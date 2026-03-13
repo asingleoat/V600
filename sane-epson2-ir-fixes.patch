@@ -1,0 +1,70 @@
+diff --git i/backend/epson2.c w/backend/epson2.c
+index 9157923..2c1e587 100644
+--- i/backend/epson2.c
++++ w/backend/epson2.c
+@@ -87,7 +87,7 @@ struct mode_param mode_params[] = {
+ 	{0, 0x00, 0x30, 1},
+ 	{0, 0x00, 0x30, 8},
+ 	{1, 0x02, 0x00, 8},
+-	{0, 0x00, 0x30, 1}
++	{0, 0x00, 0x30, 8}	/* MODE_INFRARED: mono, like gray */
+ };
+ 
+ static SANE_String_Const mode_list[] = {
+@@ -980,7 +980,7 @@ init_options(Epson_Scanner *s)
+ 	s->val[OPT_MODE].w = 0;	/* Lineart */
+ 
+ 	/* disable infrared on unsupported scanners */
+-	if (!e2_model(s, "GT-X800") && !e2_model(s, "GT-X700") && !e2_model(s, "GT-X900") && !e2_model(s, "GT-X980"))
++	if (!e2_model(s, "GT-X800") && !e2_model(s, "GT-X700") && !e2_model(s, "GT-X900") && !e2_model(s, "GT-X980") && !e2_model(s, "GT-X820"))
+ 		mode_list[MODE_INFRARED] = NULL;
+ 
+ 	/* bit depth */
+@@ -2110,9 +2110,13 @@ sane_start(SANE_Handle handle)
+ 
+ 	print_params(s->params);
+ 
+-	/* enable infrared */
+-	if (s->val[OPT_MODE].w == MODE_INFRARED)
+-		esci_enable_infrared(handle);
++	/* IR mode requires minimum 800 DPI (valid: 800, 1600, 3200) */
++	if (s->val[OPT_MODE].w == MODE_INFRARED
++	    && s->val[OPT_RESOLUTION].w < 800) {
++		DBG(1, "IR mode requires at least 800 DPI (requested %d)\n",
++		    s->val[OPT_RESOLUTION].w);
++		return SANE_STATUS_INVAL;
++	}
+ 
+ 	/* ESC , bay */
+ 	if (SANE_OPTION_IS_ACTIVE(s->opt[OPT_BAY].cap)) {
+@@ -2130,6 +2134,14 @@ sane_start(SANE_Handle handle)
+ 	if (status != SANE_STATUS_GOOD)
+ 		return status;
+ 
++	/* enable infrared - must be done AFTER scanning parameters are set,
++	 * because the challenge-response reads back parameters via FS S */
++	if (s->val[OPT_MODE].w == MODE_INFRARED) {
++		status = esci_enable_infrared(handle);
++		if (status != SANE_STATUS_GOOD)
++			return status;
++	}
++
+ 	/*
+ 	 * set focus after we set scanning parameters because the scanner will
+ 	 * use the middle of the scanning area for autofocus. If we want to
+@@ -2168,14 +2180,11 @@ sane_start(SANE_Handle handle)
+ 			DBG(1, " specific profile not available, using default\n");
+ 
+ 
+-		if (0) { /* XXX TPU */
+-
+-		        /* XXX check this */
++		if (s->hw->use_extension) {
+ 			if (s->val[OPT_FILM_TYPE].w == 0)
+ 				e2_load_cct_profile(s, CCTP_COLORPOS);
+ 			else
+ 				e2_load_cct_profile(s, CCTP_COLORNEG);
+-
+ 		} else {
+ 			e2_load_cct_profile(s, CCTP_REFLECTIVE);
+ 		}
