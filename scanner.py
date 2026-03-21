@@ -49,6 +49,7 @@ USB_CALLBACK = ctypes.CFUNCTYPE(
 # ESC/I protocol constants
 ESC = 0x1b
 FS = 0x1c
+RS = 0x1e  # Record Separator — used for extended register commands
 
 # Valid scan resolutions for the V600
 VALID_RESOLUTIONS = [100, 200, 400, 533, 600, 800, 1200, 1600, 3200, 6400]
@@ -383,6 +384,168 @@ class EpsonV600:
             return False
         return True
 
+    def _direct_write(self, data):
+        """Write directly to USB bulk OUT endpoint (bypassing interpreter)."""
+        self.ep_out.write(data, timeout=5000)
+
+    def _direct_read(self, size):
+        """Read directly from USB bulk IN endpoint (bypassing interpreter)."""
+        try:
+            return bytes(self.ep_in.read(size, timeout=5000))
+        except Exception as e:
+            print(f"  [USB direct read error: {e}]")
+            return None
+
+    def _rs_cmd(self, subcmd, data=None):
+        """Send RS <subcmd> directly over USB, read ACK, optionally send data + ACK.
+
+        RS (0x1E) commands are extended register-level commands sent directly
+        to the scanner hardware, bypassing the interpreter's ProcessCommand.
+        Used for AFE gains, CCD timing, shading correction, etc.
+        """
+        self._direct_write(bytes([RS, subcmd]))
+        resp = self._direct_read(1)
+        if resp is None or resp[0] != 0x06:
+            print(f"  RS 0x{subcmd:02x} rejected (resp={resp})")
+            return False
+        if data is not None:
+            self._direct_write(data)
+            resp = self._direct_read(1)
+            if resp is None or resp[0] != 0x06:
+                print(f"  RS 0x{subcmd:02x} data rejected (resp={resp})")
+                return False
+        return True
+
+    def _write_register(self, header, data):
+        """RS 0x84 register write: send header (8 bytes) then data block."""
+        self._direct_write(bytes([RS, 0x84]))
+        resp = self._direct_read(1)
+        if resp is None or resp[0] != 0x06:
+            print(f"  RS 0x84 rejected (resp={resp})")
+            return False
+        self._direct_write(header)
+        self._direct_write(data)
+        resp = self._direct_read(1)
+        if resp is None or resp[0] != 0x06:
+            print(f"  RS 0x84 data rejected (resp={resp})")
+            return False
+        return True
+
+    def _upload_gamma_tables(self):
+        """Upload linear gamma tables for R, G, B channels.
+
+        Each table is 256 bytes, written via FS 0x84 to addresses
+        0x1ffc (R), 0x1ffd (G), 0x1ffe (B).
+        """
+        # Linear ramp 0-255 (identity gamma)
+        lut_r = bytes(range(256))
+        lut_g = bytes(range(256))
+        lut_b = bytes(range(256))
+
+        for addr, lut in [(0xfc, lut_r), (0xfd, lut_g), (0xfe, lut_b)]:
+            header = bytes([0x03, 0x00, addr, 0x1f, 0x02, 0x00, 0x01, 0x00])
+            self._write_register(header, lut)
+
+    def configure_tpu(self):
+        """Configure TPU hardware for calibrated scanning.
+
+        Sends the AFE gain, CCD timing, and shading correction parameters
+        that the interpreter needs to perform proper TPU calibration.
+        This sequence was captured from Epson Scan 2's USB traffic.
+        """
+        print("Configuring TPU hardware...")
+
+        # Upload gamma tables (before FS W)
+        self._upload_gamma_tables()
+
+        # FS 0xA2 — set TPU mode (0x02 = TPU active)
+        self._rs_cmd(0xa2, bytes([0x02]))
+
+        # FS 0x25 — set calibration flag
+        self._rs_cmd(0x25, bytes([0x02]))
+
+        # FS 0x5A — unknown (timing?)
+        self._rs_cmd(0x5a, bytes([0x00, 0x00, 0x00, 0x00]))
+
+        # FS 0x11 — set scan pass count or mode
+        self._rs_cmd(0x11, bytes([0x03]))
+
+        # FS 0x31 — per-channel gain and offset
+        # Format: R_gain(2) G_gain(2) B_gain(2) reserved(2) R_off G_off B_off reserved
+        self._rs_cmd(0x31, bytes([
+            0x80, 0x00,  # R gain (0x0080 = 128, nominal)
+            0x80, 0x00,  # G gain
+            0x80, 0x00,  # B gain
+            0x00, 0x00,  # reserved
+            0x1e, 0x1e, 0x1e,  # R/G/B offsets (30 each)
+            0x00,        # reserved
+        ]))
+
+        # FS 0x21 — CCD configuration (26 bytes)
+        self._rs_cmd(0x21, bytes([
+            0x80, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ]))
+
+        # FS 0x84 — register write: gain/shading table
+        # Header: address=0x0000, size varies
+        gain_table_hdr = bytes([0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00])
+        # Gain table data: initial calibration values + 0xFF padding
+        gain_data = bytearray(256)
+        gain_data[0:16] = bytes([
+            0x00, 0x00, 0x00, 0x00,
+            0x28, 0x00, 0xc0, 0x39,  # R exposure/gain
+            0xc8, 0x00, 0xc0, 0x39,  # G exposure/gain
+            0x90, 0x01, 0x00, 0x10,  # B exposure/gain
+        ])
+        for i in range(16, 256):
+            gain_data[i] = 0xff
+        self._write_register(gain_table_hdr, bytes(gain_data))
+
+        # FS 0x22 — secondary CCD config (12 bytes)
+        self._rs_cmd(0x22, bytes([
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x80, 0x16, 0x00, 0x00, 0x00, 0x00,
+        ]))
+
+        # FS 0x41 — AFE (Analog Front End) configuration (22 bytes)
+        self._rs_cmd(0x41, bytes([
+            0x8f, 0x0c, 0x0f, 0x0e, 0x96, 0x00, 0x00, 0x00,
+            0x01, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x80, 0x80, 0x96, 0x00, 0x00, 0x00,
+        ]))
+
+        # FS 0x42 — additional AFE config (24 zero bytes)
+        self._rs_cmd(0x42, bytes(24))
+
+        # FS 0x43 — per-channel AFE gains (18 bytes)
+        # Bytes 0-5: nominal gains (0x0080 per channel)
+        # Bytes 6-11: calibrated exposure values per channel
+        self._rs_cmd(0x43, bytes([
+            0x00, 0x80,  # R gain
+            0x00, 0x80,  # G gain
+            0x00, 0x80,  # B gain
+            0x09, 0x78,  # R exposure
+            0xec, 0x79,  # G exposure
+            0xf2, 0x7a,  # B exposure
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]))
+
+        # FS 0x01 — scan start configuration (12 bytes)
+        self._rs_cmd(0x01, bytes([
+            0x30, 0x05, 0x00, 0x00,
+            0x80, 0x00,
+            0xff, 0x00, 0xff, 0x00,
+            0x02, 0x00,
+        ]))
+
+        # FS 0x05 — trigger calibration
+        self._rs_cmd(0x05)
+
+        print("  TPU hardware configured")
+
     def start_extended_scan(self):
         """FS G - Start extended scan. Returns (block_size, block_count, last_block_size)."""
         if not self._cmd(bytes([FS, 0x47]), debug=True):
@@ -478,24 +641,25 @@ class EpsonV600:
             max_x = struct.unpack_from('<I', eid, 36)[0]
             max_y = struct.unpack_from('<I', eid, 40)[0]
 
-        # Convert inches to scanner pixels at the requested DPI
-        # Scanner area units are in optical DPI
-        x_pixels = int(x * optical_dpi)
-        y_pixels = int(y * optical_dpi)
+        # Area dimensions from FS I are in optical DPI units.
+        # FS W expects all coordinates in scan DPI units.
+        max_x_in = max_x / optical_dpi
+        max_y_in = max_y / optical_dpi
 
         if width is None:
-            w_pixels = int(max_x - x_pixels)
+            w_in = max_x_in - x
         else:
-            w_pixels = int(width * optical_dpi)
+            w_in = width
 
         if height is None:
-            h_pixels = int(max_y - y_pixels)
+            h_in = max_y_in - y
         else:
-            h_pixels = int(height * optical_dpi)
+            h_in = height
 
-        # Scale pixels to requested DPI
-        out_w = int(w_pixels * dpi / optical_dpi)
-        out_h = int(h_pixels * dpi / optical_dpi)
+        x_pixels = int(x * dpi)
+        y_pixels = int(y * dpi)
+        out_w = int(w_in * dpi)
+        out_h = int(h_in * dpi)
 
         # Determine scanning parameters
         if ir:
@@ -516,7 +680,7 @@ class EpsonV600:
 
         print(f"\nScan parameters:")
         print(f"  Resolution: {dpi} dpi")
-        print(f"  Area: {out_w}x{out_h} pixels ({w_pixels/optical_dpi:.1f}x{h_pixels/optical_dpi:.1f} inches)")
+        print(f"  Area: {out_w}x{out_h} pixels ({w_in:.1f}x{h_in:.1f} inches)")
         print(f"  Mode: {'IR' if ir else 'RGB' if color else 'Gray'} {depth}-bit")
         print(f"  Expected size: {expected_size / 1024 / 1024:.1f} MB")
 
@@ -526,9 +690,11 @@ class EpsonV600:
             closest = min(valid_res, key=lambda r: abs(r - dpi))
             print(f"  Note: {dpi} dpi not supported{' for IR' if ir else ''}, using {closest} dpi")
             dpi = closest
-            # Recalculate output dimensions
-            out_w = int(w_pixels * dpi / optical_dpi)
-            out_h = int(h_pixels * dpi / optical_dpi)
+            # Recalculate output dimensions and coordinates at new DPI
+            x_pixels = int(x * dpi)
+            y_pixels = int(y * dpi)
+            out_w = int(w_in * dpi)
+            out_h = int(h_in * dpi)
             expected_size = out_w * out_h * bytes_per_pixel
 
         # Reset before setting parameters
@@ -547,6 +713,10 @@ class EpsonV600:
             color_mode=color_mode, depth=depth, source=source_code
         ):
             raise RuntimeError("Failed to set scanning parameters")
+
+        # Configure TPU hardware (AFE gains, CCD timing, shading)
+        if source != 'flatbed':
+            self.configure_tpu()
 
         # Start scan
         print("Starting scan...")
@@ -636,19 +806,10 @@ class EpsonV600:
         g = arr[:,:,1].astype(np.float64)
         b = arr[:,:,2].astype(np.float64)
 
-        # Step 1: Black level subtraction (use 0.5th percentile per channel)
-        r_black = np.percentile(r, 0.5)
-        g_black = np.percentile(g, 0.5)
-        b_black = np.percentile(b, 0.5)
-        print(f"  Black levels: R={r_black:.0f} G={g_black:.0f} B={b_black:.0f}")
-
-        r = np.maximum(r - r_black, 0)
-        g = np.maximum(g - g_black, 0)
-        b = np.maximum(b - b_black, 0)
-
-        # Step 2: White reference (per-channel 99.5th percentile)
-        # Using per-channel percentiles avoids the problem where combined
-        # brightness selects pixels that aren't the true per-channel max
+        # Step 1: White reference (per-channel 99.5th percentile)
+        # For transmissive scans, the clear background is the brightest thing
+        # in the image. Using per-channel percentiles avoids the problem where
+        # combined brightness selects pixels that aren't the true per-channel max.
         r_ref = np.percentile(r, 99.5)
         g_ref = np.percentile(g, 99.5)
         b_ref = np.percentile(b, 99.5)
@@ -657,8 +818,9 @@ class EpsonV600:
             print("  White balance: skipped (too dark)")
             return arr
 
-        # Step 3: Compute gains to map white reference to 95% of max value
-        # Using 95% leaves headroom to avoid hard clipping
+        # Step 2: Compute gains to make the white reference neutral
+        # Scale all channels so their white reference matches, targeting
+        # 95% of max value to leave headroom
         target = 0.95 * max_val
         r_gain = target / r_ref
         g_gain = target / g_ref
