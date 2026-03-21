@@ -615,7 +615,7 @@ class EpsonV600:
 
     def scan(self, dpi=300, x=0, y=0, width=None, height=None,
              color=True, depth=8, source='flatbed', ir=False,
-             output=None, raw=False):
+             output=None, raw=False, progress_cb=None):
         """High-level scan function. Returns numpy array.
 
         dpi: scan resolution (100-6400)
@@ -626,6 +626,7 @@ class EpsonV600:
         source: 'flatbed' or 'tpu'
         ir: True to enable infrared channel
         output: output filename (auto-detected format, or None to skip saving)
+        progress_cb: optional callback(pct, eta_secs) called during data read
         """
         # Get scanner capabilities to know area limits
         self._cmd(bytes([FS, 0x49]))
@@ -733,6 +734,7 @@ class EpsonV600:
             total_blocks += 1
 
         raw_data = bytearray()
+        scan_start_time = time.time()
         for i in range(total_blocks):
             if i == total_blocks - 1 and last_block_size:
                 this_size = last_block_size
@@ -762,7 +764,14 @@ class EpsonV600:
 
             if (i + 1) % 10 == 0 or i == total_blocks - 1:
                 pct = len(raw_data) * 100 // expected_size if expected_size else 0
+                elapsed = time.time() - scan_start_time
+                if pct > 0:
+                    eta = elapsed / pct * (100 - pct)
+                else:
+                    eta = 0
                 print(f"  Block {i+1}/{total_blocks} ({pct}%)")
+                if progress_cb:
+                    progress_cb(pct, eta)
 
         print(f"Received {len(raw_data)} bytes (expected {expected_size})")
 

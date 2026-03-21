@@ -329,7 +329,16 @@ function updateScanInfo() {
         const totalMb = mode === 'rgb+ir'
             ? (outW * outH * (3+1) * 2 / 1024 / 1024).toFixed(1)
             : mb;
-        info.textContent = `${wIn}" x ${hIn}" → ${outW}x${outH}px ${modeLabel} (${totalMb} MB)`;
+        // Estimate scan time: ~5 MB/s throughput + ~8s calibration overhead per pass
+        const passes = mode === 'rgb+ir' ? 2 : 1;
+        const dataMb = mode === 'rgb+ir'
+            ? outW * outH * 3 * 2 / 1024 / 1024 + outW * outH * 1 * 2 / 1024 / 1024
+            : outW * outH * ch * 2 / 1024 / 1024;
+        const estSecs = Math.round(dataMb / 5 + passes * 8);
+        const estMin = Math.floor(estSecs / 60);
+        const estSecR = estSecs % 60;
+        const estStr = estMin > 0 ? `~${estMin}m${estSecR}s` : `~${estSecs}s`;
+        info.textContent = `${wIn}" x ${hIn}" → ${outW}x${outH}px ${modeLabel} (${totalMb} MB, ${estStr})`;
     });
 }
 
@@ -443,8 +452,8 @@ function syncDpiOptions() {
     const dpiSel = document.getElementById('sel-dpi');
     const irOnly = [800, 1600, 3200];
     const rgbOnly = [800, 1200, 1600, 3200, 6400];
-    // RGB+IR must use IR-valid resolutions (intersection)
-    const valid = mode === 'rgb' ? rgbOnly : irOnly;
+    const rgbIr = [800, 1600, 3200, 6400]; // 6400 OK: IR scanned at 3200 and upscaled
+    const valid = mode === 'rgb' ? rgbOnly : mode === 'ir' ? irOnly : rgbIr;
     const curVal = parseInt(dpiSel.value);
 
     dpiSel.innerHTML = '';
@@ -571,6 +580,14 @@ class Handler(BaseHTTPRequestHandler):
             w_in = params.get('w', tpu_width_in)
             h_in = params.get('h', tpu_height_in)
 
+            def _progress(pct, eta, label=""):
+                global scan_status
+                if eta > 60:
+                    eta_str = f"{int(eta//60)}m{int(eta%60):02d}s"
+                else:
+                    eta_str = f"{int(eta)}s"
+                scan_status = f"{label}{pct}% — {eta_str} remaining"
+
             scan_args = dict(
                 dpi=dpi, x=x_in, y=y_in, width=w_in, height=h_in,
                 source='tpu',
@@ -586,14 +603,25 @@ class Handler(BaseHTTPRequestHandler):
                 with scanner_lock:
                     rgb = scanner.scan(
                         **scan_args, color=True, depth=16, ir=False,
+                        progress_cb=lambda p, e: _progress(p, e, "RGB: "),
                     )
 
-                # Pass 2: IR mono
-                scan_status = f"Pass 2/2: Scanning IR at {dpi} DPI..."
+                # Pass 2: IR mono (max 3200 DPI — upscale if needed)
+                ir_dpi = min(dpi, 3200)
+                ir_args = dict(scan_args)
+                ir_args['dpi'] = ir_dpi
+                scan_status = f"Pass 2/2: Scanning IR at {ir_dpi} DPI..."
                 with scanner_lock:
                     ir = scanner.scan(
-                        **scan_args, color=False, depth=16, ir=True,
+                        **ir_args, color=False, depth=16, ir=True,
+                        progress_cb=lambda p, e: _progress(p, e, "IR: "),
                     )
+
+                # Upscale IR to match RGB dimensions if needed
+                if ir.shape != rgb.shape[:2]:
+                    import cv2
+                    ir = cv2.resize(ir, (rgb.shape[1], rgb.shape[0]),
+                                    interpolation=cv2.INTER_LANCZOS4)
 
                 # Write multi-page TIFF (SilverFast format):
                 #   page 0: RGB 16-bit (H, W, 3)
@@ -632,9 +660,10 @@ class Handler(BaseHTTPRequestHandler):
                     scanner.scan(
                         **scan_args,
                         color=(not ir_mode),
-                        depth=16 if not ir_mode else 8,
+                        depth=16,
                         ir=ir_mode,
                         output=filepath,
+                        progress_cb=lambda p, e: _progress(p, e),
                     )
 
                 scan_status = f"Saved: {filename}"
