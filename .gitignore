@@ -2,3 +2,4 @@ __pycache__/
 *.tiff
 *.tif
 sane-local/
+firmware/

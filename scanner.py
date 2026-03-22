@@ -34,8 +34,112 @@ import numpy as np
 VENDOR_ID = 0x04b8
 PRODUCT_ID = 0x013a
 
-# Interpreter bundle path
-INTERP_PATH = "/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/ES00A1/Interpreter A1.bundle/Contents/MacOS/Interpreter A1"
+# Interpreter bundle — checked in order of preference
+INTERP_SEARCH_PATHS = [
+    # Local bundled copy (downloaded by ensure_interpreter)
+    os.path.join(os.path.dirname(__file__), "firmware", "Interpreter A1"),
+    # System ICA driver install
+    "/Library/Image Capture/Devices/EPSON Scanner.app/Contents/PlugIns/Interpreter A1.bundle/Contents/MacOS/Interpreter A1",
+    # Epson Scan 2 install
+    "/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/ES00A1/Interpreter A1.bundle/Contents/MacOS/Interpreter A1",
+]
+
+# Epson ICA driver download (contains the interpreter, freely available, no auth)
+ICA_DRIVER_URL = "https://ftp.epson.com/drivers/ESICA_5.8.23.dmg"
+
+
+def find_interpreter():
+    """Find the interpreter binary in known locations."""
+    for path in INTERP_SEARCH_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def ensure_interpreter():
+    """Download and extract the Epson ICA driver if interpreter is not found.
+
+    Downloads the freely-available ICA scanner driver from Epson's FTP server
+    and extracts the Interpreter A1 bundle to a local firmware/ directory.
+    """
+    path = find_interpreter()
+    if path:
+        return path
+
+    firmware_dir = os.path.join(os.path.dirname(__file__), "firmware")
+    target = os.path.join(firmware_dir, "Interpreter A1")
+
+    print("Epson Interpreter A1 not found locally.")
+    print(f"Downloading ICA driver from {ICA_DRIVER_URL} ...")
+
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dmg_path = os.path.join(tmpdir, "esica.dmg")
+
+        # Download
+        import urllib.request
+        urllib.request.urlretrieve(ICA_DRIVER_URL, dmg_path,
+            reporthook=lambda b, bs, ts: print(
+                f"\r  {b*bs/1024/1024:.1f} / {ts/1024/1024:.1f} MB", end="", flush=True
+            ) if ts > 0 else None)
+        print()
+
+        # Mount DMG
+        mount_point = os.path.join(tmpdir, "mnt")
+        os.makedirs(mount_point)
+        subprocess.run(
+            ["hdiutil", "attach", dmg_path, "-mountpoint", mount_point, "-nobrowse", "-quiet"],
+            check=True,
+        )
+
+        try:
+            # Find and extract the pkg
+            pkg_path = None
+            for root, dirs, files in os.walk(mount_point):
+                for f in files:
+                    if f.endswith(".pkg"):
+                        pkg_path = os.path.join(root, f)
+                        break
+                if pkg_path:
+                    break
+
+            if not pkg_path:
+                raise RuntimeError("No .pkg found in DMG")
+
+            # Extract pkg contents
+            extract_dir = os.path.join(tmpdir, "extracted")
+            subprocess.run(
+                ["pkgutil", "--expand-full", pkg_path, extract_dir],
+                check=True,
+            )
+
+            # Find Interpreter A1 binary
+            interp_bin = None
+            for root, dirs, files in os.walk(extract_dir):
+                if "Interpreter A1.bundle" in dirs:
+                    candidate = os.path.join(root, "Interpreter A1.bundle",
+                                            "Contents", "MacOS", "Interpreter A1")
+                    if os.path.exists(candidate):
+                        interp_bin = candidate
+                        break
+
+            if not interp_bin:
+                raise RuntimeError("Interpreter A1 not found in package")
+
+            # Copy to local firmware directory
+            os.makedirs(firmware_dir, exist_ok=True)
+            import shutil
+            shutil.copy2(interp_bin, target)
+            os.chmod(target, 0o755)
+            print(f"  Installed: {target}")
+
+        finally:
+            subprocess.run(["hdiutil", "detach", mount_point, "-quiet"],
+                          check=False)
+
+    return target
 
 # Callback type: bool callback(uint8_t* buf, uint32_t len, void* handle, int16_t* err)
 USB_CALLBACK = ctypes.CFUNCTYPE(
@@ -91,11 +195,16 @@ class EpsonV600:
         print(f"USB connected: EP OUT=0x{self.ep_out.bEndpointAddress:02x}, "
               f"EP IN=0x{self.ep_in.bEndpointAddress:02x}")
 
-        # Load interpreter
-        if not os.path.exists(INTERP_PATH):
-            raise RuntimeError(f"Interpreter not found: {INTERP_PATH}")
+        # Load interpreter (download if needed)
+        interp_path = ensure_interpreter()
+        if not interp_path:
+            raise RuntimeError(
+                "Epson Interpreter A1 not found. Install Epson Scan 2 or the "
+                "ICA Scanner Driver from https://epson.com/Support/Scanners/"
+                "Perfection-Series/Epson-Perfection-V600-Photo/s/SPT_B11B198011"
+            )
 
-        self.interp = ctypes.CDLL(INTERP_PATH)
+        self.interp = ctypes.CDLL(interp_path)
         print("Interpreter loaded")
 
         # Set up function signatures
