@@ -237,6 +237,8 @@ class EpsonV600:
         self.interp = None
         self._read_cb = None   # prevent GC
         self._write_cb = None  # prevent GC
+        self._tpu_configured = False  # set after first configure_tpu
+        self._needs_reinit = False    # set after RS commands need reinit
         self.verbose_usb = False  # trace USB callbacks
 
     def open(self):
@@ -739,6 +741,7 @@ class EpsonV600:
         # FS 0x05 — trigger calibration
         self._rs_cmd(0x05)
 
+        self._needs_reinit = True
         print("  TPU hardware configured")
 
     def start_extended_scan(self):
@@ -911,8 +914,10 @@ class EpsonV600:
             raise RuntimeError("Failed to set scanning parameters")
 
         # Configure TPU hardware (AFE gains, CCD timing, shading)
-        if source != 'flatbed':
+        # Only needed once per session — calibration persists in scanner hardware
+        if source != 'flatbed' and not self._tpu_configured:
             self.configure_tpu()
+            self._tpu_configured = True
 
         # Start scan
         print("Starting scan...")
@@ -997,9 +1002,11 @@ class EpsonV600:
         if output:
             self._save_image(arr, output, depth, dpi=dpi)
 
-        # Reinitialize interpreter after TPU scans — the RS (direct USB)
-        # commands used by configure_tpu desync the interpreter's USB state
-        if source != 'flatbed':
+        # Reinitialize interpreter if we just did TPU configuration — the RS
+        # (direct USB) commands desync the interpreter's USB state.
+        # This only happens on the first TPU scan of the session.
+        if self._needs_reinit:
+            self._needs_reinit = False
             self.reinit()
 
         return arr

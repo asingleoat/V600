@@ -371,16 +371,20 @@ function updateScanInfo() {
 function playDing() {
     try {
         const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        osc.type = 'sine';
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.5);
+        const t = ctx.currentTime;
+        for (let i = 0; i < 3; i++) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = 880;
+            osc.type = 'sine';
+            const start = t + i * 0.2;
+            gain.gain.setValueAtTime(0.4, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.12);
+            osc.start(start);
+            osc.stop(start + 0.12);
+        }
     } catch(e) {}
 }
 
@@ -498,7 +502,8 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
 
     try {
         const info = await (await fetch('/info')).json();
-        const xIn = sel.x / info.preview_w * info.tpu_width;
+        // Preview is mirrored horizontally, so flip x back for the scanner
+        const xIn = info.tpu_width - (sel.x + sel.w) / info.preview_w * info.tpu_width;
         const yIn = sel.y / info.preview_h * info.tpu_height;
         const wIn = sel.w / info.preview_w * info.tpu_width;
         const hIn = sel.h / info.preview_h * info.tpu_height;
@@ -890,12 +895,6 @@ class Handler(BaseHTTPRequestHandler):
                         **ir_args, color=False, depth=16, ir=True,
                         progress_cb=_progress_ir, cancel_cb=_check_cancel,
                     )
-
-                # Upscale IR to match RGB dimensions if needed
-                if ir.shape != rgb.shape[:2]:
-                    import cv2
-                    ir = cv2.resize(ir, (rgb.shape[1], rgb.shape[0]),
-                                    interpolation=cv2.INTER_LANCZOS4)
 
                 # Write multi-page TIFF (SilverFast format):
                 #   page 0: RGB 16-bit (H, W, 3)
