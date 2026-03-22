@@ -160,6 +160,75 @@ VALID_RESOLUTIONS = [100, 200, 400, 533, 600, 800, 1200, 1600, 3200, 6400]
 VALID_IR_RESOLUTIONS = [800, 1600, 3200]
 
 
+def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.05):
+    """Detect the film area in a preview scan image.
+
+    Finds the largest dark region (film is darker than the clear TPU
+    background) and returns its bounding box in inches with padding.
+
+    Args:
+        preview: numpy array (H, W, 3) uint8 or uint16 preview image
+        preview_dpi: DPI of the preview scan
+        tpu_width_in: TPU area width in inches
+        tpu_height_in: TPU area height in inches
+        pad: fractional padding to add around the detected area (default 5%)
+
+    Returns:
+        (x_in, y_in, w_in, h_in) tuple in inches, or None if no film detected
+    """
+    from scipy import ndimage
+
+    # Convert to grayscale float
+    if preview.ndim == 3:
+        gray = preview.astype(np.float32).mean(axis=2)
+    else:
+        gray = preview.astype(np.float32)
+
+    # Threshold: midpoint between 25th and 75th percentile
+    # This works because the histogram is bimodal (dark film + bright background)
+    p25 = np.percentile(gray, 25)
+    p75 = np.percentile(gray, 75)
+    thresh = (p25 + p75) / 2
+    dark_mask = gray < thresh
+
+    # Find connected components, pick the largest
+    labeled, n_features = ndimage.label(dark_mask)
+    if n_features == 0:
+        return None
+
+    sizes = ndimage.sum(dark_mask, labeled, range(1, n_features + 1))
+    largest = np.argmax(sizes) + 1
+
+    # Reject if the largest region is too small (< 5% of image)
+    if sizes[largest - 1] < dark_mask.size * 0.05:
+        return None
+
+    largest_mask = labeled == largest
+
+    # Bounding box
+    rows = np.any(largest_mask, axis=1)
+    cols = np.any(largest_mask, axis=0)
+    rmin, rmax = np.where(rows)[0][[0, -1]]
+    cmin, cmax = np.where(cols)[0][[0, -1]]
+
+    # Convert to inches
+    x_in = cmin / preview_dpi
+    y_in = rmin / preview_dpi
+    w_in = (cmax - cmin) / preview_dpi
+    h_in = (rmax - rmin) / preview_dpi
+
+    # Add padding (fixed amount based on the smaller dimension)
+    pad_amt = min(w_in, h_in) * pad
+    pad_w = pad_amt
+    pad_h = pad_amt
+    x_in = max(0, x_in - pad_w)
+    y_in = max(0, y_in - pad_h)
+    w_in = min(tpu_width_in - x_in, w_in + 2 * pad_w)
+    h_in = min(tpu_height_in - y_in, h_in + 2 * pad_h)
+
+    return (x_in, y_in, w_in, h_in)
+
+
 class EpsonV600:
     def __init__(self):
         self.dev = None
@@ -741,7 +810,7 @@ class EpsonV600:
 
     def scan(self, dpi=300, x=0, y=0, width=None, height=None,
              color=True, depth=8, source='flatbed', ir=False,
-             output=None, raw=False, progress_cb=None, cancel_cb=None):
+             output=None, progress_cb=None, cancel_cb=None):
         """High-level scan function. Returns numpy array.
 
         dpi: scan resolution (100-6400)
@@ -919,9 +988,10 @@ class EpsonV600:
         else:
             arr = arr.reshape((out_h, out_w))
 
-        # White balance for TPU scans (compensate for lamp spectrum)
-        if source != 'flatbed' and channels == 3 and not raw:
-            arr = self._white_balance(arr, depth)
+        # Mirror horizontally for TPU scans (film is scanned matte-side
+        # down against the glass, producing a left-right reversed image)
+        if source != 'flatbed':
+            arr = np.ascontiguousarray(arr[:, ::-1])
 
         # Save if output path specified
         if output:
@@ -933,52 +1003,6 @@ class EpsonV600:
             self.reinit()
 
         return arr
-
-    def _white_balance(self, arr, depth):
-        """White balance for TPU scans: black subtraction + per-channel gain.
-
-        For transmissive scans, the clear background (no film) represents
-        maximum light per channel. The TPU lamp has a green-biased spectrum,
-        so channels need independent gain correction.
-
-        Steps:
-        1. Subtract per-channel black level (dark current / noise floor)
-        2. Compute per-channel white reference from brightest pixels
-        3. Scale all channels so white reference maps to ~95% of max value
-        """
-        max_val = 65535 if depth == 16 else 255
-        dtype = np.uint16 if depth == 16 else np.uint8
-
-        r = arr[:,:,0].astype(np.float64)
-        g = arr[:,:,1].astype(np.float64)
-        b = arr[:,:,2].astype(np.float64)
-
-        # Step 1: White reference (per-channel 99.5th percentile)
-        # For transmissive scans, the clear background is the brightest thing
-        # in the image. Using per-channel percentiles avoids the problem where
-        # combined brightness selects pixels that aren't the true per-channel max.
-        r_ref = np.percentile(r, 99.5)
-        g_ref = np.percentile(g, 99.5)
-        b_ref = np.percentile(b, 99.5)
-
-        if min(r_ref, g_ref, b_ref) < 1:
-            print("  White balance: skipped (too dark)")
-            return arr
-
-        # Step 2: Compute gains to make the white reference neutral
-        # Scale all channels so their white reference matches, targeting
-        # 95% of max value to leave headroom
-        target = 0.95 * max_val
-        r_gain = target / r_ref
-        g_gain = target / g_ref
-        b_gain = target / b_ref
-        print(f"  White ref: R={r_ref:.0f} G={g_ref:.0f} B={b_ref:.0f}")
-        print(f"  Gains: R×{r_gain:.3f} G×{g_gain:.3f} B×{b_gain:.3f}")
-
-        r_out = np.clip(r * r_gain, 0, max_val).astype(dtype)
-        g_out = np.clip(g * g_gain, 0, max_val).astype(dtype)
-        b_out = np.clip(b * b_gain, 0, max_val).astype(dtype)
-        return np.stack([r_out, g_out, b_out], axis=2)
 
     def _tiff_metadata(self, dpi):
         """Return tifffile.write() kwargs for scanner metadata."""
@@ -1047,8 +1071,6 @@ def main():
                         help='Width in inches')
     parser.add_argument('-H', '--height', type=float, default=None,
                         help='Height in inches')
-    parser.add_argument('--raw', action='store_true',
-                        help='Skip white balance (raw sensor data)')
     parser.add_argument('-o', '--output', type=str, default='scan.tiff',
                         help='Output filename (default: scan.tiff)')
     args = parser.parse_args()
@@ -1101,7 +1123,6 @@ def main():
             source=source,
             ir=args.ir,
             output=output,
-            raw=args.raw,
         )
 
     except Exception as e:

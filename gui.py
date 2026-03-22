@@ -21,7 +21,7 @@ from socketserver import ThreadingMixIn
 
 import numpy as np
 
-from scanner import EpsonV600, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS
+from scanner import EpsonV600, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area
 
 # Global state
 scanner = None
@@ -34,6 +34,7 @@ tpu_height_in = 0.0       # TPU area height in inches
 scan_counter = 1          # auto-incrementing filename counter
 output_dir = "."
 scanning = False          # True while a scan is in progress
+last_preview_arr = None   # raw preview array for film detection
 scan_status = ""          # status message for the UI
 cancel_requested = False  # set True to abort current scan
 config_path = ""          # path to GUI config file
@@ -99,6 +100,7 @@ canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
 <body>
 <div id="toolbar">
     <button id="btn-preview" class="primary">Preview</button>
+    <label style="cursor:pointer"><input type="checkbox" id="chk-autoselect" checked> Auto-select</label>
     <span class="sep"></span>
     <label>DPI:</label>
     <select id="sel-dpi">
@@ -416,7 +418,7 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         img = new Image();
-        img.onload = () => {
+        img.onload = async () => {
             imgW = img.naturalWidth;
             imgH = img.naturalHeight;
             document.getElementById('no-preview').style.display = 'none';
@@ -424,9 +426,33 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
             resize();
             fitImage();
             sel = null;
-            applyPendingSelection();
+
+            // Auto-detect film area if enabled
+            if (document.getElementById('chk-autoselect').checked) {
+                try {
+                    const det = await (await fetch('/detect')).json();
+                    if (det.sel_x_in !== undefined) {
+                        const info = await (await fetch('/info')).json();
+                        sel = {
+                            x: det.sel_x_in / info.tpu_width * info.preview_w,
+                            y: det.sel_y_in / info.tpu_height * info.preview_h,
+                            w: det.sel_w_in / info.tpu_width * info.preview_w,
+                            h: det.sel_h_in / info.tpu_height * info.preview_h,
+                        };
+                        saveConfig();
+                        setStatus('Film area detected. Adjust selection if needed.', false);
+                    } else {
+                        setStatus('No film detected. Draw a rectangle manually.', false);
+                    }
+                } catch(e) {
+                    setStatus('Auto-detect failed. Draw a rectangle manually.', false);
+                }
+            } else {
+                applyPendingSelection();
+                setStatus('Preview ready. Draw a rectangle to select scan area.', false);
+            }
+
             draw();
-            setStatus('Preview ready. Draw a rectangle to select scan area.', false);
             setButtonsEnabled(true);
         };
         img.src = url;
@@ -555,6 +581,7 @@ function saveConfig() {
             sel_h_in: sel.h / data.preview_h * data.tpu_height,
             dpi: parseInt(document.getElementById('sel-dpi').value),
             mode: document.getElementById('sel-mode').value,
+            autoselect: document.getElementById('chk-autoselect').checked,
         };
         fetch('/config', {
             method: 'POST',
@@ -566,6 +593,9 @@ function saveConfig() {
 
 function restoreConfig() {
     fetch('/config').then(r => r.json()).then(cfg => {
+        if (cfg.autoselect !== undefined) {
+            document.getElementById('chk-autoselect').checked = cfg.autoselect;
+        }
         if (cfg.mode) {
             document.getElementById('sel-mode').value = cfg.mode;
             syncDpiOptions();
@@ -605,6 +635,7 @@ canvas.addEventListener('mouseup', () => {
 });
 document.getElementById('sel-dpi').addEventListener('change', saveConfig);
 document.getElementById('sel-mode').addEventListener('change', saveConfig);
+document.getElementById('chk-autoselect').addEventListener('change', saveConfig);
 
 // Restore on page load
 restoreConfig();
@@ -659,6 +690,22 @@ class Handler(BaseHTTPRequestHandler):
                 'tpu_height': tpu_height_in,
                 'scan_counter': scan_counter,
             })
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(data.encode())
+
+        elif self.path == '/detect':
+            result = {}
+            if last_preview_arr is not None:
+                area = detect_film_area(
+                    last_preview_arr, preview_dpi,
+                    tpu_width_in, tpu_height_in)
+                if area:
+                    result = dict(
+                        sel_x_in=area[0], sel_y_in=area[1],
+                        sel_w_in=area[2], sel_h_in=area[3])
+            data = json.dumps(result)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -720,7 +767,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _handle_preview(self):
-        global preview_jpeg, preview_dpi, tpu_width_in, tpu_height_in
+        global preview_jpeg, preview_dpi, tpu_width_in, tpu_height_in, last_preview_arr
 
         try:
             with scanner_lock:
@@ -743,6 +790,8 @@ class Handler(BaseHTTPRequestHandler):
                     color=True,
                     depth=8,
                 )
+
+            last_preview_arr = arr
 
             # Convert to JPEG
             from PIL import Image
