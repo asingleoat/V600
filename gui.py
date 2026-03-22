@@ -35,6 +35,7 @@ scan_counter = 1          # auto-incrementing filename counter
 output_dir = "."
 scanning = False          # True while a scan is in progress
 scan_status = ""          # status message for the UI
+cancel_requested = False  # set True to abort current scan
 config_path = ""          # path to GUI config file
 
 
@@ -75,6 +76,8 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; ove
 #toolbar button:hover { background: #444; }
 #toolbar button.primary { background: #2d6; color: #111; border-color: #2d6; font-weight: 600; }
 #toolbar button.primary:hover { background: #3e7; }
+#toolbar button.danger { background: #d44; color: #fff; border-color: #d44; font-weight: 600; }
+#toolbar button.danger:hover { background: #e55; }
 #toolbar .sep { width: 1px; height: 24px; background: #555; }
 #canvas-wrap {
     position: fixed; top: 48px; left: 0; right: 0; bottom: 28px; overflow: hidden;
@@ -113,6 +116,7 @@ canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
     </select>
     <span class="sep"></span>
     <button id="btn-scan" class="primary">Scan Selection</button>
+    <button id="btn-cancel" class="danger" style="display:none">Cancel</button>
     <span class="sep"></span>
     <span id="scan-info" style="font-size:12px;color:#888"></span>
 </div>
@@ -356,8 +360,26 @@ function updateScanInfo() {
         const passes = mode === 'rgb+ir' ? 2 : 1;
         const estSecs = Math.round(dataMb / 5 + passes * 8);
         const estStr = fmtTime(estSecs);
-        info.textContent = `${wIn}" x ${hIn}" → ${outW}x${outH}px ${modeLabel} (${totalMb} MB, ${estStr})`;
+        const wMm = (wIn * 25.4).toFixed(1);
+        const hMm = (hIn * 25.4).toFixed(1);
+        info.textContent = `${wIn}" x ${hIn}" (${wMm} x ${hMm} mm) → ${outW}x${outH}px ${modeLabel} (${totalMb} MB, ${estStr})`;
     });
+}
+
+function playDing() {
+    try {
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.5);
+    } catch(e) {}
 }
 
 function fmtTime(secs) {
@@ -375,6 +397,8 @@ function setStatus(msg, busy) {
 function setButtonsEnabled(enabled) {
     document.getElementById('btn-preview').disabled = !enabled;
     document.getElementById('btn-scan').disabled = !enabled;
+    document.getElementById('btn-scan').style.display = enabled ? '' : 'none';
+    document.getElementById('btn-cancel').style.display = enabled ? 'none' : '';
 }
 
 // Preview button
@@ -427,11 +451,22 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
     setButtonsEnabled(false);
 
     // Poll status while scanning
+    const defaultTitle = document.title;
     const pollId = setInterval(async () => {
         try {
             const r = await fetch('/scan-status');
             const d = await r.json();
-            if (d.status) setStatus(d.status, true);
+            if (d.status) {
+                setStatus(d.status, true);
+                // Extract ETA or percentage for tab title
+                const etaMatch = d.status.match(/ETA ([^,]+)/);
+                const pctMatch = d.status.match(/total (\d+%)/);
+                if (etaMatch) {
+                    document.title = `${etaMatch[1]} — Scanner`;
+                } else if (pctMatch) {
+                    document.title = `${pctMatch[1]} — Scanner`;
+                }
+            }
         } catch(e) {}
     }, 500);
 
@@ -448,17 +483,28 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
             body: JSON.stringify({dpi, mode, x: xIn, y: yIn, w: wIn, h: hIn})
         });
         clearInterval(pollId);
+        document.title = defaultTitle;
         const result = await resp.json();
         if (result.error) {
             setStatus('Scan failed: ' + result.error, false);
         } else {
             setStatus('Saved: ' + result.filename, false);
+            playDing();
         }
     } catch(e) {
         clearInterval(pollId);
+        document.title = defaultTitle;
         setStatus('Scan failed: ' + e.message, false);
     }
     setButtonsEnabled(true);
+});
+
+// Cancel button
+document.getElementById('btn-cancel').addEventListener('click', async () => {
+    try {
+        await fetch('/cancel', {method: 'POST'});
+        setStatus('Cancelling...', true);
+    } catch(e) {}
 });
 
 // Update info when DPI or mode changes
@@ -653,12 +699,19 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(length)) if length else {}
             self._handle_scan(body)
+        elif self.path == '/cancel':
+            global cancel_requested
+            cancel_requested = True
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+            return
         elif self.path == '/config':
             length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(length)) if length else {}
             cfg = load_config()
             cfg.update(body)
-            save_config(cfg)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -722,7 +775,12 @@ class Handler(BaseHTTPRequestHandler):
             w_in = params.get('w', tpu_width_in)
             h_in = params.get('h', tpu_height_in)
 
+            global cancel_requested
+            cancel_requested = False
             scan_start = time.time()
+
+            def _check_cancel():
+                return cancel_requested
 
             def _fmt_elapsed():
                 e = int(time.time() - scan_start)
@@ -771,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
                 with scanner_lock:
                     rgb = scanner.scan(
                         **scan_args, color=True, depth=16, ir=False,
-                        progress_cb=_progress_rgb,
+                        progress_cb=_progress_rgb, cancel_cb=_check_cancel,
                     )
 
                 # Pass 2: IR mono (max 3200 DPI — upscale if needed)
@@ -781,7 +839,7 @@ class Handler(BaseHTTPRequestHandler):
                 with scanner_lock:
                     ir = scanner.scan(
                         **ir_args, color=False, depth=16, ir=True,
-                        progress_cb=_progress_ir,
+                        progress_cb=_progress_ir, cancel_cb=_check_cancel,
                     )
 
                 # Upscale IR to match RGB dimensions if needed
@@ -806,10 +864,13 @@ class Handler(BaseHTTPRequestHandler):
                     (thumb_w, thumb_h), PILImage.LANCZOS)
                 thumb = np.array(pil_thumb)
 
+                meta = scanner._tiff_metadata(dpi)
+                ir_meta = scanner._tiff_metadata(ir_dpi)
+
                 with tifffile.TiffWriter(filepath) as tw:
-                    tw.write(rgb)    # page 0: RGB
-                    tw.write(thumb)  # page 1: thumbnail
-                    tw.write(ir)     # page 2: IR
+                    tw.write(rgb, **meta)       # page 0: RGB
+                    tw.write(thumb)              # page 1: thumbnail
+                    tw.write(ir, **ir_meta)      # page 2: IR
 
                 scan_status = f"Saved: {filename}"
                 print(f"Saved: {filepath} (RGB {rgb.shape}, IR {ir.shape})")
@@ -837,6 +898,7 @@ class Handler(BaseHTTPRequestHandler):
                         ir=ir_mode,
                         output=filepath,
                         progress_cb=_progress_single,
+                        cancel_cb=_check_cancel,
                     )
 
                 scan_status = f"Saved: {filename}"

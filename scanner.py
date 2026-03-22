@@ -741,7 +741,7 @@ class EpsonV600:
 
     def scan(self, dpi=300, x=0, y=0, width=None, height=None,
              color=True, depth=8, source='flatbed', ir=False,
-             output=None, raw=False, progress_cb=None):
+             output=None, raw=False, progress_cb=None, cancel_cb=None):
         """High-level scan function. Returns numpy array.
 
         dpi: scan resolution (100-6400)
@@ -884,6 +884,13 @@ class EpsonV600:
                 print(f"  Block {i+1}: cancel request")
                 break
 
+            # Check for cancel
+            if cancel_cb and cancel_cb():
+                print(f"  Scan cancelled at block {i+1}/{total_blocks}")
+                # Send CAN (0x18) to abort the scan
+                self._cmd(bytes([0x18]))
+                raise RuntimeError("Scan cancelled")
+
             # ACK for next block (not for last)
             if i < total_blocks - 1:
                 self._cmd(bytes([0x06]))
@@ -918,7 +925,7 @@ class EpsonV600:
 
         # Save if output path specified
         if output:
-            self._save_image(arr, output, depth)
+            self._save_image(arr, output, depth, dpi=dpi)
 
         # Reinitialize interpreter after TPU scans — the RS (direct USB)
         # commands used by configure_tpu desync the interpreter's USB state
@@ -973,28 +980,46 @@ class EpsonV600:
         b_out = np.clip(b * b_gain, 0, max_val).astype(dtype)
         return np.stack([r_out, g_out, b_out], axis=2)
 
-    def _save_image(self, arr, path, depth):
+    def _tiff_metadata(self, dpi):
+        """Return tifffile.write() kwargs for scanner metadata."""
+        from datetime import datetime
+        return dict(
+            resolution=(dpi, dpi),
+            resolutionunit='inch',
+            datetime=datetime.now(),
+            software='epdaughter',
+            # extratags: (tag_id, dtype, count, value, writeonce)
+            # dtype 2 = ASCII string
+            extratags=[
+                (271, 2, None, 'EPSON', True),          # Make
+                (272, 2, None, 'Perfection V600', True), # Model
+            ],
+        )
+
+    def _save_image(self, arr, path, depth, dpi=None):
         """Save image array to file."""
         ext = os.path.splitext(path)[1].lower()
         if ext in ('.tif', '.tiff'):
             import tifffile
-            tifffile.imwrite(path, arr)
+            kwargs = self._tiff_metadata(dpi) if dpi else {}
+            tifffile.imwrite(path, arr, **kwargs)
             print(f"Saved: {path}")
         elif ext == '.png':
             from PIL import Image
             if depth == 16:
-                # PIL doesn't handle 16-bit well, use tifffile instead
                 import tifffile
                 path = path.replace('.png', '.tiff')
-                tifffile.imwrite(path, arr)
+                kwargs = self._tiff_metadata(dpi) if dpi else {}
+                tifffile.imwrite(path, arr, **kwargs)
                 print(f"Saved as TIFF (16-bit): {path}")
             else:
                 img = Image.fromarray(arr)
-                img.save(path)
+                img.save(path, dpi=(dpi, dpi) if dpi else None)
                 print(f"Saved: {path}")
         else:
             import tifffile
-            tifffile.imwrite(path, arr)
+            kwargs = self._tiff_metadata(dpi) if dpi else {}
+            tifffile.imwrite(path, arr, **kwargs)
             print(f"Saved: {path}")
 
 
