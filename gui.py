@@ -340,22 +340,30 @@ function updateScanInfo() {
         const outH = Math.round(hIn * dpi);
         const mode = document.getElementById('sel-mode').value;
         const ch = mode === 'ir' ? 1 : 3;
-        const mb = (outW * outH * ch * 2 / 1024 / 1024).toFixed(1);
         const modeLabel = mode === 'rgb+ir' ? 'RGB+IR' : mode.toUpperCase();
-        const totalMb = mode === 'rgb+ir'
-            ? (outW * outH * (3+1) * 2 / 1024 / 1024).toFixed(1)
-            : mb;
+        // Estimate data size: RGB is 3ch×16bit, IR is 1ch×16bit
+        // For RGB+IR at 6400 DPI, IR scans at 3200 (1/4 the pixels)
+        const irDpi = Math.min(dpi, 3200);
+        const irW = Math.round(wIn * irDpi), irH = Math.round(hIn * irDpi);
+        let dataMb;
+        if (mode === 'rgb+ir') {
+            dataMb = (outW * outH * 3 * 2 + irW * irH * 1 * 2) / 1024 / 1024;
+        } else {
+            dataMb = outW * outH * ch * 2 / 1024 / 1024;
+        }
+        const totalMb = dataMb.toFixed(1);
         // Estimate scan time: ~5 MB/s throughput + ~8s calibration overhead per pass
         const passes = mode === 'rgb+ir' ? 2 : 1;
-        const dataMb = mode === 'rgb+ir'
-            ? outW * outH * 3 * 2 / 1024 / 1024 + outW * outH * 1 * 2 / 1024 / 1024
-            : outW * outH * ch * 2 / 1024 / 1024;
         const estSecs = Math.round(dataMb / 5 + passes * 8);
-        const estMin = Math.floor(estSecs / 60);
-        const estSecR = estSecs % 60;
-        const estStr = estMin > 0 ? `~${estMin}m${estSecR}s` : `~${estSecs}s`;
+        const estStr = fmtTime(estSecs);
         info.textContent = `${wIn}" x ${hIn}" → ${outW}x${outH}px ${modeLabel} (${totalMb} MB, ${estStr})`;
     });
+}
+
+function fmtTime(secs) {
+    secs = Math.round(secs);
+    if (secs < 60) return `~${secs}s`;
+    return `~${Math.floor(secs/60)}m${(secs%60).toString().padStart(2,'0')}s`;
 }
 
 function setStatus(msg, busy) {
@@ -555,6 +563,28 @@ document.getElementById('sel-mode').addEventListener('change', saveConfig);
 // Restore on page load
 restoreConfig();
 
+// Load cached preview if available
+fetch('/preview').then(resp => {
+    if (!resp.ok) return;
+    return resp.blob();
+}).then(blob => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    img = new Image();
+    img.onload = () => {
+        imgW = img.naturalWidth;
+        imgH = img.naturalHeight;
+        document.getElementById('no-preview').style.display = 'none';
+        wrap.style.display = 'block';
+        resize();
+        fitImage();
+        applyPendingSelection();
+        draw();
+        setStatus('Preview loaded. Draw a rectangle to select scan area.', false);
+    };
+    img.src = url;
+});
+
 window.addEventListener('resize', resize);
 resize();
 </script>
@@ -587,6 +617,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(data.encode())
+
+        elif self.path == '/preview':
+            if preview_jpeg:
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Content-Length', len(preview_jpeg))
+                self.end_headers()
+                self.wfile.write(preview_jpeg)
+            else:
+                self.send_response(404)
+                self.end_headers()
 
         elif self.path == '/config':
             data = json.dumps(load_config())
@@ -681,13 +722,15 @@ class Handler(BaseHTTPRequestHandler):
             w_in = params.get('w', tpu_width_in)
             h_in = params.get('h', tpu_height_in)
 
-            def _progress(pct, eta, label=""):
-                global scan_status
-                if eta > 60:
-                    eta_str = f"{int(eta//60)}m{int(eta%60):02d}s"
-                else:
-                    eta_str = f"{int(eta)}s"
-                scan_status = f"{label}{pct}% — {eta_str} remaining"
+            scan_start = time.time()
+
+            def _fmt_elapsed():
+                e = int(time.time() - scan_start)
+                return f"{e//60}m{e%60:02d}s" if e >= 60 else f"{e}s"
+
+            def _fmt_eta(secs):
+                s = int(secs)
+                return f"{s//60}m{s%60:02d}s" if s >= 60 else f"{s}s"
 
             scan_args = dict(
                 dpi=dpi, x=x_in, y=y_in, width=w_in, height=h_in,
@@ -698,24 +741,47 @@ class Handler(BaseHTTPRequestHandler):
                 filename = f"scan_{scan_counter:04d}_rgbir_{dpi}dpi.tiff"
                 filepath = os.path.join(output_dir, filename)
 
+                # Compute relative weights for total progress
+                # RGB is 3 channels, IR is 1 channel (possibly at lower DPI)
+                ir_dpi = min(dpi, 3200)
+                ir_pixel_ratio = (ir_dpi / dpi) ** 2
+                rgb_weight = 3.0 / (3.0 + ir_pixel_ratio)
+                ir_weight = ir_pixel_ratio / (3.0 + ir_pixel_ratio)
+
+                def _progress_rgb(pct, eta):
+                    global scan_status
+                    total_pct = int(pct * rgb_weight)
+                    total_eta = eta + eta / max(pct, 1) * 100 * ir_weight
+                    scan_status = (f"RGB {pct}% — "
+                                   f"total {total_pct}%, "
+                                   f"ETA {_fmt_eta(total_eta)}, "
+                                   f"elapsed {_fmt_elapsed()}")
+
+                def _progress_ir(pct, eta):
+                    global scan_status
+                    total_pct = int(100 * rgb_weight + pct * ir_weight)
+                    scan_status = (f"IR {pct}% — "
+                                   f"total {total_pct}%, "
+                                   f"ETA {_fmt_eta(eta)}, "
+                                   f"elapsed {_fmt_elapsed()}")
+
                 # Pass 1: RGB 16-bit
                 scanning = True
                 scan_status = f"Pass 1/2: Scanning RGB at {dpi} DPI..."
                 with scanner_lock:
                     rgb = scanner.scan(
                         **scan_args, color=True, depth=16, ir=False,
-                        progress_cb=lambda p, e: _progress(p, e, "RGB: "),
+                        progress_cb=_progress_rgb,
                     )
 
                 # Pass 2: IR mono (max 3200 DPI — upscale if needed)
-                ir_dpi = min(dpi, 3200)
                 ir_args = dict(scan_args)
                 ir_args['dpi'] = ir_dpi
                 scan_status = f"Pass 2/2: Scanning IR at {ir_dpi} DPI..."
                 with scanner_lock:
                     ir = scanner.scan(
                         **ir_args, color=False, depth=16, ir=True,
-                        progress_cb=lambda p, e: _progress(p, e, "IR: "),
+                        progress_cb=_progress_ir,
                     )
 
                 # Upscale IR to match RGB dimensions if needed
@@ -757,6 +823,12 @@ class Handler(BaseHTTPRequestHandler):
                 scanning = True
                 scan_status = f"Scanning {mode_tag.upper()} at {dpi} DPI..."
 
+                def _progress_single(pct, eta):
+                    global scan_status
+                    scan_status = (f"{mode_tag.upper()} {pct}% — "
+                                   f"ETA {_fmt_eta(eta)}, "
+                                   f"elapsed {_fmt_elapsed()}")
+
                 with scanner_lock:
                     scanner.scan(
                         **scan_args,
@@ -764,7 +836,7 @@ class Handler(BaseHTTPRequestHandler):
                         depth=16,
                         ir=ir_mode,
                         output=filepath,
-                        progress_cb=lambda p, e: _progress(p, e),
+                        progress_cb=_progress_single,
                     )
 
                 scan_status = f"Saved: {filename}"
