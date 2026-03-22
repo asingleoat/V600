@@ -35,6 +35,22 @@ scan_counter = 1          # auto-incrementing filename counter
 output_dir = "."
 scanning = False          # True while a scan is in progress
 scan_status = ""          # status message for the UI
+config_path = ""          # path to GUI config file
+
+
+def load_config():
+    """Load persisted GUI state from config file."""
+    if config_path and os.path.exists(config_path):
+        with open(config_path) as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(cfg):
+    """Save GUI state to config file."""
+    if config_path:
+        with open(config_path, 'w') as f:
+            json.dump(cfg, f, indent=2)
 
 
 def get_html():
@@ -376,6 +392,7 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
             resize();
             fitImage();
             sel = null;
+            applyPendingSelection();
             draw();
             setStatus('Preview ready. Draw a rectangle to select scan area.', false);
             setButtonsEnabled(true);
@@ -471,6 +488,73 @@ function syncDpiOptions() {
     }
 }
 
+// --- Config persistence ---
+// Selection is stored in inches (not preview pixels) so it survives across previews
+function saveConfig() {
+    if (!sel || sel.w < 1 || sel.h < 1) return;
+    fetch('/info').then(r => r.json()).then(data => {
+        if (!data.preview_w) return;
+        const cfg = {
+            sel_x_in: sel.x / data.preview_w * data.tpu_width,
+            sel_y_in: sel.y / data.preview_h * data.tpu_height,
+            sel_w_in: sel.w / data.preview_w * data.tpu_width,
+            sel_h_in: sel.h / data.preview_h * data.tpu_height,
+            dpi: parseInt(document.getElementById('sel-dpi').value),
+            mode: document.getElementById('sel-mode').value,
+        };
+        fetch('/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(cfg),
+        });
+    });
+}
+
+function restoreConfig() {
+    fetch('/config').then(r => r.json()).then(cfg => {
+        if (cfg.mode) {
+            document.getElementById('sel-mode').value = cfg.mode;
+            syncDpiOptions();
+        }
+        if (cfg.dpi) {
+            const dpiSel = document.getElementById('sel-dpi');
+            for (const opt of dpiSel.options) {
+                if (parseInt(opt.value) === cfg.dpi) { dpiSel.value = cfg.dpi; break; }
+            }
+        }
+        // Selection restored after preview loads (needs preview dimensions)
+        if (cfg.sel_x_in !== undefined) {
+            window._pendingSelection = cfg;
+        }
+    });
+}
+
+function applyPendingSelection() {
+    const cfg = window._pendingSelection;
+    if (!cfg || !img) return;
+    fetch('/info').then(r => r.json()).then(data => {
+        if (!data.preview_w) return;
+        sel = {
+            x: cfg.sel_x_in / data.tpu_width * data.preview_w,
+            y: cfg.sel_y_in / data.tpu_height * data.preview_h,
+            w: cfg.sel_w_in / data.tpu_width * data.preview_w,
+            h: cfg.sel_h_in / data.tpu_height * data.preview_h,
+        };
+        window._pendingSelection = null;
+        draw();
+    });
+}
+
+// Save on selection change
+canvas.addEventListener('mouseup', () => {
+    if (sel && sel.w >= 3 && sel.h >= 3) saveConfig();
+});
+document.getElementById('sel-dpi').addEventListener('change', saveConfig);
+document.getElementById('sel-mode').addEventListener('change', saveConfig);
+
+// Restore on page load
+restoreConfig();
+
 window.addEventListener('resize', resize);
 resize();
 </script>
@@ -504,6 +588,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data.encode())
 
+        elif self.path == '/config':
+            data = json.dumps(load_config())
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(data.encode())
+
         elif self.path == '/scan-status':
             data = json.dumps({'status': scan_status, 'scanning': scanning})
             self.send_response(200)
@@ -521,6 +612,16 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(length)) if length else {}
             self._handle_scan(body)
+        elif self.path == '/config':
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            cfg = load_config()
+            cfg.update(body)
+            save_config(cfg)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
         else:
             self.send_error(404)
 
@@ -688,7 +789,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global scanner, output_dir
+    global scanner, output_dir, config_path
 
     parser = argparse.ArgumentParser(description='Epson V600 Scanner GUI')
     parser.add_argument('--port', type=int, default=8432,
@@ -699,6 +800,8 @@ def main():
 
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
+
+    config_path = os.path.join(output_dir, ".scanner_config.json")
 
     # Find existing scan files to set counter
     global scan_counter

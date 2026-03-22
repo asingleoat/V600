@@ -230,12 +230,16 @@ class EpsonV600:
         self._read_cb = USB_CALLBACK(self._usb_read)
         self._write_cb = USB_CALLBACK(self._usb_write)
 
-        # Initialize interpreter — this uploads firmware to the scanner
+        self._init_interpreter()
+        return True
+
+    def _init_interpreter(self):
+        """Upload firmware and initialize the interpreter."""
         print("Initializing scanner (uploading firmware)...")
         result = self.interp.INTInit(
             ctypes.cast(self._read_cb, ctypes.c_void_p),
             ctypes.cast(self._write_cb, ctypes.c_void_p),
-            ctypes.c_void_p(0),  # usb_handle - we don't need it, we use self
+            ctypes.c_void_p(0),
         )
 
         if not result:
@@ -244,7 +248,6 @@ class EpsonV600:
             raise RuntimeError(f"INTInit failed: USB err={usb_err}, interp err={int_err}")
 
         print("Scanner initialized!")
-        return True
 
     def _usb_read(self, buf, length, handle, err_ptr):
         """USB bulk IN callback — called by the interpreter."""
@@ -284,6 +287,19 @@ class EpsonV600:
             if err_ptr:
                 err_ptr[0] = -1
             return 0
+
+    def reinit(self):
+        """Reinitialize the interpreter without re-opening USB.
+
+        Required after scans that use RS (direct USB) commands, which
+        desync the interpreter's internal USB state.
+        """
+        if self.interp:
+            try:
+                self.interp.INTClose()
+            except Exception:
+                pass
+        self._init_interpreter()
 
     def close(self):
         if self.interp:
@@ -559,8 +575,9 @@ class EpsonV600:
         """Configure TPU hardware for calibrated scanning.
 
         Sends the AFE gain, CCD timing, and shading correction parameters
-        that the interpreter needs to perform proper TPU calibration.
-        This sequence was captured from Epson Scan 2's USB traffic.
+        via RS (0x1E) commands directly to USB. These values were captured
+        from Epson Scan 2's USB traffic and trigger the interpreter's
+        internal TPU_calibrate pipeline during FS G.
         """
         print("Configuring TPU hardware...")
 
@@ -582,11 +599,11 @@ class EpsonV600:
         # FS 0x31 — per-channel gain and offset
         # Format: R_gain(2) G_gain(2) B_gain(2) reserved(2) R_off G_off B_off reserved
         self._rs_cmd(0x31, bytes([
-            0x80, 0x00,  # R gain (0x0080 = 128, nominal)
+            0x80, 0x00,  # R gain
             0x80, 0x00,  # G gain
             0x80, 0x00,  # B gain
             0x00, 0x00,  # reserved
-            0x1e, 0x1e, 0x1e,  # R/G/B offsets (30 each)
+            0x1e, 0x1e, 0x1e,  # R/G/B offsets
             0x00,        # reserved
         ]))
 
@@ -605,9 +622,9 @@ class EpsonV600:
         gain_data = bytearray(256)
         gain_data[0:16] = bytes([
             0x00, 0x00, 0x00, 0x00,
-            0x28, 0x00, 0xc0, 0x39,  # R exposure/gain
-            0xc8, 0x00, 0xc0, 0x39,  # G exposure/gain
-            0x90, 0x01, 0x00, 0x10,  # B exposure/gain
+            0x28, 0x00, 0xc0, 0x39,  # R CCD
+            0xc8, 0x00, 0xc0, 0x39,  # G CCD
+            0x90, 0x01, 0x00, 0x10,  # B CCD
         ])
         for i in range(16, 256):
             gain_data[i] = 0xff
@@ -630,8 +647,8 @@ class EpsonV600:
         self._rs_cmd(0x42, bytes(24))
 
         # FS 0x43 — per-channel AFE gains (18 bytes)
-        # Bytes 0-5: nominal gains (0x0080 per channel)
-        # Bytes 6-11: calibrated exposure values per channel
+        # Bytes 0-5: gains (little-endian 16-bit per channel)
+        # Bytes 6-11: exposure/integration time per channel (little-endian 16-bit)
         self._rs_cmd(0x43, bytes([
             0x00, 0x80,  # R gain
             0x00, 0x80,  # G gain
@@ -902,6 +919,11 @@ class EpsonV600:
         # Save if output path specified
         if output:
             self._save_image(arr, output, depth)
+
+        # Reinitialize interpreter after TPU scans — the RS (direct USB)
+        # commands used by configure_tpu desync the interpreter's USB state
+        if source != 'flatbed':
+            self.reinit()
 
         return arr
 
