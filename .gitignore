@@ -3,3 +3,4 @@ __pycache__/
 *.tif
 sane-local/
 firmware/
+epdaughter_config.toml

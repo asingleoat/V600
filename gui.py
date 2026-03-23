@@ -17,11 +17,13 @@ import struct
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from socketserver import ThreadingMixIn
 
 import numpy as np
 
 from scanner import EpsonV600, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area
+import config as cfg_mod
 
 # Global state
 scanner = None
@@ -37,22 +39,12 @@ scanning = False          # True while a scan is in progress
 last_preview_arr = None   # raw preview array for film detection
 scan_status = ""          # status message for the UI
 cancel_requested = False  # set True to abort current scan
-config_path = ""          # path to GUI config file
-
-
 def load_config():
-    """Load persisted GUI state from config file."""
-    if config_path and os.path.exists(config_path):
-        with open(config_path) as f:
-            return json.load(f)
-    return {}
+    return cfg_mod.load_config()
 
 
-def save_config(cfg):
-    """Save GUI state to config file."""
-    if config_path:
-        with open(config_path, 'w') as f:
-            json.dump(cfg, f, indent=2)
+def save_config(updates):
+    cfg_mod.save_config(updates)
 
 
 def get_html():
@@ -971,7 +963,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global scanner, output_dir, config_path
+    global scanner, output_dir
 
     parser = argparse.ArgumentParser(description='Epson V600 Scanner GUI')
     parser.add_argument('--port', type=int, default=8432,
@@ -983,7 +975,7 @@ def main():
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    config_path = os.path.join(output_dir, ".scanner_config.json")
+    cfg_mod.CONFIG_FILE = Path(os.path.join(output_dir, "epdaughter_config.toml"))
 
     # Find existing scan files to set counter
     global scan_counter
