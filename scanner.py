@@ -30,44 +30,87 @@ import usb.core
 import usb.util
 import numpy as np
 
-# Scanner USB IDs
+# Epson USB vendor ID (shared across all models)
 VENDOR_ID = 0x04b8
-PRODUCT_ID = 0x013a
 
-# Interpreter bundle — checked in order of preference
-INTERP_SEARCH_PATHS = [
-    # Local bundled copy (downloaded by ensure_interpreter)
-    os.path.join(os.path.dirname(__file__), "firmware", "Interpreter A1"),
-    # System ICA driver install
-    "/Library/Image Capture/Devices/EPSON Scanner.app/Contents/PlugIns/Interpreter A1.bundle/Contents/MacOS/Interpreter A1",
-    # Epson Scan 2 install
-    "/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/ES00A1/Interpreter A1.bundle/Contents/MacOS/Interpreter A1",
-]
-
-# Epson ICA driver download (contains the interpreter, freely available, no auth)
+# Epson ICA driver download (contains all interpreters, freely available)
 ICA_DRIVER_URL = "https://ftp.epson.com/drivers/ESICA_5.8.23.dmg"
 
+# --- Scanner model database ---
+# Each model needs: USB product ID, interpreter ID, display name,
+# IR support flag, and any model-specific quirks.
 
-def find_interpreter():
+SCANNER_MODELS = {
+    0x0128: {
+        "name": "Perfection 4870 / GT-X700",
+        "interp": "41",
+        "ir": True,
+        "max_dpi": 4800,
+    },
+    0x012a: {
+        "name": "Perfection 4990 / GT-X800",
+        "interp": "52",
+        "ir": True,
+        "max_dpi": 4800,
+    },
+    0x012c: {
+        "name": "Perfection V700/V750 / GT-X900",
+        "interp": "7A",
+        "ir": True,
+        "max_dpi": 6400,
+    },
+    0x0135: {
+        "name": "GT-X970",
+        "interp": "86",
+        "ir": True,
+        "max_dpi": 6400,
+    },
+    0x013a: {
+        "name": "Perfection V600 / GT-X820",
+        "interp": "A1",
+        "ir": True,
+        "max_dpi": 6400,
+    },
+    0x0151: {
+        "name": "Perfection V800/V850 / GT-X980",
+        "interp": "AD",
+        "ir": True,
+        "max_dpi": 6400,
+    },
+}
+
+
+def _interp_search_paths(interp_id):
+    """Return search paths for a given interpreter ID."""
+    name = f"Interpreter {interp_id}"
+    model_dir = f"ES00{interp_id}"
+    return [
+        os.path.join(os.path.dirname(__file__), "firmware", name),
+        f"/Library/Image Capture/Devices/EPSON Scanner.app/Contents/PlugIns/{name}.bundle/Contents/MacOS/{name}",
+        f"/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/{model_dir}/{name}.bundle/Contents/MacOS/{name}",
+    ]
+
+
+def find_interpreter(interp_id="A1"):
     """Find the interpreter binary in known locations."""
-    for path in INTERP_SEARCH_PATHS:
+    for path in _interp_search_paths(interp_id):
         if os.path.exists(path):
             return path
     return None
 
 
-def ensure_interpreter():
+def ensure_interpreter(interp_id="A1"):
     """Download and extract the Epson ICA driver if interpreter is not found.
 
     Downloads the freely-available ICA scanner driver from Epson's FTP server
     and extracts the Interpreter A1 bundle to a local firmware/ directory.
     """
-    path = find_interpreter()
+    path = find_interpreter(interp_id)
     if path:
         return path
 
     firmware_dir = os.path.join(os.path.dirname(__file__), "firmware")
-    target = os.path.join(firmware_dir, "Interpreter A1")
+    target = os.path.join(firmware_dir, f"Interpreter {interp_id}")
 
     print("Epson Interpreter A1 not found locally.")
     print(f"Downloading ICA driver from {ICA_DRIVER_URL} ...")
@@ -115,18 +158,20 @@ def ensure_interpreter():
                 check=True,
             )
 
-            # Find Interpreter A1 binary
+            # Find the interpreter binary for this model
+            bundle_name = f"Interpreter {interp_id}.bundle"
+            binary_name = f"Interpreter {interp_id}"
             interp_bin = None
             for root, dirs, files in os.walk(extract_dir):
-                if "Interpreter A1.bundle" in dirs:
-                    candidate = os.path.join(root, "Interpreter A1.bundle",
-                                            "Contents", "MacOS", "Interpreter A1")
+                if bundle_name in dirs:
+                    candidate = os.path.join(root, bundle_name,
+                                            "Contents", "MacOS", binary_name)
                     if os.path.exists(candidate):
                         interp_bin = candidate
                         break
 
             if not interp_bin:
-                raise RuntimeError("Interpreter A1 not found in package")
+                raise RuntimeError(f"{binary_name} not found in package")
 
             # Copy to local firmware directory
             os.makedirs(firmware_dir, exist_ok=True)
@@ -229,8 +274,19 @@ def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.05
     return (x_in, y_in, w_in, h_in)
 
 
-class EpsonV600:
-    def __init__(self):
+class EpsonScanner:
+    """Driver for Epson V-series flatbed scanners with TPU.
+
+    Supports auto-detection of scanner model from USB, or explicit
+    model selection. Uses the Epson Interpreter bundle for communication.
+    """
+
+    def __init__(self, product_id=None):
+        """Initialize scanner driver.
+
+        Args:
+            product_id: USB product ID to connect to, or None for auto-detect.
+        """
         self.dev = None
         self.ep_in = None
         self.ep_out = None
@@ -239,14 +295,41 @@ class EpsonV600:
         self._write_cb = None  # prevent GC
         self._tpu_configured = False  # set after first configure_tpu
         self._needs_reinit = False    # set after RS commands need reinit
+        self._product_id = product_id
+        self.model = None      # populated by open()
         self.verbose_usb = False  # trace USB callbacks
 
     def open(self):
-        """Open USB device and initialize interpreter."""
-        # Find and configure USB device
-        self.dev = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
+        """Open USB device and initialize interpreter.
+
+        Auto-detects the scanner model from USB if no product_id was
+        specified in __init__. Loads the matching interpreter bundle.
+        """
+        # Find scanner on USB — auto-detect or use specified product ID
+        if self._product_id:
+            self.dev = usb.core.find(idVendor=VENDOR_ID, idProduct=self._product_id)
+        else:
+            # Scan for any known Epson scanner
+            for pid in SCANNER_MODELS:
+                self.dev = usb.core.find(idVendor=VENDOR_ID, idProduct=pid)
+                if self.dev:
+                    self._product_id = pid
+                    break
+
         if self.dev is None:
-            raise RuntimeError("Epson V600 not found on USB")
+            known = ", ".join(
+                f"{m['name']} (0x{pid:04x})"
+                for pid, m in SCANNER_MODELS.items()
+            )
+            raise RuntimeError(f"No supported Epson scanner found on USB. Supported: {known}")
+
+        self.model = SCANNER_MODELS.get(self._product_id, {
+            "name": f"Unknown (0x{self._product_id:04x})",
+            "interp": "A1",
+            "ir": False,
+            "max_dpi": 6400,
+        })
+        print(f"Scanner: {self.model['name']}")
 
         try:
             if self.dev.is_kernel_driver_active(0):
@@ -266,13 +349,13 @@ class EpsonV600:
         print(f"USB connected: EP OUT=0x{self.ep_out.bEndpointAddress:02x}, "
               f"EP IN=0x{self.ep_in.bEndpointAddress:02x}")
 
-        # Load interpreter (download if needed)
-        interp_path = ensure_interpreter()
+        # Load interpreter for this model (download if needed)
+        interp_id = self.model["interp"]
+        interp_path = ensure_interpreter(interp_id)
         if not interp_path:
             raise RuntimeError(
-                "Epson Interpreter A1 not found. Install Epson Scan 2 or the "
-                "ICA Scanner Driver from https://epson.com/Support/Scanners/"
-                "Perfection-Series/Epson-Perfection-V600-Photo/s/SPT_B11B198011"
+                f"Interpreter {interp_id} not found. Install the Epson ICA "
+                "Scanner Driver from https://epson.com/Support/Scanners/"
             )
 
         self.interp = ctypes.CDLL(interp_path)
@@ -1023,7 +1106,7 @@ class EpsonV600:
             # dtype 2 = ASCII string
             extratags=[
                 (271, 2, None, 'EPSON', True),          # Make
-                (272, 2, None, 'Perfection V600', True), # Model
+                (272, 2, None, self.model['name'] if self.model else 'Epson Scanner', True), # Model
             ],
         )
 
@@ -1054,8 +1137,12 @@ class EpsonV600:
             print(f"Saved: {path}")
 
 
+# Backward compatibility alias
+EpsonV600 = EpsonScanner
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Epson V600 Scanner')
+    parser = argparse.ArgumentParser(description='Epson Scanner')
     parser.add_argument('--info', action='store_true',
                         help='Show scanner info and exit')
     parser.add_argument('--dpi', type=int, default=300,
@@ -1082,7 +1169,7 @@ def main():
                         help='Output filename (default: scan.tiff)')
     args = parser.parse_args()
 
-    scanner = EpsonV600()
+    scanner = EpsonScanner()
 
     try:
         scanner.open()

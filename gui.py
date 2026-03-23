@@ -22,7 +22,7 @@ from socketserver import ThreadingMixIn
 
 import numpy as np
 
-from scanner import EpsonV600, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area
+from scanner import EpsonScanner, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area
 import config as cfg_mod
 
 # Global state
@@ -52,7 +52,7 @@ def get_html():
 <html>
 <head>
 <meta charset="utf-8">
-<title>Epson V600 Scanner</title>
+<title>Epson Scanner</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; }
@@ -965,7 +965,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global scanner, output_dir
 
-    parser = argparse.ArgumentParser(description='Epson V600 Scanner GUI')
+    parser = argparse.ArgumentParser(description='Epson Scanner GUI')
     parser.add_argument('--port', type=int, default=8432,
                         help='Web server port (default: 8432)')
     parser.add_argument('--output-dir', type=str, default='scans',
@@ -991,7 +991,7 @@ def main():
             scan_counter = max(nums) + 1
 
     # Initialize scanner
-    scanner = EpsonV600()
+    scanner = EpsonScanner()
     scanner.open()
     print(f"Scanner connected")
 
