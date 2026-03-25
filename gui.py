@@ -475,7 +475,15 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
     const mode = document.getElementById('sel-mode').value;
 
     const modeLabel = mode === 'rgb+ir' ? 'RGB+IR' : mode.toUpperCase();
-    setStatus(`Scanning ${modeLabel} at ${dpi} DPI...`, true);
+    let statusNote = '';
+    if (dpi >= 3200) {
+        statusNote = ' (this may take several minutes)';
+        // Platform-specific notes
+        if (navigator.platform.indexOf('Linux') !== -1) {
+            statusNote += ' [Linux: Using SANE backend]';
+        }
+    }
+    setStatus(`Scanning ${modeLabel} at ${dpi} DPI${statusNote}...`, true);
     setButtonsEnabled(false);
 
     // Poll status while scanning
@@ -692,9 +700,16 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(html)
 
         elif self.path == '/info':
+            # Use actual preview dimensions from the scanned array
+            # The preview scan may return different dimensions than expected
+            preview_w = 0
+            preview_h = 0
+            if last_preview_arr is not None:
+                # Array shape is (height, width, channels)
+                preview_h, preview_w = last_preview_arr.shape[:2]
             data = json.dumps({
-                'preview_w': int(tpu_width_in * preview_dpi) if preview_jpeg else 0,
-                'preview_h': int(tpu_height_in * preview_dpi) if preview_jpeg else 0,
+                'preview_w': preview_w,
+                'preview_h': preview_h,
                 'tpu_width': tpu_width_in,
                 'tpu_height': tpu_height_in,
                 'scan_counter': scan_counter,
@@ -777,28 +792,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_preview(self):
         global preview_jpeg, preview_dpi, tpu_width_in, tpu_height_in, last_preview_arr
+        import time
 
         try:
             with scanner_lock:
-                # Read TPU area dimensions
-                scanner._cmd(bytes([0x1c, 0x49]))
-                eid = scanner._read(80)
-                if eid is None:
-                    raise RuntimeError("Cannot read scanner identity")
-
-                optical_dpi = struct.unpack_from('<I', eid, 4)[0]
-                tpu_x = struct.unpack_from('<I', eid, 36)[0]
-                tpu_y = struct.unpack_from('<I', eid, 40)[0]
-                tpu_width_in = tpu_x / optical_dpi
-                tpu_height_in = tpu_y / optical_dpi
+                start_time = time.time()
+                print(f"[{time.time()-start_time:.2f}s] Preview scan started")
+                
+                # Get scanner capabilities using high-level interface
+                print(f"[{time.time()-start_time:.2f}s] Getting scanner capabilities...")
+                caps = scanner.get_scanner_capabilities()
+                print(f"[{time.time()-start_time:.2f}s] Got capabilities")
+                
+                optical_dpi = caps['optical_dpi']
+                tpu_width_in = caps['tpu_width_in']
+                tpu_height_in = caps['tpu_height_in']
+                
+                print(f"[{time.time()-start_time:.2f}s] TPU dimensions: {tpu_width_in:.1f}\" x {tpu_height_in:.1f}\"")
+                print(f"[{time.time()-start_time:.2f}s] Preview size will be: {int(tpu_width_in * preview_dpi)} x {int(tpu_height_in * preview_dpi)} pixels")
 
                 # Low-res preview scan of entire TPU area
+                print(f"[{time.time()-start_time:.2f}s] Starting scanner.scan() - TPU area {tpu_width_in:.1f}\" x {tpu_height_in:.1f}\" at {preview_dpi} DPI")
                 arr = scanner.scan(
                     dpi=preview_dpi,
+                    x=0, y=0, width=tpu_width_in, height=tpu_height_in,  # Explicitly specify TPU area
                     source='tpu',
                     color=True,
                     depth=8,
                 )
+                print(f"[{time.time()-start_time:.2f}s] Scan complete: {arr.shape} pixels")
 
             last_preview_arr = arr
 
@@ -832,6 +854,9 @@ class Handler(BaseHTTPRequestHandler):
             y_in = params.get('y', 0)
             w_in = params.get('w', tpu_width_in)
             h_in = params.get('h', tpu_height_in)
+            
+            print(f"DEBUG: Scan request - x:{x_in:.2f}\" y:{y_in:.2f}\" w:{w_in:.2f}\" h:{h_in:.2f}\"")
+            print(f"DEBUG: TPU limits - w:{tpu_width_in:.2f}\" h:{tpu_height_in:.2f}\"")
 
             global cancel_requested
             cancel_requested = False
@@ -918,7 +943,7 @@ class Handler(BaseHTTPRequestHandler):
                 scan_status = f"Pass 2/2: Scanning IR at {ir_dpi} DPI..."
                 with scanner_lock:
                     ir = scanner.scan(
-                        **ir_args, color=False, depth=16, ir=True,
+                        **ir_args, color=False, depth=8, ir=True,  # IR is 8-bit grayscale
                         progress_cb=_progress_ir, cancel_cb=_check_cancel,
                     )
 
@@ -974,7 +999,7 @@ class Handler(BaseHTTPRequestHandler):
                     scanner.scan(
                         **scan_args,
                         color=(not ir_mode),
-                        depth=16,
+                        depth=8 if ir_mode else 16,  # IR is 8-bit, RGB is 16-bit
                         ir=ir_mode,
                         output=filepath,
                         progress_cb=_progress_single,
@@ -1030,29 +1055,48 @@ def main():
         if nums:
             scan_counter = max(nums) + 1
 
-    # Initialize scanner
-    scanner = EpsonScanner()
-    scanner.open()
-    print(f"Scanner connected")
-
-    # Start threaded server (allows status polling during scans)
-    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-        daemon_threads = True
-
-    server = ThreadedHTTPServer(('127.0.0.1', args.port), Handler)
-    url = f'http://127.0.0.1:{args.port}'
-    print(f"GUI: {url}")
-
-    # Open browser
-    import webbrowser
-    webbrowser.open(url)
-
+    # Initialize scanner with proper cleanup
+    scanner = None
+    server = None
     try:
+        scanner = EpsonScanner()
+        scanner.open()
+        print(f"Scanner connected")
+
+        # Start threaded server (allows status polling during scans)
+        class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+
+        server = ThreadedHTTPServer(('127.0.0.1', args.port), Handler)
+        url = f'http://127.0.0.1:{args.port}'
+        print(f"GUI: {url}")
+
+        # Open browser
+        import webbrowser
+        webbrowser.open(url)
+
         server.serve_forever()
+        
     except KeyboardInterrupt:
         print("\nShutting down...")
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        scanner.close()
+        print("Cleaning up resources...")
+        if scanner:
+            try:
+                scanner.close()
+                print("Scanner released")
+            except Exception as e:
+                print(f"Error closing scanner: {e}")
+        if server:
+            try:
+                server.shutdown()
+                print("Server stopped")
+            except Exception as e:
+                print(f"Error stopping server: {e}")
 
 
 if __name__ == '__main__':

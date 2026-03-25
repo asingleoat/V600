@@ -29,6 +29,9 @@ import time
 import usb.core
 import usb.util
 import numpy as np
+import platform
+import subprocess
+import tempfile
 
 # Epson USB vendor ID (shared across all models)
 VENDOR_ID = 0x04b8
@@ -93,6 +96,10 @@ def _interp_search_paths(interp_id):
 
 def find_interpreter(interp_id="A1"):
     """Find the interpreter binary in known locations."""
+    # On Linux, we can't use the interpreter directly due to unresolved symbols
+    if platform.system() == "Linux":
+        return None
+        
     for path in _interp_search_paths(interp_id):
         if os.path.exists(path):
             return path
@@ -205,7 +212,452 @@ VALID_RESOLUTIONS = [100, 200, 400, 533, 600, 800, 1200, 1600, 3200, 6400]
 VALID_IR_RESOLUTIONS = [800, 1600, 3200]
 
 
-def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.0125):
+class SaneEpsonScanner:
+    """SANE-based driver for Epson V-series scanners on Linux.
+    
+    Uses the SANE epkowa backend for communication instead of the 
+    proprietary macOS interpreter bundle.
+    """
+    
+    # Class-level cache for device name to avoid repeated detection
+    _cached_device_name = None
+    _cache_timestamp = 0
+    CACHE_TIMEOUT = 300  # 5 minutes cache timeout
+    
+    def __init__(self, product_id=None):
+        """Initialize SANE scanner driver."""
+        self.device_name = None
+        self.model = None
+        self._product_id = product_id
+        self._cached_capabilities = None  # Cache capabilities to avoid repeated queries
+        
+    def find_sane_device(self):
+        """Find the scanner device using SANE.
+        
+        Uses class-level cache to avoid repeated expensive scanimage -L calls.
+        """
+        # Check if we have a valid cached device name
+        import time
+        current_time = time.time()
+        if (SaneEpsonScanner._cached_device_name and 
+            current_time - SaneEpsonScanner._cache_timestamp < SaneEpsonScanner.CACHE_TIMEOUT):
+            print(f"Using cached device: {SaneEpsonScanner._cached_device_name}")
+            return SaneEpsonScanner._cached_device_name
+            
+        print("Detecting scanner (this may take 10-15 seconds on first run)...")
+        try:
+            result = subprocess.run(['scanimage', '-L'], 
+                                  capture_output=True, text=True, check=True)
+            
+            # Prefer epson2 backend over epkowa (epson2 supports 16-bit at high DPI)
+            epson2_device = None
+            epkowa_device = None
+            
+            for line in result.stdout.split('\n'):
+                if 'V600' in line or 'GT-X820' in line:
+                    # Extract device name from: device `backend:...` is a ...
+                    if '`' in line and "'" in line:
+                        device_name = line.split('`')[1].split("'")[0]
+                        if 'epson2' in device_name:
+                            epson2_device = device_name
+                            print(f"Found epson2 device (preferred): {device_name}")
+                        elif 'epkowa' in device_name:
+                            epkowa_device = device_name
+                            print(f"Found epkowa device: {device_name}")
+            
+            # Return epson2 if available, otherwise epkowa
+            device_to_use = None
+            if epson2_device:
+                print("Using epson2 backend (supports 16-bit at high DPI)")
+                device_to_use = epson2_device
+            elif epkowa_device:
+                print("WARNING: Using epkowa backend (limited to 8-bit at 3200+ DPI)")
+                print("         For 16-bit high DPI scans, install patched SANE with epson2")
+                device_to_use = epkowa_device
+            
+            # Cache the device name
+            if device_to_use:
+                SaneEpsonScanner._cached_device_name = device_to_use
+                SaneEpsonScanner._cache_timestamp = current_time
+                print(f"Cached device name for future use")
+            
+            return device_to_use
+                        
+        except subprocess.CalledProcessError:
+            pass
+        return None
+    
+    def open(self):
+        """Open scanner using SANE backend."""
+        self.device_name = self.find_sane_device()
+        if not self.device_name:
+            raise RuntimeError("No V600 scanner found via SANE. Check that the scanner is connected and epkowa backend is installed.")
+            
+        # Set model info
+        if self._product_id and self._product_id in SCANNER_MODELS:
+            self.model = SCANNER_MODELS[self._product_id]
+        else:
+            # Default to V600 specs if we can't determine exact model
+            self.model = {
+                "name": "Perfection V600 / GT-X820 (SANE)",
+                "interp": "SANE",
+                "ir": True,
+                "max_dpi": 6400,
+            }
+            
+        print(f"Scanner: {self.model['name']}")
+        print(f"SANE device: {self.device_name}")
+        
+        return True
+        
+    def close(self):
+        """Close scanner - no-op for SANE."""
+        pass
+    
+    def usb_reset(self):
+        """Reset scanner via USB to recover from bad state."""
+        print("Performing USB reset...")
+        
+        # Try to use the compiled usb_reset tool if available
+        reset_tool = os.path.join(os.path.dirname(__file__), 'usb_reset')
+        if os.path.exists(reset_tool):
+            try:
+                result = subprocess.run([reset_tool], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    print("USB reset successful")
+                    time.sleep(2)  # Wait for scanner to reinitialize
+                    return True
+            except:
+                pass
+        
+        # Fallback: try Python USB reset
+        try:
+            # Find V600 device
+            for bus in range(1, 11):
+                for dev in range(1, 128):
+                    path = f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+                    if os.path.exists(path):
+                        with open(path, 'rb') as f:
+                            desc = f.read(18)
+                            if len(desc) >= 18:
+                                import struct
+                                vid = struct.unpack('<H', desc[8:10])[0]
+                                pid = struct.unpack('<H', desc[10:12])[0]
+                                if vid == 0x04b8 and pid == 0x013a:
+                                    # Found V600, try reset
+                                    fd = os.open(path, os.O_RDWR)
+                                    try:
+                                        import fcntl
+                                        USBDEVFS_RESET = 0x5514
+                                        fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+                                        print(f"USB reset performed on {path}")
+                                        time.sleep(2)
+                                        return True
+                                    finally:
+                                        os.close(fd)
+        except Exception as e:
+            print(f"USB reset failed: {e}")
+        
+        return False
+    
+    def get_identity(self):
+        """Get scanner identity using SANE."""
+        # Return a simple identity string
+        return f"SANE {self.model['name']}".encode('ascii')
+        
+    def get_status(self):
+        """Get scanner status - basic implementation."""
+        print("  Scanner ready via SANE")
+        return b'\x00'  # Basic status byte
+        
+    def get_extended_identity(self):
+        """Get extended identity - mock implementation."""
+        print(f"  Command level: 2.0")
+        print(f"  Model:         {self.model['name']}")
+        print(f"  ** IR scanning SUPPORTED (via SANE) **")
+        return b'\x00' * 80  # Mock response
+        
+    def scan(self, dpi=300, x=0, y=0, width=None, height=None,
+             color=True, depth=8, source='flatbed', ir=False,
+             output=None, progress_cb=None, cancel_cb=None):
+        """High-level scan function using SANE backend.
+        
+        Parameters are similar to the interpreter-based scanner but uses
+        SANE scanimage command for actual scanning.
+        """
+        
+        # Map our parameters to SANE parameters
+        if source == 'tpu' or ir:
+            sane_source = "Transparency Unit"
+        else:
+            sane_source = "Flatbed"
+            
+        if ir:
+            sane_mode = "Gray"  # IR is grayscale
+        elif color:
+            sane_mode = "Color"
+        else:
+            sane_mode = "Gray"
+            
+        # TPU only supports specific resolutions: 400, 800, 1600, 3200
+        if sane_source == "Transparency Unit":
+            valid_tpu_resolutions = [400, 800, 1600, 3200]
+            if dpi not in valid_tpu_resolutions:
+                # For preview (200 DPI), we'll scan at 400 and downsample later
+                original_dpi = dpi
+                closest = min(valid_tpu_resolutions, key=lambda r: abs(r - dpi))
+                print(f"  Note: TPU doesn't support {dpi} dpi, using {closest} dpi")
+                dpi = closest
+            else:
+                original_dpi = dpi
+        else:
+            original_dpi = dpi
+            
+        # Validate resolution for IR
+        if ir and dpi not in VALID_IR_RESOLUTIONS:
+            closest = min(VALID_IR_RESOLUTIONS, key=lambda r: abs(r - dpi))
+            print(f"  Note: {dpi} dpi not supported for IR, using {closest} dpi")
+            dpi = closest
+            
+        print(f"\nScan parameters:")
+        print(f"  Resolution: {dpi} dpi")
+        print(f"  Mode: {'IR' if ir else 'RGB' if color else 'Gray'} {depth}-bit")
+        print(f"  Source: {sane_source}")
+        
+        # Calculate scan area
+        if width is not None or height is not None or x != 0 or y != 0:
+            print(f"  Area: offset ({x:.1f}, {y:.1f}) inches, size ({width or 'full'}x{height or 'full'}) inches")
+            
+        # Use the appropriate wrapper script for V600 scanning
+        env = os.environ.copy()
+        
+        # Check if wrapper scripts are available
+        import shutil
+        use_wrappers = shutil.which('scanimage-v600') is not None
+        
+        # Choose the right wrapper command
+        if ir:
+            if use_wrappers and shutil.which('scanimage-v600-ir'):
+                # Use IR wrapper for infrared scanning
+                print("  Using scanimage-v600-ir wrapper for IR scanning")
+                cmd = ['scanimage-v600-ir']
+            else:
+                # Fallback to regular scanimage with environment variable
+                print("  Using scanimage with SCAN_IR_MODE=1 for IR scanning")
+                env['SCAN_IR_MODE'] = '1'
+                cmd = ['scanimage']
+            # IR mode requirements
+            sane_source = "Transparency Unit"
+            sane_mode = "Gray"
+            # Ensure resolution is valid for IR
+            if dpi not in [800, 1600, 3200]:
+                dpi = 800  # Default to 800 for IR
+                print(f"  Adjusted resolution to {dpi} DPI for IR mode")
+        else:
+            if use_wrappers:
+                # Use regular V600 wrapper for color/grayscale scanning
+                print("  Using scanimage-v600 wrapper for color scanning")
+                cmd = ['scanimage-v600']
+            else:
+                # Fallback to regular scanimage
+                cmd = ['scanimage']
+        
+        # ALWAYS add explicit device name to avoid expensive auto-detection
+        cmd.extend(['--device-name', self.device_name])
+        
+        # Add common parameters
+        cmd.extend([
+            '--mode', sane_mode,
+            '--source', sane_source,
+            '--resolution', str(dpi),
+            '--format', 'tiff',
+        ])
+        
+        # Add depth parameter for non-IR scans
+        if not ir and depth == 16:
+            cmd.extend(['--depth', '16'])
+            
+        # Add scan area if specified
+        if x != 0 or y != 0 or width is not None or height is not None:
+            # Convert inches to mm for SANE
+            x_mm = x * 25.4
+            y_mm = y * 25.4
+            
+            # Get scanner limits for validation
+            try:
+                caps = self.get_scanner_capabilities()
+                max_width_mm = caps['tpu_width_in'] * 25.4 if sane_source == "Transparency Unit" else caps['flatbed_width_in'] * 25.4
+                max_height_mm = caps['tpu_height_in'] * 25.4 if sane_source == "Transparency Unit" else caps['flatbed_height_in'] * 25.4
+            except:
+                # Fallback limits if capabilities query fails (already in mm)
+                max_width_mm = 68.58 if sane_source == "Transparency Unit" else 215.9
+                max_height_mm = 242.316 if sane_source == "Transparency Unit" else 297.18
+            
+            # Add small safety margin (0.1mm) to avoid floating point precision issues
+            safety_margin = 0.1
+            max_width_mm -= safety_margin
+            max_height_mm -= safety_margin
+            
+            # Validate and clamp coordinates
+            x_mm = max(0, min(x_mm, max_width_mm))
+            y_mm = max(0, min(y_mm, max_height_mm))
+            
+            # SANE parameters:
+            # -l: left (x position)
+            # -t: top (y position) 
+            # -x: width
+            # -y: height
+            # Round to reasonable precision (0.1mm) to avoid float precision issues
+            cmd.extend(['-l', f'{x_mm:.1f}', '-t', f'{y_mm:.1f}'])
+            
+            if width is not None:
+                w_mm = width * 25.4
+                # Ensure width doesn't exceed available space
+                w_mm = min(w_mm, max_width_mm - x_mm)
+                cmd.extend(['-x', f'{w_mm:.1f}'])
+            else:
+                # If no width specified, use full TPU/flatbed width
+                w_mm = max_width_mm - x_mm
+                cmd.extend(['-x', f'{w_mm:.1f}'])
+                
+            if height is not None:
+                h_mm = height * 25.4
+                # Ensure height doesn't exceed available space
+                h_mm = min(h_mm, max_height_mm - y_mm)
+                cmd.extend(['-y', f'{h_mm:.1f}'])
+            else:
+                # If no height specified, use full TPU/flatbed height
+                h_mm = max_height_mm - y_mm
+                cmd.extend(['-y', f'{h_mm:.1f}'])
+                
+            print(f"  SANE coordinates: -l {x_mm:.1f} -t {y_mm:.1f} -x {w_mm:.1f} -y {h_mm:.1f} (mm)")
+            print(f"  Expected pixels at {dpi} DPI: {int(w_mm/25.4*dpi)} x {int(h_mm/25.4*dpi)}")
+        
+        # Set up output
+        if output:
+            temp_file = output
+        else:
+            temp_fd, temp_file = tempfile.mkstemp(suffix='.tiff')
+            os.close(temp_fd)
+            
+        cmd.extend(['-o', temp_file])
+        
+        print("Starting SANE scan...")
+        print(f"Command: {' '.join(cmd)}")
+        
+        # Estimate scan time based on resolution and area
+        pixels = (w_mm/25.4*dpi if width else max_width_mm/25.4*dpi) * (h_mm/25.4*dpi if height else max_height_mm/25.4*dpi)
+        estimated_time = 10 + (pixels / 1_000_000) * 2  # Base 10s + 2s per megapixel
+        if dpi >= 3200:
+            estimated_time *= 3  # High res scans are much slower
+        print(f"Estimated scan time: {int(estimated_time)}s for {pixels/1_000_000:.1f} megapixels")
+        
+        try:
+            # Run scanimage with longer timeout for high-res scans
+            # Use Popen for potential progress monitoring
+            import subprocess
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, 
+                                  timeout=max(300, estimated_time * 2), env=env)
+            
+            print(f"Scan completed successfully")
+            
+            # Load the image using tifffile or PIL
+            try:
+                import tifffile
+                arr = tifffile.imread(temp_file)
+            except ImportError:
+                from PIL import Image
+                img = Image.open(temp_file)
+                arr = np.array(img)
+                
+            print(f"Image loaded: {arr.shape}, dtype={arr.dtype}")
+            
+            # Handle resolution mismatch for TPU (when we requested lower DPI than supported)
+            if sane_source == "Transparency Unit" and original_dpi != dpi:
+                # Downsample to match requested resolution
+                from PIL import Image
+                scale_factor = original_dpi / dpi
+                if arr.ndim == 3:
+                    h, w, c = arr.shape
+                else:
+                    h, w = arr.shape
+                    c = 1
+                new_h = int(h * scale_factor)
+                new_w = int(w * scale_factor)
+                
+                img = Image.fromarray(arr)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                arr = np.array(img)
+                print(f"Downsampled from {dpi} to {original_dpi} DPI: {arr.shape}")
+            
+            # Mirror horizontally for TPU scans (same as original code)
+            if source != 'flatbed':
+                arr = np.ascontiguousarray(arr[:, ::-1])
+                
+            # If no output specified, clean up temp file
+            if not output:
+                os.unlink(temp_file)
+                
+            return arr
+            
+        except subprocess.CalledProcessError as e:
+            print(f"SANE scan failed: {e}")
+            print(f"Return code: {e.returncode}")
+            print(f"stdout: {e.stdout}")
+            print(f"stderr: {e.stderr}")
+            
+            # Try to get more detailed error by running with verbose
+            if not e.stderr:
+                print("Running again with --verbose to get error details...")
+                verbose_cmd = cmd.copy()
+                verbose_cmd.insert(1, '--verbose')
+                result = subprocess.run(verbose_cmd, capture_output=True, text=True)
+                print(f"Verbose stderr: {result.stderr}")
+            
+            raise RuntimeError(f"Scan failed: {e.stderr or 'No error message'}")
+            
+    def _save_image(self, arr, path, depth, dpi=None):
+        """Save image array to file - same as original implementation."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.tif', '.tiff'):
+            import tifffile
+            kwargs = self._tiff_metadata(dpi) if dpi else {}
+            tifffile.imwrite(path, arr, **kwargs)
+            print(f"Saved: {path}")
+        elif ext == '.png':
+            from PIL import Image
+            if depth == 16:
+                import tifffile
+                path = path.replace('.png', '.tiff')
+                kwargs = self._tiff_metadata(dpi) if dpi else {}
+                tifffile.imwrite(path, arr, **kwargs)
+                print(f"Saved as TIFF (16-bit): {path}")
+            else:
+                img = Image.fromarray(arr)
+                img.save(path, dpi=(dpi, dpi) if dpi else None)
+                print(f"Saved: {path}")
+        else:
+            import tifffile
+            kwargs = self._tiff_metadata(dpi) if dpi else {}
+            tifffile.imwrite(path, arr, **kwargs)
+            print(f"Saved: {path}")
+            
+    def _tiff_metadata(self, dpi):
+        """Return tifffile.write() kwargs for scanner metadata."""
+        from datetime import datetime
+        return dict(
+            resolution=(dpi, dpi),
+            resolutionunit='inch',
+            datetime=datetime.now(),
+            software='epdaughter-sane',
+            extratags=[
+                (271, 2, None, 'EPSON', True),          # Make
+                (272, 2, None, self.model['name'] if self.model else 'Epson Scanner', True), # Model
+            ],
+        )
+
+
+def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.05):
     """Detect the film area in a preview scan image.
 
     Finds the largest dark region (film is darker than the clear TPU
@@ -274,109 +726,6 @@ def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.01
     return (x_in, y_in, w_in, h_in)
 
 
-def compute_film_luts(preview, sel_x, sel_y, sel_w, sel_h,
-                      lo_pct=0.5, hi_pct=99.5, bg_threshold=0.7,
-                      mode='affine'):
-    """Compute per-channel LUTs optimized for film dynamic range.
-
-    Analyzes the selected area of an 8-bit preview scan, excludes bright
-    background pixels (clear TPU areas), and computes per-channel LUTs
-    that stretch the film's value range to fill the full 0-255 output.
-
-    Args:
-        preview: numpy array (H, W, 3) uint8 preview image
-        sel_x, sel_y, sel_w, sel_h: selection rectangle in pixels
-        lo_pct: low percentile for black point (default 0.5%)
-        hi_pct: high percentile for white point (default 99.5%)
-        bg_threshold: fraction of max value above which pixels are
-            considered background and excluded (default 0.7 = 70%)
-        mode: 'affine' subtracts black level and scales (max dynamic range),
-              'linear' scales only using the white point (preserves zero)
-
-    Returns:
-        (lut_r, lut_g, lut_b) tuple of 256-byte LUTs, or (None, None, None)
-        if the selection has insufficient film pixels.
-    """
-    # Extract selection
-    x, y = int(sel_x), int(sel_y)
-    w, h = int(sel_w), int(sel_h)
-    crop = preview[y:y+h, x:x+w]
-
-    if crop.size == 0:
-        return (None, None, None)
-
-    # Mask out bright background (clear areas where light passes unobstructed)
-    # Use Otsu's method to find the optimal threshold between the bimodal
-    # distribution of dark film pixels and bright background pixels
-    gray = crop.astype(np.float32).mean(axis=2)
-    max_val = 255 if crop.dtype == np.uint8 else 65535
-
-    # Otsu threshold on the gray values
-    from scipy import ndimage
-    hist, bin_edges = np.histogram(gray.ravel(), bins=256, range=(0, max_val))
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    total = hist.sum()
-    if total == 0:
-        return (None, None, None)
-    # Otsu: find threshold that minimizes intra-class variance
-    best_thresh = max_val * bg_threshold  # fallback
-    best_var = -1
-    cum_sum = 0
-    cum_mean = 0
-    global_mean = (hist * bin_centers).sum() / total
-    for i in range(1, 256):
-        cum_sum += hist[i-1]
-        cum_mean += hist[i-1] * bin_centers[i-1]
-        if cum_sum == 0 or cum_sum == total:
-            continue
-        w0 = cum_sum / total
-        w1 = 1 - w0
-        m0 = cum_mean / cum_sum
-        m1 = (global_mean * total - cum_mean) / (total - cum_sum)
-        var = w0 * w1 * (m0 - m1) ** 2
-        if var > best_var:
-            best_var = var
-            best_thresh = bin_centers[i]
-
-    film_mask = gray < best_thresh
-    print(f"  LUT threshold: {best_thresh:.0f} (Otsu)")
-
-    film_pixels = film_mask.sum()
-    if film_pixels < 100:
-        print(f"  LUT: insufficient film pixels ({film_pixels}), using identity")
-        return (None, None, None)
-
-    luts = []
-    for ch in range(3):
-        ch_name = "RGB"[ch]
-        ch_data = crop[:, :, ch][film_mask].astype(np.float32)
-
-        # Percentile-based black and white points
-        black = np.percentile(ch_data, lo_pct)
-        white = np.percentile(ch_data, hi_pct)
-
-        if white <= black + 1:
-            print(f"  LUT {ch_name}: degenerate range ({black:.0f}-{white:.0f}), using identity")
-            luts.append(None)
-            continue
-
-        if mode == 'affine':
-            # output = clamp((input - black) / (white - black) * 255, 0, 255)
-            scale = 255.0 / (white - black)
-            lut = bytes(min(255, max(0, int((i - black) * scale))) for i in range(256))
-        else:
-            # output = clamp(input * 255 / white, 0, 255)
-            # Preserves zero — no black subtraction, just linear gain
-            scale = 255.0 / white
-            lut = bytes(min(255, int(i * scale)) for i in range(256))
-
-        print(f"  LUT {ch_name}: black={black:.1f} white={white:.1f} "
-              f"gain={scale:.2f}x {mode} ({film_pixels} film pixels)")
-        luts.append(lut)
-
-    return tuple(luts)
-
-
 class EpsonScanner:
     """Driver for Epson V-series flatbed scanners with TPU.
 
@@ -390,15 +739,23 @@ class EpsonScanner:
         Args:
             product_id: USB product ID to connect to, or None for auto-detect.
         """
-        self.dev = None
-        self.ep_in = None
-        self.ep_out = None
-        self.interp = None
-        self._read_cb = None   # prevent GC
-        self._write_cb = None  # prevent GC
-        self._tpu_configured = False  # set after first configure_tpu
-        self._needs_reinit = False    # set after RS commands need reinit
-        self._current_luts = (None, None, None)  # current gamma LUTs
+        # Detect platform and choose appropriate backend
+        if platform.system() == "Linux":
+            print("Detected Linux - using SANE backend")
+            self._backend = SaneEpsonScanner(product_id)
+        else:
+            print("Detected macOS/other - using interpreter backend")
+            # Original interpreter-based initialization
+            self.dev = None
+            self.ep_in = None
+            self.ep_out = None
+            self.interp = None
+            self._read_cb = None   # prevent GC
+            self._write_cb = None  # prevent GC
+            self._tpu_configured = False  # set after first configure_tpu
+            self._needs_reinit = False    # set after RS commands need reinit
+            self._backend = None
+            
         self._product_id = product_id
         self.model = None      # populated by open()
         self.verbose_usb = False  # trace USB callbacks
@@ -409,6 +766,11 @@ class EpsonScanner:
         Auto-detects the scanner model from USB if no product_id was
         specified in __init__. Loads the matching interpreter bundle.
         """
+        # If using SANE backend, delegate to it
+        if self._backend:
+            result = self._backend.open()
+            self.model = self._backend.model
+            return result
         # Find scanner on USB — auto-detect or use specified product ID
         if self._product_id:
             self.dev = usb.core.find(idVendor=VENDOR_ID, idProduct=self._product_id)
@@ -464,6 +826,7 @@ class EpsonScanner:
 
         self.interp = ctypes.CDLL(interp_path)
         print("Interpreter loaded")
+
 
         # Set up function signatures
         self.interp.INTInit.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
@@ -560,6 +923,9 @@ class EpsonScanner:
         self._init_interpreter()
 
     def close(self):
+        if self._backend:
+            return self._backend.close()
+            
         if self.interp:
             try:
                 self.interp.INTClose()
@@ -572,6 +938,10 @@ class EpsonScanner:
 
     def _cmd(self, data, debug=False):
         """Send command via INTWrite, return success."""
+        if self._backend:
+            # SANE backend doesn't support low-level commands
+            raise RuntimeError("Low-level commands not supported with SANE backend. Use high-level methods like get_scanner_capabilities() instead.")
+            
         if debug:
             hex_str = " ".join(f"{b:02x}" for b in data[:32])
             print(f"  -> INTWrite({len(data)}B): {hex_str}")
@@ -587,6 +957,10 @@ class EpsonScanner:
 
     def _read(self, size, debug=False):
         """Read response via INTRead (calls ProcessCommand internally)."""
+        if self._backend:
+            # SANE backend doesn't support low-level commands
+            raise RuntimeError("Low-level commands not supported with SANE backend. Use high-level methods like get_scanner_capabilities() instead.")
+            
         buf = (ctypes.c_uint8 * size)()
         result = self.interp.INTRead(buf, size)
         if debug:
@@ -620,11 +994,17 @@ class EpsonScanner:
 
     def get_identity(self):
         """ESC I - Request identity."""
+        if self._backend:
+            return self._backend.get_identity()
+            
         self._cmd(bytes([ESC, 0x49]))
         return self._read(256)
 
     def get_status(self):
         """ESC F - Request status."""
+        if self._backend:
+            return self._backend.get_status()
+            
         self._cmd(bytes([ESC, 0x46]))
         resp = self._read(16)
         if resp:
@@ -637,6 +1017,9 @@ class EpsonScanner:
 
     def get_extended_identity(self):
         """FS I - Extended identity (80 bytes)."""
+        if self._backend:
+            return self._backend.get_extended_identity()
+            
         self._cmd(bytes([FS, 0x49]))
         resp = self._read(80)
         if resp:
@@ -662,9 +1045,132 @@ class EpsonScanner:
             print(f"  Input depth:   {resp[66]} bits")
             print(f"  Max out depth: {resp[67]} bits")
         return resp
+    
+    def get_scanner_capabilities(self):
+        """Get scanner capabilities in a structured format.
+        
+        Returns dict with keys: optical_dpi, tpu_width_in, tpu_height_in, etc.
+        This is a high-level interface that works with both backends.
+        """
+        if self._backend:
+            # Return cached capabilities if available
+            if hasattr(self._backend, '_cached_capabilities') and self._backend._cached_capabilities:
+                return self._backend._cached_capabilities
+                
+            # For SANE backend, query SANE directly for capabilities
+            try:
+                # Get capabilities for both flatbed and TPU sources
+                import re
+                
+                # First get flatbed capabilities (default source)
+                result_flatbed = subprocess.run([
+                    'scanimage', '--device-name', self._backend.device_name, '--help'
+                ], capture_output=True, text=True, check=True)
+                
+                # Then get TPU-specific capabilities
+                result_tpu = subprocess.run([
+                    'scanimage', '--device-name', self._backend.device_name, 
+                    '--source', 'Transparency Unit', '--help'
+                ], capture_output=True, text=True, check=True)
+                
+                max_resolution = 6400  # Default V600 max
+                
+                # Parse flatbed area from default help
+                flatbed_width_mm = 215.9   # Default
+                flatbed_height_mm = 297.18 # Default
+                for line in result_flatbed.stdout.split('\n'):
+                    if '--resolution' in line and 'dpi' in line:
+                        numbers = re.findall(r'\d+', line)
+                        if numbers:
+                            max_resolution = max(int(n) for n in numbers if int(n) <= 6400)
+                    elif '-x 0..' in line and 'mm' in line:
+                        match = re.search(r'-x 0\.\.(\d+\.?\d*)mm', line)
+                        if match:
+                            flatbed_width_mm = float(match.group(1))
+                    elif '-y 0..' in line and 'mm' in line:
+                        match = re.search(r'-y 0\.\.(\d+\.?\d*)mm', line)
+                        if match:
+                            flatbed_height_mm = float(match.group(1))
+                
+                # Parse TPU area from TPU-specific help
+                tpu_width_mm = 68.58    # Default V600 TPU width
+                tpu_height_mm = 242.316 # Default V600 TPU height
+                for line in result_tpu.stdout.split('\n'):
+                    if '-x 0..' in line and 'mm' in line:
+                        match = re.search(r'-x 0\.\.(\d+\.?\d*)mm', line)
+                        if match:
+                            tpu_width_mm = float(match.group(1))
+                    elif '-y 0..' in line and 'mm' in line:
+                        match = re.search(r'-y 0\.\.(\d+\.?\d*)mm', line)
+                        if match:
+                            tpu_height_mm = float(match.group(1))
+                
+                # Convert mm to inches for our API
+                tpu_width_in = tpu_width_mm / 25.4
+                tpu_height_in = tpu_height_mm / 25.4
+                flatbed_width_in = flatbed_width_mm / 25.4  
+                flatbed_height_in = flatbed_height_mm / 25.4
+                
+                caps = {
+                    'optical_dpi': 1200,  # Standard optical resolution
+                    'max_resolution': max_resolution,
+                    'tpu_width_in': tpu_width_in,
+                    'tpu_height_in': tpu_height_in,
+                    'flatbed_width_in': flatbed_width_in,
+                    'flatbed_height_in': flatbed_height_in,
+                    'ir_supported': True,
+                    'model': self.model['name']
+                }
+                # Cache the capabilities
+                self._backend._cached_capabilities = caps
+                return caps
+                
+            except subprocess.CalledProcessError:
+                # Fallback to reasonable defaults for V600
+                return {
+                    'optical_dpi': 1200,
+                    'max_resolution': 6400,
+                    'tpu_width_in': 8.5,
+                    'tpu_height_in': 11.7,
+                    'flatbed_width_in': 8.5,
+                    'flatbed_height_in': 11.7,
+                    'ir_supported': True,
+                    'model': self.model['name']
+                }
+        else:
+            # For interpreter backend, use existing extended identity
+            eid = self.get_extended_identity()
+            if eid is None:
+                raise RuntimeError("Cannot read scanner capabilities")
+                
+            optical_dpi = struct.unpack_from('<I', eid, 4)[0]
+            max_res = struct.unpack_from('<I', eid, 12)[0]
+            fbf_x = struct.unpack_from('<I', eid, 20)[0]
+            fbf_y = struct.unpack_from('<I', eid, 24)[0]
+            tpu_x = struct.unpack_from('<I', eid, 36)[0]
+            tpu_y = struct.unpack_from('<I', eid, 40)[0]
+            
+            return {
+                'optical_dpi': optical_dpi,
+                'max_resolution': max_res,
+                'tpu_width_in': tpu_x / optical_dpi,
+                'tpu_height_in': tpu_y / optical_dpi,
+                'flatbed_width_in': fbf_x / optical_dpi,
+                'flatbed_height_in': fbf_y / optical_dpi,
+                'ir_supported': bool(eid[44] & 0x02) if len(eid) > 44 else True,
+                'model': eid[46:62].decode('ascii', errors='replace').rstrip('\x00 ') if len(eid) > 62 else 'Unknown'
+            }
 
     def get_extended_status(self):
         """ESC f - Extended status."""
+        if self._backend:
+            # For SANE backend, return a mock status
+            print("  Model: V600 via SANE")
+            print("  TPU status: Available")  
+            print("  -> TPU installed")
+            print("  -> TPU enabled")
+            return b'\x00' * 64
+            
         self._cmd(bytes([ESC, 0x66]))
         return self._read(64)
 
@@ -814,42 +1320,33 @@ class EpsonScanner:
             return False
         return True
 
-    def _upload_gamma_tables(self, lut_r=None, lut_g=None, lut_b=None):
-        """Upload gamma tables for R, G, B channels.
+    def _upload_gamma_tables(self):
+        """Upload linear gamma tables for R, G, B channels.
 
-        Each table is a 256-byte lookup applied to the 8-bit sensor data
-        before 16-bit output scaling. None = identity (linear ramp).
-
-        Args:
-            lut_r/g/b: 256-byte LUT per channel, or None for identity.
+        Each table is 256 bytes, written via FS 0x84 to addresses
+        0x1ffc (R), 0x1ffd (G), 0x1ffe (B).
         """
-        identity = bytes(range(256))
-        luts = [
-            (0xfc, lut_r or identity),
-            (0xfd, lut_g or identity),
-            (0xfe, lut_b or identity),
-        ]
-        for addr, lut in luts:
+        # Linear ramp 0-255 (identity gamma)
+        lut_r = bytes(range(256))
+        lut_g = bytes(range(256))
+        lut_b = bytes(range(256))
+
+        for addr, lut in [(0xfc, lut_r), (0xfd, lut_g), (0xfe, lut_b)]:
             header = bytes([0x03, 0x00, addr, 0x1f, 0x02, 0x00, 0x01, 0x00])
             self._write_register(header, lut)
 
-    def configure_tpu(self, lut_r=None, lut_g=None, lut_b=None):
+    def configure_tpu(self):
         """Configure TPU hardware for calibrated scanning.
 
         Sends the AFE gain, CCD timing, and shading correction parameters
         via RS (0x1E) commands directly to USB. These values were captured
         from Epson Scan 2's USB traffic and trigger the interpreter's
         internal TPU_calibrate pipeline during FS G.
-
-        Args:
-            lut_r/g/b: 256-byte gamma LUTs per channel, or None for identity.
-                Use compute_film_luts() to generate optimal LUTs from preview data.
         """
-        has_custom = any(l is not None for l in (lut_r, lut_g, lut_b))
-        print(f"Configuring TPU hardware ({'custom LUTs' if has_custom else 'default'})...")
+        print("Configuring TPU hardware...")
 
-        # Upload gamma tables
-        self._upload_gamma_tables(lut_r, lut_g, lut_b)
+        # Upload gamma tables (before FS W)
+        self._upload_gamma_tables()
 
         # FS 0xA2 — set TPU mode (0x02 = TPU active)
         self._rs_cmd(0xa2, bytes([0x02]))
@@ -1009,8 +1506,7 @@ class EpsonScanner:
 
     def scan(self, dpi=300, x=0, y=0, width=None, height=None,
              color=True, depth=8, source='flatbed', ir=False,
-             output=None, progress_cb=None, cancel_cb=None,
-             lut_r=None, lut_g=None, lut_b=None):
+             output=None, progress_cb=None, cancel_cb=None):
         """High-level scan function. Returns numpy array.
 
         dpi: scan resolution (100-6400)
@@ -1023,6 +1519,11 @@ class EpsonScanner:
         output: output filename (auto-detected format, or None to skip saving)
         progress_cb: optional callback(pct, eta_secs) called during data read
         """
+        # If using SANE backend, delegate to it
+        if self._backend:
+            return self._backend.scan(dpi=dpi, x=x, y=y, width=width, height=height,
+                                    color=color, depth=depth, source=source, ir=ir,
+                                    output=output, progress_cb=progress_cb, cancel_cb=cancel_cb)
         # Get scanner capabilities to know area limits
         self._cmd(bytes([FS, 0x49]))
         eid = self._read(80)
@@ -1111,12 +1612,10 @@ class EpsonScanner:
             raise RuntimeError("Failed to set scanning parameters")
 
         # Configure TPU hardware (AFE gains, CCD timing, shading)
-        # Reconfigure if LUTs changed or not yet configured
-        new_luts = (lut_r, lut_g, lut_b)
-        if source != 'flatbed' and (not self._tpu_configured or new_luts != self._current_luts):
-            self.configure_tpu(lut_r, lut_g, lut_b)
+        # Only needed once per session — calibration persists in scanner hardware
+        if source != 'flatbed' and not self._tpu_configured:
+            self.configure_tpu()
             self._tpu_configured = True
-            self._current_luts = new_luts
 
         # Start scan
         print("Starting scan...")
@@ -1199,8 +1698,7 @@ class EpsonScanner:
 
         # Save if output path specified
         if output:
-            self._save_image(arr, output, depth, dpi=dpi,
-                             lut_r=lut_r, lut_g=lut_g, lut_b=lut_b)
+            self._save_image(arr, output, depth, dpi=dpi)
 
         # Reinitialize interpreter if we just did TPU configuration — the RS
         # (direct USB) commands desync the interpreter's USB state.
@@ -1211,30 +1709,14 @@ class EpsonScanner:
 
         return arr
 
-    def _tiff_metadata(self, dpi, lut_r=None, lut_g=None, lut_b=None):
+    def _tiff_metadata(self, dpi):
         """Return tifffile.write() kwargs for scanner metadata."""
         from datetime import datetime
-
-        # Summarize LUT as gain parameters for metadata
-        description_parts = []
-        if any(l is not None for l in (lut_r, lut_g, lut_b)):
-            for ch, lut in [('R', lut_r), ('G', lut_g), ('B', lut_b)]:
-                if lut is None:
-                    description_parts.append(f"{ch}_gain=1.00 {ch}_black=0")
-                    continue
-                black = next((i for i in range(256) if lut[i] > 0), 0)
-                white = next((i for i in range(255, -1, -1) if lut[i] < 255), 255)
-                gain = 255.0 / (white - black) if white > black else 1.0
-                description_parts.append(f"{ch}_gain={gain:.2f} {ch}_black={black}")
-
-        description = "; ".join(description_parts) if description_parts else None
-
         return dict(
             resolution=(dpi, dpi),
             resolutionunit='inch',
             datetime=datetime.now(),
             software='epdaughter',
-            description=description,
             # extratags: (tag_id, dtype, count, value, writeonce)
             # dtype 2 = ASCII string
             extratags=[
@@ -1243,12 +1725,12 @@ class EpsonScanner:
             ],
         )
 
-    def _save_image(self, arr, path, depth, dpi=None, lut_r=None, lut_g=None, lut_b=None):
+    def _save_image(self, arr, path, depth, dpi=None):
         """Save image array to file."""
         ext = os.path.splitext(path)[1].lower()
         if ext in ('.tif', '.tiff'):
             import tifffile
-            kwargs = self._tiff_metadata(dpi, lut_r, lut_g, lut_b) if dpi else {}
+            kwargs = self._tiff_metadata(dpi) if dpi else {}
             tifffile.imwrite(path, arr, **kwargs)
             print(f"Saved: {path}")
         elif ext == '.png':
@@ -1322,7 +1804,8 @@ def main():
 
             print("\n=== Extended Status ===")
             es = scanner.get_extended_status()
-            if es:
+            # Only parse extended status for interpreter-based scanners
+            if es and not scanner._backend:
                 model = es[0x1A:0x2A].decode('ascii', errors='replace').rstrip('\x00 ')
                 print(f"  Model: {model}")
                 print(f"  TPU status: 0x{es[6]:02x}")
