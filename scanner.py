@@ -271,8 +271,7 @@ class SaneEpsonScanner:
                 print("Using epson2 backend (supports 16-bit at high DPI)")
                 device_to_use = epson2_device
             elif epkowa_device:
-                print("WARNING: Using epkowa backend (limited to 8-bit at 3200+ DPI)")
-                print("         For 16-bit high DPI scans, install patched SANE with epson2")
+                print("Using epkowa backend (patched for 16-bit and IR support)")
                 device_to_use = epkowa_device
             
             # Cache the device name
