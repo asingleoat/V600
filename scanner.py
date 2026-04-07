@@ -274,6 +274,109 @@ def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.05
     return (x_in, y_in, w_in, h_in)
 
 
+def compute_film_luts(preview, sel_x, sel_y, sel_w, sel_h,
+                      lo_pct=0.5, hi_pct=99.5, bg_threshold=0.7,
+                      mode='affine'):
+    """Compute per-channel LUTs optimized for film dynamic range.
+
+    Analyzes the selected area of an 8-bit preview scan, excludes bright
+    background pixels (clear TPU areas), and computes per-channel LUTs
+    that stretch the film's value range to fill the full 0-255 output.
+
+    Args:
+        preview: numpy array (H, W, 3) uint8 preview image
+        sel_x, sel_y, sel_w, sel_h: selection rectangle in pixels
+        lo_pct: low percentile for black point (default 0.5%)
+        hi_pct: high percentile for white point (default 99.5%)
+        bg_threshold: fraction of max value above which pixels are
+            considered background and excluded (default 0.7 = 70%)
+        mode: 'affine' subtracts black level and scales (max dynamic range),
+              'linear' scales only using the white point (preserves zero)
+
+    Returns:
+        (lut_r, lut_g, lut_b) tuple of 256-byte LUTs, or (None, None, None)
+        if the selection has insufficient film pixels.
+    """
+    # Extract selection
+    x, y = int(sel_x), int(sel_y)
+    w, h = int(sel_w), int(sel_h)
+    crop = preview[y:y+h, x:x+w]
+
+    if crop.size == 0:
+        return (None, None, None)
+
+    # Mask out bright background (clear areas where light passes unobstructed)
+    # Use Otsu's method to find the optimal threshold between the bimodal
+    # distribution of dark film pixels and bright background pixels
+    gray = crop.astype(np.float32).mean(axis=2)
+    max_val = 255 if crop.dtype == np.uint8 else 65535
+
+    # Otsu threshold on the gray values
+    from scipy import ndimage
+    hist, bin_edges = np.histogram(gray.ravel(), bins=256, range=(0, max_val))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    total = hist.sum()
+    if total == 0:
+        return (None, None, None)
+    # Otsu: find threshold that minimizes intra-class variance
+    best_thresh = max_val * bg_threshold  # fallback
+    best_var = -1
+    cum_sum = 0
+    cum_mean = 0
+    global_mean = (hist * bin_centers).sum() / total
+    for i in range(1, 256):
+        cum_sum += hist[i-1]
+        cum_mean += hist[i-1] * bin_centers[i-1]
+        if cum_sum == 0 or cum_sum == total:
+            continue
+        w0 = cum_sum / total
+        w1 = 1 - w0
+        m0 = cum_mean / cum_sum
+        m1 = (global_mean * total - cum_mean) / (total - cum_sum)
+        var = w0 * w1 * (m0 - m1) ** 2
+        if var > best_var:
+            best_var = var
+            best_thresh = bin_centers[i]
+
+    film_mask = gray < best_thresh
+    print(f"  LUT threshold: {best_thresh:.0f} (Otsu)")
+
+    film_pixels = film_mask.sum()
+    if film_pixels < 100:
+        print(f"  LUT: insufficient film pixels ({film_pixels}), using identity")
+        return (None, None, None)
+
+    luts = []
+    for ch in range(3):
+        ch_name = "RGB"[ch]
+        ch_data = crop[:, :, ch][film_mask].astype(np.float32)
+
+        # Percentile-based black and white points
+        black = np.percentile(ch_data, lo_pct)
+        white = np.percentile(ch_data, hi_pct)
+
+        if white <= black + 1:
+            print(f"  LUT {ch_name}: degenerate range ({black:.0f}-{white:.0f}), using identity")
+            luts.append(None)
+            continue
+
+        if mode == 'affine':
+            # output = clamp((input - black) / (white - black) * 255, 0, 255)
+            scale = 255.0 / (white - black)
+            lut = bytes(min(255, max(0, int((i - black) * scale))) for i in range(256))
+        else:
+            # output = clamp(input * 255 / white, 0, 255)
+            # Preserves zero — no black subtraction, just linear gain
+            scale = 255.0 / white
+            lut = bytes(min(255, int(i * scale)) for i in range(256))
+
+        print(f"  LUT {ch_name}: black={black:.1f} white={white:.1f} "
+              f"gain={scale:.2f}x {mode} ({film_pixels} film pixels)")
+        luts.append(lut)
+
+    return tuple(luts)
+
+
 class EpsonScanner:
     """Driver for Epson V-series flatbed scanners with TPU.
 
@@ -295,6 +398,7 @@ class EpsonScanner:
         self._write_cb = None  # prevent GC
         self._tpu_configured = False  # set after first configure_tpu
         self._needs_reinit = False    # set after RS commands need reinit
+        self._current_luts = (None, None, None)  # current gamma LUTs
         self._product_id = product_id
         self.model = None      # populated by open()
         self.verbose_usb = False  # trace USB callbacks
@@ -710,33 +814,42 @@ class EpsonScanner:
             return False
         return True
 
-    def _upload_gamma_tables(self):
-        """Upload linear gamma tables for R, G, B channels.
+    def _upload_gamma_tables(self, lut_r=None, lut_g=None, lut_b=None):
+        """Upload gamma tables for R, G, B channels.
 
-        Each table is 256 bytes, written via FS 0x84 to addresses
-        0x1ffc (R), 0x1ffd (G), 0x1ffe (B).
+        Each table is a 256-byte lookup applied to the 8-bit sensor data
+        before 16-bit output scaling. None = identity (linear ramp).
+
+        Args:
+            lut_r/g/b: 256-byte LUT per channel, or None for identity.
         """
-        # Linear ramp 0-255 (identity gamma)
-        lut_r = bytes(range(256))
-        lut_g = bytes(range(256))
-        lut_b = bytes(range(256))
-
-        for addr, lut in [(0xfc, lut_r), (0xfd, lut_g), (0xfe, lut_b)]:
+        identity = bytes(range(256))
+        luts = [
+            (0xfc, lut_r or identity),
+            (0xfd, lut_g or identity),
+            (0xfe, lut_b or identity),
+        ]
+        for addr, lut in luts:
             header = bytes([0x03, 0x00, addr, 0x1f, 0x02, 0x00, 0x01, 0x00])
             self._write_register(header, lut)
 
-    def configure_tpu(self):
+    def configure_tpu(self, lut_r=None, lut_g=None, lut_b=None):
         """Configure TPU hardware for calibrated scanning.
 
         Sends the AFE gain, CCD timing, and shading correction parameters
         via RS (0x1E) commands directly to USB. These values were captured
         from Epson Scan 2's USB traffic and trigger the interpreter's
         internal TPU_calibrate pipeline during FS G.
-        """
-        print("Configuring TPU hardware...")
 
-        # Upload gamma tables (before FS W)
-        self._upload_gamma_tables()
+        Args:
+            lut_r/g/b: 256-byte gamma LUTs per channel, or None for identity.
+                Use compute_film_luts() to generate optimal LUTs from preview data.
+        """
+        has_custom = any(l is not None for l in (lut_r, lut_g, lut_b))
+        print(f"Configuring TPU hardware ({'custom LUTs' if has_custom else 'default'})...")
+
+        # Upload gamma tables
+        self._upload_gamma_tables(lut_r, lut_g, lut_b)
 
         # FS 0xA2 — set TPU mode (0x02 = TPU active)
         self._rs_cmd(0xa2, bytes([0x02]))
@@ -896,7 +1009,8 @@ class EpsonScanner:
 
     def scan(self, dpi=300, x=0, y=0, width=None, height=None,
              color=True, depth=8, source='flatbed', ir=False,
-             output=None, progress_cb=None, cancel_cb=None):
+             output=None, progress_cb=None, cancel_cb=None,
+             lut_r=None, lut_g=None, lut_b=None):
         """High-level scan function. Returns numpy array.
 
         dpi: scan resolution (100-6400)
@@ -997,10 +1111,12 @@ class EpsonScanner:
             raise RuntimeError("Failed to set scanning parameters")
 
         # Configure TPU hardware (AFE gains, CCD timing, shading)
-        # Only needed once per session — calibration persists in scanner hardware
-        if source != 'flatbed' and not self._tpu_configured:
-            self.configure_tpu()
+        # Reconfigure if LUTs changed or not yet configured
+        new_luts = (lut_r, lut_g, lut_b)
+        if source != 'flatbed' and (not self._tpu_configured or new_luts != self._current_luts):
+            self.configure_tpu(lut_r, lut_g, lut_b)
             self._tpu_configured = True
+            self._current_luts = new_luts
 
         # Start scan
         print("Starting scan...")

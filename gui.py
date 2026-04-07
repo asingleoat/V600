@@ -22,7 +22,7 @@ from socketserver import ThreadingMixIn
 
 import numpy as np
 
-from scanner import EpsonScanner, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area
+from scanner import EpsonScanner, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area, compute_film_luts
 import config as cfg_mod
 
 # Global state
@@ -111,6 +111,12 @@ canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
     <span class="sep"></span>
     <button id="btn-scan" class="primary">Scan Selection</button>
     <button id="btn-cancel" class="danger" style="display:none">Cancel</button>
+    <span class="sep"></span>
+    <label>Exposure:</label>
+    <select id="sel-exposure">
+        <option value="linear" selected>Linear</option>
+        <option value="affine">Affine</option>
+    </select>
     <span class="sep"></span>
     <span id="scan-info" style="font-size:12px;color:#888"></span>
 </div>
@@ -503,7 +509,8 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
         const resp = await fetch('/scan', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({dpi, mode, x: xIn, y: yIn, w: wIn, h: hIn})
+            body: JSON.stringify({dpi, mode, x: xIn, y: yIn, w: wIn, h: hIn,
+                exposure: document.getElementById('sel-exposure').value})
         });
         clearInterval(pollId);
         document.title = defaultTitle;
@@ -579,6 +586,7 @@ function saveConfig() {
             dpi: parseInt(document.getElementById('sel-dpi').value),
             mode: document.getElementById('sel-mode').value,
             autoselect: document.getElementById('chk-autoselect').checked,
+            exposure: document.getElementById('sel-exposure').value,
         };
         fetch('/config', {
             method: 'POST',
@@ -592,6 +600,9 @@ function restoreConfig() {
     fetch('/config').then(r => r.json()).then(cfg => {
         if (cfg.autoselect !== undefined) {
             document.getElementById('chk-autoselect').checked = cfg.autoselect;
+        }
+        if (cfg.exposure) {
+            document.getElementById('sel-exposure').value = cfg.exposure;
         }
         if (cfg.mode) {
             document.getElementById('sel-mode').value = cfg.mode;
@@ -632,6 +643,7 @@ canvas.addEventListener('mouseup', () => {
 });
 document.getElementById('sel-dpi').addEventListener('change', saveConfig);
 document.getElementById('sel-mode').addEventListener('change', saveConfig);
+document.getElementById('sel-exposure').addEventListener('change', saveConfig);
 document.getElementById('chk-autoselect').addEventListener('change', saveConfig);
 
 // Restore on page load
@@ -836,9 +848,27 @@ class Handler(BaseHTTPRequestHandler):
                 s = int(secs)
                 return f"{s//60}m{s%60:02d}s" if s >= 60 else f"{s}s"
 
+            # Compute per-channel LUTs from preview to optimize film exposure
+            lut_r, lut_g, lut_b = None, None, None
+            if last_preview_arr is not None and w_in > 0 and h_in > 0:
+                # Convert selection inches to preview pixels
+                # The preview is mirrored, so un-mirror x for the array
+                px = int((tpu_width_in - x_in - w_in) * preview_dpi)
+                py = int(y_in * preview_dpi)
+                pw = int(w_in * preview_dpi)
+                ph = int(h_in * preview_dpi)
+                exposure_mode = params.get('exposure', 'linear')
+                print(f"Computing LUTs from preview selection ({pw}x{ph} at ({px},{py}), {exposure_mode})...")
+                lut_r, lut_g, lut_b = compute_film_luts(
+                    last_preview_arr, px, py, pw, ph, mode=exposure_mode)
+                if lut_r:
+                    print(f"  LUTs computed: R[128]={lut_r[128]} G[128]={lut_g[128]} B[128]={lut_b[128]}")
+                else:
+                    print(f"  No film detected, using identity LUTs")
+
             scan_args = dict(
                 dpi=dpi, x=x_in, y=y_in, width=w_in, height=h_in,
-                source='tpu',
+                source='tpu', lut_r=lut_r, lut_g=lut_g, lut_b=lut_b,
             )
 
             if mode == 'rgb+ir':
@@ -879,8 +909,12 @@ class Handler(BaseHTTPRequestHandler):
                     )
 
                 # Pass 2: IR mono (max 3200 DPI — upscale if needed)
+                # IR uses identity LUTs — exposure optimization is RGB-only
                 ir_args = dict(scan_args)
                 ir_args['dpi'] = ir_dpi
+                ir_args['lut_r'] = None
+                ir_args['lut_g'] = None
+                ir_args['lut_b'] = None
                 scan_status = f"Pass 2/2: Scanning IR at {ir_dpi} DPI..."
                 with scanner_lock:
                     ir = scanner.scan(
@@ -929,6 +963,12 @@ class Handler(BaseHTTPRequestHandler):
                     scan_status = (f"{mode_tag.upper()} {pct}% — "
                                    f"ETA {_fmt_eta(eta)}, "
                                    f"elapsed {_fmt_elapsed()}")
+
+                # IR scans use identity LUTs
+                if ir_mode:
+                    scan_args['lut_r'] = None
+                    scan_args['lut_g'] = None
+                    scan_args['lut_b'] = None
 
                 with scanner_lock:
                     scanner.scan(
