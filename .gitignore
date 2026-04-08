@@ -1,6 +1,31 @@
+# Python
 __pycache__/
+*.py[cod]
+
+# Scan outputs
 *.tiff
 *.tif
+*.png
+*.jpg
+*.pnm
+scans/
+
+# Build directories
 sane-local/
 firmware/
+
+# Config
 epdaughter_config.toml
+
+# Test binaries
+test_direct_usb
+test_epson2
+usb_reset
+
+# Temporary/debug
+*.log
+*.tmp
+*.pcapng
+
+# Environment
+.envrc
