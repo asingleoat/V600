@@ -9,6 +9,7 @@ pkgs.mkShell {
       pillow
       scikit-image
       pyusb
+      scipy
     ]))
     exiftool
     imagemagick
