@@ -93,6 +93,7 @@ canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
 <div id="toolbar">
     <button id="btn-preview" class="primary">Preview</button>
     <label style="cursor:pointer"><input type="checkbox" id="chk-autoselect" checked> Auto-select</label>
+    <button id="btn-restore-auto" style="display:none">Restore Auto</button>
     <span class="sep"></span>
     <label>DPI:</label>
     <select id="sel-dpi">
@@ -136,6 +137,7 @@ let scale = 1, offsetX = 0, offsetY = 0;
 
 // Selection rectangle in image coordinates (pixels in preview image)
 let sel = null;  // {x, y, w, h} or null
+let autoDetectedSel = null;  // Store the auto-detected selection for restore
 let dragging = null; // null, 'draw', 'move', 'resize-XX'
 let dragStart = {mx: 0, my: 0, x: 0, y: 0, w: 0, h: 0};
 
@@ -409,6 +411,8 @@ function setButtonsEnabled(enabled) {
 document.getElementById('btn-preview').addEventListener('click', async () => {
     setStatus('Scanning preview...', true);
     setButtonsEnabled(false);
+    autoDetectedSel = null;  // Clear previous auto-detection
+    document.getElementById('btn-restore-auto').style.display = 'none';
     try {
         const resp = await fetch('/preview', {method: 'POST'});
         if (!resp.ok) {
@@ -435,12 +439,14 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
                     const det = await (await fetch('/detect')).json();
                     if (det.sel_x_in !== undefined) {
                         const info = await (await fetch('/info')).json();
-                        sel = {
+                        autoDetectedSel = {
                             x: det.sel_x_in / info.tpu_width * info.preview_w,
                             y: det.sel_y_in / info.tpu_height * info.preview_h,
                             w: det.sel_w_in / info.tpu_width * info.preview_w,
                             h: det.sel_h_in / info.tpu_height * info.preview_h,
                         };
+                        sel = {...autoDetectedSel};  // Copy to current selection
+                        document.getElementById('btn-restore-auto').style.display = 'inline-block';
                         saveConfig();
                         setStatus('Film area detected. Adjust selection if needed.', false);
                     } else {
@@ -653,6 +659,15 @@ document.getElementById('sel-dpi').addEventListener('change', saveConfig);
 document.getElementById('sel-mode').addEventListener('change', saveConfig);
 document.getElementById('sel-exposure').addEventListener('change', saveConfig);
 document.getElementById('chk-autoselect').addEventListener('change', saveConfig);
+
+// Restore auto-detected selection button
+document.getElementById('btn-restore-auto').addEventListener('click', () => {
+    if (autoDetectedSel) {
+        sel = {...autoDetectedSel};  // Copy the stored auto-detected selection
+        draw();
+        setStatus('Auto-detected area restored', false);
+    }
+});
 
 // Restore on page load
 restoreConfig();
