@@ -938,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
                     (thumb_w, thumb_h), PILImage.LANCZOS)
                 thumb = np.array(pil_thumb)
 
-                meta = scanner._tiff_metadata(dpi)
+                meta = scanner._tiff_metadata(dpi, lut_r, lut_g, lut_b)
                 ir_meta = scanner._tiff_metadata(ir_dpi)
 
                 with tifffile.TiffWriter(filepath) as tw:

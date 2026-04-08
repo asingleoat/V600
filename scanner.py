@@ -205,7 +205,7 @@ VALID_RESOLUTIONS = [100, 200, 400, 533, 600, 800, 1200, 1600, 3200, 6400]
 VALID_IR_RESOLUTIONS = [800, 1600, 3200]
 
 
-def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.05):
+def detect_film_area(preview, preview_dpi, tpu_width_in, tpu_height_in, pad=0.0125):
     """Detect the film area in a preview scan image.
 
     Finds the largest dark region (film is darker than the clear TPU
@@ -1199,7 +1199,8 @@ class EpsonScanner:
 
         # Save if output path specified
         if output:
-            self._save_image(arr, output, depth, dpi=dpi)
+            self._save_image(arr, output, depth, dpi=dpi,
+                             lut_r=lut_r, lut_g=lut_g, lut_b=lut_b)
 
         # Reinitialize interpreter if we just did TPU configuration — the RS
         # (direct USB) commands desync the interpreter's USB state.
@@ -1210,14 +1211,30 @@ class EpsonScanner:
 
         return arr
 
-    def _tiff_metadata(self, dpi):
+    def _tiff_metadata(self, dpi, lut_r=None, lut_g=None, lut_b=None):
         """Return tifffile.write() kwargs for scanner metadata."""
         from datetime import datetime
+
+        # Summarize LUT as gain parameters for metadata
+        description_parts = []
+        if any(l is not None for l in (lut_r, lut_g, lut_b)):
+            for ch, lut in [('R', lut_r), ('G', lut_g), ('B', lut_b)]:
+                if lut is None:
+                    description_parts.append(f"{ch}_gain=1.00 {ch}_black=0")
+                    continue
+                black = next((i for i in range(256) if lut[i] > 0), 0)
+                white = next((i for i in range(255, -1, -1) if lut[i] < 255), 255)
+                gain = 255.0 / (white - black) if white > black else 1.0
+                description_parts.append(f"{ch}_gain={gain:.2f} {ch}_black={black}")
+
+        description = "; ".join(description_parts) if description_parts else None
+
         return dict(
             resolution=(dpi, dpi),
             resolutionunit='inch',
             datetime=datetime.now(),
             software='epdaughter',
+            description=description,
             # extratags: (tag_id, dtype, count, value, writeonce)
             # dtype 2 = ASCII string
             extratags=[
@@ -1226,12 +1243,12 @@ class EpsonScanner:
             ],
         )
 
-    def _save_image(self, arr, path, depth, dpi=None):
+    def _save_image(self, arr, path, depth, dpi=None, lut_r=None, lut_g=None, lut_b=None):
         """Save image array to file."""
         ext = os.path.splitext(path)[1].lower()
         if ext in ('.tif', '.tiff'):
             import tifffile
-            kwargs = self._tiff_metadata(dpi) if dpi else {}
+            kwargs = self._tiff_metadata(dpi, lut_r, lut_g, lut_b) if dpi else {}
             tifffile.imwrite(path, arr, **kwargs)
             print(f"Saved: {path}")
         elif ext == '.png':
