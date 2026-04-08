@@ -871,6 +871,7 @@ class EpsonScanner:
             self._write_cb = None  # prevent GC
             self._tpu_configured = False  # set after first configure_tpu
             self._needs_reinit = False    # set after RS commands need reinit
+            self._current_luts = (None, None, None)  # current gamma LUTs
             self._backend = None
             
         self._product_id = product_id
@@ -1741,10 +1742,12 @@ class EpsonScanner:
             raise RuntimeError("Failed to set scanning parameters")
 
         # Configure TPU hardware (AFE gains, CCD timing, shading)
-        # Only needed once per session — calibration persists in scanner hardware
-        if source != 'flatbed' and not self._tpu_configured:
+        # Reconfigure if LUTs changed or not yet configured
+        new_luts = (lut_r, lut_g, lut_b)
+        if source != 'flatbed' and (not self._tpu_configured or new_luts != self._current_luts):
             self.configure_tpu(lut_r, lut_g, lut_b)
             self._tpu_configured = True
+            self._current_luts = new_luts
 
         # Start scan
         print("Starting scan...")
