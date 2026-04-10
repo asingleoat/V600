@@ -417,7 +417,17 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
         const resp = await fetch('/preview', {method: 'POST'});
         if (!resp.ok) {
             const err = await resp.json();
-            setStatus('Preview failed: ' + err.error, false);
+            if (err.offline) {
+                setStatus('Scanner not connected: ' + err.error, false);
+                document.getElementById('no-preview').innerHTML = 
+                    '<div style="color: #ff4444; padding: 20px;">' +
+                    '<h3>Scanner Offline</h3>' +
+                    '<p>' + err.error + '</p>' +
+                    '<p>Please connect your scanner and refresh the page.</p>' +
+                    '</div>';
+            } else {
+                setStatus('Preview failed: ' + err.error, false);
+            }
             setButtonsEnabled(true);
             return;
         }
@@ -530,7 +540,12 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
         document.title = defaultTitle;
         const result = await resp.json();
         if (result.error) {
-            setStatus('Scan failed: ' + result.error, false);
+            if (result.offline) {
+                setStatus('Scanner not connected: ' + result.error, false);
+                alert('Scanner is offline. Please connect your scanner and refresh the page.');
+            } else {
+                setStatus('Scan failed: ' + result.error, false);
+            }
         } else {
             setStatus('Saved: ' + result.filename, false);
             playDing();
@@ -806,8 +821,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _handle_preview(self):
-        global preview_jpeg, preview_dpi, tpu_width_in, tpu_height_in, last_preview_arr
+        global preview_jpeg, preview_dpi, tpu_width_in, tpu_height_in, last_preview_arr, scanner, scanner_error
         import time
+
+        # Check if scanner is available
+        if scanner is None:
+            error_msg = scanner_error or "No scanner connected"
+            self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': error_msg,
+                'offline': True
+            }).encode())
+            return
 
         try:
             with scanner_lock:
@@ -860,7 +887,19 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def _handle_scan(self, params):
-        global scan_counter, scanning, scan_status
+        global scan_counter, scanning, scan_status, scanner, scanner_error
+
+        # Check if scanner is available
+        if scanner is None:
+            error_msg = scanner_error or "No scanner connected"
+            self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': error_msg,
+                'offline': True
+            }).encode())
+            return
 
         try:
             dpi = params.get('dpi', 3200)
@@ -1073,11 +1112,23 @@ def main():
     # Initialize scanner with proper cleanup
     scanner = None
     server = None
+    scanner_error = None
+    
     try:
         scanner = EpsonScanner()
         scanner.open()
         print(f"Scanner connected")
+    except RuntimeError as e:
+        print(f"Warning: {e}")
+        print("Starting GUI in offline mode - scanner operations will be disabled")
+        scanner_error = str(e)
+        scanner = None
+    except Exception as e:
+        print(f"Unexpected error initializing scanner: {e}")
+        scanner_error = str(e)
+        scanner = None
 
+    try:
         # Start threaded server (allows status polling during scans)
         class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
             daemon_threads = True
