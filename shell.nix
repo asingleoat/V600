@@ -13,6 +13,9 @@ pkgs.mkShell {
     ]))
     exiftool
     imagemagick
+    
+    # Compiler for LUT dispatcher
+    gcc
 
     # sane-backends build deps
     autoconf

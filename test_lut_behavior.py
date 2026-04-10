@@ -47,7 +47,9 @@ def capture_scan_with_custom_luts():
 def analyze_interpreter_symbols():
     """Check what symbols are exported that might relate to LUTs."""
     
-    interpreter = "/nix/store/8r5wk6l34pnfa8168xc04s2fzr0n5xxf-v600-interpreters/lib/libesintA1_normal.so"
+    # Use environment variable or search in common locations
+    import os
+    interpreter = os.getenv("V600_BASE_INTERPRETER", "libesintA1.so.2.0.1")
     
     print("\nAnalyzing interpreter symbols...")
     

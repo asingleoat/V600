@@ -80,8 +80,9 @@ static void load_real_interpreter() {
     // Determine which interpreter to load based on mode
     const char* base_lib = getenv("V600_BASE_INTERPRETER");
     if (!base_lib) {
-        // Default to normal interpreter
-        base_lib = "/nix/store/8r5wk6l34pnfa8168xc04s2fzr0n5xxf-v600-interpreters/lib/libesintA1_normal.so";
+        // Fallback to searching for any interpreter
+        base_lib = "libesintA1.so.2.0.1";
+        if (verbose) fprintf(stderr, "[V600-LUT] No V600_BASE_INTERPRETER set, using fallback: %s\n", base_lib);
     }
     
     if (verbose) fprintf(stderr, "[V600-LUT] Loading base interpreter: %s\n", base_lib);

@@ -29,3 +29,7 @@ usb_reset
 
 # Environment
 .envrc
+
+# Compiled LUT dispatchers
+libesintA1_lut.so
+libesintA1_unified.so

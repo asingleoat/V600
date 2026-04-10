@@ -395,12 +395,33 @@ class SaneEpsonScanner:
                 from create_lut_file import create_lut_file
                 lut_file = create_lut_file(lut_r, lut_g, lut_b)
                 
-                # Check if LUT dispatcher is available
+                # Check if LUT dispatcher is available, compile if needed
                 lut_dispatcher = os.path.join(os.path.dirname(__file__), 'libesintA1_lut.so')
+                lut_dispatcher_src = os.path.join(os.path.dirname(__file__), 'lut_dispatcher.c')
+                
+                if not os.path.exists(lut_dispatcher) and os.path.exists(lut_dispatcher_src):
+                    # Try to compile the dispatcher
+                    print("  Compiling LUT dispatcher...")
+                    import subprocess
+                    try:
+                        result = subprocess.run(
+                            ['gcc', '-shared', '-fPIC', '-o', lut_dispatcher, lut_dispatcher_src, '-ldl'],
+                            capture_output=True,
+                            text=True,
+                            check=True
+                        )
+                        print("  LUT dispatcher compiled successfully")
+                    except subprocess.CalledProcessError as e:
+                        print(f"  Warning: Failed to compile LUT dispatcher: {e.stderr}")
+                        lut_dispatcher = None
+                    except FileNotFoundError:
+                        print("  Warning: gcc not found, cannot compile LUT dispatcher")
+                        lut_dispatcher = None
+                
                 if os.path.exists(lut_dispatcher):
                     print(f"  Using custom LUTs via dispatcher")
                 else:
-                    print("  Note: LUT dispatcher not found, LUTs will be metadata only")
+                    print("  Note: LUT dispatcher not available, LUTs will be metadata only")
                     lut_dispatcher = None
             except (ImportError, Exception) as e:
                 print(f"  Note: Custom LUTs provided but could not set up: {e}")
