@@ -98,13 +98,4 @@ The scanner uses the ESC/I-2 protocol with extensions:
 - IR mode requires special authentication sequence (`ESC #`)
 - TPU calibration uses AFE gain and CCD timing parameters
 
-## Notes
-
-- Initial scanner detection on Linux takes 10-15 seconds (cached for 5 minutes)
-- IR scanning hardware supports 800, 1600, or 3200 DPI
-- Use TIFF format for widest 16-bit compatibility
-
-## License
-
-This project is for personal use. The Epson firmware and epkowa backend are proprietary software from Seiko Epson Corporation.
 
