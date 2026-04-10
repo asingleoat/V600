@@ -471,6 +471,235 @@ The raw USB packet trace from a full Epson Scan 2 session (connect + preview sca
 is available in `xhc0-initial-connect.pcapng`. This can be parsed with the Python
 script used in development — see git history for the pcapng parser.
 
+## Per-Channel Gain Control via Gamma LUTs
+
+The scanner applies an 8-bit lookup table (gamma LUT) to each color channel
+before producing the 16-bit output. By uploading custom LUTs, we get
+independent per-channel gain/exposure control. This is used for film scanning
+to optimize dynamic range for the film content rather than the clear background.
+
+### How Gamma LUTs Work
+
+Each LUT is 256 bytes. Input is the 8-bit sensor value (0-255), output is
+the 8-bit transformed value. The scanner then interpolates to produce 16-bit
+output — consecutive LUT entries produce ~256 steps in 16-bit space, but the
+sensor has higher resolution than 8 bits, so the scanner interpolates between
+LUT entries, producing genuine intermediate 16-bit values (not just multiples
+of 256).
+
+**Identity LUT** (default, for preview scans):
+```
+[0, 1, 2, 3, ..., 255]
+```
+
+**Gain LUT** (for film scans — affine stretch):
+Given a black point `B` and white point `W` from the film content:
+```python
+scale = 255.0 / (W - B)
+lut = bytes(min(255, max(0, int((i - B) * scale))) for i in range(256))
+```
+This maps sensor values below B to 0, B-W to 0-255, and above W to 255
+(clipping the bright background, which we don't care about for film).
+
+### LUT Upload Protocol (RS 0x84)
+
+Three LUTs are uploaded via RS register-write commands, one per channel.
+This happens **before** the rest of the calibration sequence, over direct
+USB (bypassing the interpreter).
+
+**All communication uses bulk endpoints: OUT=0x02, IN=0x81.**
+
+```
+=== R Channel LUT (address 0x1ffc) ===
+OUT: 1e 84                                    # RS REG_WRITE
+IN:  06                                        # ACK
+OUT: 03 00 fc 1f 02 00 01 00                  # 8-byte header
+OUT: <256 bytes R LUT data>                   # the lookup table
+IN:  06                                        # ACK
+
+=== G Channel LUT (address 0x1ffd) ===
+OUT: 1e 84                                    # RS REG_WRITE
+IN:  06                                        # ACK
+OUT: 03 00 fd 1f 02 00 01 00                  # 8-byte header
+OUT: <256 bytes G LUT data>                   # the lookup table
+IN:  06                                        # ACK
+
+=== B Channel LUT (address 0x1ffe) ===
+OUT: 1e 84                                    # RS REG_WRITE
+IN:  06                                        # ACK
+OUT: 03 00 fe 1f 02 00 01 00                  # 8-byte header
+OUT: <256 bytes B LUT data>                   # the lookup table
+IN:  06                                        # ACK
+```
+
+The header format is:
+```
+Byte 0: 0x03     (register write type: gamma LUT)
+Byte 1: 0x00     (reserved)
+Byte 2: address  (0xfc=R, 0xfd=G, 0xfe=B)
+Byte 3: 0x1f     (address high byte — combined address is 0x1ffc/fd/fe)
+Byte 4: 0x02     (data type)
+Byte 5: 0x00     (reserved)
+Byte 6: 0x01     (block count)
+Byte 7: 0x00     (reserved)
+```
+
+Note: the header and LUT data are sent as **two separate USB writes**
+after the ACK to the RS 0x84 command, but before the final ACK. The
+scanner ACKs once after receiving both the header and the data.
+
+### Verified by USB Capture
+
+The file `lut_capturexhc1.pcapng` contains a capture of a complete scan
+with sentinel LUT values:
+- R LUT: all `DE AD` repeating (256 bytes)
+- G LUT: all `BE EF` repeating (256 bytes)
+- B LUT: all `CA FE` repeating (256 bytes)
+
+These sentinel patterns are clearly visible in the capture at packets
+188-216 and confirm that the protocol works exactly as documented above.
+
+### Computing Optimal Film LUTs
+
+For film scanning, LUTs are computed from the 8-bit preview scan:
+
+1. **Select** the film area in the preview
+2. **Threshold** using Otsu's method to separate dark film pixels from
+   bright background (clear TPU areas, sprocket holes, film borders)
+3. **Per channel**, find the 0.5th percentile (black point) and 99.5th
+   percentile (white point) of the film-only pixels
+4. **Build affine LUT**: `output = clamp((input - black) / (white - black) * 255, 0, 255)`
+
+This stretches the film's actual value range to fill the full 0-255 LUT
+output, maximizing the scanner's effective dynamic range for the film
+content. Background pixels that were bright (above the white point) clip
+to 255, which is expected and harmless.
+
+### When to Use Custom vs Identity LUTs
+
+- **Preview scans**: Always identity LUTs — you need to see the full
+  unmodified image to select the film area
+- **Full-resolution RGB scans**: Custom LUTs computed from the preview
+  selection — optimizes exposure for the film content
+- **IR scans**: Always identity LUTs — IR is monochrome and doesn't
+  need per-channel gain compensation
+
+### Complete Annotated Protocol Trace
+
+This is the full USB traffic for a TPU scan with custom LUTs, captured
+from a V600 on macOS. All commands use the RS prefix (0x1E) sent directly
+to USB bulk endpoints (not through the interpreter's INTWrite).
+
+Phase 1: Gamma LUT upload
+```
+OUT: 1e 84           # RS REG_WRITE
+IN:  06              # ACK
+OUT: 03 00 fc 1f 02 00 01 00    # R LUT header
+OUT: <256 bytes>     # R LUT data
+IN:  06              # ACK
+
+OUT: 1e 84           # RS REG_WRITE
+IN:  06              # ACK
+OUT: 03 00 fd 1f 02 00 01 00    # G LUT header
+OUT: <256 bytes>     # G LUT data
+IN:  06              # ACK
+
+OUT: 1e 84           # RS REG_WRITE
+IN:  06              # ACK
+OUT: 03 00 fe 1f 02 00 01 00    # B LUT header
+OUT: <256 bytes>     # B LUT data
+IN:  06              # ACK
+```
+
+Phase 2: TPU calibration setup
+```
+OUT: 1e a2           # TPU_MODE
+IN:  06              # ACK
+OUT: 02              # TPU active
+IN:  06              # ACK
+
+OUT: 1e 25           # CAL_FLAG
+IN:  06              # ACK
+OUT: 02              # enable calibration
+IN:  06              # ACK
+
+OUT: 1e 5a           # TIMING
+IN:  06              # ACK
+OUT: 00 00 00 00     # timing config
+IN:  06              # ACK
+
+OUT: 1e 11           # PASS_MODE
+IN:  06              # ACK
+OUT: 03              # scan pass mode
+IN:  06              # ACK
+
+OUT: 1e 31           # GAINS (per-channel analog gain — has no actual effect,
+IN:  06              #        but must be sent for the calibration sequence)
+OUT: 80 00 80 00 80 00 00 00 1e 1e 1e 00
+IN:  06              # ACK
+
+OUT: 1e 21           # CCD_CFG
+IN:  06              # ACK
+OUT: 80 16 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+IN:  06              # ACK
+
+OUT: 1e 84           # REG_WRITE (gain table)
+IN:  06              # ACK
+OUT: 07 00 00 00 00 00 01 00     # header: type=0x07
+OUT: 00 00 00 00                 # 256 bytes: first 16 are CCD config,
+     28 00 c0 39                 #   R CCD exposure
+     c8 00 c0 39                 #   G CCD exposure
+     90 01 00 10                 #   B CCD exposure
+     ff ff ff ff ...             #   rest is 0xFF padding
+IN:  06              # ACK
+
+OUT: 1e 22           # CCD_CFG2
+IN:  06              # ACK
+OUT: 00 00 00 00 00 00 80 16 00 00 00 00
+IN:  06              # ACK
+
+OUT: 1e 41           # AFE_CFG
+IN:  06              # ACK
+OUT: 8f 0c 0f 0e 96 00 00 00 01 01 08 00 00 00 00 00 80 80 96 00 00 00
+IN:  06              # ACK
+
+OUT: 1e 42           # AFE_CFG2
+IN:  06              # ACK
+OUT: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+IN:  06              # ACK
+
+OUT: 1e 43           # AFE_GAINS
+IN:  06              # ACK
+OUT: 00 80 00 80 00 80 09 78 ec 79 f2 7a 00 00 00 00 00 00
+IN:  06              # ACK
+
+OUT: 1e 01           # SCAN_CFG
+IN:  06              # ACK
+OUT: 30 05 00 00 80 00 ff 00 ff 00 02 00
+IN:  06              # ACK
+
+OUT: 1e 05           # TRIGGER_CAL
+IN:  06              # ACK
+```
+
+Phase 3: Scan parameters and start
+```
+OUT: 1e 53           # GET_PARAMS (read current state)
+IN:  <42 bytes>      # current scanning parameters
+
+OUT: 1e 57           # SET_PARAMS (FS W equivalent)
+IN:  06              # ACK
+OUT: <42 bytes>      # DPI, area, color mode, depth, source, etc.
+IN:  06              # ACK
+
+OUT: 1e 47           # START_SCAN (FS G equivalent)
+IN:  <scan data>     # blocks of pixel data + status bytes
+```
+
+Note: After the scan completes, the interpreter must be reinitialized
+(INTClose + INTInit) because the direct USB RS commands have desynchronized
+the interpreter's internal USB state machine.
+
 ## Notes for Linux-Specific Issues
 
 1. **Interpreter binary format**: The macOS interpreter is Mach-O. Linux needs an ELF .so version. Check Epson's Linux scanner packages (iscan, imagescan).
