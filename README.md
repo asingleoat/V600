@@ -4,13 +4,13 @@ Complete driver and GUI for the Epson Perfection V600 Photo scanner with full 16
 
 ## Features
 
-- ✅ **Cross-platform**: Works on macOS and Linux (NixOS tested)
-- ✅ **16-bit color depth** at all resolutions (up to 6400 DPI)
-- ✅ **Infrared scanning** for dust/scratch detection
-- ✅ **Film scanning** with automatic detection and cropping
-- ✅ **Web GUI** for easy scanning with live preview
-- ✅ **Gain calibration** for optimal dynamic range
-- ✅ **Performance optimized** with device caching on Linux
+- **Cross-platform**: Works on macOS and Linux (NixOS tested)
+- **16-bit color depth** at all resolutions (up to 6400 DPI)
+- **Infrared scanning** for dust/scratch detection
+- **Film scanning** with automatic detection and cropping
+- **Web GUI** for easy scanning with live preview
+- **Gain calibration** for optimal dynamic range
+- **Performance optimized** with device caching on Linux
 
 ## Quick Start
 
@@ -98,22 +98,13 @@ The scanner uses the ESC/I-2 protocol with extensions:
 - IR mode requires special authentication sequence (`ESC #`)
 - TPU calibration uses AFE gain and CCD timing parameters
 
-## Known Issues
+## Notes
 
 - Initial scanner detection on Linux takes 10-15 seconds (cached for 5 minutes)
-- IR scanning only works at 800, 1600, or 3200 DPI
-- Some applications may not support 16-bit PNM files (use TIFF instead)
+- IR scanning hardware supports 800, 1600, or 3200 DPI
+- Use TIFF format for widest 16-bit compatibility
 
 ## License
 
 This project is for personal use. The Epson firmware and epkowa backend are proprietary software from Seiko Epson Corporation.
 
-## Contributing
-
-Contributions welcome! Please test changes on your hardware before submitting PRs.
-
-## Credits
-
-- Epson Interpreter analysis and protocol documentation
-- SANE epson2 backend for protocol reference
-- Community patches for 16-bit scanning support
