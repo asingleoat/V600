@@ -1,6 +1,6 @@
-# Epson V600 Scanner Driver
+# Epson V600 Scanning Utility
 
-Complete driver and GUI for the Epson Perfection V600 Photo scanner with full 16-bit color depth and infrared (IR) scanning support on both macOS and Linux.
+Complete scanning utility and GUI for the Epson Perfection V600 Photo scanner with full 16-bit color depth and infrared (IR) scanning support on both macOS and Linux.
 
 ## Features
 
