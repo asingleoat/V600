@@ -17,32 +17,30 @@ Complete driver and GUI for the Epson Perfection V600 Photo scanner with full 16
 ### macOS
 
 1. Install Epson ICA driver (will be auto-downloaded if not present)
-2. Run the GUI:
+2. Run the GUI (browser opens automatically):
 ```bash
-python3 gui.py
+python gui.py
 ```
-3. Open browser to http://localhost:5001
 
 ### Linux/NixOS
 
 1. Add the NixOS configuration (see `nixos/README.md`)
-2. Run the GUI:
+2. Run the GUI (browser opens automatically):
 ```bash
-python3 gui.py
+python gui.py
 ```
-3. Open browser to http://localhost:5001
 
 ### Command Line
 
 ```bash
 # Basic scan
-python3 scanner.py --dpi 300 -o scan.tiff
+python scanner.py --dpi 300 -o scan.tiff
 
 # 16-bit film scan
-python3 scanner.py --tpu --depth 16 --dpi 3200 -o film.tiff
+python scanner.py --tpu --depth 16 --dpi 3200 -o film.tiff
 
 # IR scan for dust detection
-python3 scanner.py --ir --tpu --dpi 1600 -o infrared.tiff
+python scanner.py --ir --tpu --dpi 1600 -o infrared.tiff
 ```
 
 ## Documentation
