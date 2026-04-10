@@ -386,11 +386,27 @@ class SaneEpsonScanner:
         SANE scanimage command for actual scanning.
         """
         
-        # Check if LUTs were provided
+        # Handle custom LUTs if provided
+        lut_file = None
+        lut_dispatcher = None
         if any(lut is not None for lut in (lut_r, lut_g, lut_b)):
-            print("  Note: Custom LUTs provided but not yet supported on Linux.")
-            print("        LUTs will be computed and stored as metadata, but not applied at hardware level.")
-            print("        Full LUT support for Linux is TBD - requires interpreter patching similar to IR mode.")
+            try:
+                # Create LUT file for dispatcher to read
+                from create_lut_file import create_lut_file
+                lut_file = create_lut_file(lut_r, lut_g, lut_b)
+                
+                # Check if LUT dispatcher is available
+                lut_dispatcher = os.path.join(os.path.dirname(__file__), 'libesintA1_lut.so')
+                if os.path.exists(lut_dispatcher):
+                    print(f"  Using custom LUTs via dispatcher")
+                else:
+                    print("  Note: LUT dispatcher not found, LUTs will be metadata only")
+                    lut_dispatcher = None
+            except (ImportError, Exception) as e:
+                print(f"  Note: Custom LUTs provided but could not set up: {e}")
+                print("        LUTs will be computed and stored as metadata only")
+                lut_file = None
+                lut_dispatcher = None
         
         # Map our parameters to SANE parameters
         if source == 'tpu' or ir:
@@ -436,6 +452,14 @@ class SaneEpsonScanner:
             
         # Use the appropriate wrapper script for V600 scanning
         env = os.environ.copy()
+        
+        # Add LUT support if dispatcher is available
+        if lut_file and lut_dispatcher:
+            env['V600_LUT_FILE'] = lut_file
+            env['V600_LUT_VERBOSE'] = '1'
+            # Prepend our dispatcher to LD_PRELOAD
+            existing_preload = env.get('LD_PRELOAD', '')
+            env['LD_PRELOAD'] = lut_dispatcher + (':' + existing_preload if existing_preload else '')
         
         # Check if wrapper scripts are available
         import shutil
@@ -606,6 +630,13 @@ class SaneEpsonScanner:
             else:
                 # Clean up temp file if no output specified
                 os.unlink(temp_file)
+            
+            # Clean up LUT file if we created one
+            if lut_file and os.path.exists(lut_file):
+                try:
+                    os.unlink(lut_file)
+                except:
+                    pass  # Don't fail if cleanup fails
                 
             return arr
             
