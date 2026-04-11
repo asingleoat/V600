@@ -13,7 +13,6 @@ import argparse
 import io
 import json
 import os
-import struct
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -22,7 +21,7 @@ from socketserver import ThreadingMixIn
 
 import numpy as np
 
-from scanner import EpsonScanner, VALID_RESOLUTIONS, VALID_IR_RESOLUTIONS, detect_film_area, compute_film_luts
+from scanner import EpsonScanner, detect_film_area, compute_film_luts
 import config as cfg_mod
 
 # Global state
@@ -846,7 +845,6 @@ class Handler(BaseHTTPRequestHandler):
                 caps = scanner.get_scanner_capabilities()
                 print(f"[{time.time()-start_time:.2f}s] Got capabilities")
                 
-                optical_dpi = caps['optical_dpi']
                 tpu_width_in = caps['tpu_width_in']
                 tpu_height_in = caps['tpu_height_in']
                 
@@ -943,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
                 if lut_r:
                     print(f"  LUTs computed: R[128]={lut_r[128]} G[128]={lut_g[128]} B[128]={lut_b[128]}")
                 else:
-                    print(f"  No film detected, using identity LUTs")
+                    print("  No film detected, using identity LUTs")
 
             scan_args = dict(
                 dpi=dpi, x=x_in, y=y_in, width=w_in, height=h_in,
@@ -1117,7 +1115,7 @@ def main():
     try:
         scanner = EpsonScanner()
         scanner.open()
-        print(f"Scanner connected")
+        print("Scanner connected")
     except RuntimeError as e:
         print(f"Warning: {e}")
         print("Starting GUI in offline mode - scanner operations will be disabled")
@@ -1125,7 +1123,7 @@ def main():
         scanner = None
     except Exception as e:
         print(f"Unexpected error initializing scanner: {e}")
-        scanner_error = str(e)
+        scanner_error = str(e)  # noqa: F841 - used via global in handlers
         scanner = None
 
     try:

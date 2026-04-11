@@ -7,10 +7,7 @@ similar to how we patch for IR mode.
 """
 
 import os
-import sys
-import struct
 import tempfile
-import base64
 
 def create_lut_file(lut_r, lut_g, lut_b):
     """Create a temporary file with LUT data that the patched interpreter can read.

@@ -56,15 +56,15 @@ def test_lut_file():
     filename = create_lut_file(lut_r, lut_g, lut_b, '/tmp/test_luts.bin')
     
     print(f"Created test LUT file: {filename}")
-    print(f"  R gain: 1.5x (saturates at i=170)")
-    print(f"  G gain: 1.2x (saturates at i=212)")
-    print(f"  B gain: 0.9x (never saturates)")
+    print("  R gain: 1.5x (saturates at i=170)")
+    print("  G gain: 1.2x (saturates at i=212)")
+    print("  B gain: 0.9x (never saturates)")
     print()
     print("To test with scanner:")
     print(f"  export V600_LUT_FILE={filename}")
-    print(f"  export V600_LUT_VERBOSE=1")
+    print("  export V600_LUT_VERBOSE=1")
     print(f"  export LD_PRELOAD={os.path.abspath('libesintA1_lut.so')}")
-    print(f"  scanimage-v600 --mode Color --depth 16 --resolution 300 -o test.tiff")
+    print("  scanimage-v600 --mode Color --depth 16 --resolution 300 -o test.tiff")
     
     return filename
 

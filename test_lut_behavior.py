@@ -2,9 +2,7 @@
 """Test current LUT behavior by examining USB traffic during scan."""
 
 import subprocess
-import tempfile
 import os
-import sys
 
 def capture_scan_with_custom_luts():
     """
@@ -48,7 +46,6 @@ def analyze_interpreter_symbols():
     """Check what symbols are exported that might relate to LUTs."""
     
     # Use environment variable or search in common locations
-    import os
     interpreter = os.getenv("V600_BASE_INTERPRETER", "libesintA1.so.2.0.1")
     
     print("\nAnalyzing interpreter symbols...")

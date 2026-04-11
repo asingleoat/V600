@@ -5,7 +5,6 @@ are written to the config file — active values uncommented, defaults
 commented out — so the file serves as its own reference.
 """
 
-import os
 from pathlib import Path
 
 # Default config location (overridden by --output-dir in GUI)

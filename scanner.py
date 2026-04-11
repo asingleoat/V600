@@ -22,7 +22,6 @@ Architecture:
 import argparse
 import ctypes
 import ctypes.util
-import sys
 import os
 import struct
 import time
@@ -278,7 +277,7 @@ class SaneEpsonScanner:
             if device_to_use:
                 SaneEpsonScanner._cached_device_name = device_to_use
                 SaneEpsonScanner._cache_timestamp = current_time
-                print(f"Cached device name for future use")
+                print("Cached device name for future use")
             
             return device_to_use
                         
@@ -326,7 +325,7 @@ class SaneEpsonScanner:
                     print("USB reset successful")
                     time.sleep(2)  # Wait for scanner to reinitialize
                     return True
-            except:
+            except Exception:
                 pass
         
         # Fallback: try Python USB reset
@@ -371,9 +370,9 @@ class SaneEpsonScanner:
         
     def get_extended_identity(self):
         """Get extended identity - mock implementation."""
-        print(f"  Command level: 2.0")
+        print("  Command level: 2.0")
         print(f"  Model:         {self.model['name']}")
-        print(f"  ** IR scanning SUPPORTED (via SANE) **")
+        print("  ** IR scanning SUPPORTED (via SANE) **")
         return b'\x00' * 80  # Mock response
         
     def scan(self, dpi=300, x=0, y=0, width=None, height=None,
@@ -419,7 +418,7 @@ class SaneEpsonScanner:
                         lut_dispatcher = None
                 
                 if os.path.exists(lut_dispatcher):
-                    print(f"  Using custom LUTs via dispatcher")
+                    print("  Using custom LUTs via dispatcher")
                 else:
                     print("  Note: LUT dispatcher not available, LUTs will be metadata only")
                     lut_dispatcher = None
@@ -462,7 +461,7 @@ class SaneEpsonScanner:
             print(f"  Note: {dpi} dpi not supported for IR, using {closest} dpi")
             dpi = closest
             
-        print(f"\nScan parameters:")
+        print("\nScan parameters:")
         print(f"  Resolution: {dpi} dpi")
         print(f"  Mode: {'IR' if ir else 'RGB' if color else 'Gray'} {depth}-bit")
         print(f"  Source: {sane_source}")
@@ -539,7 +538,7 @@ class SaneEpsonScanner:
                 caps = self.get_scanner_capabilities()
                 max_width_mm = caps['tpu_width_in'] * 25.4 if sane_source == "Transparency Unit" else caps['flatbed_width_in'] * 25.4
                 max_height_mm = caps['tpu_height_in'] * 25.4 if sane_source == "Transparency Unit" else caps['flatbed_height_in'] * 25.4
-            except:
+            except Exception:
                 # Fallback limits if capabilities query fails (already in mm)
                 max_width_mm = 68.58 if sane_source == "Transparency Unit" else 215.9
                 max_height_mm = 242.316 if sane_source == "Transparency Unit" else 297.18
@@ -610,7 +609,7 @@ class SaneEpsonScanner:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True, 
                                   timeout=max(300, estimated_time * 2), env=env)
             
-            print(f"Scan completed successfully")
+            print("Scan completed successfully")
             
             # Load the image using tifffile or PIL
             try:
@@ -632,7 +631,6 @@ class SaneEpsonScanner:
                     h, w, c = arr.shape
                 else:
                     h, w = arr.shape
-                    c = 1
                 new_h = int(h * scale_factor)
                 new_w = int(w * scale_factor)
                 
@@ -656,7 +654,7 @@ class SaneEpsonScanner:
             if lut_file and os.path.exists(lut_file):
                 try:
                     os.unlink(lut_file)
-                except:
+                except Exception:
                     pass  # Don't fail if cleanup fails
                 
             return arr
@@ -761,7 +759,6 @@ def compute_film_luts(preview, sel_x, sel_y, sel_w, sel_h,
     max_val = 255 if crop.dtype == np.uint8 else 65535
 
     # Otsu threshold on the gray values
-    from scipy import ndimage
     hist, bin_edges = np.histogram(gray.ravel(), bins=256, range=(0, max_val))
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     total = hist.sum()
@@ -1069,7 +1066,7 @@ class EpsonScanner:
             if self.verbose_usb:
                 hex_str = " ".join(f"{b:02x}" for b in data[:min(length, 32)])
                 print(f"    [USB WR {length}B: {hex_str}]")
-            written = self.ep_out.write(data, timeout=10000)
+            self.ep_out.write(data, timeout=10000)
             if err_ptr:
                 err_ptr[0] = 0
             return 1  # success
@@ -1151,7 +1148,7 @@ class EpsonScanner:
             return True
         if resp[0] == 0x15:  # NAK
             if debug:
-                print(f"  NAK received")
+                print("  NAK received")
             return False
         if debug:
             print(f"  Unexpected response: 0x{resp[0]:02x}")
@@ -1521,7 +1518,7 @@ class EpsonScanner:
             lut_r/g/b: 256-byte gamma LUTs per channel, or None for identity.
                 Use compute_film_luts() to generate optimal LUTs from preview data.
         """
-        has_custom = any(l is not None for l in (lut_r, lut_g, lut_b))
+        has_custom = any(lut is not None for lut in (lut_r, lut_g, lut_b))
         print(f"Configuring TPU hardware ({'custom LUTs' if has_custom else 'default'})...")
 
         # Upload gamma tables (before FS W)
@@ -1757,7 +1754,7 @@ class EpsonScanner:
         bytes_per_pixel = channels * (2 if depth == 16 else 1)
         expected_size = out_w * out_h * bytes_per_pixel
 
-        print(f"\nScan parameters:")
+        print("\nScan parameters:")
         print(f"  Resolution: {dpi} dpi")
         print(f"  Area: {out_w}x{out_h} pixels ({w_in:.1f}x{h_in:.1f} inches)")
         print(f"  Mode: {'IR' if ir else 'RGB' if color else 'Gray'} {depth}-bit")

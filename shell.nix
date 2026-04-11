@@ -10,6 +10,7 @@ pkgs.mkShell {
       scikit-image
       pyusb
       scipy
+      ruff
     ]))
     exiftool
     imagemagick
