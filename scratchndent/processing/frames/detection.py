@@ -749,6 +749,36 @@ def detect_frames(
             snapped.append(max(int(min_pos), pos))
     edge_obs_positions = snapped
 
+    # Size-consistency correction: DTW can compress or stretch individual
+    # frames far from the expected size (e.g. mapping a 4500px frame
+    # to 2400px). Detect any frame whose along-strip dimension deviates
+    # by more than 30% from the format-spec expected size and re-derive
+    # its trailing edge from its leading edge + expected dimension,
+    # snapped to the nearest gradient peak.
+    if actual_n >= 2 and len(edge_obs_positions) == 2 * actual_n:
+        for i in range(actual_n):
+            dim_i = edge_obs_positions[2*i+1] - edge_obs_positions[2*i]
+            ratio = dim_i / frame_strip_dim if frame_strip_dim > 0 else 1.0
+            if ratio < 0.7 or ratio > 1.3:
+                # Re-derive trailing edge from leading edge + expected dim
+                start_i = edge_obs_positions[2*i]
+                end_target = start_i + int(round(frame_strip_dim))
+                # Snap to gradient peak in a tight window
+                end_radius = max(int(frame_strip_dim * 0.05), 4)
+                end_lo = max(start_i + int(frame_strip_dim * 0.5),
+                             end_target - end_radius)
+                end_hi = min(len(grad_avg), end_target + end_radius + 1)
+                if end_hi > end_lo:
+                    new_end = end_lo + int(np.argmax(grad_avg[end_lo:end_hi]))
+                else:
+                    new_end = end_target
+                old_dim = dim_i
+                edge_obs_positions[2*i+1] = new_end
+                new_dim = new_end - start_i
+                print(f"    Frame {i+1} size corrected: "
+                      f"{old_dim} -> {new_dim}px "
+                      f"(expected ~{int(frame_strip_dim)}px)")
+
     # Fix the last frame's edges using inductive bias from earlier frames.
     # The first N-1 frames give us reliable median pitch (start-to-start
     # spacing) and median frame dimension. DTW can drift on the final
@@ -758,13 +788,35 @@ def detect_frames(
     # (15% of frame dim) is then too small to recover. Re-derive both
     # edges of the last frame from the earlier-frame median statistics
     # and snap each to the nearest gradient peak using a wider window.
+    # Decide whether the last-frame fix should run.
+    # For N>=3 we have measured pitches from earlier frames, so the
+    # pitch-based prediction is highly accurate — always re-derive both
+    # edges of the last frame to recover from DTW drift on the start.
+    # For N=2 we only have the format-spec pitch which is less precise;
+    # the DTW typically places the start correctly and only the end
+    # drifts, so skip the fix if the size-consistency pass already
+    # brought the dim within tolerance (it fixes the end, not the start).
+    _run_last_frame_fix = False
     if actual_n >= 3 and len(edge_obs_positions) == 2 * actual_n:
+        _run_last_frame_fix = True
+    elif actual_n == 2 and len(edge_obs_positions) == 2 * actual_n:
+        last_dim = edge_obs_positions[-1] - edge_obs_positions[-2]
+        last_dim_ratio = last_dim / frame_strip_dim if frame_strip_dim > 0 else 1.0
+        _run_last_frame_fix = last_dim_ratio < 0.85 or last_dim_ratio > 1.15
+
+    if _run_last_frame_fix:
         # Median pitch and dim from the first N-1 frames
         starts = [edge_obs_positions[2 * i] for i in range(actual_n)]
         dims = [edge_obs_positions[2*i+1] - edge_obs_positions[2*i]
                 for i in range(actual_n - 1)]
         pitches = [starts[i + 1] - starts[i] for i in range(actual_n - 2)]
-        median_pitch = int(np.median(pitches))
+        if pitches:
+            median_pitch = int(np.median(pitches))
+        else:
+            # N=2: no earlier pitches available. Derive pitch from the
+            # format spec scaled to work resolution, which gives us the
+            # expected center-to-center spacing.
+            median_pitch = int(round(work_info["pitch_px"]))
         expected_dim = int(np.median(dims))
 
         # Predict last frame's start from earlier-frame pitch
