@@ -996,7 +996,16 @@ def detect_frames(
 
     for i in range(actual_n):
         edge_peak_positions = []  # list of (x_pos, peak_y) per strip per edge
-        for edge_idx in [2 * i, 2 * i + 1]:
+        # For edge frames, skip the strip-leader / strip-end boundary
+        # which is noisier than inter-frame gaps. Use only the inter-
+        # frame edge for a cleaner angle measurement.
+        edge_indices = [2 * i, 2 * i + 1]
+        if actual_n >= 3:
+            if i == 0:
+                edge_indices = [2 * i + 1]       # trailing edge only
+            elif i == actual_n - 1:
+                edge_indices = [2 * i]            # leading edge only
+        for edge_idx in edge_indices:
             if edge_idx >= len(edge_obs_positions):
                 continue
             pos_int = edge_obs_positions[edge_idx]
