@@ -11,7 +11,6 @@ import argparse
 import os
 import sys
 import threading
-import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -82,6 +81,8 @@ def main():
                         help='Scanner output / processing input directory (default: scans/)')
     parser.add_argument('--output-dir', type=str, default='frames',
                         help='Processing output directory (default: frames/)')
+    parser.add_argument('--browser', action='store_true',
+                        help='Open in browser instead of native window')
     args = parser.parse_args()
 
     scan_dir = args.scan_dir
@@ -125,38 +126,55 @@ def main():
     process_handlers.init(scan_dir, output_dir)
 
     # --- Start server ---
-    server = None
-    try:
-        server = ThreadedHTTPServer(('127.0.0.1', args.port), Handler)
-        url = f'http://127.0.0.1:{args.port}'
-        print(f"Server: {url}")
-        print(f"  Scanner UI: {url}/scan/")
-        print(f"  Processing: {url}/process/")
-        print(f"  Gallery:    {url}/gallery/")
+    server = ThreadedHTTPServer(('127.0.0.1', args.port), Handler)
+    url = f'http://127.0.0.1:{args.port}'
+    print(f"Server: {url}")
+    print(f"  Scanner UI: {url}/scan/")
+    print(f"  Processing: {url}/process/")
+    print(f"  Gallery:    {url}/gallery/")
 
+    # Run HTTP server in a background thread
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    if not args.browser:
+        try:
+            # Ensure Qt can find its platform plugins (nix sets QT_PLUGIN_PATH
+            # in the shell but PyQt6 init can clear it before webview loads)
+            import platform as _plat
+            if _plat.system() == 'Linux':
+                try:
+                    from PyQt6.QtCore import QLibraryInfo
+                    plugin_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+                    os.environ['QT_PLUGIN_PATH'] = plugin_path
+                except ImportError:
+                    pass
+            import webview
+            window = webview.create_window('V600 Scanner', url, width=1280, height=900)
+            webview.start()
+        except ImportError:
+            print("pywebview not available, opening in browser")
+            args.browser = True
+
+    if args.browser:
+        import webbrowser
         webbrowser.open(url)
-        server.serve_forever()
-
+        try:
+            server_thread.join()
+        except KeyboardInterrupt:
+            pass
     except KeyboardInterrupt:
-        print("\nShutting down...")
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        traceback.print_exc()
+        pass
     finally:
-        print("Cleaning up...")
+        print("Shutting down...")
         if scan_handlers.state.scanner:
             try:
                 scan_handlers.state.scanner.close()
                 print("Scanner released")
             except Exception as e:
                 print(f"Error closing scanner: {e}")
-        if server:
-            try:
-                server.shutdown()
-                print("Server stopped")
-            except Exception as e:
-                print(f"Error stopping server: {e}")
+        server.shutdown()
+        print("Server stopped")
 
 
 if __name__ == '__main__':

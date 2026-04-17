@@ -16,6 +16,10 @@ firmware/
 
 # Config
 epdaughter_config.toml
+scratchndent_config.toml
+
+# Processing outputs
+frames/
 
 # Test binaries
 test_direct_usb

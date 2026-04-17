@@ -40,6 +40,8 @@ Examples:
                            help='Scanner output / processing input directory (default: scans/)')
     gui_parser.add_argument('--output-dir', type=str, default='frames',
                            help='Processing output directory (default: frames/)')
+    gui_parser.add_argument('--browser', action='store_true',
+                           help='Open in browser instead of native window')
 
     # CLI subcommand
     cli_parser = subparsers.add_parser('cli', help='Command-line interface')
@@ -72,6 +74,8 @@ Examples:
                     '--port', str(args.port if hasattr(args, 'port') else 8432),
                     '--scan-dir', args.scan_dir if hasattr(args, 'scan_dir') else 'scans',
                     '--output-dir', args.output_dir if hasattr(args, 'output_dir') else 'frames']
+        if getattr(args, 'browser', False):
+            sys.argv.append('--browser')
         gui_main()
 
     elif args.command == 'cli':
