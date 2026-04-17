@@ -878,6 +878,58 @@ def detect_frames(
         edge_obs_positions[-2] = new_start
         edge_obs_positions[-1] = new_end
 
+    # Symmetric fix for the FIRST frame. The strip's leading edge has
+    # a strong film-leader gradient that can pull Frame 1's start edge
+    # too early, making it oversized. For N>=3, use median pitch from
+    # frames 2+ to predict where Frame 1 should start.
+    if actual_n >= 3 and len(edge_obs_positions) == 2 * actual_n:
+        starts = [edge_obs_positions[2 * i] for i in range(actual_n)]
+        dims = [edge_obs_positions[2*i+1] - edge_obs_positions[2*i]
+                for i in range(1, actual_n)]  # frames 2..N
+        pitches = [starts[i + 1] - starts[i] for i in range(1, actual_n - 1)]
+        if pitches:
+            median_pitch = int(np.median(pitches))
+        else:
+            median_pitch = int(round(work_info["pitch_px"]))
+        expected_dim = int(np.median(dims))
+
+        expected_end = starts[1] - (median_pitch - expected_dim)
+        expected_start = expected_end - expected_dim
+
+        wide_radius = max(snap_radius, expected_dim // 4)
+
+        def _snap_first(target, radius, sigma):
+            lo = max(0, target - radius)
+            hi = min(len(grad_avg), target + radius + 1)
+            if hi <= lo:
+                return target
+            window = grad_avg[lo:hi].copy()
+            for j in range(len(window)):
+                dist = abs((lo + j) - target)
+                window[j] *= math.exp(-0.5 * (dist / sigma) ** 2)
+            return lo + int(np.argmax(window))
+
+        # Start: use tight sigma around the pitch-predicted position
+        new_start = _snap_first(
+            expected_start, wide_radius,
+            sigma=max(expected_dim * 0.01, 1.0))
+
+        # End: tight window using earlier-frame dim consistency
+        end_target = new_start + expected_dim
+        dim_std = float(np.std(dims)) if len(dims) > 1 else 3.0
+        end_radius = max(int(dim_std * 1.5) + 2, 4)
+        end_lo = max(new_start + expected_dim // 2,
+                     end_target - end_radius)
+        end_hi = min(edge_obs_positions[2] - 3,
+                     end_target + end_radius + 1)
+        if end_hi > end_lo:
+            new_end = end_lo + int(np.argmax(grad_avg[end_lo:end_hi]))
+        else:
+            new_end = end_target
+
+        edge_obs_positions[0] = new_start
+        edge_obs_positions[1] = new_end
+
     # Place frames from edge pairs, enforcing aspect ratio
     target_aspect = work_info["frame_w"] / max(work_info["frame_h"], 1)
     cross_center = (sw / 2) if is_vert else (sh / 2)
