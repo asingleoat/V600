@@ -197,7 +197,7 @@ that term to the R, G, B output channels respectively.
 
 ### Kodak Gold 200
 
-Tuned for Gold 200 scanned on an Epson V600 at 3200-6400 DPI.
+wild guess for Gold 200 scanned on an Epson V600 at 3200-6400 DPI.
 
 Gold has a strong orange mask (high Dmin, especially in B). The
 cross-channel coupling is significant (0.91-0.97 correlation between
@@ -207,7 +207,7 @@ mask.
 
 ### Kodak Portra 400
 
-Tuned for Portra 400 on the same scanner. Portra has a less aggressive
+wild guess for Portra 400 on the same scanner. Portra has a less aggressive
 orange mask, better channel separation, and wider exposure latitude.
 The corrections are gentler: diagonal terms are closer to 1.0 and the
 off-diagonal terms are smaller.
