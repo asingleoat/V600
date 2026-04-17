@@ -8,12 +8,6 @@ from .xmp_parser import (
     extract_channelmixer_from_xmp,
 )
 
-from .config_manager import (
-    ConfigManager,
-    PARAM_DEFAULTS,
-    REFERENCE_DPI,
-)
-
 from .io import (
     read_tiff_dpi,
     write_tiff,
@@ -29,10 +23,6 @@ __all__ = [
     'parse_sigmoid_params',
     'extract_sigmoid_from_xmp',
     'extract_channelmixer_from_xmp',
-    # Config management
-    'ConfigManager',
-    'PARAM_DEFAULTS',
-    'REFERENCE_DPI',
     # I/O utilities
     'read_tiff_dpi',
     'write_tiff',

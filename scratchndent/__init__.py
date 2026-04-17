@@ -2,17 +2,17 @@
 ScratchNDent - Film scanning post-processing toolkit.
 
 Modules:
+- config: Processing configuration management
+- export: Frame export pipeline (crop, IR clean, invert, write)
 - processing.defects: IR-based dust/scratch detection and removal
 - processing.negative: Negative film inversion and color processing
 - processing.frames: Automatic frame detection and extraction
 - calibration: Film stock calibration and measurement
-- utils: Utility functions (XMP parsing, etc.)
-- web: Web-based user interfaces
+- utils: Utility functions (I/O, XMP parsing)
 """
 
 __version__ = "2.0.0"
 
-# Import main functions for convenience
 from scratchndent.processing.defects import (
     load_tiff,
     align_ir,

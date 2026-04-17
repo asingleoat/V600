@@ -10,7 +10,6 @@ import json
 import os
 import threading
 import time
-import traceback
 
 import numpy as np
 from PIL import Image as PILImage
@@ -191,7 +190,6 @@ def _handle_preview(handler):
         _respond(handler, 200, 'image/jpeg', state.preview_jpeg)
 
     except Exception as e:
-        traceback.print_exc()
         _respond_json(handler, 500, {'error': str(e)})
 
 
@@ -345,5 +343,4 @@ def _handle_scan(handler, params):
     except Exception as e:
         state.scanning = False
         state.scan_status = f"Error: {e}"
-        traceback.print_exc()
         _respond_json(handler, 500, {'error': str(e)})

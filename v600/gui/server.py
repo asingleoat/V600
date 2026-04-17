@@ -92,7 +92,8 @@ def main():
     cfg_mod.CONFIG_FILE = Path(os.path.join(scan_dir, "epdaughter_config.toml"))
 
     # Processing config lives in the working directory
-    process_handlers.CONFIG_FILE = Path("scratchndent_config.toml")
+    import scratchndent.config as process_cfg
+    process_cfg.CONFIG_FILE = Path("scratchndent_config.toml")
 
     # --- Initialize scanner (background) ---
     # Scanner detection via SANE is slow (10-15s). Start the server

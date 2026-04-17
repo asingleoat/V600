@@ -7,243 +7,31 @@ Gallery routes under /gallery/ are also handled here since they share OUTPUT_DIR
 import io
 import json
 import math
-import sys
 import time
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote
 
 import cv2
 import numpy as np
 import tifffile
 from PIL import Image
 
-from scratchndent import align_ir, make_defect_mask, inpaint
+from scratchndent import align_ir
 from scratchndent.processing.negative import compute_dmin, invert_negative, render_to_display
 from scratchndent.processing.frames import (
     detect_frames,
-    crop_rotated_rect,
-    apply_rotation,
-    make_rebate_mask,
     rebate_in_bounds,
     extract_rebate_pixels,
     compute_inter_frame_rebate,
 )
-from scratchndent.utils import (
-    read_tiff_dpi,
-    generate_unique_path,
-    write_tiff,
-    find_images as find_images_util,
+from scratchndent.utils import read_tiff_dpi, generate_unique_path, find_images as find_images_util
+from scratchndent.config import (
+    CONFIG_FILE, TIFF_EXTS, REFERENCE_DPI,
+    load_config, save_config, get_param,
+    get_available_stocks, get_stock_coeffs, get_active_stock, get_preview_size,
 )
-from scratchndent.calibration.film_stocks import default_kodak_gold_coeffs, default_kodak_portra_coeffs
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-CONFIG_FILE = Path("scratchndent_config.toml")
-
-REFERENCE_DPI = 800
-
-PARAM_DEFAULTS = {
-    "ir_threshold": 0.10,
-    "ir_hair_sensitivity": 0.10,
-    "ir_min_area": 3,
-    "ir_dilate_radius": 4,
-    "ir_close_radius": 6,
-    "ir_blur_size": 301,
-    "ir_max_coverage": 0.03,
-    "inpaint_padding": 16,
-    "render_contrast": 1.4,
-    "render_curve_k": 5.0,
-    "render_percentile_lo": 0.5,
-    "render_percentile_hi": 99.5,
-    "exposure_compensation": 0.0,
-    "color_temp": 0.0,
-    "color_tint": 0.0,
-    "preview_size": 8192,
-    "clahe_clip": 2.0,
-}
-
-DPI_SCALED_PARAMS = {
-    "ir_min_area", "ir_dilate_radius", "ir_close_radius",
-    "ir_blur_size", "inpaint_padding",
-}
-DPI_AREA_PARAMS = {"ir_min_area"}
-
-PARAM_COMMENTS = {
-    "stock": "Active film stock name",
-    "preview_size": "Max preview dimension in pixels",
-    "ir_threshold": "Defect detection sensitivity (lower = more aggressive)",
-    "ir_hair_sensitivity": "Meijering line filter threshold for hairs/scratches",
-    "ir_min_area": "Minimum defect size in pixels at 800 DPI",
-    "ir_dilate_radius": "Mask dilation in pixels at 800 DPI",
-    "ir_close_radius": "Morphological close in pixels at 800 DPI",
-    "ir_blur_size": "Background blur kernel in pixels at 800 DPI",
-    "ir_max_coverage": "Sanity cap: max fraction of image flagged as defects",
-    "inpaint_padding": "Context padding in pixels at 800 DPI",
-    "render_contrast": "S-curve contrast strength: 1.0=linear, 2.0=punchy",
-    "render_curve_k": "S-curve steepness multiplier",
-    "render_percentile_lo": "Low percentile for display range normalization",
-    "render_percentile_hi": "High percentile for display range normalization",
-    "exposure_compensation": "Density-domain exposure shift: positive=brighter",
-    "color_temp": "Color temperature: positive=warmer, negative=cooler",
-    "color_tint": "Color tint: positive=magenta, negative=green",
-    "clahe_clip": "CLAHE clip limit for preview contrast enhancement",
-    "dmin": "Film base density [R, G, B]",
-    "ir_clean": "Enable IR dust/scratch removal",
-    "invert": "Enable film negative inversion",
-    "preview_inversion": "Show inverted preview instead of CLAHE",
-    "aspect": "Last used aspect ratio for frame selection",
-}
-
-PARAM_SECTIONS = {
-    "ir_threshold": "dust_removal",
-    "ir_hair_sensitivity": "dust_removal",
-    "ir_min_area": "dust_removal",
-    "ir_dilate_radius": "dust_removal",
-    "ir_close_radius": "dust_removal",
-    "ir_blur_size": "dust_removal",
-    "ir_max_coverage": "dust_removal",
-    "inpaint_padding": "dust_removal",
-    "render_contrast": "render",
-    "render_curve_k": "render",
-    "render_percentile_lo": "render",
-    "render_percentile_hi": "render",
-    "exposure_compensation": "render",
-    "color_temp": "render",
-    "color_tint": "render",
-}
-
-BUILTIN_STOCKS = {
-    "kodak_gold": {
-        "description": "Kodak Gold 200 on Epson V600",
-        "coeffs": default_kodak_gold_coeffs().tolist(),
-    },
-    "kodak_portra": {
-        "description": "Kodak Portra 400 on Epson V600",
-        "coeffs": default_kodak_portra_coeffs().tolist(),
-    },
-}
-
-TIFF_EXTS = {".tif", ".tiff"}
-
-
-def _load_config_from_disk() -> dict:
-    if CONFIG_FILE.exists():
-        try:
-            import tomllib
-            with open(CONFIG_FILE, "rb") as f:
-                raw = tomllib.load(f)
-            flat = {}
-            stocks = {}
-            for k, v in raw.items():
-                if k == "stocks" and isinstance(v, dict):
-                    stocks = v
-                elif isinstance(v, dict):
-                    flat.update(v)
-                else:
-                    flat[k] = v
-            if stocks:
-                flat["_stocks"] = stocks
-            return flat
-        except Exception:
-            pass
-    return {}
-
-
-_CONFIG: dict = _load_config_from_disk()
-
-
-def load_config() -> dict:
-    return _CONFIG
-
-
-def _format_toml_value(v) -> str:
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, str):
-        return f'"{v}"'
-    if isinstance(v, list):
-        items = ", ".join(_format_toml_value(x) for x in v)
-        return f"[{items}]"
-    return repr(v)
-
-
-def save_config(updates: dict) -> None:
-    _CONFIG.update(updates)
-    cfg = dict(_CONFIG)
-    stocks = cfg.pop("_stocks", {})
-
-    lines = ["# scratchndent configuration", ""]
-
-    sectioned_keys = set(PARAM_SECTIONS.keys())
-    top_keys = [k for k in cfg if k not in sectioned_keys and k != "_stocks"]
-    for k in top_keys:
-        comment = PARAM_COMMENTS.get(k)
-        if comment:
-            lines.append(f"# {comment}")
-        lines.append(f"{k} = {_format_toml_value(cfg[k])}")
-        lines.append("")
-
-    for section_name in ["dust_removal", "render"]:
-        section_keys = [k for k, s in PARAM_SECTIONS.items() if s == section_name]
-        if not section_keys:
-            continue
-        lines.append(f"[{section_name}]")
-        for k in section_keys:
-            comment = PARAM_COMMENTS.get(k)
-            if comment:
-                lines.append(f"# {comment}")
-            if k in cfg:
-                lines.append(f"{k} = {_format_toml_value(cfg[k])}")
-            else:
-                lines.append(f"# {k} = {_format_toml_value(PARAM_DEFAULTS[k])}")
-        lines.append("")
-
-    all_stocks = dict(BUILTIN_STOCKS)
-    all_stocks.update(stocks)
-    lines.append("# Film stock profiles")
-    lines.append("")
-    for name, stock_def in all_stocks.items():
-        lines.append(f"[stocks.{name}]")
-        if "description" in stock_def:
-            lines.append(f'description = "{stock_def["description"]}"')
-        coeffs = stock_def["coeffs"]
-        basis_labels = ["R", "G", "B", "R2", "G2", "B2", "RG", "RB", "GB", "bias"]
-        lines.append("coeffs = [")
-        for i, row in enumerate(coeffs):
-            row_str = ", ".join(f"{v:8.4f}" for v in row)
-            lines.append(f"    [{row_str}],  # {basis_labels[i]}")
-        lines.append("]")
-        lines.append("")
-
-    CONFIG_FILE.write_text("\n".join(lines))
-
-
-def get_available_stocks() -> dict[str, dict]:
-    stocks = dict(BUILTIN_STOCKS)
-    cfg = load_config()
-    if "_stocks" in cfg:
-        stocks.update(cfg["_stocks"])
-    return stocks
-
-
-def get_stock_coeffs(name: str) -> np.ndarray:
-    stocks = get_available_stocks()
-    if name in stocks:
-        return np.array(stocks[name]["coeffs"], dtype=np.float64)
-    raise ValueError(f"Unknown film stock '{name}'. Available: {list(stocks.keys())}")
-
-
-def get_active_stock() -> str | None:
-    return load_config().get("stock")
-
-
-def get_preview_size() -> int:
-    return int(load_config().get("preview_size", PARAM_DEFAULTS["preview_size"]))
+from scratchndent.export import process_frame, apply_inversion
 
 
 # ---------------------------------------------------------------------------
@@ -301,27 +89,6 @@ def set_progress(msg: str) -> None:
     print(f"  [{msg}]")
 
 
-def get_dpi_scale() -> float:
-    if CURRENT_DPI and CURRENT_DPI > 0:
-        return CURRENT_DPI / REFERENCE_DPI
-    return 1.0
-
-
-def get_param(name: str) -> float | int:
-    cfg = load_config()
-    raw = cfg[name] if name in cfg else PARAM_DEFAULTS[name]
-    if name in DPI_SCALED_PARAMS:
-        scale = get_dpi_scale()
-        if name in DPI_AREA_PARAMS:
-            raw = raw * scale * scale
-        else:
-            raw = raw * scale
-        if name == "ir_blur_size":
-            raw = int(raw) | 1
-            return raw
-    return type(PARAM_DEFAULTS[name])(raw)
-
-
 # ---------------------------------------------------------------------------
 # Image loading and processing
 # ---------------------------------------------------------------------------
@@ -362,7 +129,7 @@ def switch_to_image(idx: int) -> None:
     FULL_WIDTH, FULL_HEIGHT = w, h
     HAS_IR = ir is not None
     IS_GRAYSCALE = rgb.ndim == 2
-    dpi_str = f", {CURRENT_DPI} DPI (scale {get_dpi_scale():.1f}x)" if CURRENT_DPI else ""
+    dpi_str = f", {CURRENT_DPI} DPI (scale {CURRENT_DPI / REFERENCE_DPI:.1f}x)" if CURRENT_DPI else ""
     print(f"  Image: {w}x{h}, {rgb.dtype}{dpi_str}")
 
     ps = get_preview_size()
@@ -472,49 +239,6 @@ def ensure_loaded() -> None:
     FULL_IMG_READY = True
 
 
-def ir_clean_region(rgb_region: np.ndarray, ir_region: np.ndarray) -> np.ndarray:
-    rgb_h, rgb_w = rgb_region.shape[:2]
-    ir_h, ir_w = ir_region.shape[:2]
-    mask_ir = make_defect_mask(
-        ir_region,
-        threshold=get_param("ir_threshold"),
-        hair_sensitivity=get_param("ir_hair_sensitivity"),
-        min_area=int(get_param("ir_min_area")),
-        dilate_radius=int(get_param("ir_dilate_radius")),
-        close_radius=int(get_param("ir_close_radius")),
-        blur_size=int(get_param("ir_blur_size")),
-        max_coverage=get_param("ir_max_coverage"),
-    )
-    n_defects = np.count_nonzero(mask_ir)
-    if n_defects == 0:
-        return rgb_region
-    if rgb_h != ir_h or rgb_w != ir_w:
-        mask = cv2.resize(mask_ir, (rgb_w, rgb_h), interpolation=cv2.INTER_NEAREST)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask = cv2.dilate(mask, kernel)
-    else:
-        mask = mask_ir
-    n_final = np.count_nonzero(mask)
-    print(f"    {n_defects} defect pixels (IR) -> {n_final} pixels (RGB)")
-    return inpaint(rgb_region, mask, padding=get_param("inpaint_padding"))
-
-
-def apply_inversion(img: np.ndarray) -> np.ndarray:
-    stock = get_active_stock()
-    coeffs = get_stock_coeffs(stock) if stock else None
-    scene_linear = invert_negative(img, dmin=DMIN, stock=stock or "kodak_gold", coeffs=coeffs)
-    return render_to_display(
-        scene_linear,
-        contrast=get_param("render_contrast"),
-        curve_k=get_param("render_curve_k"),
-        percentile_lo=get_param("render_percentile_lo"),
-        percentile_hi=get_param("render_percentile_hi"),
-        exposure_compensation=get_param("exposure_compensation"),
-        color_temp=get_param("color_temp"),
-        color_tint=get_param("color_tint"),
-    )
-
-
 def rescan_images() -> None:
     global IMAGE_LIST, IMAGE_IDX
     old_current = IMAGE_LIST[IMAGE_IDX] if IMAGE_IDX < len(IMAGE_LIST) else None
@@ -536,94 +260,6 @@ def find_images(path: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 # Export pipeline
 # ---------------------------------------------------------------------------
-
-def _process_frame(
-    frame_idx, rect, rgb_img, aligned_ir, ir_scale_x, ir_scale_y,
-    film_stock, stock_coeffs, dmin, outputs, out_paths, base_meta,
-) -> dict:
-    timings = {}
-    t0 = time.monotonic()
-    written = []
-
-    cx, cy, w, h = rect["cx"], rect["cy"], rect["w"], rect["h"]
-    angle = rect.get("angle", 0)
-    rotation = rect.get("rotation", 0)
-
-    need_ir = outputs.get("ir_neg") or outputs.get("ir_inv")
-    need_invert_clean = outputs.get("ir_inv")
-    need_invert_raw = outputs.get("inv_only")
-
-    t = time.monotonic()
-    raw_crop = crop_rotated_rect(rgb_img, cx, cy, w, h, angle)
-    timings["crop"] = time.monotonic() - t
-
-    ir_cleaned = None
-    if need_ir and aligned_ir is not None:
-        t = time.monotonic()
-        ir_cropped = crop_rotated_rect(
-            aligned_ir,
-            cx * ir_scale_x, cy * ir_scale_y,
-            w * ir_scale_x, h * ir_scale_y,
-            angle,
-        )
-        ir_cleaned = ir_clean_region(raw_crop, ir_cropped)
-        timings["ir_clean"] = time.monotonic() - t
-    elif need_ir:
-        ir_cleaned = raw_crop
-
-    def _invert(img):
-        t = time.monotonic()
-        scene_linear = invert_negative(
-            img, dmin=dmin, coeffs=stock_coeffs, stock=film_stock or "kodak_gold",
-        )
-        result = render_to_display(
-            scene_linear,
-            contrast=get_param("render_contrast"),
-            curve_k=get_param("render_curve_k"),
-            percentile_lo=get_param("render_percentile_lo"),
-            percentile_hi=get_param("render_percentile_hi"),
-            exposure_compensation=get_param("exposure_compensation"),
-            color_temp=get_param("color_temp"),
-            color_tint=get_param("color_tint"),
-        )
-        return result, time.monotonic() - t
-
-    if outputs.get("ir_neg") and ir_cleaned is not None:
-        t = time.monotonic()
-        out = apply_rotation(ir_cleaned, rotation)
-        meta = {**base_meta, "variant": "ir_cleaned"}
-        write_tiff(out_paths["ir_neg"], out, meta)
-        timings["write_ir_neg"] = time.monotonic() - t
-        written.append(Path(out_paths["ir_neg"]).name)
-
-    if need_invert_clean and ir_cleaned is not None:
-        inverted, t_inv = _invert(ir_cleaned)
-        timings["invert"] = t_inv
-        t = time.monotonic()
-        out = apply_rotation(inverted, rotation)
-        meta = {**base_meta, "variant": "ir_cleaned_inverted",
-                "stock": film_stock, "contrast": get_param("render_contrast"),
-                "dmin": dmin.tolist() if dmin is not None else None}
-        write_tiff(out_paths["ir_inv"], out, meta)
-        timings["write_ir_inv"] = time.monotonic() - t
-        written.append(Path(out_paths["ir_inv"]).name)
-
-    if need_invert_raw:
-        inverted, t_inv = _invert(raw_crop)
-        timings.setdefault("invert", t_inv)
-        t = time.monotonic()
-        out = apply_rotation(inverted, rotation)
-        meta = {**base_meta, "variant": "inverted",
-                "stock": film_stock, "contrast": get_param("render_contrast"),
-                "dmin": dmin.tolist() if dmin is not None else None}
-        write_tiff(out_paths["inv_only"], out, meta)
-        timings["write_inv_only"] = time.monotonic() - t
-        written.append(Path(out_paths["inv_only"]).name)
-
-    timings["total"] = time.monotonic() - t0
-    shape = (raw_crop.shape[1], raw_crop.shape[0])
-    return {"written": written, "timings": timings, "shape": shape}
-
 
 def handle_export(body: dict) -> dict:
     default_base = Path(INPUT_PATH).stem
@@ -692,9 +328,10 @@ def handle_export(body: dict) -> dict:
     all_timings = [None] * n_rects
 
     def run_frame(i, r, out_paths, base_meta):
-        return _process_frame(
+        return process_frame(
             i, r, FULL_IMG, aligned_ir, ir_scale_x, ir_scale_y,
             film_stock, stock_coeffs, DMIN, outputs, out_paths, base_meta,
+            current_dpi=CURRENT_DPI,
         )
 
     if n_rects == 1:
@@ -788,7 +425,7 @@ def handle_get(handler, sub_path):
             "loading": LOADING,
             "has_dmin": DMIN is not None,
             "dpi": CURRENT_DPI,
-            "dpi_scale": round(get_dpi_scale(), 2),
+            "dpi_scale": round(CURRENT_DPI / REFERENCE_DPI, 2) if CURRENT_DPI else 1.0,
         }
         _respond_json(handler, 200, info)
 
