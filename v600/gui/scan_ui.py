@@ -25,6 +25,13 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; ove
 #toolbar button.danger { background: #d44; color: #fff; border-color: #d44; font-weight: 600; }
 #toolbar button.danger:hover { background: #e55; }
 #toolbar .sep { width: 1px; height: 24px; background: #555; }
+.nav { display: flex; gap: 2px; margin-right: 4px; }
+.nav a {
+    font-size: 12px; padding: 4px 10px; border-radius: 4px; text-decoration: none;
+    color: #888; background: transparent; border: 1px solid transparent;
+}
+.nav a:hover { color: #eee; background: #333; }
+.nav a.active { color: #eee; background: #383838; border-color: #555; }
 #canvas-wrap {
     position: fixed; top: 48px; left: 0; right: 0; bottom: 28px; overflow: hidden;
 }
@@ -44,6 +51,8 @@ canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
 </head>
 <body>
 <div id="toolbar">
+    <nav class="nav"><a href="/scan/" class="active">Scan</a><a href="/process/">Process</a><a href="/gallery/">Gallery</a></nav>
+    <span class="sep"></span>
     <button id="btn-preview" class="primary">Preview</button>
     <label style="cursor:pointer"><input type="checkbox" id="chk-autoselect" checked> Auto-select</label>
     <button id="btn-restore-auto" style="display:none">Restore Auto</button>

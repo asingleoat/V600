@@ -17,6 +17,13 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; }
     background: #333; color: #eee; cursor: pointer;
 }
 #toolbar button:hover { background: #444; }
+.nav { display: flex; gap: 2px; }
+.nav a {
+    font-size: 12px; padding: 4px 10px; border-radius: 4px; text-decoration: none;
+    color: #888; background: transparent; border: 1px solid transparent;
+}
+.nav a:hover { color: #eee; background: #333; }
+.nav a.active { color: #eee; background: #383838; border-color: #555; }
 #view-area {
     position: fixed; top: 48px; left: 0; right: 0; bottom: 0;
     display: flex; flex-direction: column;
@@ -52,6 +59,8 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; }
 </head>
 <body>
 <div id="toolbar">
+    <nav class="nav"><a href="/scan/">Scan</a><a href="/process/">Process</a><a href="/gallery/" class="active">Gallery</a></nav>
+    <span style="width:1px;height:24px;background:#555"></span>
     <button id="btn-prev" title="Previous">&larr;</button>
     <select id="file-select"></select>
     <button id="btn-next" title="Next">&rarr;</button>
