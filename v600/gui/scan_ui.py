@@ -369,6 +369,37 @@ function setButtonsEnabled(enabled) {
     document.getElementById('btn-cancel').style.display = enabled ? 'none' : '';
 }
 
+// Poll scanner status until connected (or failed). Called on page load
+// and after a "still connecting" response.
+let _waitingForScanner = false;
+function waitForScanner() {
+    if (_waitingForScanner) return;
+    _waitingForScanner = true;
+    setStatus('Connecting to scanner...', true);
+    const poll = setInterval(async () => {
+        try {
+            const r = await fetch('/scan/status');
+            const d = await r.json();
+            if (d.connected) {
+                clearInterval(poll);
+                _waitingForScanner = false;
+                setStatus('Scanner connected. Ready.', false);
+            } else if (!d.connecting) {
+                // Finished connecting but failed
+                clearInterval(poll);
+                _waitingForScanner = false;
+                setStatus('Scanner not found. Check connection and restart.', false);
+            }
+        } catch(e) {}
+    }, 1000);
+}
+
+// On page load, check if scanner is still connecting and show status
+fetch('/scan/status').then(r => r.json()).then(d => {
+    if (d.connecting) waitForScanner();
+    else if (!d.connected) setStatus('Scanner not found. Check connection and restart.', false);
+});
+
 // Preview button
 document.getElementById('btn-preview').addEventListener('click', async () => {
     setStatus('Scanning preview...', true);
@@ -380,13 +411,9 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
         if (!resp.ok) {
             const err = await resp.json();
             if (err.offline) {
-                setStatus('Scanner not connected: ' + err.error, false);
-                document.getElementById('no-preview').innerHTML = 
-                    '<div style="color: #ff4444; padding: 20px;">' +
-                    '<h3>Scanner Offline</h3>' +
-                    '<p>' + err.error + '</p>' +
-                    '<p>Please connect your scanner and refresh the page.</p>' +
-                    '</div>';
+                setStatus(err.error, false);
+                // If scanner is still connecting, poll until ready
+                waitForScanner();
             } else {
                 setStatus('Preview failed: ' + err.error, false);
             }
@@ -503,8 +530,8 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
         const result = await resp.json();
         if (result.error) {
             if (result.offline) {
-                setStatus('Scanner not connected: ' + result.error, false);
-                alert('Scanner is offline. Please connect your scanner and refresh the page.');
+                setStatus(result.error, false);
+                waitForScanner();
             } else {
                 setStatus('Scan failed: ' + result.error, false);
             }

@@ -10,6 +10,7 @@ Routes:
 import argparse
 import os
 import sys
+import threading
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -93,27 +94,31 @@ def main():
     # Processing config lives in the working directory
     process_handlers.CONFIG_FILE = Path("scratchndent_config.toml")
 
-    # --- Initialize scanner ---
-    scanner = None
-    scanner_error = None
-    try:
-        from scanner import EpsonScanner
-        scanner = EpsonScanner()
-        scanner.open()
-        print("Scanner connected")
-    except RuntimeError as e:
-        print(f"Warning: {e}")
-        print("Starting in offline mode — scanner operations will be disabled")
-        scanner = None
-        scanner_error = str(e)
-    except Exception as e:
-        print(f"Unexpected scanner error: {e}")
-        scanner = None
-        scanner_error = str(e)
+    # --- Initialize scanner (background) ---
+    # Scanner detection via SANE is slow (10-15s). Start the server
+    # immediately so the UI is usable, and connect in the background.
+    scan_handlers.init(None, scan_dir)
+    scan_handlers.state.scanner_connecting = True
 
-    scan_handlers.init(scanner, scan_dir)
-    if scanner_error:
-        scan_handlers.state.scanner_error = scanner_error
+    def _connect_scanner():
+        try:
+            from scanner import EpsonScanner
+            scanner = EpsonScanner()
+            scanner.open()
+            scan_handlers.state.scanner = scanner
+            print("Scanner connected")
+        except RuntimeError as e:
+            print(f"Warning: {e}")
+            print("Scanner offline — scanner operations will be disabled")
+            scan_handlers.state.scanner_error = str(e)
+        except Exception as e:
+            print(f"Unexpected scanner error: {e}")
+            scan_handlers.state.scanner_error = str(e)
+        finally:
+            scan_handlers.state.scanner_connecting = False
+
+    scanner_thread = threading.Thread(target=_connect_scanner, daemon=True)
+    scanner_thread.start()
 
     # --- Initialize processing ---
     process_handlers.init(scan_dir, output_dir)
@@ -139,9 +144,9 @@ def main():
         traceback.print_exc()
     finally:
         print("Cleaning up...")
-        if scanner:
+        if scan_handlers.state.scanner:
             try:
-                scanner.close()
+                scan_handlers.state.scanner.close()
                 print("Scanner released")
             except Exception as e:
                 print(f"Error closing scanner: {e}")

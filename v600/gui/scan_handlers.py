@@ -26,6 +26,7 @@ class ScannerState:
         self.scanner = None
         self.scanner_lock = threading.Lock()
         self.scanner_error = None
+        self.scanner_connecting = False
         self.preview_jpeg = None
         self.preview_scale = 1.0
         self.preview_dpi = 200
@@ -121,6 +122,8 @@ def handle_get(handler, sub_path):
         _respond_json(handler, 200, {
             'status': state.scan_status,
             'scanning': state.scanning,
+            'connecting': state.scanner_connecting,
+            'connected': state.scanner is not None,
         })
 
     else:
@@ -153,8 +156,11 @@ def handle_post(handler, sub_path):
 
 def _handle_preview(handler):
     if state.scanner is None:
-        error_msg = state.scanner_error or "No scanner connected"
-        _respond_json(handler, 503, {'error': error_msg, 'offline': True})
+        if state.scanner_connecting:
+            _respond_json(handler, 503, {'error': 'Scanner connecting, please wait...', 'offline': True})
+        else:
+            error_msg = state.scanner_error or "No scanner connected"
+            _respond_json(handler, 503, {'error': error_msg, 'offline': True})
         return
 
     try:
@@ -191,8 +197,11 @@ def _handle_preview(handler):
 
 def _handle_scan(handler, params):
     if state.scanner is None:
-        error_msg = state.scanner_error or "No scanner connected"
-        _respond_json(handler, 503, {'error': error_msg, 'offline': True})
+        if state.scanner_connecting:
+            _respond_json(handler, 503, {'error': 'Scanner connecting, please wait...', 'offline': True})
+        else:
+            error_msg = state.scanner_error or "No scanner connected"
+            _respond_json(handler, 503, {'error': error_msg, 'offline': True})
         return
 
     try:
