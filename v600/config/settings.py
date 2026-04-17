@@ -74,6 +74,9 @@ PARAM_COMMENTS = {
 
 def load_config() -> dict:
     """Load config from TOML file, returning a flat dict."""
+    if CONFIG_FILE is None:
+        print(f"WARNING: CONFIG_FILE is None in settings.load_config()")
+        return {}
     if not CONFIG_FILE.exists():
         return {}
     try:
@@ -98,6 +101,9 @@ def save_config(updates: dict) -> None:
     All known parameters are included — active values uncommented,
     defaults commented out — so the file is self-documenting.
     """
+    if CONFIG_FILE is None:
+        print(f"WARNING: CONFIG_FILE is None in settings.save_config()")
+        return
     cfg = load_config()
     cfg.update(updates)
 

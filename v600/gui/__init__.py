@@ -1,4 +1,4 @@
-"""Epson V600 Scanner Web GUI."""
+"""Epson V600 Scanner + Processing Web GUI."""
 
 from .server import main
 

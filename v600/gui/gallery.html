@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Exported Frames</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; }
+#toolbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 48px; z-index: 100;
+    background: #2a2a2a; display: flex; align-items: center; padding: 0 16px; gap: 12px;
+    border-bottom: 1px solid #444;
+}
+#toolbar label { font-size: 13px; color: #aaa; }
+#toolbar select, #toolbar button {
+    font-size: 13px; padding: 4px 8px; border-radius: 4px; border: 1px solid #555;
+    background: #333; color: #eee; cursor: pointer;
+}
+#toolbar button:hover { background: #444; }
+#view-area {
+    position: fixed; top: 48px; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column;
+}
+#thumb-strip {
+    height: 140px; min-height: 140px;
+    background: #222; border-bottom: 1px solid #444;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; overflow-x: auto;
+}
+.thumb {
+    height: 120px; border-radius: 4px; cursor: pointer;
+    border: 2px solid transparent; flex-shrink: 0;
+    object-fit: contain; background: #111;
+}
+.thumb.active { border-color: #2d6; }
+.thumb:hover { border-color: #888; }
+#main-view {
+    flex: 1; position: relative; overflow: hidden;
+}
+#main-view img {
+    position: absolute; transform-origin: 0 0; cursor: grab;
+}
+#status {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 24px;
+    background: #2a2a2a; border-top: 1px solid #444; padding: 0 12px;
+    font-size: 12px; line-height: 24px; color: #888; z-index: 100;
+}
+#empty-msg {
+    color: #666; font-size: 16px; text-align: center; margin-top: 100px;
+}
+</style>
+</head>
+<body>
+<div id="toolbar">
+    <button id="btn-prev" title="Previous">&larr;</button>
+    <select id="file-select"></select>
+    <button id="btn-next" title="Next">&rarr;</button>
+    <span style="flex:1"></span>
+    <button id="btn-trash" title="Move current image to trash" onclick="trashCurrent()">Trash</button>
+    <button id="btn-delete" title="Permanently delete current image" onclick="deleteCurrent()" style="color:#d44">Delete</button>
+    <button onclick="refreshList()">Refresh</button>
+</div>
+<div id="view-area">
+    <div id="thumb-strip"></div>
+    <div id="main-view">
+        <div id="empty-msg">No exported frames yet</div>
+    </div>
+</div>
+<div id="status">Ready</div>
+
+<script>
+const fileSelect = document.getElementById('file-select');
+const thumbStrip = document.getElementById('thumb-strip');
+const mainView = document.getElementById('main-view');
+const statusEl = document.getElementById('status');
+
+let files = [];
+let currentIdx = -1;
+let viewImg = null;  // current <img> element
+let scale = 1, offsetX = 0, offsetY = 0;
+let panning = false, panStart = null;
+
+function fitImage() {
+    if (!viewImg || !viewImg.naturalWidth) return;
+    const vw = mainView.clientWidth, vh = mainView.clientHeight;
+    const iw = viewImg.naturalWidth, ih = viewImg.naturalHeight;
+    scale = Math.min(vw / iw, vh / ih) * 0.95;
+    offsetX = (vw - iw * scale) / 2;
+    offsetY = (vh - ih * scale) / 2;
+    applyTransform();
+}
+
+function applyTransform() {
+    if (viewImg) {
+        viewImg.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+    }
+}
+
+function refreshList() {
+    fetch('/gallery/list').then(r => r.json()).then(data => {
+        // Skip rebuild if file list hasn't changed
+        if (JSON.stringify(data.files) === JSON.stringify(files)) return;
+
+        files = data.files;
+        fileSelect.innerHTML = '';
+        thumbStrip.innerHTML = '';
+
+        if (files.length === 0) {
+            mainView.innerHTML = '<div id="empty-msg">No exported frames yet</div>';
+            statusEl.textContent = 'No exports found';
+            currentIdx = -1;
+            viewImg = null;
+            return;
+        }
+
+        files.forEach((name, i) => {
+            const opt = document.createElement('option');
+            opt.value = i;
+            opt.textContent = `${i + 1}/${files.length}: ${name}`;
+            fileSelect.appendChild(opt);
+
+            const img = document.createElement('img');
+            img.className = 'thumb';
+            img.src = `/gallery/thumb/${encodeURIComponent(name)}`;
+            img.title = name;
+            img.addEventListener('click', () => showImage(i));
+            thumbStrip.appendChild(img);
+        });
+
+        if (currentIdx < 0 || currentIdx >= files.length) {
+            showImage(0);
+        } else {
+            showImage(currentIdx);
+        }
+        statusEl.textContent = `${files.length} exported frame${files.length !== 1 ? 's' : ''}`;
+    });
+}
+
+function showImage(idx) {
+    if (idx < 0 || idx >= files.length) return;
+    currentIdx = idx;
+    fileSelect.value = idx;
+
+    const thumbs = thumbStrip.querySelectorAll('.thumb');
+    thumbs.forEach((t, i) => t.classList.toggle('active', i === idx));
+    if (thumbs[idx]) thumbs[idx].scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+
+    const name = files[idx];
+    mainView.innerHTML = '';
+    viewImg = document.createElement('img');
+    viewImg.src = `/gallery/full/${encodeURIComponent(name)}`;
+    viewImg.draggable = false;
+    viewImg.onload = fitImage;
+    mainView.appendChild(viewImg);
+    statusEl.textContent = `${idx + 1}/${files.length}: ${name}`;
+}
+
+// Scroll to zoom
+mainView.addEventListener('wheel', (e) => {
+    if (!viewImg) return;
+    e.preventDefault();
+    const rect = mainView.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    offsetX = mx - (mx - offsetX) * factor;
+    offsetY = my - (my - offsetY) * factor;
+    scale *= factor;
+    applyTransform();
+}, { passive: false });
+
+// Middle mouse pan
+mainView.addEventListener('mousedown', (e) => {
+    if (e.button === 1 || (e.button === 0 && scale > 1.01)) {
+        panning = true;
+        panStart = { x: e.clientX - offsetX, y: e.clientY - offsetY };
+        if (viewImg) viewImg.style.cursor = 'grabbing';
+        e.preventDefault();
+    }
+});
+window.addEventListener('mousemove', (e) => {
+    if (panning && panStart) {
+        offsetX = e.clientX - panStart.x;
+        offsetY = e.clientY - panStart.y;
+        applyTransform();
+    }
+});
+window.addEventListener('mouseup', (e) => {
+    if (panning) {
+        panning = false;
+        panStart = null;
+        if (viewImg) viewImg.style.cursor = 'grab';
+    }
+});
+
+// Double-click to reset zoom
+mainView.addEventListener('dblclick', () => fitImage());
+
+// Resize
+window.addEventListener('resize', fitImage);
+
+fileSelect.addEventListener('change', () => showImage(parseInt(fileSelect.value)));
+fileSelect.addEventListener('focus', refreshList);
+
+document.getElementById('btn-prev').addEventListener('click', () => {
+    if (files.length > 0) showImage(currentIdx > 0 ? currentIdx - 1 : files.length - 1);
+});
+document.getElementById('btn-next').addEventListener('click', () => {
+    if (files.length > 0) showImage(currentIdx < files.length - 1 ? currentIdx + 1 : 0);
+});
+
+async function trashCurrent() {
+    if (currentIdx < 0 || !files[currentIdx]) return;
+    const name = files[currentIdx];
+    if (!confirm(`Move "${name}" to trash?`)) return;
+    const resp = await fetch('/gallery/trash/' + encodeURIComponent(name), { method: 'POST' });
+    const data = await resp.json();
+    statusEl.textContent = data.message || data.error;
+    if (data.ok) refreshList();
+}
+
+async function deleteCurrent() {
+    if (currentIdx < 0 || !files[currentIdx]) return;
+    const name = files[currentIdx];
+    if (!confirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
+    const resp = await fetch('/gallery/delete/' + encodeURIComponent(name), { method: 'POST' });
+    const data = await resp.json();
+    statusEl.textContent = data.message || data.error;
+    if (data.ok) refreshList();
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); document.getElementById('btn-prev').click(); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); document.getElementById('btn-next').click(); }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); trashCurrent(); }
+});
+
+refreshList();
+setInterval(refreshList, 500);
+</script>
+</body>
+</html>

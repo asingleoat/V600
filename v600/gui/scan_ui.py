@@ -291,7 +291,7 @@ function updateScanInfo() {
         return;
     }
     // Convert preview pixels to inches
-    fetch('/info').then(r => r.json()).then(data => {
+    fetch('/scan/info').then(r => r.json()).then(data => {
         const wIn = (sel.w / data.preview_w * data.tpu_width).toFixed(2);
         const hIn = (sel.h / data.preview_h * data.tpu_height).toFixed(2);
         const dpi = parseInt(document.getElementById('sel-dpi').value);
@@ -367,7 +367,7 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
     autoDetectedSel = null;  // Clear previous auto-detection
     document.getElementById('btn-restore-auto').style.display = 'none';
     try {
-        const resp = await fetch('/preview', {method: 'POST'});
+        const resp = await fetch('/scan/preview', {method: 'POST'});
         if (!resp.ok) {
             const err = await resp.json();
             if (err.offline) {
@@ -399,9 +399,9 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
             // Auto-detect film area if enabled
             if (document.getElementById('chk-autoselect').checked) {
                 try {
-                    const det = await (await fetch('/detect')).json();
+                    const det = await (await fetch('/scan/detect')).json();
                     if (det.sel_x_in !== undefined) {
-                        const info = await (await fetch('/info')).json();
+                        const info = await (await fetch('/scan/info')).json();
                         autoDetectedSel = {
                             x: det.sel_x_in / info.tpu_width * info.preview_w,
                             y: det.sel_y_in / info.tpu_height * info.preview_h,
@@ -459,7 +459,7 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
     const defaultTitle = document.title;
     const pollId = setInterval(async () => {
         try {
-            const r = await fetch('/scan-status');
+            const r = await fetch('/scan/status');
             const d = await r.json();
             if (d.status) {
                 setStatus(d.status, true);
@@ -476,14 +476,14 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
     }, 500);
 
     try {
-        const info = await (await fetch('/info')).json();
+        const info = await (await fetch('/scan/info')).json();
         // Preview is mirrored horizontally, so flip x back for the scanner
         const xIn = info.tpu_width - (sel.x + sel.w) / info.preview_w * info.tpu_width;
         const yIn = sel.y / info.preview_h * info.tpu_height;
         const wIn = sel.w / info.preview_w * info.tpu_width;
         const hIn = sel.h / info.preview_h * info.tpu_height;
 
-        const resp = await fetch('/scan', {
+        const resp = await fetch('/scan/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({dpi, mode, x: xIn, y: yIn, w: wIn, h: hIn,
@@ -514,7 +514,7 @@ document.getElementById('btn-scan').addEventListener('click', async () => {
 // Cancel button
 document.getElementById('btn-cancel').addEventListener('click', async () => {
     try {
-        await fetch('/cancel', {method: 'POST'});
+        await fetch('/scan/cancel', {method: 'POST'});
         setStatus('Cancelling...', true);
     } catch(e) {}
 });
@@ -558,7 +558,7 @@ function syncDpiOptions() {
 // Selection is stored in inches (not preview pixels) so it survives across previews
 function saveConfig() {
     if (!sel || sel.w < 1 || sel.h < 1) return;
-    fetch('/info').then(r => r.json()).then(data => {
+    fetch('/scan/info').then(r => r.json()).then(data => {
         if (!data.preview_w) return;
         const cfg = {
             sel_x_in: sel.x / data.preview_w * data.tpu_width,
@@ -570,7 +570,7 @@ function saveConfig() {
             autoselect: document.getElementById('chk-autoselect').checked,
             exposure: document.getElementById('sel-exposure').value,
         };
-        fetch('/config', {
+        fetch('/scan/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(cfg),
@@ -579,7 +579,7 @@ function saveConfig() {
 }
 
 function restoreConfig() {
-    fetch('/config').then(r => r.json()).then(cfg => {
+    fetch('/scan/config').then(r => r.json()).then(cfg => {
         if (cfg.autoselect !== undefined) {
             document.getElementById('chk-autoselect').checked = cfg.autoselect;
         }
@@ -606,7 +606,7 @@ function restoreConfig() {
 function applyPendingSelection() {
     const cfg = window._pendingSelection;
     if (!cfg || !img) return;
-    fetch('/info').then(r => r.json()).then(data => {
+    fetch('/scan/info').then(r => r.json()).then(data => {
         if (!data.preview_w) return;
         sel = {
             x: cfg.sel_x_in / data.tpu_width * data.preview_w,
@@ -641,7 +641,7 @@ document.getElementById('btn-restore-auto').addEventListener('click', () => {
 restoreConfig();
 
 // Load cached preview if available
-fetch('/preview').then(resp => {
+fetch('/scan/preview').then(resp => {
     if (!resp.ok) return;
     return resp.blob();
 }).then(blob => {

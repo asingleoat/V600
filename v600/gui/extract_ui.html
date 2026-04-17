@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Frame Extractor</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; }
+#toolbar {
+    position: fixed; top: 0; left: 0; right: 0; min-height: 48px; z-index: 100;
+    background: #2a2a2a; display: flex; align-items: center; padding: 4px 16px; gap: 8px 12px;
+    border-bottom: 1px solid #444; flex-wrap: wrap;
+}
+#toolbar label { font-size: 13px; color: #aaa; }
+#toolbar select, #toolbar button, #toolbar input {
+    font-size: 13px; padding: 4px 8px; border-radius: 4px; border: 1px solid #555;
+    background: #333; color: #eee;
+}
+#toolbar button { cursor: pointer; }
+#toolbar button:hover { background: #444; }
+#toolbar button.primary { background: #2d6; color: #111; border-color: #2d6; font-weight: 600; }
+#toolbar button.primary:hover { background: #3e7; }
+#toolbar button.danger { background: #d44; color: #fff; border-color: #d44; }
+#toolbar button.danger:hover { background: #e55; }
+#sidebar {
+    position: fixed; top: 48px; right: 0; width: 240px; bottom: 0;
+    background: #222; border-left: 1px solid #444; overflow-y: auto; padding: 8px;
+    z-index: 90;
+}
+.sel-item {
+    padding: 8px; margin-bottom: 4px; border-radius: 4px; background: #2a2a2a;
+    border: 1px solid #444; font-size: 12px; cursor: pointer;
+}
+.sel-item.active { border-color: #2d6; }
+.sel-item .del { float: right; cursor: pointer; color: #d44; }
+#canvas-wrap {
+    position: fixed; top: 48px; left: 0; right: 240px; bottom: 0; overflow: hidden;
+}
+canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+#status {
+    position: fixed; bottom: 0; left: 0; right: 240px; height: 24px;
+    background: #2a2a2a; border-top: 1px solid #444; padding: 0 12px;
+    font-size: 12px; line-height: 24px; color: #888; z-index: 100;
+}
+.settings-group {
+    border-top: 1px solid #444; margin-top: 8px; padding-top: 6px;
+}
+.settings-group summary {
+    font-size: 12px; color: #888; cursor: pointer; padding: 2px 0;
+    user-select: none;
+}
+.settings-group summary:hover { color: #aaa; }
+.settings-group[open] summary { color: #aaa; margin-bottom: 6px; }
+.param-row {
+    display: flex; flex-direction: column; margin-bottom: 8px;
+}
+.param-row label {
+    font-size: 11px; color: #999; margin-bottom: 2px;
+}
+.param-row .param-ctrl {
+    display: flex; align-items: center; gap: 4px;
+}
+.param-row .slider-wrap {
+    flex: 1; position: relative; height: 16px; display: flex; align-items: center;
+}
+.param-row input[type="range"] {
+    width: 100%; height: 4px; accent-color: #2d6; margin: 0;
+}
+.param-row .default-tick {
+    position: absolute; top: 0; width: 1px; height: 100%;
+    background: #f90; pointer-events: none; opacity: 0.7;
+}
+.param-row .param-val {
+    font-size: 11px; color: #ccc; min-width: 36px; text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+</style>
+</head>
+<body>
+<div id="toolbar">
+    <button id="btn-prev" title="Previous image">&larr;</button>
+    <select id="img-select" style="font-size:13px;max-width:220px"></select>
+    <button id="btn-next" title="Next image">&rarr;</button>
+    <button id="btn-scan-trash" title="Move current scan to trash">Trash</button>
+    <button id="btn-scan-delete" title="Permanently delete current scan" style="color:#d44">Delete</button>
+    <span id="img-info" style="font-size:11px;color:#888"></span>
+    <span style="width:1px;height:24px;background:#555;margin:0 4px"></span>
+    <label>Aspect:</label>
+    <select id="aspect">
+        <option value="free">Free</option>
+        <option value="1:1">1:1</option>
+        <optgroup label="Landscape">
+        <option value="3:2" selected>3:2</option>
+        <option value="4:3">4:3</option>
+        <option value="5:4">5:4</option>
+        <option value="6:4.5">6:4.5 (645)</option>
+        <option value="7:6">7:6</option>
+        <option value="9:6">9:6</option>
+        <option value="16:9">16:9</option>
+        <option value="17:6">17:6 (pano)</option>
+        </optgroup>
+        <optgroup label="Portrait">
+        <option value="2:3">2:3</option>
+        <option value="3:4">3:4</option>
+        <option value="4:5">4:5</option>
+        <option value="4.5:6">4.5:6 (645)</option>
+        <option value="6:7">6:7</option>
+        <option value="6:9">6:9</option>
+        <option value="9:16">9:16</option>
+        <option value="6:17">6:17 (pano)</option>
+        </optgroup>
+    </select>
+    <button id="btn-add">+ New selection</button>
+    <button id="btn-rebate" title="Select an area of unexposed film (the orange strip between frames or at the edge of the strip) to calibrate base color removal">Set rebate</button>
+    <select id="auto-format" title="Film format for auto-detection" style="font-size:12px">
+        <option value="35mm" selected>35mm</option>
+        <option value="645">645</option>
+        <option value="6x6">6x6</option>
+        <option value="6x7">6x7</option>
+        <option value="6x9">6x9</option>
+    </select>
+    <button id="btn-auto" title="Automatically detect frame positions based on film format">Auto Detect</button>
+    <input id="auto-scale" type="number" value="0" min="-1" max="1" step="0.1"
+           style="width:62px;font-size:12px" title="Scale adjustment for auto-detected frames (%). Positive grows frames, negative shrinks them.">%
+    <button id="btn-clear" class="danger">Clear all</button>
+    <button id="btn-dump" title="Dump current selections to server console as ground truth">Dump</button>
+    <span style="width:1px;height:24px;background:#555;margin:0 4px"></span>
+    <label title="Export IR cleaned negative (dust/scratch removal only)"><input type="checkbox" id="chk-ir-neg"> IR cleaned</label>
+    <label title="Export inverted positive (with IR cleaning and color inversion)"><input type="checkbox" id="chk-ir-inv" checked> IR + inverted</label>
+    <label title="Export inverted positive without IR cleaning"><input type="checkbox" id="chk-inv-only"> Inverted only</label>
+    <span style="width:1px;height:24px;background:#555;margin:0 4px"></span>
+    <span id="dmin-display" style="font-size:11px;color:#888"></span>
+    <span style="width:1px;height:24px;background:#555;margin:0 4px"></span>
+    <label title="Show live inversion preview instead of simple negative view"><input type="checkbox" id="chk-inv-preview"> Preview inversion</label>
+    <span style="flex:1"></span>
+    <label>Base name:</label>
+    <input id="basename" value="" style="width:100px">
+    <button id="btn-export" class="primary">Export all</button>
+    <button id="btn-gallery" onclick="window.open('/gallery','_blank')">View Exports</button>
+</div>
+<div id="loading-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+    background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center;
+    font-size:20px;color:#eee;">Loading...</div>
+<div id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+</div>
+<div id="sidebar">
+    <div style="padding:4px 0 8px;font-size:13px;color:#888;">Selections</div>
+    <div id="sel-list"></div>
+
+    <details class="settings-group" id="settings-stock" open>
+        <summary>Film Stock</summary>
+        <div class="param-row" title="Select the film stock profile for negative inversion. Defines the color transform coefficients.">
+            <label>Stock</label>
+            <select id="stock-select" style="width:100%;font-size:11px;background:#333;color:#eee;border:1px solid #555;border-radius:3px;padding:3px">
+                <option value="">(none — no inversion)</option>
+            </select>
+        </div>
+    </details>
+
+    <details class="settings-group" id="settings-render">
+        <summary>Rendering</summary>
+        <div class="param-row" title="S-curve contrast strength. 1.0 = no contrast adjustment (linear), higher values darken shadows and brighten highlights for more punch">
+            <label>Contrast</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="render_contrast" min="1.0" max="2.0" step="0.05">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Multiplier for the S-curve steepness. Higher values make the contrast curve sharper at the midpoint. Interacts with Contrast setting">
+            <label>Curve steepness</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="render_curve_k" min="2.0" max="10.0" step="0.5">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Percentile of image data used as the black point. Higher values clip more shadow detail but can reduce haze in low-contrast scans">
+            <label>Black percentile</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="render_percentile_lo" min="0.0" max="5.0" step="0.1">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Percentile of image data used as the white point. Lower values clip more highlight detail but can prevent washed-out highlights">
+            <label>White percentile</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="render_percentile_hi" min="95.0" max="100.0" step="0.1">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Shift the overall brightness in density space before rendering. Positive values produce a brighter image, negative values darken it">
+            <label>Exposure compensation</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="exposure_compensation" min="-0.5" max="2.0" step="0.05">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Drag the point to adjust color balance. Horizontal = temperature (blue↔yellow), Vertical = tint (green↔magenta). Center = neutral.">
+            <label>Color balance</label>
+            <div style="position:relative;width:100%;height:120px;background:linear-gradient(to bottom,#4a2,#888,#a4a);border-radius:4px;cursor:crosshair;margin-top:2px" id="color-pad">
+                <div style="position:absolute;top:0;left:0;right:0;bottom:0;background:linear-gradient(to right,rgba(40,80,200,0.5),transparent 50%,rgba(200,180,40,0.5));border-radius:4px"></div>
+                <div id="color-dot" style="position:absolute;width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,0.5);pointer-events:none;transform:translate(-50%,-50%)"></div>
+                <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.15)"></div>
+                <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:rgba(255,255,255,0.15)"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px">
+                <span>cool</span>
+                <span id="color-val">0.00, 0.00</span>
+                <span>warm</span>
+            </div>
+        </div>
+    </details>
+
+    <details class="settings-group" id="settings-ir">
+        <summary>Dust &amp; Scratch Removal</summary>
+        <div class="param-row" title="How far below the local background a pixel must be to count as a defect. Lower values detect fainter dust but may flag film grain. Higher values only catch obvious defects">
+            <label>Detection threshold</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="ir_threshold" min="0.02" max="0.50" step="0.01">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Meijering ridge filter threshold for detecting thin linear features like hairs and scratches. Lower values catch finer/fainter hairs but may produce false positives on textured areas">
+            <label>Hair sensitivity</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="ir_hair_sensitivity" min="0.02" max="0.30" step="0.01">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Expand detected defect regions by this many pixels. Ensures the inpainter covers the full extent of each defect including soft edges">
+            <label>Dilate radius</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="ir_dilate_radius" min="0" max="10" step="1">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Morphological close operation radius. Fills small gaps within partially-detected large defects, connecting nearby detected regions into a single defect">
+            <label>Close radius</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="ir_close_radius" min="0" max="15" step="1">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Detected regions smaller than this many pixels are discarded as noise. Increase to ignore tiny specks, decrease to catch very small dust particles">
+            <label>Min defect area (px)</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="ir_min_area" min="1" max="20" step="1">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="Safety limit: if more than this fraction of the image is flagged as defects, the detection is assumed to be wrong and no cleaning is performed. Prevents destroying the image when thresholds are too aggressive">
+            <label>Max coverage (%)</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="ir_max_coverage" min="0.005" max="0.10" step="0.005">
+                <span class="param-val"></span>
+            </div>
+        </div>
+        <div class="param-row" title="How many pixels of clean image context to include around each defect when inpainting. More padding gives the inpainter better context for reconstruction but is slower for large defects">
+            <label>Inpaint padding (px)</label>
+            <div class="param-ctrl">
+                <input type="range" data-param="inpaint_padding" min="4" max="48" step="2">
+                <span class="param-val"></span>
+            </div>
+        </div>
+    </details>
+</div>
+<div id="status">Ready</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+const selList = document.getElementById('sel-list');
+const statusEl = document.getElementById('status');
+
+let img = new window.Image();
+let imgW = 0, imgH = 0;
+let scale = 1, offsetX = 0, offsetY = 0;
+let previewScale = 1; // preview px / full px
+
+let selections = [];
+let activeIdx = -1;
+let mode = 'idle'; // idle, drawing, moving, resizing, rotating, drawing_rebate
+let drawStart = null;
+let dragInfo = null;
+let rebateRect = null;     // {x, y, w, h, angle} in preview coords, or null
+let rebateActive = false;  // true when rebate has editing handles shown
+
+const HANDLE_SIZE = 8;
+const ROT_HANDLE_DIST = 30;
+
+// --- Image loading ---
+let initialLoad = true;
+img.onload = () => {
+    imgW = img.width; imgH = img.height;
+    fitImage();
+    render();
+};
+// Initial preview load is deferred to settings callback below
+// so we know whether preview_inversion is enabled.
+let imageIdx = 0, imageCount = 1;
+const imgSelect = document.getElementById('img-select');
+const basenameEl = document.getElementById('basename');
+const overlay = document.getElementById('loading-overlay');
+
+// Populate image dropdown — called on startup and refreshed on interaction
+function refreshImageList() {
+    return fetch('/process/images').then(r => r.json()).then(data => {
+        imgSelect.innerHTML = '';
+        data.images.forEach((name, i) => {
+            const opt = document.createElement('option');
+            opt.value = i;
+            opt.textContent = `${i + 1}/${data.images.length}: ${name}`;
+            imgSelect.appendChild(opt);
+        });
+        imageCount = data.images.length;
+        imgSelect.value = data.current;
+        return data;
+    });
+}
+refreshImageList();
+
+// Rescan directory when dropdown is opened
+imgSelect.addEventListener('focus', () => refreshImageList());
+
+imgSelect.addEventListener('change', () => {
+    const idx = parseInt(imgSelect.value);
+    if (idx !== imageIdx) switchImage(idx);
+});
+
+// Load persisted settings
+const dminEl = document.getElementById('dmin-display');
+function updateDminDisplay(dmin) {
+    if (dmin) {
+        dminEl.textContent = `Dmin: ${dmin[0].toFixed(3)} ${dmin[1].toFixed(3)} ${dmin[2].toFixed(3)}`;
+        dminEl.style.color = '#aaa';
+    } else {
+        dminEl.textContent = 'Dmin: not set';
+        dminEl.style.color = '#666';
+    }
+}
+// Parameter defaults (must match PARAM_DEFAULTS in extract.py)
+const PARAM_DEFAULTS = {
+    ir_threshold: 0.10, ir_hair_sensitivity: 0.10, ir_min_area: 3,
+    ir_dilate_radius: 4, ir_close_radius: 6, ir_max_coverage: 0.03,
+    inpaint_padding: 16, render_contrast: 1.4, render_curve_k: 5.0,
+    render_percentile_lo: 0.5, render_percentile_hi: 99.5,
+    exposure_compensation: 0.0,
+    color_temp: 0.0,
+    color_tint: 0.0,
+};
+
+function fmtVal(v, step) {
+    if (Number.isInteger(v) && (!step || !step.includes('.'))) return String(v);
+    const decimals = step && step.includes('.') ? step.split('.')[1].length : 2;
+    return v.toFixed(decimals);
+}
+
+// Populate film stock dropdown
+const stockSelect = document.getElementById('stock-select');
+fetch('/process/stocks').then(r => r.json()).then(data => {
+    stockSelect.innerHTML = '<option value="">(none — no inversion)</option>';
+    for (const [name, desc] of Object.entries(data.stocks)) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = `${name} — ${desc}`;
+        stockSelect.appendChild(opt);
+    }
+    if (data.active) stockSelect.value = data.active;
+});
+stockSelect.addEventListener('change', () => {
+    const stock = stockSelect.value || null;
+    fetch('/process/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stock }),
+    });
+    // Enable IR+inverted when a stock is selected
+    if (stock) {
+        document.getElementById('chk-ir-inv').checked = true;
+        fetch('/process/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ export_ir_inv: true }),
+        });
+    }
+    // Refresh inversion preview after stock change
+    setTimeout(() => refreshInversionPreview(), 200);
+});
+
+function initParamSliders(cfg) {
+    document.querySelectorAll('[data-param]').forEach(input => {
+        const key = input.dataset.param;
+        const defaultVal = PARAM_DEFAULTS[key];
+        const val = cfg[key] !== undefined ? cfg[key] : defaultVal;
+        input.value = val;
+        const display = input.parentElement.querySelector('.param-val');
+        if (display) display.textContent = fmtVal(val, input.step);
+
+        // Wrap slider in a container and add default tick mark
+        const wrap = document.createElement('div');
+        wrap.className = 'slider-wrap';
+        input.parentNode.insertBefore(wrap, input);
+        wrap.appendChild(input);
+
+        const tick = document.createElement('div');
+        tick.className = 'default-tick';
+        tick.title = `Default: ${fmtVal(defaultVal, input.step)}`;
+        const min = parseFloat(input.min), max = parseFloat(input.max);
+        const pct = ((defaultVal - min) / (max - min)) * 100;
+        tick.style.left = `${pct}%`;
+        wrap.appendChild(tick);
+
+        input.addEventListener('input', () => {
+            const v = parseFloat(input.value);
+            if (display) display.textContent = fmtVal(v, input.step);
+        });
+        input.addEventListener('change', () => {
+            const v = parseFloat(input.value);
+            if (display) display.textContent = fmtVal(v, input.step);
+            fetch('/process/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: v }),
+            }).then(() => refreshInversionPreview());
+        });
+    });
+}
+
+// --- Live inversion preview ---
+const chkInvPreview = document.getElementById('chk-inv-preview');
+let invPreviewPending = false;
+
+function refreshInversionPreview() {
+    if (!chkInvPreview.checked) return;
+    if (invPreviewPending) return;  // debounce
+    invPreviewPending = true;
+    setTimeout(() => {
+        skipFitOnLoad = true;
+        img.src = '/process/preview/inverted?' + Date.now();
+        invPreviewPending = false;
+    }, 100);
+}
+
+chkInvPreview.addEventListener('change', () => {
+    skipFitOnLoad = true;
+    if (chkInvPreview.checked) {
+        img.src = '/process/preview/inverted?' + Date.now();
+    } else {
+        img.src = '/process/preview?' + Date.now();
+    }
+    fetch('/process/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview_inversion: chkInvPreview.checked }),
+    });
+});
+
+// --- Color balance pad ---
+const colorPad = document.getElementById('color-pad');
+const colorDot = document.getElementById('color-dot');
+const colorVal = document.getElementById('color-val');
+let colorTemp = 0, colorTint = 0;
+let colorDragging = false;
+
+function updateColorDot() {
+    const rect = colorPad.getBoundingClientRect();
+    // temp: -1 (left/cool) to +1 (right/warm)
+    // tint: -1 (top/green) to +1 (bottom/magenta)
+    const px = (colorTemp + 1) / 2 * rect.width;
+    const py = (colorTint + 1) / 2 * rect.height;
+    colorDot.style.left = px + 'px';
+    colorDot.style.top = py + 'px';
+    colorVal.textContent = `${colorTemp.toFixed(2)}, ${colorTint.toFixed(2)}`;
+}
+
+function colorPadFromMouse(e) {
+    const rect = colorPad.getBoundingClientRect();
+    colorTemp = Math.max(-1, Math.min(1, ((e.clientX - rect.left) / rect.width) * 2 - 1));
+    colorTint = Math.max(-1, Math.min(1, ((e.clientY - rect.top) / rect.height) * 2 - 1));
+    updateColorDot();
+}
+
+function saveColorBalance() {
+    fetch('/process/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ color_temp: colorTemp, color_tint: colorTint }),
+    }).then(() => refreshInversionPreview());
+}
+
+colorPad.addEventListener('mousedown', (e) => {
+    colorDragging = true;
+    colorPadFromMouse(e);
+    e.preventDefault();
+});
+window.addEventListener('mousemove', (e) => {
+    if (colorDragging) { colorPadFromMouse(e); }
+});
+window.addEventListener('mouseup', () => {
+    if (colorDragging) { colorDragging = false; saveColorBalance(); }
+});
+// Double-click to reset
+colorPad.addEventListener('dblclick', () => {
+    colorTemp = 0; colorTint = 0;
+    updateColorDot();
+    saveColorBalance();
+});
+
+fetch('/process/settings').then(r => r.json()).then(cfg => {
+    // Initialize color pad from config
+    colorTemp = cfg.color_temp || 0;
+    colorTint = cfg.color_tint || 0;
+    updateColorDot();
+    if (cfg.aspect) {
+        document.getElementById('aspect').value = cfg.aspect;
+    }
+    if (cfg.export_ir_neg !== undefined)
+        document.getElementById('chk-ir-neg').checked = cfg.export_ir_neg;
+    if (cfg.export_ir_inv !== undefined)
+        document.getElementById('chk-ir-inv').checked = cfg.export_ir_inv;
+    if (cfg.export_inv_only !== undefined)
+        document.getElementById('chk-inv-only').checked = cfg.export_inv_only;
+    if (cfg.preview_inversion !== undefined)
+        chkInvPreview.checked = cfg.preview_inversion;
+    updateDminDisplay(cfg.dmin || null);
+    initParamSliders(cfg);
+    // Load initial preview now that we know checkbox state
+    img.src = (chkInvPreview.checked ? '/process/preview/inverted' : '/process/preview');
+});
+
+function updateImageInfo(info) {
+    previewScale = info.preview_scale;
+    imageIdx = info.image_idx;
+    imageCount = info.image_count;
+    const name = info.filename || '';
+    imgSelect.value = imageIdx;
+    basenameEl.value = name.replace(/\.[^.]+$/, '');
+    const mp = (info.full_width * info.full_height / 1e6).toFixed(1);
+    document.getElementById('img-info').textContent = `${info.full_width}x${info.full_height} (${mp}MP)`;
+    statusEl.textContent = `${name} | ${info.full_width}x${info.full_height} | Preview scale: ${previewScale.toFixed(3)}`;
+    document.getElementById('btn-prev').disabled = false;
+    document.getElementById('btn-next').disabled = false;
+}
+
+fetch('/process/info').then(r => r.json()).then(updateImageInfo);
+
+async function switchImage(idx) {
+    overlay.style.display = 'flex';
+    selections = [];
+    activeIdx = -1;
+    lastAutoFrames = null;
+    rebateRect = null;
+    rebateActive = false;
+    updateSelList();
+    const resp = await fetch('/process/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idx }),
+    });
+    const info = await resp.json();
+    updateImageInfo(info);
+    // Reload preview (cache-bust), respecting inversion toggle
+    const previewUrl = chkInvPreview.checked ? '/process/preview/inverted' : '/process/preview';
+    img.src = previewUrl + '?' + Date.now();
+    // img.onload will call fitImage + render, then hide overlay
+    // Auto-detect frames on the new image
+    img.addEventListener('load', () => { runAutoDetect(); }, { once: true });
+}
+
+let skipFitOnLoad = false;
+img.onload = () => {
+    imgW = img.width; imgH = img.height;
+    if (!skipFitOnLoad) fitImage();
+    skipFitOnLoad = false;
+    render();
+    overlay.style.display = 'none';
+    if (initialLoad) {
+        initialLoad = false;
+        runAutoDetect();
+    }
+};
+img.onerror = () => {
+    // If preview load fails (e.g. broken pipe), retry after a short delay
+    skipFitOnLoad = false;
+    setTimeout(() => {
+        console.warn('Preview load failed, retrying...');
+        img.src = img.src;  // retry same URL
+    }, 500);
+};
+
+function fitImage() {
+    const ww = wrap.clientWidth, wh = wrap.clientHeight;
+    scale = Math.min(ww / imgW, wh / imgH) * 0.95;
+    offsetX = (ww - imgW * scale) / 2;
+    offsetY = (wh - imgH * scale) / 2;
+}
+
+// --- Coordinate transforms ---
+function imgToScreen(x, y) {
+    return [x * scale + offsetX, y * scale + offsetY];
+}
+function screenToImg(sx, sy) {
+    return [(sx - offsetX) / scale, (sy - offsetY) / scale];
+}
+
+// --- Aspect ratio ---
+document.getElementById('aspect').addEventListener('change', (e) => {
+    fetch('/process/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aspect: e.target.value }),
+    });
+});
+for (const [id, key] of [['chk-ir-neg', 'export_ir_neg'], ['chk-ir-inv', 'export_ir_inv'], ['chk-inv-only', 'export_inv_only']]) {
+    document.getElementById(id).addEventListener('change', (e) => {
+        fetch('/process/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [key]: e.target.checked }),
+        });
+    });
+}
+
+function getAspect() {
+    const v = document.getElementById('aspect').value;
+    if (v === 'free') return null;
+    const [a, b] = v.split(':').map(Number);
+    return a / b;
+}
+
+// --- Selection model ---
+let lastAngle = 0, lastW = 0, lastH = 0;
+let lastRotation = 270; // default: 270° CW (scanner vertical, photos landscape)
+let lastAutoFrames = null;   // last auto-detected frames (unscaled) for rescaling
+
+function addSelection(x, y, w, h, angle = lastAngle) {
+    selections.push({ x, y, w, h, angle, rotation: lastRotation });
+    activeIdx = selections.length - 1;
+    updateSelList();
+}
+
+function updateSelList() {
+    selList.innerHTML = '';
+    selections.forEach((s, i) => {
+        const div = document.createElement('div');
+        div.className = 'sel-item' + (i === activeIdx ? ' active' : '');
+        const fw = (s.w / previewScale)|0, fh = (s.h / previewScale)|0;
+        const rot = s.rotation || 0;
+        div.innerHTML = `<span class="del" data-i="${i}">&times;</span>#${i + 1}: ${fw}&times;${fh}`
+            + `<label style="display:block;font-size:11px;margin-top:3px;color:#aaa">rotate: `
+            + `<select class="sel-rot" data-i="${i}" style="font-size:11px;background:#333;color:#eee;border:1px solid #555;border-radius:3px">`
+            + `<option value="0" ${rot===0?'selected':''}>0&deg;</option>`
+            + `<option value="90" ${rot===90?'selected':''}>90&deg; CW</option>`
+            + `<option value="180" ${rot===180?'selected':''}>180&deg;</option>`
+            + `<option value="270" ${rot===270?'selected':''}>270&deg; CW</option>`
+            + `</select></label>`;
+        div.addEventListener('click', (e) => {
+            if (e.target.classList.contains('del')) {
+                selections.splice(i, 1);
+                if (activeIdx >= selections.length) activeIdx = selections.length - 1;
+                updateSelList(); render();
+            } else if (e.target.classList.contains('sel-rot')) {
+                s.rotation = parseInt(e.target.value);
+                lastRotation = s.rotation;
+            } else {
+                activeIdx = i; updateSelList(); render();
+            }
+        });
+        selList.appendChild(div);
+    });
+}
+
+// --- Hit testing ---
+function getHandles(s) {
+    const cos = Math.cos(s.angle), sin = Math.sin(s.angle);
+    const hw = s.w / 2, hh = s.h / 2;
+    const cx = s.x + hw, cy = s.y + hh;
+    function rot(lx, ly) {
+        return [cx + lx * cos - ly * sin, cy + lx * sin + ly * cos];
+    }
+    return {
+        tl: rot(-hw, -hh), tr: rot(hw, -hh),
+        bl: rot(-hw, hh), br: rot(hw, hh),
+        tm: rot(0, -hh), bm: rot(0, hh),
+        ml: rot(-hw, 0), mr: rot(hw, 0),
+        rot_t: rot(0, -hh - ROT_HANDLE_DIST / scale),
+        rot_b: rot(0, hh + ROT_HANDLE_DIST / scale),
+        rot_l: rot(-hw - ROT_HANDLE_DIST / scale, 0),
+        rot_r: rot(hw + ROT_HANDLE_DIST / scale, 0),
+        center: [cx, cy],
+    };
+}
+
+// Hit test against a single rect-with-angle. If checkHandles is true,
+// the rotation/resize handles are also tested; otherwise only inside.
+function hitTestRect(mx, my, s, threshold, checkHandles) {
+    if (checkHandles) {
+        const h = getHandles(s);
+        // Rotation handles (all 4 sides)
+        for (const rk of ['rot_t', 'rot_b', 'rot_l', 'rot_r']) {
+            const [rx, ry] = h[rk];
+            if (Math.hypot(mx - rx, my - ry) < threshold * 1.5) {
+                return { type: 'rotate' };
+            }
+        }
+        // Corner/edge handles
+        for (const name of ['tl', 'tr', 'bl', 'br', 'tm', 'bm', 'ml', 'mr']) {
+            const [px, py] = h[name];
+            if (Math.hypot(mx - px, my - py) < threshold) {
+                return { type: 'resize', handle: name };
+            }
+        }
+    }
+    // Inside test (unrotated space)
+    const cos = Math.cos(-s.angle), sin = Math.sin(-s.angle);
+    const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+    const dx = mx - cx, dy = my - cy;
+    const lx = dx * cos - dy * sin, ly = dx * sin + dy * cos;
+    if (Math.abs(lx) < s.w / 2 && Math.abs(ly) < s.h / 2) {
+        return { type: 'move' };
+    }
+    return null;
+}
+
+function hitTest(mx, my) {
+    const threshold = HANDLE_SIZE / scale;
+    // Frame selections take priority. Handles for non-active selections
+    // are checked too (matches existing behavior); inside test wins on
+    // newer selections via reverse iteration.
+    for (let i = selections.length - 1; i >= 0; i--) {
+        const r = hitTestRect(mx, my, selections[i], threshold, true);
+        if (r) return { ...r, target: 'frame', idx: i };
+    }
+    // Rebate (single rect). Handles are only hit-testable when the
+    // rebate is the active editable item; otherwise just the inside,
+    // so clicking on it activates editing.
+    if (rebateRect) {
+        const r = hitTestRect(mx, my, rebateRect, threshold, rebateActive);
+        if (r) return { ...r, target: 'rebate' };
+    }
+    return null;
+}
+
+// --- Rendering ---
+function render() {
+    const ww = wrap.clientWidth, wh = wrap.clientHeight;
+    canvas.width = ww; canvas.height = wh;
+    ctx.clearRect(0, 0, ww, wh);
+
+    // Draw image
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+
+    // Draw rebate region (rotated rect; matches frame-selection geometry
+    // so it can be moved/resized/rotated with the same handles).
+    if (rebateRect) {
+        const r = rebateRect;
+        const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+        const [scx, scy] = imgToScreen(cx, cy);
+        ctx.save();
+        ctx.translate(scx, scy);
+        ctx.rotate(r.angle);
+        const rw = r.w * scale, rh = r.h * scale;
+        ctx.fillStyle = 'rgba(255, 160, 0, 0.15)';
+        ctx.fillRect(-rw / 2, -rh / 2, rw, rh);
+        ctx.strokeStyle = '#fa0';
+        ctx.lineWidth = rebateActive ? 2 : 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(-rw / 2, -rh / 2, rw, rh);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#fa0';
+        ctx.font = '11px system-ui';
+        ctx.textAlign = 'left';
+        ctx.fillText('rebate (Dmin)', -rw / 2 + 4, -rh / 2 + 14);
+
+        if (rebateActive) {
+            // Resize handles
+            ctx.fillStyle = '#fa0';
+            const hs = HANDLE_SIZE;
+            for (const [hx, hy] of [
+                [-rw/2, -rh/2], [rw/2, -rh/2], [-rw/2, rh/2], [rw/2, rh/2],
+                [0, -rh/2], [0, rh/2], [-rw/2, 0], [rw/2, 0],
+            ]) {
+                ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
+            }
+            // Rotation handles (all 4 sides)
+            const rotPositions = [
+                [0, -rh/2, 0, -rh/2 - ROT_HANDLE_DIST],
+                [0, rh/2, 0, rh/2 + ROT_HANDLE_DIST],
+                [-rw/2, 0, -rw/2 - ROT_HANDLE_DIST, 0],
+                [rw/2, 0, rw/2 + ROT_HANDLE_DIST, 0],
+            ];
+            for (const [x1, y1, x2, y2] of rotPositions) {
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.strokeStyle = '#fa0';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(x2, y2, hs * 0.7, 0, Math.PI * 2);
+                ctx.fillStyle = '#fa0';
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+
+    // Draw selections
+    selections.forEach((s, i) => {
+        const isActive = i === activeIdx;
+        const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+        const [scx, scy] = imgToScreen(cx, cy);
+
+        ctx.save();
+        ctx.translate(scx, scy);
+        ctx.rotate(s.angle);
+
+        // Rectangle
+        const sw = s.w * scale, sh = s.h * scale;
+        ctx.strokeStyle = isActive ? '#2d6' : '#f90';
+        ctx.lineWidth = isActive ? 2 : 1.5;
+        ctx.strokeRect(-sw / 2, -sh / 2, sw, sh);
+
+        // Semi-transparent fill
+        ctx.fillStyle = isActive ? 'rgba(34,221,102,0.08)' : 'rgba(255,153,0,0.08)';
+        ctx.fillRect(-sw / 2, -sh / 2, sw, sh);
+
+        if (isActive) {
+            // Handles
+            ctx.fillStyle = '#2d6';
+            const hs = HANDLE_SIZE;
+            for (const [hx, hy] of [
+                [-sw/2, -sh/2], [sw/2, -sh/2], [-sw/2, sh/2], [sw/2, sh/2],
+                [0, -sh/2], [0, sh/2], [-sw/2, 0], [sw/2, 0],
+            ]) {
+                ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
+            }
+            // Rotation handles (all 4 sides)
+            const rotPositions = [
+                [0, -sh/2, 0, -sh/2 - ROT_HANDLE_DIST],
+                [0, sh/2, 0, sh/2 + ROT_HANDLE_DIST],
+                [-sw/2, 0, -sw/2 - ROT_HANDLE_DIST, 0],
+                [sw/2, 0, sw/2 + ROT_HANDLE_DIST, 0],
+            ];
+            for (const [x1, y1, x2, y2] of rotPositions) {
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.strokeStyle = '#2d6';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(x2, y2, hs * 0.7, 0, Math.PI * 2);
+                ctx.fillStyle = '#2d6';
+                ctx.fill();
+            }
+
+            // Label
+            ctx.fillStyle = '#2d6';
+            ctx.font = '12px system-ui';
+            ctx.textAlign = 'center';
+            const fw = (s.w / previewScale)|0, fh = (s.h / previewScale)|0;
+            ctx.fillText(`#${i+1}: ${fw}×${fh}`, 0, -sh/2 - ROT_HANDLE_DIST - 14);
+        }
+
+        ctx.restore();
+    });
+}
+
+// --- Mouse handling ---
+canvas.addEventListener('mousedown', (e) => {
+    const [mx, my] = screenToImg(e.offsetX, e.offsetY);
+    const hit = hitTest(mx, my);
+
+    if (hit) {
+        // Resolve which rect we're operating on and toggle active state
+        let s;
+        if (hit.target === 'frame') {
+            activeIdx = hit.idx;
+            rebateActive = false;
+            s = selections[hit.idx];
+        } else { // 'rebate'
+            rebateActive = true;
+            activeIdx = -1;
+            s = rebateRect;
+        }
+        if (hit.type === 'move') {
+            mode = 'moving';
+            dragInfo = { target: hit.target, startMx: mx, startMy: my,
+                         origX: s.x, origY: s.y };
+        } else if (hit.type === 'resize') {
+            mode = 'resizing';
+            dragInfo = { target: hit.target, handle: hit.handle,
+                         startMx: mx, startMy: my,
+                         origX: s.x, origY: s.y, origW: s.w, origH: s.h };
+        } else if (hit.type === 'rotate') {
+            mode = 'rotating';
+            const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+            dragInfo = { target: hit.target, cx, cy,
+                         startAngle: Math.atan2(my - cy, mx - cx),
+                         origAngle: s.angle };
+        }
+        updateSelList(); render();
+    } else if (mode === 'rebate_pending') {
+        mode = 'drawing_rebate';
+        drawStart = { x: mx, y: my };
+    } else {
+        // Start drawing new selection; deselect rebate
+        rebateActive = false;
+        mode = 'drawing';
+        drawStart = { x: mx, y: my };
+        render();
+    }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    const [mx, my] = screenToImg(e.offsetX, e.offsetY);
+
+    if (mode === 'drawing_rebate' && drawStart) {
+        const w = mx - drawStart.x, h = my - drawStart.y;
+        rebateRect = {
+            x: Math.min(drawStart.x, mx),
+            y: Math.min(drawStart.y, my),
+            w: Math.abs(w),
+            h: Math.abs(h),
+            angle: 0,
+        };
+        rebateActive = true;
+        render();
+    } else if (mode === 'drawing' && drawStart) {
+        let w = mx - drawStart.x, h = my - drawStart.y;
+        const aspect = getAspect();
+        if (aspect) {
+            const sign = Math.sign(h) || 1;
+            h = sign * Math.abs(w) / aspect;
+        }
+        // Update or create temp selection
+        if (activeIdx >= 0 && selections[activeIdx]._temp) {
+            const s = selections[activeIdx];
+            s.x = w >= 0 ? drawStart.x : drawStart.x + w;
+            s.y = h >= 0 ? drawStart.y : drawStart.y + h;
+            s.w = Math.abs(w); s.h = Math.abs(h);
+        } else {
+            const sx = w >= 0 ? drawStart.x : drawStart.x + w;
+            const sy = h >= 0 ? drawStart.y : drawStart.y + h;
+            addSelection(sx, sy, Math.abs(w), Math.abs(h));
+            selections[activeIdx]._temp = true;
+        }
+        render();
+    } else if (mode === 'moving' && dragInfo) {
+        const s = dragInfo.target === 'rebate' ? rebateRect : selections[activeIdx];
+        s.x = dragInfo.origX + (mx - dragInfo.startMx);
+        s.y = dragInfo.origY + (my - dragInfo.startMy);
+        render(); updateSelList();
+    } else if (mode === 'resizing' && dragInfo) {
+        const s = dragInfo.target === 'rebate' ? rebateRect : selections[activeIdx];
+        const cos = Math.cos(-s.angle), sin = Math.sin(-s.angle);
+        const cx = dragInfo.origX + dragInfo.origW / 2;
+        const cy = dragInfo.origY + dragInfo.origH / 2;
+        const dx = mx - dragInfo.startMx, dy = my - dragInfo.startMy;
+        // Rotate delta into local space
+        const ldx = dx * cos - dy * sin;
+        const ldy = dx * sin + dy * cos;
+        const h = dragInfo.handle;
+        let nw = dragInfo.origW, nh = dragInfo.origH;
+        let nox = 0, noy = 0;
+        if (h.includes('r')) { nw += ldx; }
+        if (h.includes('l')) { nw -= ldx; nox = ldx; }
+        if (h.includes('b')) { nh += ldy; }
+        if (h.includes('t')) { nh -= ldy; noy = ldy; }
+        // Enforce aspect ratio (frame selections only -- rebate is freeform)
+        if (dragInfo.target !== 'rebate') {
+            const aspect = getAspect();
+            if (aspect) {
+                if (h === 'ml' || h === 'mr') { nh = nw / aspect; }
+                else if (h === 'tm' || h === 'bm') { nw = nh * aspect; }
+                else { nh = nw / aspect; }
+            }
+        }
+        nw = Math.max(nw, 20); nh = Math.max(nh, 20);
+        // Adjust position for the offset (rotate back)
+        const rcos = Math.cos(s.angle), rsin = Math.sin(s.angle);
+        s.x = dragInfo.origX + nox * rcos - noy * rsin;
+        s.y = dragInfo.origY + nox * rsin + noy * rcos;
+        s.w = nw; s.h = nh;
+        render(); updateSelList();
+    } else if (mode === 'rotating' && dragInfo) {
+        const s = dragInfo.target === 'rebate' ? rebateRect : selections[activeIdx];
+        const angle = Math.atan2(my - dragInfo.cy, mx - dragInfo.cx);
+        s.angle = dragInfo.origAngle + (angle - dragInfo.startAngle);
+        render();
+    } else {
+        // Update cursor
+        const hit = hitTest(mx, my);
+        if (hit) {
+            if (hit.type === 'rotate') canvas.style.cursor = 'grab';
+            else if (hit.type === 'move') canvas.style.cursor = 'move';
+            else canvas.style.cursor = 'nwse-resize';
+        } else {
+            canvas.style.cursor = 'crosshair';
+        }
+    }
+});
+
+function sendRebateToServer() {
+    if (!rebateRect) return;
+    fetch('/process/rebate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            x: rebateRect.x / previewScale,
+            y: rebateRect.y / previewScale,
+            w: rebateRect.w / previewScale,
+            h: rebateRect.h / previewScale,
+            angle: rebateRect.angle || 0,
+        }),
+    }).then(r => r.json()).then(data => {
+        updateDminDisplay(data.dmin || null);
+        refreshInversionPreview();
+    });
+}
+
+canvas.addEventListener('mouseup', () => {
+    if (mode === 'drawing_rebate') {
+        if (rebateRect && rebateRect.w > 5 && rebateRect.h > 5) {
+            statusEl.textContent = `Rebate set (${Math.round(rebateRect.w)}x${Math.round(rebateRect.h)} px)`;
+            sendRebateToServer();
+        } else {
+            rebateRect = null;
+            rebateActive = false;
+            statusEl.textContent = 'Rebate selection too small, cleared';
+        }
+        mode = 'idle'; drawStart = null;
+        render();
+        return;
+    }
+    // If we just finished editing the rebate (move/resize/rotate),
+    // recompute Dmin from the new region.
+    const wasRebateEdit = dragInfo && dragInfo.target === 'rebate' &&
+        (mode === 'moving' || mode === 'resizing' || mode === 'rotating');
+    if (mode === 'drawing' && activeIdx >= 0 && selections[activeIdx]._temp) {
+        const s = selections[activeIdx];
+        delete s._temp;
+        if (s.w < 10 || s.h < 10) {
+            selections.splice(activeIdx, 1);
+            activeIdx = selections.length - 1;
+        }
+        updateSelList();
+    }
+    if (activeIdx >= 0) {
+        const s = selections[activeIdx];
+        lastAngle = s.angle;
+        lastW = s.w;
+        lastH = s.h;
+    }
+    mode = 'idle'; dragInfo = null; drawStart = null;
+    if (wasRebateEdit) sendRebateToServer();
+    render();
+});
+
+// --- Zoom/pan with scroll ---
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const mx = e.offsetX, my = e.offsetY;
+    offsetX = mx - (mx - offsetX) * factor;
+    offsetY = my - (my - offsetY) * factor;
+    scale *= factor;
+    render();
+}, { passive: false });
+
+// --- Middle mouse pan ---
+let panning = false, panStart = null;
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 1) { panning = true; panStart = { x: e.offsetX - offsetX, y: e.offsetY - offsetY }; e.preventDefault(); }
+});
+canvas.addEventListener('mousemove', (e) => {
+    if (panning && panStart) { offsetX = e.offsetX - panStart.x; offsetY = e.offsetY - panStart.y; render(); }
+});
+canvas.addEventListener('mouseup', (e) => {
+    if (e.button === 1) { panning = false; panStart = null; }
+});
+
+// --- Buttons ---
+document.getElementById('btn-add').addEventListener('click', () => {
+    let w, h;
+    const aspect = getAspect();
+    if (lastW > 0 && lastH > 0) {
+        // Inherit size from previous selection, but apply current aspect ratio
+        const area = lastW * lastH;
+        if (aspect) {
+            w = Math.sqrt(area * aspect);
+            h = w / aspect;
+        } else {
+            w = lastW; h = lastH;
+        }
+    } else {
+        h = imgH * 0.3;
+        w = h * (aspect || 1.5);
+    }
+    // Place in center of current viewport
+    const vcx = (canvas.width / 2 - offsetX) / scale;
+    const vcy = (canvas.height / 2 - offsetY) / scale;
+    addSelection(vcx - w / 2, vcy - h / 2, w, h);
+    render();
+});
+
+document.getElementById('btn-rebate').addEventListener('click', () => {
+    mode = 'rebate_pending';
+    statusEl.textContent = 'Click and drag over unexposed film edge (rebate area)';
+    canvas.style.cursor = 'crosshair';
+});
+
+document.getElementById('btn-prev').addEventListener('click', () => {
+    refreshImageList().then(() => {
+        switchImage(imageIdx > 0 ? imageIdx - 1 : imageCount - 1);
+    });
+});
+document.getElementById('btn-next').addEventListener('click', () => {
+    refreshImageList().then(() => {
+        switchImage(imageIdx < imageCount - 1 ? imageIdx + 1 : 0);
+    });
+});
+
+document.getElementById('btn-scan-trash').addEventListener('click', async () => {
+    if (imageCount === 0) return;
+    const name = imgSelect.options[imgSelect.selectedIndex]?.textContent || '';
+    if (!confirm(`Move current scan to trash?\n${name}`)) return;
+    const resp = await fetch('/process/trash', { method: 'POST' });
+    const data = await resp.json();
+    statusEl.textContent = data.message || data.error;
+    if (data.ok) {
+        await refreshImageList();
+        if (imageCount > 0) switchImage(Math.min(imageIdx, imageCount - 1));
+    }
+});
+
+document.getElementById('btn-scan-delete').addEventListener('click', async () => {
+    if (imageCount === 0) return;
+    const name = imgSelect.options[imgSelect.selectedIndex]?.textContent || '';
+    if (!confirm(`Permanently delete current scan? This cannot be undone.\n${name}`)) return;
+    const resp = await fetch('/process/delete', { method: 'POST' });
+    const data = await resp.json();
+    statusEl.textContent = data.message || data.error;
+    if (data.ok) {
+        await refreshImageList();
+        if (imageCount > 0) switchImage(Math.min(imageIdx, imageCount - 1));
+    }
+});
+
+async function runAutoDetect() {
+    const fmt = document.getElementById('auto-format').value;
+    statusEl.textContent = 'Detecting frames...';
+    try {
+        const resp = await fetch('/process/auto-detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ format: fmt }),
+        });
+        const data = await resp.json();
+        if (data.ok && data.frames) {
+            lastAutoFrames = data.frames;
+            const scalePct = parseFloat(document.getElementById('auto-scale').value) || 0;
+            const s = 1 + scalePct / 100;
+            selections = data.frames.map(f => ({
+                x: f.cx - (f.w * s) / 2,
+                y: f.cy - (f.h * s) / 2,
+                w: f.w * s,
+                h: f.h * s,
+                angle: f.angle,
+                rotation: lastRotation,
+            }));
+            activeIdx = 0;
+            // Set aspect ratio to match detected format
+            if (data.aspect) {
+                const aspectSelect = document.getElementById('aspect');
+                const [aw, ah] = data.aspect.split(':').map(Number);
+                const targetRatio = aw / ah;
+                // Find closest matching option
+                let bestOpt = 'free', bestErr = Infinity;
+                for (const opt of aspectSelect.options) {
+                    if (opt.value === 'free') continue;
+                    const parts = opt.value.split(':').map(Number);
+                    if (parts.length === 2) {
+                        const err = Math.abs(parts[0] / parts[1] - targetRatio);
+                        if (err < bestErr) { bestErr = err; bestOpt = opt.value; }
+                    }
+                }
+                aspectSelect.value = bestErr < 0.05 ? bestOpt : 'free';
+            }
+            // If auto-detect produced a suggested rebate (one of the
+            // inter-frame gaps), set it and recompute Dmin from it.
+            if (data.rebate) {
+                const rb = data.rebate;
+                rebateRect = {
+                    x: rb.cx - rb.w / 2,
+                    y: rb.cy - rb.h / 2,
+                    w: rb.w,
+                    h: rb.h,
+                    angle: rb.angle,
+                };
+                rebateActive = false;
+                sendRebateToServer();
+            }
+            updateSelList();
+            render();
+            statusEl.textContent = `Detected ${data.frames.length} frames (${data.aspect || ''})`;
+        } else {
+            statusEl.textContent = data.error || 'Auto-detect failed';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Auto-detect error: ' + e.message;
+    }
+}
+
+document.getElementById('btn-auto').addEventListener('click', runAutoDetect);
+
+document.getElementById('auto-scale').addEventListener('input', () => {
+    if (!lastAutoFrames) return;
+    const scalePct = parseFloat(document.getElementById('auto-scale').value) || 0;
+    const s = 1 + scalePct / 100;
+    selections = lastAutoFrames.map(f => ({
+        x: f.cx - (f.w * s) / 2,
+        y: f.cy - (f.h * s) / 2,
+        w: f.w * s,
+        h: f.h * s,
+        angle: f.angle,
+        rotation: lastRotation,
+    }));
+    activeIdx = 0;
+    updateSelList();
+    render();
+});
+
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+    selections = []; activeIdx = -1; updateSelList(); render();
+});
+
+document.getElementById('btn-dump').addEventListener('click', () => {
+    fetch('/process/debug/selections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selections, preview_scale: previewScale }),
+    });
+    statusEl.textContent = `Dumped ${selections.length} selections to server console`;
+});
+
+document.getElementById('btn-export').addEventListener('click', async () => {
+    if (selections.length === 0) { statusEl.textContent = 'No selections to export'; return; }
+    const exportBtn = document.getElementById('btn-export');
+    exportBtn.disabled = true;
+    exportBtn.textContent = 'Exporting...';
+    const basename = document.getElementById('basename').value || 'frame';
+    statusEl.textContent = 'Starting export...';
+
+    // Poll progress while export runs
+    const pollId = setInterval(async () => {
+        try {
+            const pr = await fetch('/process/progress');
+            const pj = await pr.json();
+            if (pj.status) statusEl.textContent = pj.status;
+        } catch {}
+    }, 500);
+
+    const rects = selections.map(s => ({
+        cx: (s.x + s.w / 2) / previewScale,
+        cy: (s.y + s.h / 2) / previewScale,
+        w: s.w / previewScale,
+        h: s.h / previewScale,
+        angle: s.angle * 180 / Math.PI,
+        rotation: s.rotation || 0,
+    }));
+    try {
+        const resp = await fetch('/process/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+            basename, rects,
+            export_ir_neg: document.getElementById('chk-ir-neg').checked,
+            export_ir_inv: document.getElementById('chk-ir-inv').checked,
+            export_inv_only: document.getElementById('chk-inv-only').checked,
+        }),
+        });
+        const result = await resp.json();
+        statusEl.textContent = result.message;
+    } catch (e) {
+        statusEl.textContent = 'Export failed: ' + e.message;
+    }
+    clearInterval(pollId);
+    exportBtn.disabled = false;
+    exportBtn.textContent = 'Export all';
+});
+
+// --- Resize handling ---
+function adjustLayout() {
+    const tb = document.getElementById('toolbar');
+    const h = tb.offsetHeight + 'px';
+    document.getElementById('sidebar').style.top = h;
+    document.getElementById('canvas-wrap').style.top = h;
+    render();
+}
+window.addEventListener('resize', adjustLayout);
+adjustLayout();
+
+// --- Keyboard ---
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (activeIdx >= 0 && document.activeElement.tagName !== 'INPUT') {
+            selections.splice(activeIdx, 1);
+            activeIdx = Math.min(activeIdx, selections.length - 1);
+            updateSelList(); render();
+        }
+    }
+});
+</script>
+</body>
+</html>
