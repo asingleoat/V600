@@ -711,3 +711,65 @@ the interpreter's internal USB state machine.
 4. **USB timeouts**: We use 10,000ms for interpreter operations, 5,000ms for direct RS commands. Linux libusb may handle timeouts slightly differently.
 
 5. **Scanner Monitor**: On macOS, Epson Scanner Monitor may claim the USB device. On Linux, equivalent is `epsond` or `saned`. Kill before connecting.
+
+## epkowa 8-bit Depth Bug
+
+The epkowa SANE backend has a bug where it forces 8-bit depth at
+3200+ DPI, even though the hardware, protocol, and backend's own
+`--help` output all claim 16-bit support.
+
+Root cause: in `dip-obj.c`, there is a hardcoded check:
+
+    require (8 == buf->ctx.depth);
+
+This is called in the image processing pipeline when resolution
+>= 3200. It aborts the scan if depth is 16.
+
+The fix (in the patched epkowa overlay) changes this to:
+
+    require (8 == depth || 16 == depth);
+
+The FS W command byte at offset 27 (depth field) is correctly set
+to 16 by the backend — the bug is only in the post-scan processing
+path that validates the depth after data has already been received.
+
+## SANE epson2 IR Patch
+
+The epson2 SANE backend has better open-source 16-bit support but
+lacks working IR mode for the V600. Six bugs were identified and
+patched:
+
+1. **IR depth was 1-bit (lineart) instead of 8-bit (mono)** —
+   scanner NAKs depth=1, so IR scans failed immediately
+
+2. **IR enable (ESC #) was called before scan params (FS W)** —
+   challenge-response could use stale parameter data
+
+3. **IR enable return value was ignored** — failures were silent
+
+4. **No minimum DPI check for IR** — scanner NAKs <800 DPI with
+   a confusing error
+
+5. **TPU color profiles were dead code** — `if (0)` prevented the
+   profile path from ever executing; changed to
+   `if (s->hw->use_extension)`
+
+6. **GT-X820 missing from IR model list** — IR mode option wasn't
+   exposed to users of this scanner model
+
+### Building patched sane-backends from source
+
+    git clone https://gitlab.com/sane-project/backends.git sane-backends
+    cd sane-backends
+    git apply ../sane-epson2-ir-fixes.patch
+    ./configure --prefix=$PWD/../sane-local CPPFLAGS="-DSANE_FRAME_IR"
+    make -j$(nproc)
+    make install
+
+Test with:
+
+    export LD_LIBRARY_PATH=$PWD/../sane-local/lib
+    export SANE_CONFIG_DIR=$PWD/../sane-local/etc/sane.d
+    ../sane-local/bin/scanimage -L
+
+Set `SANE_DEBUG_EPSON2=10` for verbose protocol logging.

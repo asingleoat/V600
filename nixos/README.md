@@ -1,156 +1,58 @@
-# NixOS Configuration for V600 Scanner
+# NixOS Configuration
+
+Hardware support for the Epson V600 on NixOS: udev rules, patched
+epkowa SANE backend with 16-bit and IR support, wrapper scripts.
+
+Not needed for running the application (that's handled by `shell.nix`
+in the project root). This is for system-level scanner access.
 
 ## Files
 
-- `v600-scanner.nix` - NixOS module for scanner hardware support
-- `v600-overlay.nix` - Nixpkgs overlay with patched epkowa and wrapper scripts
-- `example-configuration.nix` - Example integration
+    v600-scanner.nix        NixOS module (SANE, udev, packages)
+    v600-overlay.nix        nixpkgs overlay (patched epkowa, wrappers)
+    example-configuration.nix
 
 ## Installation
 
-### Method 1: Direct Import
+Add the overlay and module to your NixOS configuration:
 
-Add the overlay and module to your configuration:
+    # configuration.nix
+    { config, pkgs, ... }:
+    {
+      imports = [ /path/to/V600/nixos/v600-scanner.nix ];
 
-```nix
-# /etc/nixos/configuration.nix
-{ config, pkgs, ... }:
+      nixpkgs.overlays = [
+        (import /path/to/V600/nixos/v600-overlay.nix)
+      ];
 
-{
-  imports = [ 
-    /path/to/V600/nixos/v600-scanner.nix
-  ];
+      users.users.yourname.extraGroups = [ "scanner" "lp" ];
+    }
 
-  nixpkgs.overlays = [
-    (import /path/to/V600/nixos/v600-overlay.nix)
-  ];
+Rebuild and re-login:
 
-  users.users.yourname = {
-    extraGroups = [ "scanner" "lp" ];
-  };
-}
-```
+    sudo nixos-rebuild switch
 
-### Method 2: Inline Configuration
+## Verification
 
-If you prefer to keep everything in one file:
+    lsusb | grep -i epson
+    # 04b8:013a Seiko Epson Corp. GT-X820
 
-```nix
-{ config, pkgs, ... }:
+    scanimage -L
+    # device `epkowa:...' is a Epson GT-X820 flatbed scanner
 
-{
-  nixpkgs.overlays = [
-    (import /path/to/v600-overlay.nix)
-  ];
+First `scanimage -L` takes 10-15 seconds. Subsequent calls are
+faster. The application caches the device name for 5 minutes.
 
-  hardware.sane = {
-    enable = true;
-    extraBackends = [ pkgs.epkowa ];
-  };
-  
-  environment.etc."sane.d/dll.d/epkowa.conf".text = "epkowa";
-  
-  services.udev.extraRules = ''
-    # Epson Perfection V600 Photo
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013a", MODE="0666", GROUP="scanner", TAG+="uaccess"
-  '';
-  
-  environment.systemPackages = with pkgs; [
-    simple-scan
-    xsane
-    scanimage-v600     # Color/grayscale wrapper
-    scanimage-v600-ir  # IR scanning wrapper
-  ];
-  
-  users.users.yourname.extraGroups = [ "scanner" "lp" ];
-}
-```
+## What the overlay does
 
-Then rebuild:
-```bash
-sudo nixos-rebuild switch
-```
+1. Patches epkowa to remove the 8-bit depth cap at high DPI
+2. Increases USB buffer sizes for 16-bit data
+3. Builds two interpreter variants (normal and IR-patched)
+4. Provides `scanimage-v600` and `scanimage-v600-ir` wrappers
+   that load the correct interpreter via `LD_PRELOAD`
 
-## Usage
+## Supported hardware
 
-### Command Line Wrappers
-
-The overlay provides two wrapper scripts:
-
-```bash
-# Basic scan
-scanimage-v600 -o output.tiff
-
-# 16-bit color scan at 3200 DPI
-scanimage-v600 --mode Color --depth 16 --resolution 3200 -o scan.tiff
-
-# Film scanning (TPU)
-scanimage-v600 --source "Transparency Unit" --mode Color --depth 16 --resolution 3200 -o film.tiff
-
-# IR scan (requires TPU, grayscale mode, and specific resolutions)
-scanimage-v600-ir --source "Transparency Unit" --mode Gray --resolution 1600 -o ir.tiff
-# Supported IR resolutions: 800, 1600, 3200 DPI
-```
-
-### GUI Applications
-
-- **Simple Scan** - Basic scanning interface
-- **XSane** - Advanced interface with film scanning presets
-
-## Troubleshooting
-
-### Scanner Not Detected
-
-1. Check USB connection:
-```bash
-lsusb | grep -i epson
-# Should show: Bus xxx Device xxx: ID 04b8:013a Seiko Epson Corp. GT-X820 [Perfection V600 Photo]
-```
-
-2. Test scanner detection:
-```bash
-scanimage -L
-# Should show: device `epkowa:...' is a Epson GT-X820 flatbed scanner
-```
-
-3. Check permissions:
-```bash
-groups
-# Should include 'scanner'
-```
-
-### Slow Initial Detection
-
-The first `scanimage -L` call takes 10-15 seconds. This is normal. The Python GUI caches the device name for 5 minutes to avoid repeated slow detections.
-
-### 16-bit Scanning Issues
-
-If 16-bit scanning doesn't work:
-
-1. Verify the overlay is applied:
-```bash
-nix-instantiate --eval -E '(import <nixpkgs> {}).epkowa.version'
-```
-
-2. Check if wrapper scripts are available:
-```bash
-which scanimage-v600
-which scanimage-v600-ir
-```
-
-## Technical Details
-
-### What the Overlay Does
-
-1. Patches epkowa backend to remove 8-bit limitation at high DPI
-2. Increases buffer sizes for 16-bit data handling
-3. Creates two interpreter versions:
-   - Normal: Standard color/grayscale scanning
-   - IR: Patched for infrared channel access
-4. Provides wrapper scripts that load the appropriate interpreter via `LD_PRELOAD`
-
-### Supported Models
-
-While designed for the V600, this configuration may also work with:
-- GT-X820 (same as V600)
-- Other Epson Perfection V-series scanners (untested)
+Designed for the V600 / GT-X820. May work with other Epson
+Perfection V-series scanners (V550, V700, V750, V850) but
+untested.
