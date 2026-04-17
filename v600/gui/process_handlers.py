@@ -858,18 +858,17 @@ def handle_post(handler, sub_path):
         }
         print(f"  Rebate set: x={REBATE_RECT['x']:.0f} y={REBATE_RECT['y']:.0f} "
               f"w={REBATE_RECT['w']:.0f} h={REBATE_RECT['h']:.0f}")
-        if get_active_stock():
-            if FULL_IMG is not None:
-                src_img = FULL_IMG
-            else:
-                print(f"  Reading rebate region from {Path(INPUT_PATH).name}...")
-                with tifffile.TiffFile(INPUT_PATH) as tif:
-                    src_img = tif.pages[0].asarray()
-            rebate_rgb = extract_rebate_pixels(src_img, REBATE_RECT)
-            DMIN = compute_dmin(rebate_rgb)
-            invalidate_inversion_cache()
-            print(f"  Dmin updated: R={DMIN[0]:.4f} G={DMIN[1]:.4f} B={DMIN[2]:.4f}")
-            save_config({"dmin": DMIN.tolist()})
+        if FULL_IMG is not None:
+            src_img = FULL_IMG
+        else:
+            print(f"  Reading rebate region from {Path(INPUT_PATH).name}...")
+            with tifffile.TiffFile(INPUT_PATH) as tif:
+                src_img = tif.pages[0].asarray()
+        rebate_rgb = extract_rebate_pixels(src_img, REBATE_RECT)
+        DMIN = compute_dmin(rebate_rgb)
+        invalidate_inversion_cache()
+        print(f"  Dmin updated: R={DMIN[0]:.4f} G={DMIN[1]:.4f} B={DMIN[2]:.4f}")
+        save_config({"dmin": DMIN.tolist()})
         _respond_json(handler, 200, {
             "ok": True,
             "dmin": DMIN.tolist() if DMIN is not None else None,
