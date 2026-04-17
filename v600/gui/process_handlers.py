@@ -527,19 +527,48 @@ def handle_post(handler, sub_path):
         try:
             if PREVIEW_RAW is not None:
                 result = detect_frames(PREVIEW_RAW, fmt, n_frames=n_override)
-                for i, f in enumerate(result["frames"]):
+                frames = result["frames"]
+
+                # Sanity check: for single-frame detections, verify the
+                # frame covers a reasonable portion of the image. Single-
+                # frame scans (e.g. a pre-cropped TIFF) lack the inter-
+                # frame gaps that detection relies on, producing junk.
+                # Fall back to selecting the whole image in that case.
+                if len(frames) == 1:
+                    ph, pw = PREVIEW_RAW.shape[:2]
+                    f = frames[0]
+                    area_ratio = (f["w"] * f["h"]) / (pw * ph)
+                    if area_ratio < 0.3:
+                        print(f"    Single frame covers only {area_ratio:.0%} of image, "
+                              f"falling back to full-image selection")
+                        frames = [{
+                            "cx": pw / 2.0,
+                            "cy": ph / 2.0,
+                            "w": float(pw),
+                            "h": float(ph),
+                            "angle": 0.0,
+                        }]
+                        _respond_json(handler, 200, {
+                            "ok": True,
+                            "frames": frames,
+                            "aspect": result["aspect"],
+                            "rebate": None,
+                        })
+                        return
+
+                for i, f in enumerate(frames):
                     fw = f["w"] / PREVIEW_SCALE
                     fh = f["h"] / PREVIEW_SCALE
                     print(f"    Frame {i+1}: {fw:.0f}x{fh:.0f}px, "
                           f"rotation {math.degrees(f['angle']):+.2f} deg")
-                rebate = compute_inter_frame_rebate(result["frames"])
+                rebate = compute_inter_frame_rebate(frames)
                 if rebate is not None:
                     rw_full = rebate["w"] / PREVIEW_SCALE
                     rh_full = rebate["h"] / PREVIEW_SCALE
                     print(f"    Suggested rebate: {rw_full:.0f}x{rh_full:.0f}px")
                 _respond_json(handler, 200, {
                     "ok": True,
-                    "frames": result["frames"],
+                    "frames": frames,
                     "aspect": result["aspect"],
                     "rebate": rebate,
                 })
