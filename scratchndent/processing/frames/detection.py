@@ -992,7 +992,7 @@ def detect_frames(
     img_cross = gray_raw_small.astype(np.float64)
     n_cross_samples = 15
     cross_dim_px = sw if is_vert else sh
-    cross_search_r = max(3, int(cross_dim_px * 0.02))
+    cross_search_r = max(3, int(cross_dim_px * 0.04))
 
     for i in range(actual_n):
         cx, cy = frames[i, 0], frames[i, 1]
