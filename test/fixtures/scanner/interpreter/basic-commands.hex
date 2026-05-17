@@ -1,0 +1,17 @@
+# Python oracle: scanner.py ESC/I command builders.
+reset=1b 40
+identity=1b 49
+status=1b 46
+extended_status=1b 66
+extended_identity=1c 49
+set_resolution_3200=1b 52 80 0c 80 0c
+set_scan_area_320_640_4800_6400=1b 41 40 01 00 00 80 02 00 00 c0 12 00 00 00 19 00 00
+set_color_mode_rgb_byte_seq=1b 43 13
+set_data_format_16=1b 44 10
+set_source_tpu_enabled=1b 65 01 01
+start_scan=1b 47
+read_scan_parameters=1c 53
+set_scanning_parameters=1c 57
+start_extended_scan=1c 47
+ack=06
+cancel=18

@@ -193,6 +193,14 @@ coeffs = [
 Each row is one basis term. The three values are the contribution of
 that term to the R, G, B output channels respectively.
 
+## Zig Rewrite Decision
+
+The function-for-function Zig rewrite preserves this manual TOML workflow for
+version-one parity. Config-defined `[stocks.*]` profiles remain the supported
+custom stock mechanism; the native UI may list and select them, but a richer
+profile editor is deferred until after backend parity. The backend must parse,
+resolve, and re-serialize custom profiles without dropping them.
+
 ## Built-in Profiles
 
 ### Kodak Gold 200

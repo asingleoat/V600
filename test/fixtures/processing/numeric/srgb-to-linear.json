@@ -1,0 +1,21 @@
+{
+  "name": "srgb-to-linear",
+  "operation": "srgb_to_linear",
+  "python_oracle": "scratchndent/processing/negative/color_transforms.py:172 srgb_to_linear",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.processing.negative.color_transforms.srgb_to_linear",
+  "shape": [2, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python casts inputs to float32 and returns float32; this tolerance allows only float32 rounding drift."
+  },
+  "input": [0.0, 0.04045, 0.04046, 0.18, 0.5, 1.0],
+  "expected": [
+    0.0,
+    0.003130804980173707,
+    0.003131594741716981,
+    0.027211783453822136,
+    0.21404114365577698,
+    1.0
+  ]
+}

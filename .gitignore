@@ -9,10 +9,13 @@ __pycache__/
 *.jpg
 *.pnm
 scans/
+test_scans/
 
 # Build directories
 sane-local/
 firmware/
+.zig-cache/
+zig-out/
 
 # Config
 epdaughter_config.toml

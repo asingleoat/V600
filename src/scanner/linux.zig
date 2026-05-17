@@ -1,0 +1,1605 @@
+const std = @import("std");
+const builtin = @import("builtin");
+
+const contracts = @import("contracts.zig");
+const events = @import("events.zig");
+const lut = @import("lut.zig");
+const sane = @import("sane.zig");
+const tiff = @import("../tiff.zig");
+
+pub const v600_vendor_id = "04b8";
+pub const v600_product_id = "013a";
+pub const v600_vendor_id_int: u16 = 0x04b8;
+pub const v600_product_id_int: u16 = 0x013a;
+pub const usbdevfs_reset: u32 = 0x5514;
+pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
+
+pub const Device = struct {
+    name: []const u8,
+    vendor: []const u8 = "",
+    model: []const u8 = "",
+    kind: []const u8 = "",
+    raw_line: []const u8 = "",
+
+    pub fn backendRank(self: Device) u8 {
+        if (std.mem.indexOf(u8, self.name, "epson2") != null) return 0;
+        if (std.mem.indexOf(u8, self.name, "epkowa") != null) return 1;
+        return 2;
+    }
+
+    pub fn looksLikeV600(self: Device) bool {
+        return containsAny(self.raw_line, &.{ "V600", "GT-X820", "Perfection V600" }) or
+            containsAny(self.name, &.{ "epkowa:interpreter", "epson2" });
+    }
+};
+
+pub const ProgressEvent = events.ProgressEvent;
+pub const FailureKind = events.FailureKind;
+
+pub const WrapperAvailability = sane.WrapperAvailability;
+
+pub const cache_header = "v600-scanner-device-cache-v1";
+pub const tiff_software = "epdaughter-sane";
+const custom_lut_marker = tiff.scanner_custom_lut_marker;
+
+pub const TiffMetadataTag = enum(u16) {
+    make = 271,
+    model = 272,
+    software = 305,
+};
+
+pub const TiffMetadataTagValue = struct {
+    tag: TiffMetadataTag,
+    value: []const u8,
+};
+
+pub const SaveImageFormat = enum {
+    tiff,
+    png,
+};
+
+pub const SaveImagePlan = struct {
+    path: []u8,
+    format: SaveImageFormat,
+    converted_png_16_to_tiff: bool = false,
+
+    pub fn deinit(self: SaveImagePlan, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+    }
+};
+
+pub const DeviceChoiceSource = events.SelectionSource;
+
+pub const DeviceChoice = struct {
+    name: []u8,
+    source: DeviceChoiceSource,
+
+    pub fn deinit(self: DeviceChoice, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+    }
+};
+
+pub const SaneBackendState = struct {
+    device_name: ?[]const u8 = null,
+    model_name: ?[]const u8 = null,
+    product_id: ?u16 = null,
+    cached_capabilities: ?contracts.ScannerCapabilities = null,
+
+    pub fn init(product_id: ?u16) SaneBackendState {
+        return .{ .product_id = product_id };
+    }
+};
+
+pub fn saneIdentity(allocator: std.mem.Allocator, model_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "SANE {s}", .{model_name});
+}
+
+pub fn saneStatus() [1]u8 {
+    return .{0};
+}
+
+pub fn saneExtendedIdentity() [80]u8 {
+    return .{0} ** 80;
+}
+
+pub fn planSaveImage(allocator: std.mem.Allocator, path: []const u8, depth: contracts.BitDepth) !SaveImagePlan {
+    const ext = std.fs.path.extension(path);
+    if (std.ascii.eqlIgnoreCase(ext, ".png")) {
+        if (depth == .sixteen) {
+            return .{
+                .path = try std.mem.replaceOwned(u8, allocator, path, ".png", ".tiff"),
+                .format = .tiff,
+                .converted_png_16_to_tiff = true,
+            };
+        }
+        return .{ .path = try allocator.dupe(u8, path), .format = .png };
+    }
+    return .{ .path = try allocator.dupe(u8, path), .format = .tiff };
+}
+
+pub const UsbDeviceId = struct {
+    vendor_id: u16,
+    product_id: u16,
+};
+
+pub const UsbResetStatus = enum {
+    reset_performed,
+    device_not_found,
+    permission_denied,
+    reset_failed,
+};
+
+pub const UsbResetOutcome = struct {
+    status: UsbResetStatus,
+    path: ?[]u8 = null,
+
+    pub fn deinit(self: UsbResetOutcome, allocator: std.mem.Allocator) void {
+        if (self.path) |path| allocator.free(path);
+    }
+};
+
+const ScanFailure = struct {
+    kind: FailureKind,
+    detail: []u8,
+
+    fn deinit(self: ScanFailure, allocator: std.mem.Allocator) void {
+        allocator.free(self.detail);
+    }
+};
+
+pub const Runtime = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *std.process.Environ.Map,
+    event_sink: ?events.Sink = null,
+
+    pub fn wrappers(self: Runtime) WrapperAvailability {
+        return .{
+            .scanimage_v600 = self.commandExists("scanimage-v600"),
+            .scanimage_v600_ir = self.commandExists("scanimage-v600-ir"),
+        };
+    }
+
+    pub fn close(self: Runtime) void {
+        _ = self;
+    }
+
+    pub fn getIdentity(self: Runtime, model_name: []const u8) ![]u8 {
+        return saneIdentity(self.allocator, model_name);
+    }
+
+    pub fn getStatus(_: Runtime) [1]u8 {
+        return saneStatus();
+    }
+
+    pub fn getExtendedIdentity(_: Runtime) [80]u8 {
+        return saneExtendedIdentity();
+    }
+
+    fn emitStartup(self: Runtime, event: events.StartupEvent) void {
+        events.emitStartup(event);
+        if (self.event_sink) |sink| sink.send(.{ .startup = event });
+    }
+
+    fn emitDeviceDiscovery(self: Runtime, event: events.DeviceDiscoveryEvent) void {
+        events.emitDeviceDiscovery(event);
+        if (self.event_sink) |sink| sink.send(.{ .device_discovery = event });
+    }
+
+    fn emitProbe(self: Runtime, event: events.ProbeEvent) void {
+        events.emitProbe(event);
+        if (self.event_sink) |sink| sink.send(.{ .probe = event });
+    }
+
+    fn emitScanStart(self: Runtime, event: events.ScanStartEvent) void {
+        events.emitScanStart(event);
+        if (self.event_sink) |sink| sink.send(.{ .scan_start = event });
+    }
+
+    fn emitProgress(self: Runtime, event: events.ProgressEvent) void {
+        events.emitProgress(event);
+        if (self.event_sink) |sink| sink.send(.{ .progress = event });
+    }
+
+    fn emitScanComplete(self: Runtime, event: events.ScanCompleteEvent) void {
+        events.emitScanComplete(event);
+        if (self.event_sink) |sink| sink.send(.{ .scan_complete = event });
+    }
+
+    fn emitScanCancelled(self: Runtime, event: events.ScanFailureEvent) void {
+        events.emitScanCancelled(event);
+        if (self.event_sink) |sink| sink.send(.{ .scan_cancelled = event });
+    }
+
+    fn emitScanError(self: Runtime, event: events.ScanFailureEvent) void {
+        events.emitScanError(event);
+        if (self.event_sink) |sink| sink.send(.{ .scan_error = event });
+    }
+
+    pub fn discoverDevices(self: Runtime) ![]Device {
+        const result = try runCapture(self.allocator, self.io, &.{ "scanimage", "-L" }, null);
+        defer result.deinit(self.allocator);
+        if (!result.succeeded()) {
+            self.emitDeviceDiscovery(.{
+                .discovery_attempted = true,
+                .devices_found = 0,
+                .selected_device = null,
+                .selection_source = .none,
+            });
+            return error.ScanimageListFailed;
+        }
+        const devices = try parseDeviceList(self.allocator, result.stdout);
+        const selected = selectDevice(devices);
+        self.emitDeviceDiscovery(.{
+            .discovery_attempted = true,
+            .devices_found = devices.len,
+            .selected_device = if (selected) |device| device.name else null,
+            .selection_source = if (selected != null) .discovered else .none,
+        });
+        return devices;
+    }
+
+    pub fn probe(self: Runtime, out: anytype) !contracts.ScannerCapabilities {
+        self.emitStartup(.{ .platform = "linux", .backend = "sane" });
+        const devices = try self.discoverDevices();
+        defer freeDevices(self.allocator, devices);
+
+        const device = selectDevice(devices) orelse return error.NoV600Device;
+        self.writeCachedDeviceName(device.name);
+        const wrappers_available = self.wrappers();
+        const help_cmd = if (wrappers_available.scanimage_v600) "scanimage-v600" else "scanimage";
+
+        const flatbed_help = try self.helpFor(help_cmd, device.name, .flatbed);
+        defer self.allocator.free(flatbed_help);
+        const tpu_help = try self.helpFor(help_cmd, device.name, .tpu);
+        defer self.allocator.free(tpu_help);
+
+        var caps = sane.parseCombinedCapabilities(flatbed_help, tpu_help);
+        if (caps.device_name.len == 0) caps.device_name = device.name;
+        self.emitProbe(.{
+            .device = caps.device_name,
+            .model = caps.model,
+            .max_resolution = caps.max_resolution,
+            .ir_supported = caps.ir_supported,
+        });
+
+        try out.print("device: {s}\n", .{caps.device_name});
+        try out.print("model: {s}\n", .{caps.model});
+        try out.print("wrappers: scanimage-v600={any} scanimage-v600-ir={any}\n", .{
+            wrappers_available.scanimage_v600,
+            wrappers_available.scanimage_v600_ir,
+        });
+        try out.print("flatbed: {d:.3}in x {d:.3}in\n", .{ caps.flatbed_width_in, caps.flatbed_height_in });
+        try out.print("tpu: {d:.3}in x {d:.3}in\n", .{ caps.tpu_width_in, caps.tpu_height_in });
+        try out.print("max_resolution: {d}\n", .{caps.max_resolution});
+        try out.print("ir_supported: {any}\n", .{caps.ir_supported});
+        return caps;
+    }
+
+    pub fn scan(self: Runtime, options: ScanOptions) !void {
+        self.emitStartup(.{ .platform = "linux", .backend = "sane" });
+        if (options.output_path.len == 0) {
+            self.emitScanError(.{ .kind = .scanimage_failed, .detail = "missing output path" });
+            return error.MissingOutputPath;
+        }
+
+        var selected = try self.resolveDeviceName(options.device_name);
+        defer selected.deinit(self.allocator);
+
+        if (options.request.kind == .rgb_ir) {
+            try self.scanRgbIr(options, selected.name);
+            return;
+        }
+
+        var first_failure = self.scanOnce(options, selected.name) catch |err| switch (err) {
+            error.ScanimageHelpFailed => try self.makeFailure(.no_device, "scanimage capability lookup failed"),
+            else => return err,
+        };
+        if (first_failure == null) return;
+        defer first_failure.?.deinit(self.allocator);
+
+        if (selected.source == .cache_hit and options.device_name == null and first_failure.?.kind == .no_device) {
+            const refreshed = try self.discoverAndCacheDeviceName();
+            selected.deinit(self.allocator);
+            selected = refreshed;
+            var retry_failure = self.scanOnce(options, selected.name) catch |err| switch (err) {
+                error.ScanimageHelpFailed => try self.makeFailure(.no_device, "scanimage capability lookup failed after cache refresh"),
+                else => return err,
+            };
+            if (retry_failure == null) return;
+            defer retry_failure.?.deinit(self.allocator);
+            self.emitScanError(.{ .kind = retry_failure.?.kind, .detail = retry_failure.?.detail });
+            return error.ScanFailed;
+        }
+
+        self.emitScanError(.{ .kind = first_failure.?.kind, .detail = first_failure.?.detail });
+        return error.ScanFailed;
+    }
+
+    fn scanRgbIr(self: Runtime, options: ScanOptions, device_name: []const u8) !void {
+        const rgb_path = try std.fmt.allocPrint(self.allocator, "{s}.rgb.tmp.tiff", .{options.output_path});
+        defer self.allocator.free(rgb_path);
+        const ir_path = try std.fmt.allocPrint(self.allocator, "{s}.ir.tmp.tiff", .{options.output_path});
+        defer self.allocator.free(ir_path);
+        const thumb_path = try std.fmt.allocPrint(self.allocator, "{s}.thumb.tmp.tiff", .{options.output_path});
+        defer self.allocator.free(thumb_path);
+        const rgb_sidecar_path = try std.fmt.allocPrint(self.allocator, "{s}.json", .{rgb_path});
+        defer self.allocator.free(rgb_sidecar_path);
+        const ir_sidecar_path = try std.fmt.allocPrint(self.allocator, "{s}.json", .{ir_path});
+        defer self.allocator.free(ir_sidecar_path);
+        defer deleteIfExists(self.io, rgb_path);
+        defer deleteIfExists(self.io, ir_path);
+        defer deleteIfExists(self.io, thumb_path);
+        defer deleteIfExists(self.io, rgb_sidecar_path);
+        defer deleteIfExists(self.io, ir_sidecar_path);
+
+        var rgb_request = options.request;
+        rgb_request.kind = .rgb;
+        rgb_request.depth = .sixteen;
+        rgb_request.source = if (options.request.source == .flatbed) .flatbed else .tpu;
+        rgb_request.output_path = rgb_path;
+        var rgb_options = options;
+        rgb_options.request = rgb_request;
+        rgb_options.output_path = rgb_path;
+        rgb_options.device_name = device_name;
+        try self.scanPassOrEmit(rgb_options, device_name);
+
+        var ir_request = options.request;
+        ir_request.kind = .ir;
+        ir_request.depth = .eight;
+        ir_request.source = .tpu;
+        ir_request.dpi = @min(options.request.dpi, 3200);
+        ir_request.lut_file_path = null;
+        ir_request.output_path = ir_path;
+        var ir_options = options;
+        ir_options.request = ir_request;
+        ir_options.output_path = ir_path;
+        ir_options.device_name = device_name;
+        try self.scanPassOrEmit(ir_options, device_name);
+
+        try self.createThumbnail(rgb_path, thumb_path);
+        try self.combineTiffPages(rgb_path, thumb_path, ir_path, options.output_path);
+        try self.applyTiffMetadataTags(options.output_path, .{
+            .model = "Epson Perfection V600 Photo",
+            .software = tiff_software,
+            .dpi = options.request.dpi,
+            .custom_luts_applied = customLutsApplied(options.request),
+        });
+        const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name);
+        defer self.allocator.free(metadata_path);
+        self.emitScanComplete(.{
+            .output = options.output_path,
+            .metadata = metadata_path,
+        });
+    }
+
+    fn scanPassOrEmit(self: Runtime, options: ScanOptions, device_name: []const u8) !void {
+        const failure = self.scanOnce(options, device_name) catch |err| switch (err) {
+            error.ScanimageHelpFailed => try self.makeFailure(.no_device, "scanimage capability lookup failed"),
+            else => return err,
+        };
+        if (failure) |scan_failure| {
+            defer scan_failure.deinit(self.allocator);
+            self.emitScanError(.{ .kind = scan_failure.kind, .detail = scan_failure.detail });
+            return error.ScanFailed;
+        }
+    }
+
+    fn createThumbnail(self: Runtime, rgb_path: []const u8, thumb_path: []const u8) !void {
+        const result = try runCapture(self.allocator, self.io, &.{
+            "magick",
+            rgb_path,
+            "-auto-orient",
+            "-depth",
+            "8",
+            "-resize",
+            "x256>",
+            thumb_path,
+        }, null);
+        defer result.deinit(self.allocator);
+        if (!result.succeeded()) return error.ThumbnailFailed;
+    }
+
+    fn combineTiffPages(self: Runtime, rgb_path: []const u8, thumb_path: []const u8, ir_path: []const u8, output_path: []const u8) !void {
+        const result = try runCapture(self.allocator, self.io, &.{
+            "tiffcp",
+            rgb_path,
+            thumb_path,
+            ir_path,
+            output_path,
+        }, null);
+        defer result.deinit(self.allocator);
+        if (!result.succeeded()) return error.TiffCombineFailed;
+    }
+
+    fn scanOnce(self: Runtime, options: ScanOptions, device_name: []const u8) !?ScanFailure {
+        var caps = if (options.capabilities) |caps_override| caps_override else if (!options.request.area.isExplicit()) caps: {
+            break :caps contracts.ScannerCapabilities{ .device_name = device_name };
+        } else caps: {
+            const help_cmd = if (self.wrappers().scanimage_v600) "scanimage-v600" else "scanimage";
+            const flatbed_help = try self.helpFor(help_cmd, device_name, .flatbed);
+            defer self.allocator.free(flatbed_help);
+            const tpu_help = try self.helpFor(help_cmd, device_name, .tpu);
+            defer self.allocator.free(tpu_help);
+            var parsed = sane.parseCombinedCapabilities(flatbed_help, tpu_help);
+            parsed.device_name = device_name;
+            break :caps parsed;
+        };
+        if (caps.device_name.len == 0) caps.device_name = device_name;
+
+        var request = options.request;
+        request.output_path = options.output_path;
+        var plan = try sane.planCommand(self.allocator, request, caps, self.wrappers());
+        defer plan.deinit(self.allocator);
+        try addProgressFlag(self.allocator, &plan);
+
+        self.emitScanStart(.{
+            .device = caps.device_name,
+            .output = options.output_path,
+            .source = plan.source,
+            .kind = plan.kind,
+            .requested_dpi = plan.original_dpi,
+            .effective_dpi = plan.effective_dpi,
+        });
+        const result = try self.runScanPlan(&plan, options.cancel_file);
+        defer result.deinit(self.allocator);
+        if (!result.succeeded()) {
+            return try self.makeFailure(classifyFailure(result.stderr), result.stderr);
+        }
+        try self.mirrorTiffForSource(options.output_path, plan.source);
+        try self.applyTiffMetadataTags(options.output_path, .{
+            .model = if (caps.model.len == 0) "Epson Scanner" else caps.model,
+            .software = tiff_software,
+            .dpi = plan.effective_dpi,
+            .custom_luts_applied = customLutsApplied(options.request),
+        });
+        const metadata_path = try writeMetadataSidecar(self.allocator, self.io, options, caps, &plan);
+        defer self.allocator.free(metadata_path);
+        self.emitScanComplete(.{
+            .output = options.output_path,
+            .metadata = metadata_path,
+        });
+        return null;
+    }
+
+    fn makeFailure(self: Runtime, kind: FailureKind, raw_detail: []const u8) !ScanFailure {
+        const detail = std.mem.trim(u8, raw_detail, " \t\r\n");
+        return .{
+            .kind = kind,
+            .detail = try self.allocator.dupe(u8, if (detail.len == 0) "scanimage exited without diagnostic" else detail),
+        };
+    }
+
+    fn mirrorTiffForSource(self: Runtime, output_path: []const u8, source: contracts.Source) !void {
+        if (!shouldMirrorTiff(source)) return;
+        try self.mirrorTiffHorizontallyInPlace(output_path);
+    }
+
+    fn mirrorTiffHorizontallyInPlace(self: Runtime, output_path: []const u8) !void {
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.mirror.tmp.tiff", .{output_path});
+        defer self.allocator.free(tmp_path);
+        defer deleteIfExists(self.io, tmp_path);
+
+        try self.mirrorTiffHorizontally(output_path, tmp_path);
+        try replaceFile(self.io, tmp_path, output_path);
+    }
+
+    fn mirrorTiffHorizontally(self: Runtime, input_path: []const u8, output_path: []const u8) !void {
+        const result = try runCapture(self.allocator, self.io, &.{
+            "magick",
+            input_path,
+            "-flop",
+            output_path,
+        }, null);
+        defer result.deinit(self.allocator);
+        if (!result.succeeded()) return error.TiffMirrorFailed;
+    }
+
+    fn applyTiffMetadataTags(self: Runtime, output_path: []const u8, metadata: contracts.TiffMetadata) !void {
+        try tiff.writeScannerMetadata(self.allocator, output_path, .{
+            .make = metadata.make,
+            .model = metadata.model,
+            .software = metadata.software,
+            .dpi = metadata.dpi,
+            .custom_luts_applied = metadata.custom_luts_applied,
+        });
+    }
+
+    fn helpFor(self: Runtime, command: []const u8, device_name: []const u8, source: contracts.Source) ![]u8 {
+        const source_name = switch (source) {
+            .flatbed => "Flatbed",
+            .tpu => "Transparency Unit",
+        };
+        const result = try runCapture(self.allocator, self.io, &.{
+            command,
+            "--device-name",
+            device_name,
+            "--source",
+            source_name,
+            "--help",
+        }, null);
+        defer {
+            self.allocator.free(result.stderr);
+        }
+        if (!result.succeeded()) {
+            self.allocator.free(result.stdout);
+            return error.ScanimageHelpFailed;
+        }
+        return result.stdout;
+    }
+
+    fn runScanPlan(self: Runtime, plan: *const sane.CommandPlan, cancel_file: ?[]const u8) !RunResult {
+        var env_map: ?std.process.Environ.Map = null;
+        defer if (env_map) |*map| map.deinit();
+        const child_env = try prepareEnvironment(self.allocator, self.environ_map, plan.env, &env_map);
+
+        var child = try std.process.spawn(self.io, .{
+            .argv = plan.argv.items,
+            .environ_map = child_env,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .pipe,
+        });
+        errdefer child.kill(self.io);
+
+        var stderr = std.array_list.Managed(u8).init(self.allocator);
+        errdefer stderr.deinit();
+
+        var stream_buffer: [128]u8 = undefined;
+        var reader = child.stderr.?.readerStreaming(self.io, &.{});
+        while (true) {
+            if (cancel_file) |path| {
+                if (cancelState(cancel_file, cancelFileExists(self.io, path)) == .cancel_requested) {
+                    child.kill(self.io);
+                    self.emitScanCancelled(.{ .kind = .cancelled, .detail = "cancel file observed" });
+                    return error.ScanCancelled;
+                }
+            }
+
+            const n = reader.interface.readSliceShort(&stream_buffer) catch |err| return err;
+            if (n == 0) break;
+            try stderr.appendSlice(stream_buffer[0..n]);
+            emitProgressFromChunk(self, stream_buffer[0..n]) catch {};
+        }
+
+        const term = try child.wait(self.io);
+        return .{
+            .term = term,
+            .stdout = &.{},
+            .stderr = try stderr.toOwnedSlice(),
+        };
+    }
+
+    fn commandExists(self: Runtime, command: []const u8) bool {
+        const result = runCapture(self.allocator, self.io, &.{ "sh", "-c", commandExistsScript(command) }, null) catch return false;
+        defer result.deinit(self.allocator);
+        return result.succeeded();
+    }
+
+    fn resolveDeviceName(self: Runtime, explicit_device_name: ?[]const u8) !DeviceChoice {
+        if (explicit_device_name) |name| {
+            self.emitDeviceDiscovery(.{
+                .discovery_attempted = false,
+                .devices_found = null,
+                .selected_device = name,
+                .selection_source = .explicit,
+            });
+            return .{ .name = try self.allocator.dupe(u8, name), .source = .explicit };
+        }
+        if (try self.readCachedDeviceName()) |cached| {
+            self.emitDeviceDiscovery(.{
+                .discovery_attempted = false,
+                .devices_found = null,
+                .selected_device = cached,
+                .selection_source = .cache_hit,
+            });
+            return .{ .name = cached, .source = .cache_hit };
+        }
+        return self.discoverAndCacheDeviceName();
+    }
+
+    fn discoverAndCacheDeviceName(self: Runtime) !DeviceChoice {
+        const devices = try self.discoverDevices();
+        defer freeDevices(self.allocator, devices);
+        const selected = selectDevice(devices) orelse return error.NoV600Device;
+        const name = try self.allocator.dupe(u8, selected.name);
+        self.writeCachedDeviceName(name);
+        return .{ .name = name, .source = .discovered };
+    }
+
+    fn readCachedDeviceName(self: Runtime) !?[]u8 {
+        const path = try self.deviceCachePath() orelse return null;
+        defer self.allocator.free(path);
+
+        const data = std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(4096)) catch return null;
+        defer self.allocator.free(data);
+        return parseCachedDeviceName(self.allocator, data);
+    }
+
+    fn writeCachedDeviceName(self: Runtime, device_name: []const u8) void {
+        const path = self.deviceCachePath() catch return;
+        const cache_path = path orelse return;
+        defer self.allocator.free(cache_path);
+
+        const data = serializeDeviceCache(self.allocator, device_name) catch return;
+        defer self.allocator.free(data);
+
+        if (std.fs.path.dirname(cache_path)) |dir_name| {
+            std.Io.Dir.cwd().createDirPath(self.io, dir_name) catch return;
+        }
+        std.Io.Dir.cwd().writeFile(self.io, .{
+            .sub_path = cache_path,
+            .data = data,
+            .flags = .{ .truncate = true },
+        }) catch return;
+    }
+
+    fn deviceCachePath(self: Runtime) !?[]u8 {
+        if (self.environ_map.get("V600_SCANNER_DEVICE_CACHE")) |path| {
+            if (path.len != 0) return try self.allocator.dupe(u8, path);
+        }
+        if (self.environ_map.get("XDG_CACHE_HOME")) |cache_home| {
+            if (cache_home.len != 0) {
+                return try std.fmt.allocPrint(self.allocator, "{s}/v600/scanner-device.txt", .{cache_home});
+            }
+        }
+        if (self.environ_map.get("HOME")) |home| {
+            if (home.len != 0) {
+                return try std.fmt.allocPrint(self.allocator, "{s}/.cache/v600/scanner-device.txt", .{home});
+            }
+        }
+        return null;
+    }
+
+    pub fn usbReset(self: Runtime) !UsbResetOutcome {
+        if (builtin.os.tag != .linux) return error.UnsupportedPlatform;
+
+        var bus: usize = 1;
+        while (bus <= 10) : (bus += 1) {
+            var dev: usize = 1;
+            while (dev < 128) : (dev += 1) {
+                const path = try usbDevicePath(self.allocator, bus, dev);
+                const device_id = self.readUsbDeviceId(path) catch null;
+                if (device_id) |id| {
+                    if (isV600UsbDevice(id)) {
+                        return self.resetUsbDevicePath(path);
+                    }
+                }
+                self.allocator.free(path);
+            }
+        }
+
+        return .{ .status = .device_not_found };
+    }
+
+    fn readUsbDeviceId(self: Runtime, path: []const u8) !?UsbDeviceId {
+        var file = std.Io.Dir.openFileAbsolute(self.io, path, .{
+            .mode = .read_only,
+            .allow_directory = false,
+        }) catch return null;
+        defer file.close(self.io);
+
+        var buffer: [18]u8 = undefined;
+        var reader = file.readerStreaming(self.io, &.{});
+        const n = reader.interface.readSliceShort(&buffer) catch return null;
+        return parseUsbDeviceDescriptor(buffer[0..n]);
+    }
+
+    fn resetUsbDevicePath(self: Runtime, path: []u8) !UsbResetOutcome {
+        errdefer self.allocator.free(path);
+
+        var file = std.Io.Dir.openFileAbsolute(self.io, path, .{
+            .mode = .read_write,
+            .allow_directory = false,
+        }) catch |err| switch (err) {
+            error.AccessDenied => return .{ .status = .permission_denied, .path = path },
+            else => return .{ .status = .reset_failed, .path = path },
+        };
+        defer file.close(self.io);
+
+        const rc = std.posix.system.ioctl(file.handle, usbdevfs_reset, @as(usize, 0));
+        switch (std.posix.system.errno(rc)) {
+            .SUCCESS => {
+                sleepAfterUsbReset();
+                return .{ .status = .reset_performed, .path = path };
+            },
+            .ACCES, .PERM => return .{ .status = .permission_denied, .path = path },
+            else => return .{ .status = .reset_failed, .path = path },
+        }
+    }
+};
+
+pub const ScanOptions = struct {
+    request: contracts.ScanRequest,
+    output_path: []const u8,
+    metadata_path: ?[]const u8 = null,
+    device_name: ?[]const u8 = null,
+    cancel_file: ?[]const u8 = null,
+    capabilities: ?contracts.ScannerCapabilities = null,
+};
+
+const RunResult = struct {
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+
+    fn deinit(self: RunResult, allocator: std.mem.Allocator) void {
+        if (self.stdout.len != 0) allocator.free(self.stdout);
+        if (self.stderr.len != 0) allocator.free(self.stderr);
+    }
+
+    fn succeeded(self: RunResult) bool {
+        return switch (self.term) {
+            .exited => |code| code == 0,
+            else => false,
+        };
+    }
+};
+
+fn runCapture(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    argv: []const []const u8,
+    environ_map: ?*const std.process.Environ.Map,
+) !RunResult {
+    const result = try std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(8 * 1024 * 1024),
+        .stderr_limit = .limited(8 * 1024 * 1024),
+        .environ_map = environ_map,
+        .expand_arg0 = .expand,
+    });
+    return .{
+        .term = result.term,
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+    };
+}
+
+pub fn parseDeviceList(allocator: std.mem.Allocator, output: []const u8) ![]Device {
+    var devices = std.array_list.Managed(Device).init(allocator);
+    errdefer {
+        for (devices.items) |device| freeDevice(allocator, device);
+        devices.deinit();
+    }
+
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "device `")) continue;
+        const name = between(line, "`", "'") orelse continue;
+        var device = Device{
+            .name = try allocator.dupe(u8, name),
+            .raw_line = try allocator.dupe(u8, line),
+        };
+        errdefer freeDevice(allocator, device);
+
+        const is_pos = std.mem.indexOf(u8, line, " is a ");
+        if (is_pos) |pos| {
+            const desc = line[pos + " is a ".len ..];
+            var parts = std.mem.splitScalar(u8, desc, ' ');
+            if (parts.next()) |vendor| device.vendor = try allocator.dupe(u8, vendor);
+            if (parts.next()) |model| device.model = try allocator.dupe(u8, model);
+            if (std.mem.lastIndexOfScalar(u8, desc, ' ')) |last_space| {
+                device.kind = try allocator.dupe(u8, desc[last_space + 1 ..]);
+            }
+        }
+
+        try devices.append(device);
+    }
+
+    return devices.toOwnedSlice();
+}
+
+pub fn freeDevices(allocator: std.mem.Allocator, devices: []Device) void {
+    for (devices) |device| freeDevice(allocator, device);
+    allocator.free(devices);
+}
+
+fn freeDevice(allocator: std.mem.Allocator, device: Device) void {
+    allocator.free(device.name);
+    if (device.vendor.len != 0) allocator.free(device.vendor);
+    if (device.model.len != 0) allocator.free(device.model);
+    if (device.kind.len != 0) allocator.free(device.kind);
+    if (device.raw_line.len != 0) allocator.free(device.raw_line);
+}
+
+pub fn selectDevice(devices: []const Device) ?Device {
+    var selected: ?Device = null;
+    for (devices) |device| {
+        if (!device.looksLikeV600()) continue;
+        if (selected == null or device.backendRank() < selected.?.backendRank()) {
+            selected = device;
+        }
+    }
+    return selected;
+}
+
+pub fn chooseDeviceName(
+    allocator: std.mem.Allocator,
+    devices: []const Device,
+    cached_name: ?[]const u8,
+    explicit_name: ?[]const u8,
+) !?DeviceChoice {
+    if (explicit_name) |name| {
+        return .{ .name = try allocator.dupe(u8, name), .source = .explicit };
+    }
+    if (cached_name) |name| {
+        if (deviceListContains(devices, name)) {
+            return .{ .name = try allocator.dupe(u8, name), .source = .cache_hit };
+        }
+    }
+    if (selectDevice(devices)) |selected| {
+        return .{ .name = try allocator.dupe(u8, selected.name), .source = .discovered };
+    }
+    return null;
+}
+
+pub fn serializeDeviceCache(allocator: std.mem.Allocator, device_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}\n{s}\n", .{ cache_header, device_name });
+}
+
+pub fn parseCachedDeviceName(allocator: std.mem.Allocator, data: []const u8) !?[]u8 {
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    const header = lines.next() orelse return null;
+    if (!std.mem.eql(u8, std.mem.trim(u8, header, " \t\r"), cache_header)) return null;
+    const raw_name = lines.next() orelse return null;
+    const name = std.mem.trim(u8, raw_name, " \t\r");
+    if (name.len == 0) return null;
+    return try allocator.dupe(u8, name);
+}
+
+fn deviceListContains(devices: []const Device, device_name: []const u8) bool {
+    for (devices) |device| {
+        if (std.mem.eql(u8, device.name, device_name)) return true;
+    }
+    return false;
+}
+
+pub fn tiffMetadataTags(caps: contracts.ScannerCapabilities) [3]TiffMetadataTagValue {
+    return .{
+        .{ .tag = .make, .value = "EPSON" },
+        .{ .tag = .model, .value = if (caps.model.len == 0) "Epson Scanner" else caps.model },
+        .{ .tag = .software, .value = tiff_software },
+    };
+}
+
+pub fn parseUsbDeviceDescriptor(descriptor: []const u8) ?UsbDeviceId {
+    if (descriptor.len < 18) return null;
+    return .{
+        .vendor_id = std.mem.readInt(u16, descriptor[8..10], .little),
+        .product_id = std.mem.readInt(u16, descriptor[10..12], .little),
+    };
+}
+
+pub fn isV600UsbDevice(device_id: UsbDeviceId) bool {
+    return device_id.vendor_id == v600_vendor_id_int and device_id.product_id == v600_product_id_int;
+}
+
+pub fn usbDevicePath(allocator: std.mem.Allocator, bus: usize, dev: usize) ![]u8 {
+    return std.fmt.allocPrint(allocator, "/dev/bus/usb/{d:0>3}/{d:0>3}", .{ bus, dev });
+}
+
+pub fn usbResetStatusName(status: UsbResetStatus) []const u8 {
+    return switch (status) {
+        .reset_performed => "reset-performed",
+        .device_not_found => "device-not-found",
+        .permission_denied => "permission-denied",
+        .reset_failed => "reset-failed",
+    };
+}
+
+fn sleepAfterUsbReset() void {
+    var remaining = std.posix.timespec{ .sec = 2, .nsec = 0 };
+    while (true) {
+        switch (std.posix.system.errno(std.posix.system.nanosleep(&remaining, &remaining))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => return,
+        }
+    }
+}
+
+pub fn shouldMirrorTiff(source: contracts.Source) bool {
+    return source == .tpu;
+}
+
+fn tiffTagNumber(tag: TiffMetadataTag) []const u8 {
+    return switch (tag) {
+        .make => "271",
+        .model => "272",
+        .software => "305",
+    };
+}
+
+pub fn parseProgress(line_or_chunk: []const u8) ?ProgressEvent {
+    var cursor: usize = 0;
+    while (cursor < line_or_chunk.len) {
+        while (cursor < line_or_chunk.len and !std.ascii.isDigit(line_or_chunk[cursor])) cursor += 1;
+        const start = cursor;
+        while (cursor < line_or_chunk.len and std.ascii.isDigit(line_or_chunk[cursor])) cursor += 1;
+        const integer_end = cursor;
+        if (cursor > start and cursor < line_or_chunk.len and line_or_chunk[cursor] == '.') {
+            while (cursor < line_or_chunk.len and (std.ascii.isDigit(line_or_chunk[cursor]) or line_or_chunk[cursor] == '.')) cursor += 1;
+        }
+        if (cursor > start and cursor < line_or_chunk.len and line_or_chunk[cursor] == '%') {
+            const value = std.fmt.parseInt(u8, line_or_chunk[start..integer_end], 10) catch return null;
+            return .{ .percent = @min(value, 100) };
+        }
+    }
+    return null;
+}
+
+pub fn classifyFailure(stderr: []const u8) FailureKind {
+    if (containsAny(stderr, &.{ "Device busy", "device busy", "Resource busy", "resource busy" })) return .device_busy;
+    if (containsAny(stderr, &.{ "Access denied", "Permission denied", "permission denied", "Operation not permitted", "insufficient permissions" })) return .permission_denied;
+    if (containsAny(stderr, &.{ "No scanners were identified", "No such device", "no such device", "open of device" })) return .no_device;
+    if (containsAny(stderr, &.{ "Unknown option", "unknown option", "unrecognized option", "Unsupported option", "unsupported option", "Invalid argument" })) return .unsupported_option;
+    if (containsAny(stderr, &.{ "paper jam", "Paper jam", "jammed", "Jammed" })) return .paper_jam;
+    if (containsAny(stderr, &.{ "cancel", "Cancel" })) return .cancelled;
+    if (containsAny(stderr, &.{ "Error during device I/O", "I/O error", "backend error", "Backend error", "sane_start", "sane_read" })) return .backend_failure;
+    return .scanimage_failed;
+}
+
+pub fn cancelFileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+pub fn cancelState(cancel_file: ?[]const u8, file_exists: bool) contracts.CancelState {
+    return if (cancel_file != null and file_exists) .cancel_requested else .keep_scanning;
+}
+
+fn addProgressFlag(allocator: std.mem.Allocator, plan: *sane.CommandPlan) !void {
+    try plan.argv.insert(allocator, 1, "--progress");
+}
+
+fn prepareEnvironment(
+    allocator: std.mem.Allocator,
+    parent: *std.process.Environ.Map,
+    env: sane.EnvironmentPlan,
+    storage: *?std.process.Environ.Map,
+) !?*const std.process.Environ.Map {
+    if (!env.scan_ir_mode and env.lut_file == null) return null;
+    storage.* = try parent.clone(allocator);
+    if (env.scan_ir_mode) try storage.*.?.put("SCAN_IR_MODE", "1");
+    if (env.lut_file) |lut_file| try storage.*.?.put("V600_LUT_FILE", lut_file);
+    return &storage.*.?;
+}
+
+fn emitProgressFromChunk(self: Runtime, chunk: []const u8) !void {
+    var cursor: usize = 0;
+    while (cursor < chunk.len) {
+        while (cursor < chunk.len and !std.ascii.isDigit(chunk[cursor])) cursor += 1;
+        const start = cursor;
+        while (cursor < chunk.len and std.ascii.isDigit(chunk[cursor])) cursor += 1;
+        const integer_end = cursor;
+        if (cursor > start and cursor < chunk.len and chunk[cursor] == '.') {
+            while (cursor < chunk.len and (std.ascii.isDigit(chunk[cursor]) or chunk[cursor] == '.')) cursor += 1;
+        }
+        if (cursor <= start or cursor >= chunk.len or chunk[cursor] != '%') {
+            if (cursor == start) cursor += 1;
+            continue;
+        }
+        const raw = std.fmt.parseInt(u8, chunk[start..integer_end], 10) catch {
+            cursor += 1;
+            continue;
+        };
+        const progress = ProgressEvent{ .percent = @min(raw, 100) };
+        self.emitProgress(progress);
+        cursor += 1;
+    }
+}
+
+fn writeMetadataSidecar(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ScanOptions,
+    caps: contracts.ScannerCapabilities,
+    plan: *const sane.CommandPlan,
+) ![]u8 {
+    const metadata_path = if (options.metadata_path) |path|
+        try allocator.dupe(u8, path)
+    else
+        try std.fmt.allocPrint(allocator, "{s}.json", .{options.output_path});
+    errdefer allocator.free(metadata_path);
+
+    var file = try std.Io.Dir.cwd().createFile(io, metadata_path, .{ .truncate = true });
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    const out = &writer.interface;
+
+    try out.print(
+        \\{{
+        \\  "software": "v600-zig",
+        \\  "device": "{s}",
+        \\  "model": "{s}",
+        \\  "source": "{t}",
+        \\  "kind": "{t}",
+        \\  "requested_dpi": {d},
+        \\  "effective_dpi": {d},
+        \\  "depth": {d},
+        \\  "output": "{s}",
+        \\  "custom_luts_applied": {any},
+        \\  "tiff_metadata": {{
+        \\    "make": "EPSON",
+        \\    "model": "{s}",
+        \\    "software": "{s}"
+        \\  }},
+        \\  "argv": [
+        \\
+    , .{
+        caps.device_name,
+        caps.model,
+        plan.source,
+        plan.kind,
+        plan.original_dpi,
+        plan.effective_dpi,
+        @intFromEnum(options.request.depth),
+        options.output_path,
+        customLutsApplied(options.request),
+        if (caps.model.len == 0) "Epson Scanner" else caps.model,
+        tiff_software,
+    });
+    for (plan.argv.items, 0..) |arg, i| {
+        try out.print("    \"{s}\"{s}\n", .{ arg, if (i + 1 == plan.argv.items.len) "" else "," });
+    }
+    try out.print("  ]\n}}\n", .{});
+    try out.flush();
+    return metadata_path;
+}
+
+fn writeCombinedMetadataSidecar(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ScanOptions,
+    device_name: []const u8,
+) ![]u8 {
+    const metadata_path = if (options.metadata_path) |path|
+        try allocator.dupe(u8, path)
+    else
+        try std.fmt.allocPrint(allocator, "{s}.json", .{options.output_path});
+    errdefer allocator.free(metadata_path);
+
+    var file = try std.Io.Dir.cwd().createFile(io, metadata_path, .{ .truncate = true });
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    const out = &writer.interface;
+
+    const ir_dpi = @min(options.request.dpi, 3200);
+    try out.print(
+        \\{{
+        \\  "software": "v600-zig",
+        \\  "device": "{s}",
+        \\  "model": "Epson Perfection V600 Photo",
+        \\  "source": "{t}",
+        \\  "kind": "rgb+ir",
+        \\  "requested_dpi": {d},
+        \\  "effective_dpi": {d},
+        \\  "ir_effective_dpi": {d},
+        \\  "depth": 16,
+        \\  "output": "{s}",
+        \\  "custom_luts_applied": {any},
+        \\  "tiff_metadata": {{
+        \\    "make": "EPSON",
+        \\    "model": "Epson Perfection V600 Photo",
+        \\    "software": "{s}"
+        \\  }},
+        \\  "pages": [
+        \\    {{"index": 0, "kind": "rgb"}},
+        \\    {{"index": 1, "kind": "thumbnail"}},
+        \\    {{"index": 2, "kind": "ir"}}
+        \\  ]
+        \\}}
+        \\
+    , .{
+        device_name,
+        options.request.source,
+        options.request.dpi,
+        options.request.dpi,
+        ir_dpi,
+        options.output_path,
+        customLutsApplied(options.request),
+        tiff_software,
+    });
+    try out.flush();
+    return metadata_path;
+}
+
+fn deleteIfExists(io: std.Io, path: []const u8) void {
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+}
+
+fn customLutsApplied(request: contracts.ScanRequest) bool {
+    return switch (request.kind) {
+        .rgb, .rgb_ir => request.lut_file_path != null,
+        .gray, .ir => false,
+    };
+}
+
+fn replaceFile(io: std.Io, old_path: []const u8, new_path: []const u8) !void {
+    if (std.fs.path.isAbsolute(old_path) or std.fs.path.isAbsolute(new_path)) {
+        try std.Io.Dir.renameAbsolute(old_path, new_path, io);
+    } else {
+        const cwd = std.Io.Dir.cwd();
+        try cwd.rename(old_path, cwd, new_path, io);
+    }
+}
+
+fn commandExistsScript(command: []const u8) []const u8 {
+    if (std.mem.eql(u8, command, "scanimage-v600")) return "command -v scanimage-v600 >/dev/null 2>&1";
+    if (std.mem.eql(u8, command, "scanimage-v600-ir")) return "command -v scanimage-v600-ir >/dev/null 2>&1";
+    return "false";
+}
+
+fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.mem.indexOf(u8, haystack, needle) != null) return true;
+    }
+    return false;
+}
+
+fn between(haystack: []const u8, left: []const u8, right: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, haystack, left) orelse return null;
+    const body_start = start + left.len;
+    const end_rel = std.mem.indexOf(u8, haystack[body_start..], right) orelse return null;
+    return haystack[body_start .. body_start + end_rel];
+}
+
+fn expectDeviceName(device: ?Device, expected: []const u8) !void {
+    try std.testing.expect(device != null);
+    try std.testing.expectEqualStrings(expected, device.?.name);
+}
+
+test "parses scanimage device list and selects preferred V600 backend" {
+    const allocator = std.testing.allocator;
+    const output =
+        \\device `epkowa:interpreter:001:017' is a Epson (unknown model) flatbed scanner
+        \\device `epson2:libusb:001:018' is a Epson V600 flatbed scanner
+        \\
+    ;
+    const devices = try parseDeviceList(allocator, output);
+    defer freeDevices(allocator, devices);
+    try std.testing.expectEqual(@as(usize, 2), devices.len);
+    try expectDeviceName(selectDevice(devices), "epson2:libusb:001:018");
+}
+
+test "accepts live epkowa interpreter listing when model text is unknown" {
+    const allocator = std.testing.allocator;
+    const output =
+        \\device `epkowa:interpreter:001:017' is a Epson (unknown model) flatbed scanner
+        \\
+    ;
+    const devices = try parseDeviceList(allocator, output);
+    defer freeDevices(allocator, devices);
+    try expectDeviceName(selectDevice(devices), "epkowa:interpreter:001:017");
+}
+
+test "serializes and parses persistent scanner device cache" {
+    const allocator = std.testing.allocator;
+    const data = try serializeDeviceCache(allocator, "epkowa:interpreter:001:017");
+    defer allocator.free(data);
+    const parsed = (try parseCachedDeviceName(allocator, data)).?;
+    defer allocator.free(parsed);
+    try std.testing.expectEqualStrings("epkowa:interpreter:001:017", parsed);
+    try std.testing.expect((try parseCachedDeviceName(allocator, "not-a-v600-cache\nfoo\n")) == null);
+}
+
+test "chooses explicit device over cache and discovery" {
+    const allocator = std.testing.allocator;
+    const devices = try parseDeviceList(allocator,
+        \\device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner
+        \\
+    );
+    defer freeDevices(allocator, devices);
+    const choice = (try chooseDeviceName(allocator, devices, "epkowa:interpreter:001:017", "manual:device")).?;
+    defer choice.deinit(allocator);
+    try std.testing.expectEqual(DeviceChoiceSource.explicit, choice.source);
+    try std.testing.expectEqualStrings("manual:device", choice.name);
+}
+
+test "uses cache hit when cached device is still present" {
+    const allocator = std.testing.allocator;
+    const devices = try parseDeviceList(allocator,
+        \\device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner
+        \\
+    );
+    defer freeDevices(allocator, devices);
+    const choice = (try chooseDeviceName(allocator, devices, "epkowa:interpreter:001:017", null)).?;
+    defer choice.deinit(allocator);
+    try std.testing.expectEqual(DeviceChoiceSource.cache_hit, choice.source);
+    try std.testing.expectEqualStrings("epkowa:interpreter:001:017", choice.name);
+}
+
+test "ignores stale cache and falls back to discovered V600 device" {
+    const allocator = std.testing.allocator;
+    const devices = try parseDeviceList(allocator,
+        \\device `epkowa:interpreter:001:018' is a Epson Perfection V600 Photo flatbed scanner
+        \\
+    );
+    defer freeDevices(allocator, devices);
+    const choice = (try chooseDeviceName(allocator, devices, "epkowa:interpreter:001:017", null)).?;
+    defer choice.deinit(allocator);
+    try std.testing.expectEqual(DeviceChoiceSource.discovered, choice.source);
+    try std.testing.expectEqualStrings("epkowa:interpreter:001:018", choice.name);
+}
+
+test "parses scanimage progress chunks" {
+    try std.testing.expectEqual(@as(u8, 37), parseProgress("Progress: 37.2%").?.percent);
+    try std.testing.expectEqual(@as(u8, 100), parseProgress("\r100%").?.percent);
+    try std.testing.expect(parseProgress("warming up") == null);
+}
+
+test "maps TIFF metadata tags to Python SANE parity values" {
+    const tags = tiffMetadataTags(.{ .model = "Epson Perfection V600 Photo" });
+    try std.testing.expectEqual(TiffMetadataTag.make, tags[0].tag);
+    try std.testing.expectEqualStrings("271", tiffTagNumber(tags[0].tag));
+    try std.testing.expectEqualStrings("EPSON", tags[0].value);
+    try std.testing.expectEqual(TiffMetadataTag.model, tags[1].tag);
+    try std.testing.expectEqualStrings("272", tiffTagNumber(tags[1].tag));
+    try std.testing.expectEqualStrings("Epson Perfection V600 Photo", tags[1].value);
+    try std.testing.expectEqual(TiffMetadataTag.software, tags[2].tag);
+    try std.testing.expectEqualStrings("305", tiffTagNumber(tags[2].tag));
+    try std.testing.expectEqualStrings("epdaughter-sane", tags[2].value);
+
+    const fallback = tiffMetadataTags(.{ .model = "" });
+    try std.testing.expectEqualStrings("Epson Scanner", fallback[1].value);
+}
+
+test "parses USB descriptors and matches Epson V600 product id" {
+    var descriptor = [_]u8{0} ** 18;
+    descriptor[8] = 0xb8;
+    descriptor[9] = 0x04;
+    descriptor[10] = 0x3a;
+    descriptor[11] = 0x01;
+
+    const device_id = parseUsbDeviceDescriptor(&descriptor).?;
+    try std.testing.expectEqual(@as(u16, 0x04b8), device_id.vendor_id);
+    try std.testing.expectEqual(@as(u16, 0x013a), device_id.product_id);
+    try std.testing.expect(isV600UsbDevice(device_id));
+
+    descriptor[10] = 0xff;
+    try std.testing.expect(!isV600UsbDevice(parseUsbDeviceDescriptor(&descriptor).?));
+    try std.testing.expect(parseUsbDeviceDescriptor(descriptor[0..17]) == null);
+}
+
+test "formats Linux USB device paths like Python fallback scanner reset" {
+    const allocator = std.testing.allocator;
+    const path = try usbDevicePath(allocator, 1, 7);
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings("/dev/bus/usb/001/007", path);
+}
+
+test "names USB reset outcomes for explicit CLI reporting" {
+    try std.testing.expectEqualStrings("reset-performed", usbResetStatusName(.reset_performed));
+    try std.testing.expectEqualStrings("device-not-found", usbResetStatusName(.device_not_found));
+    try std.testing.expectEqualStrings("permission-denied", usbResetStatusName(.permission_denied));
+    try std.testing.expectEqualStrings("reset-failed", usbResetStatusName(.reset_failed));
+}
+
+test "mirrors only TPU TIFF outputs" {
+    try std.testing.expect(shouldMirrorTiff(.tpu));
+    try std.testing.expect(!shouldMirrorTiff(.flatbed));
+}
+
+test "marks custom LUT metadata only for RGB-bearing scan requests" {
+    try std.testing.expect(customLutsApplied(.{ .kind = .rgb, .lut_file_path = "/tmp/lut.bin" }));
+    try std.testing.expect(customLutsApplied(.{ .kind = .rgb_ir, .lut_file_path = "/tmp/lut.bin" }));
+    try std.testing.expect(!customLutsApplied(.{ .kind = .gray, .lut_file_path = "/tmp/lut.bin" }));
+    try std.testing.expect(!customLutsApplied(.{ .kind = .ir, .lut_file_path = "/tmp/lut.bin" }));
+    try std.testing.expect(!customLutsApplied(.{ .kind = .rgb }));
+}
+
+test "classifies common scan failures" {
+    try std.testing.expectEqual(FailureKind.device_busy, classifyFailure("open of device failed: Device busy"));
+    try std.testing.expectEqual(FailureKind.no_device, classifyFailure("No scanners were identified"));
+    try std.testing.expectEqual(FailureKind.permission_denied, classifyFailure("open of device failed: Access denied"));
+    try std.testing.expectEqual(FailureKind.unsupported_option, classifyFailure("setting of option --source failed: Invalid argument"));
+    try std.testing.expectEqual(FailureKind.paper_jam, classifyFailure("sane_read: Document feeder jammed"));
+    try std.testing.expectEqual(FailureKind.cancelled, classifyFailure("scan cancelled by user"));
+    try std.testing.expectEqual(FailureKind.backend_failure, classifyFailure("sane_start: Error during device I/O"));
+    try std.testing.expectEqual(FailureKind.scanimage_failed, classifyFailure("unexpected scanner diagnostic"));
+}
+
+test "maps cancel file observation to scanner cancel state" {
+    try std.testing.expectEqual(contracts.CancelState.keep_scanning, cancelState(null, true));
+    try std.testing.expectEqual(contracts.CancelState.keep_scanning, cancelState("cancel", false));
+    try std.testing.expectEqual(contracts.CancelState.cancel_requested, cancelState("cancel", true));
+}
+
+test "adds progress flag without changing command semantics" {
+    const allocator = std.testing.allocator;
+    const caps = contracts.ScannerCapabilities{ .device_name = "epkowa:interpreter:001:017" };
+    const request = contracts.ScanRequest{ .dpi = 400, .source = .tpu, .kind = .rgb, .output_path = "out.tiff" };
+    var plan = try sane.planCommand(allocator, request, caps, .{ .scanimage_v600 = true });
+    defer plan.deinit(allocator);
+    try addProgressFlag(allocator, &plan);
+    try std.testing.expectEqualStrings("scanimage-v600", plan.argv.items[0]);
+    try std.testing.expectEqualStrings("--progress", plan.argv.items[1]);
+}
+
+test "scanner cancellation kills fake long-running child" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script =
+        \\cancel_file="$1"
+        \\pid_file="$2"
+        \\printf '%s\n' "$$" > "$pid_file"
+        \\printf 'Progress: 1%%\n' >&2
+        \\: > "$cancel_file"
+        \\while :; do printf 'Progress: 2%%\n' >&2; done
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fake-scanimage.sh", .data = script });
+
+    const script_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/fake-scanimage.sh", .{tmp.sub_path[0..]});
+    defer allocator.free(script_path);
+    const cancel_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/cancel", .{tmp.sub_path[0..]});
+    defer allocator.free(cancel_path);
+    const pid_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/pid", .{tmp.sub_path[0..]});
+    defer allocator.free(pid_path);
+
+    var plan = sane.CommandPlan{
+        .effective_dpi = 400,
+        .original_dpi = 400,
+        .source = .tpu,
+        .kind = .rgb,
+    };
+    defer plan.deinit(allocator);
+    try plan.argv.append(allocator, "sh");
+    try plan.argv.append(allocator, script_path);
+    try plan.argv.append(allocator, cancel_path);
+    try plan.argv.append(allocator, pid_path);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+    };
+
+    try std.testing.expectError(error.ScanCancelled, runtime.runScanPlan(&plan, cancel_path));
+
+    const pid_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, pid_path, allocator, .limited(64));
+    defer allocator.free(pid_bytes);
+    const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_bytes, " \t\r\n"), 10);
+    try std.testing.expect(!processExists(pid));
+}
+
+test "writes RGB plus IR sidecar with stable page layout" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const metadata_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/combined.json", .{tmp.sub_path[0..]});
+    defer allocator.free(metadata_path);
+    const options = ScanOptions{
+        .request = .{ .dpi = 800, .source = .tpu, .kind = .rgb_ir },
+        .output_path = "combined.tiff",
+        .metadata_path = metadata_path,
+    };
+
+    const written_path = try writeCombinedMetadataSidecar(allocator, std.testing.io, options, "epkowa:interpreter:001:017");
+    defer allocator.free(written_path);
+    try std.testing.expectEqualStrings(metadata_path, written_path);
+
+    const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, metadata_path, allocator, .limited(4096));
+    defer allocator.free(data);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"kind\": \"rgb+ir\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"index\": 0, \"kind\": \"rgb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"index\": 1, \"kind\": \"thumbnail\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"index\": 2, \"kind\": \"ir\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, ".tmp.tiff") == null);
+}
+
+test "prepareEnvironment exposes V600_LUT_FILE to scan child" {
+    const allocator = std.testing.allocator;
+    var parent = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer parent.deinit();
+
+    var storage: ?std.process.Environ.Map = null;
+    defer if (storage) |*map| map.deinit();
+
+    const child_env = (try prepareEnvironment(allocator, &parent, .{ .lut_file = "/tmp/v600-luts.bin" }, &storage)).?;
+    try std.testing.expectEqualStrings("/tmp/v600-luts.bin", child_env.get("V600_LUT_FILE").?);
+}
+
+test "mirrors TIFF horizontally like Python TPU postprocessing" {
+    if (!commandAvailableForTest("magick")) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ppm =
+        \\P3
+        \\3 1
+        \\255
+        \\255 0 0 0 255 0 0 0 255
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "input.ppm", .data = ppm });
+
+    const ppm_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/input.ppm", .{tmp.sub_path[0..]});
+    defer allocator.free(ppm_path);
+    const input_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/input.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(input_path);
+    const output_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/output.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(output_path);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+    };
+
+    var create = try runCapture(allocator, std.testing.io, &.{
+        "magick",
+        ppm_path,
+        "-depth",
+        "8",
+        input_path,
+    }, null);
+    defer create.deinit(allocator);
+    try std.testing.expect(create.succeeded());
+
+    try runtime.mirrorTiffHorizontally(input_path, output_path);
+
+    const pixels = try runCapture(allocator, std.testing.io, &.{
+        "magick",
+        output_path,
+        "-depth",
+        "8",
+        "rgb:-",
+    }, null);
+    defer pixels.deinit(allocator);
+    try std.testing.expect(pixels.succeeded());
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 255, 0, 255, 0, 255, 0, 0 }, pixels.stdout);
+}
+
+test "applies custom LUT TIFF metadata marker through native TIFF wrapper" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tiff_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/input.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(tiff_path);
+    const lut_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/lut.bin", .{tmp.sub_path[0..]});
+    defer allocator.free(lut_path);
+
+    try tiff.writeImage(allocator, tiff_path, .{
+        .width = 1,
+        .height = 1,
+        .samples_per_pixel = 3,
+        .bits_per_sample = 8,
+        .data = &.{ 12, 34, 56 },
+    }, .{});
+
+    try lut.writeRgbFile(std.testing.io, lut_path, null, null, null);
+    const lut_data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, lut_path, allocator, .limited(lut.serialized_len + 1));
+    defer allocator.free(lut_data);
+    try std.testing.expectEqual(@as(usize, lut.serialized_len), lut_data.len);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+    };
+
+    try runtime.applyTiffMetadataTags(tiff_path, .{
+        .model = "Epson Perfection V600 Photo",
+        .software = tiff_software,
+        .dpi = 800,
+        .custom_luts_applied = true,
+    });
+    const marker = (try tiff.readAsciiTag(allocator, tiff_path, tiff.scanner_custom_lut_tag, tiff.scanner_custom_lut_name)).?;
+    defer allocator.free(marker);
+    try std.testing.expectEqualStrings(custom_lut_marker, marker);
+    try std.testing.expectEqual(@as(?u32, 800), try tiff.readDpi(allocator, tiff_path));
+}
+
+test "SANE backend identity status and close match Python no-hardware methods" {
+    const allocator = std.testing.allocator;
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+    };
+
+    const identity = try runtime.getIdentity(sane_default_model_name);
+    defer allocator.free(identity);
+    try std.testing.expectEqualStrings("SANE Perfection V600 / GT-X820 (SANE)", identity);
+    const status = runtime.getStatus();
+    try std.testing.expectEqualSlices(u8, &.{0}, &status);
+    const extended = runtime.getExtendedIdentity();
+    const expected_extended = [_]u8{0} ** 80;
+    try std.testing.expectEqual(@as(usize, 80), extended.len);
+    try std.testing.expectEqualSlices(u8, &expected_extended, &extended);
+    runtime.close();
+}
+
+test "SANE backend init state mirrors Python constructor defaults" {
+    const default_state = SaneBackendState.init(null);
+    try std.testing.expect(default_state.device_name == null);
+    try std.testing.expect(default_state.model_name == null);
+    try std.testing.expect(default_state.product_id == null);
+    try std.testing.expect(default_state.cached_capabilities == null);
+
+    const explicit_state = SaneBackendState.init(v600_product_id_int);
+    try std.testing.expectEqual(@as(?u16, v600_product_id_int), explicit_state.product_id);
+    try std.testing.expect(explicit_state.device_name == null);
+    try std.testing.expect(explicit_state.model_name == null);
+    try std.testing.expect(explicit_state.cached_capabilities == null);
+}
+
+test "SANE save image planning mirrors Python extension and depth routing" {
+    const allocator = std.testing.allocator;
+
+    const tiff_plan = try planSaveImage(allocator, "scan.tiff", .sixteen);
+    defer tiff_plan.deinit(allocator);
+    try std.testing.expectEqual(SaveImageFormat.tiff, tiff_plan.format);
+    try std.testing.expectEqualStrings("scan.tiff", tiff_plan.path);
+    try std.testing.expect(!tiff_plan.converted_png_16_to_tiff);
+
+    const png_8_plan = try planSaveImage(allocator, "scan.png", .eight);
+    defer png_8_plan.deinit(allocator);
+    try std.testing.expectEqual(SaveImageFormat.png, png_8_plan.format);
+    try std.testing.expectEqualStrings("scan.png", png_8_plan.path);
+    try std.testing.expect(!png_8_plan.converted_png_16_to_tiff);
+
+    const png_16_plan = try planSaveImage(allocator, "scan.png", .sixteen);
+    defer png_16_plan.deinit(allocator);
+    try std.testing.expectEqual(SaveImageFormat.tiff, png_16_plan.format);
+    try std.testing.expectEqualStrings("scan.tiff", png_16_plan.path);
+    try std.testing.expect(png_16_plan.converted_png_16_to_tiff);
+
+    const unknown_plan = try planSaveImage(allocator, "scan.raw", .eight);
+    defer unknown_plan.deinit(allocator);
+    try std.testing.expectEqual(SaveImageFormat.tiff, unknown_plan.format);
+    try std.testing.expectEqualStrings("scan.raw", unknown_plan.path);
+}
+
+fn processExists(pid: std.posix.pid_t) bool {
+    std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
+        error.ProcessNotFound => return false,
+        error.PermissionDenied => return true,
+        else => return false,
+    };
+    return true;
+}
+
+fn commandAvailableForTest(command: []const u8) bool {
+    if (std.mem.eql(u8, command, "magick")) {
+        const result = runCapture(std.testing.allocator, std.testing.io, &.{
+            "sh",
+            "-c",
+            "command -v magick >/dev/null 2>&1",
+        }, null) catch return false;
+        defer result.deinit(std.testing.allocator);
+        return result.succeeded();
+    }
+    if (std.mem.eql(u8, command, "exiftool")) {
+        const result = runCapture(std.testing.allocator, std.testing.io, &.{
+            "sh",
+            "-c",
+            "command -v exiftool >/dev/null 2>&1",
+        }, null) catch return false;
+        defer result.deinit(std.testing.allocator);
+        return result.succeeded();
+    }
+    return false;
+}

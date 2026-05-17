@@ -1,0 +1,24 @@
+{
+  "name": "invert-negative-identity-dmin",
+  "operation": "invert_negative:provided_dmin_identity_coeffs",
+  "python_oracle": "scratchndent/processing/negative/inversion.py:61 invert_negative with default_identity_coeffs",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.processing.negative.inversion.invert_negative with dmin=[0.2,0.1,0.05]",
+  "shape": [3, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python measurement stages use float32 inputs; this tolerance allows only float32 rounding drift."
+  },
+  "input": [10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0, 12000.0, 50000.0, 3000.0],
+  "expected": [
+    0.6164733171463013,
+    0.4154433310031891,
+    0.28935205936431885,
+    0.014413341879844666,
+    0.01750330626964569,
+    0.0,
+    0.5372920632362366,
+    0.01750330626964569,
+    1.2893521785736084
+  ]
+}

@@ -1,0 +1,21 @@
+
+[scan]
+dpi = 1600  # Scan resolution (800, 1200, 1600, 3200, 6400)
+mode = "ir"  # Scan mode: rgb+ir, rgb, ir
+autoselect = false  # Auto-detect film area on preview
+
+[selection]
+# sel_x_in = 0.0  # Selection X offset (inches)
+# sel_y_in = 0.0  # Selection Y offset (inches)
+sel_w_in = 0.0  # Selection width (inches)
+# sel_h_in = 0.0  # Selection height (inches)
+
+[detection]
+# detect_pad = 0.05  # Padding around detected film area (fraction of smaller dimension)
+# detect_min_area = 0.05  # Minimum region size for detection (fraction of image)
+
+[preview]
+preview_dpi = 400  # Preview scan resolution (minimum 200 for TPU)
+
+[server]
+# port = 8432  # Web GUI server port

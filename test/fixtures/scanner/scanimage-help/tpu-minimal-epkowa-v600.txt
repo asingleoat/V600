@@ -1,0 +1,7 @@
+Options specific to device `epkowa:interpreter:001:017':
+    --resolution 400|800|1600|3200dpi [400]
+    -x 0..68.58mm [68.58]
+        Width of scan-area.
+    -y 0..242.316mm [242.316]
+        Height of scan-area.
+    --source Flatbed|Transparency Unit [Transparency Unit]

@@ -1,0 +1,38 @@
+{
+  "name": "render-to-display-no-positive-luminance",
+  "operation": "render_to_display",
+  "python_oracle": "scratchndent.processing.negative.render",
+  "generated_by": "nix-shell --run python3 (2026-05-15)",
+  "shape": [
+    1,
+    3,
+    3
+  ],
+  "tolerance": {
+    "abs": 0.0,
+    "rel": 0.0,
+    "reason": "Python oracle numeric parity"
+  },
+  "input": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "expected": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ]
+}

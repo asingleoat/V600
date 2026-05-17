@@ -1,0 +1,28 @@
+{
+  "name": "dmin-percentile-25",
+  "operation": "estimate_dmin:fallback_percentile",
+  "python_oracle": "scratchndent/calibration/measurement.py:63 estimate_dmin",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.calibration.measurement.estimate_dmin with rebate_mask=None and percentile=25.0",
+  "shape": [4, 3],
+  "expected_shape": [3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python computes percentiles from float32 density values; this tolerance allows only float32 rounding drift."
+  },
+  "input": [
+    0.5,
+    0.800000011920929,
+    1.100000023841858,
+    0.6000000238418579,
+    0.699999988079071,
+    1.2000000476837158,
+    1.5,
+    1.7999999523162842,
+    2.0,
+    0.4000000059604645,
+    0.8999999761581421,
+    1.0
+  ],
+  "expected": [0.4749999940395355, 0.7749999761581421, 1.0750000476837158]
+}

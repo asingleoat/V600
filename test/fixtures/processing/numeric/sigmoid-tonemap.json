@@ -1,0 +1,21 @@
+{
+  "name": "sigmoid-tonemap",
+  "operation": "sigmoid_tonemap",
+  "python_oracle": "scratchndent/processing/negative/render.py:50 sigmoid_tonemap",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.processing.negative.render.sigmoid_tonemap with mid_grey=0.18, white_point=0.9, black_point=0.02, contrast=1.4",
+  "shape": [2, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python casts tone-map input to float32 and returns float32; this tolerance allows only float32 rounding drift."
+  },
+  "input": [-0.10000000149011612, 0.0, 0.18000000715255737, 0.5, 1.0, 2.0],
+  "expected": [
+    0.019999999552965164,
+    0.019999999552965164,
+    0.46000000834465027,
+    0.7301158905029297,
+    0.8268561959266663,
+    0.870775043964386
+  ]
+}

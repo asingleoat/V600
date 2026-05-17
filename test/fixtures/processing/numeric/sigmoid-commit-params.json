@@ -1,0 +1,33 @@
+{
+  "name": "sigmoid-commit-params",
+  "operation": "sigmoid_commit_params",
+  "python_oracle": "scratchndent.processing.negative.color_transforms",
+  "generated_by": "nix-shell --run python3 (2026-05-15)",
+  "shape": [
+    6
+  ],
+  "expected_shape": [
+    6
+  ],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python oracle numeric parity"
+  },
+  "input": [
+    1.5,
+    -0.25,
+    5.0,
+    0.015,
+    2.0,
+    0.65
+  ],
+  "expected": [
+    5.0,
+    0.015,
+    1.9748242800363898,
+    0.031325963807020435,
+    0.9192259894741028,
+    1.4953487812212205
+  ]
+}

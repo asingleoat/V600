@@ -1,0 +1,1 @@
+scanimage: sane_cancel: Operation was cancelled

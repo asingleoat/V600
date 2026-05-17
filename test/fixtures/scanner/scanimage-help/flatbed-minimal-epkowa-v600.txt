@@ -1,0 +1,5 @@
+Options specific to device `epkowa:interpreter:001:017':
+    --resolution 400|800|1600|3200dpi [400]
+    -x 0..215.9mm [215.9]
+    -y 0..297.18mm [297.18]
+    --source Flatbed|Transparency Unit [Flatbed]

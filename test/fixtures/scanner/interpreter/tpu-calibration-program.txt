@@ -1,0 +1,18 @@
+# Python oracle: scanner.py configure_tpu and docs/SCANNER_INTERNALS.md.
+# Format: operation name, command bytes, payload length.
+gamma_r command=1e 84 header=03 00 fc 1f 02 00 01 00 data_len=256
+gamma_g command=1e 84 header=03 00 fd 1f 02 00 01 00 data_len=256
+gamma_b command=1e 84 header=03 00 fe 1f 02 00 01 00 data_len=256
+tpu_mode command=1e a2 data=02
+calibration_flag command=1e 25 data=02
+timing command=1e 5a data=00 00 00 00
+scan_pass command=1e 11 data=03
+gain_offset command=1e 31 data_len=12
+ccd_config command=1e 21 data_len=26
+gain_shading command=1e 84 header=07 00 00 00 00 00 01 00 data_len=256
+secondary_ccd command=1e 22 data_len=12
+afe command=1e 41 data_len=22
+afe_zero command=1e 42 data_len=24
+afe_gains command=1e 43 data_len=18
+scan_start_config command=1e 01 data_len=12
+trigger_calibration command=1e 05 data_len=0

@@ -1,0 +1,21 @@
+{
+  "name": "transmittance-u16-default",
+  "operation": "normalize_transmittance:uint16_default_light",
+  "python_oracle": "scratchndent/calibration/measurement.py:13 normalize_transmittance",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.calibration.measurement.normalize_transmittance with uint16 input and no dark/light frames",
+  "shape": [2, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python computes float32 transmittance; this tolerance allows only float32 rounding drift."
+  },
+  "input": [0.0, 1.0, 32768.0, 65535.0, 10000.0, 50000.0],
+  "expected": [
+    9.99999993922529e-09,
+    1.5259021893143654e-05,
+    0.5000076293945312,
+    1.0,
+    0.15259021520614624,
+    0.7629510760307312
+  ]
+}

@@ -1,0 +1,1 @@
+scanimage: open of device epkowa:interpreter:001:017 failed: Device busy

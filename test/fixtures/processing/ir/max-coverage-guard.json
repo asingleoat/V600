@@ -1,0 +1,60 @@
+{
+  "name": "ir-max-coverage-guard",
+  "operation": "ir_max_coverage_guard",
+  "python_oracle": "scratchndent.processing.defects.ir_removal.make_defect_mask max coverage guard",
+  "generated_by": "nix-shell --run python3 (2026-05-15)",
+  "shape": [
+    4,
+    5
+  ],
+  "max_coverage": 0.3,
+  "tolerance": {
+    "abs": 0.0,
+    "rel": 0.0,
+    "reason": "binary mask equality"
+  },
+  "input": [
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    255.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "expected": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ]
+}

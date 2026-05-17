@@ -1,0 +1,14 @@
+{
+  "name": "linear-scale-smoke",
+  "operation": "synthetic_linear_scale",
+  "python_oracle": "synthetic fixture for numeric harness validation; later fixtures should reference frozen Python source functions",
+  "generated_by": "python3 - <<'PY'\nimport json\ninp=[0,1,2,3,4,5]\nprint(json.dumps({'expected':[x*1.5+0.25 for x in inp]}))\nPY",
+  "shape": [2, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Harness smoke fixture uses f64 values and allows only sub-micro unit drift."
+  },
+  "input": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+  "expected": [0.25, 1.75, 3.25, 4.75, 6.25, 7.75]
+}

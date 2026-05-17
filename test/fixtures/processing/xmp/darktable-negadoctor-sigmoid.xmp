@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"
+           xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+           xmlns:darktable="http://darktable.sf.net/">
+  <rdf:RDF>
+    <rdf:Description>
+      <darktable:history>
+        <rdf:Seq>
+          <rdf:li darktable:operation="negadoctor"
+                  darktable:enabled="0"
+                  darktable:params="00000000000010410000104100001041000010410000104100001041000010410000104100001041000010410000104100001041000010410000104100001041000010410000104100001041"/>
+          <rdf:li darktable:operation="sigmoid"
+                  darktable:enabled="1"
+                  darktable:params="0000c03f000080be0000fa430000c03f02000000000082420000e0400000004100001041000020410000304100004041000050410e000000"/>
+          <rdf:li darktable:operation="channelmixerrgb"
+                  darktable:enabled="1"
+                  darktable:params="gz01eJxjYBgcwFxqgd2GohV2DAqnXZHFAVGTBGg"/>
+          <rdf:li darktable:operation="negadoctor"
+                  darktable:enabled="1"
+                  darktable:params="00000000000010410000104100001041000010410000104100001041000010410000104100001041000010410000104100001041000010410000104100001041000010410000104100001041"/>
+          <rdf:li darktable:operation="negadoctor"
+                  darktable:enabled="1"
+                  darktable:params="01000000ae47e13dae47613ec3f5a83eae47e13ecdcc8c3f9a99993f6666a63f3333b33f0ad7233c0ad7a33c8fc2f53c0ad7233d000020400000003e8fc2753c9a99d93f9a99593f0000a03f"/>
+        </rdf:Seq>
+      </darktable:history>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>

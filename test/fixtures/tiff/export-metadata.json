@@ -1,0 +1,32 @@
+{
+  "fixture": "test/fixtures/tiff/export-metadata.tiff",
+  "generator": "python scratchndent.utils.io.write_tiff with representative process_frame export metadata",
+  "python_oracle": {
+    "function": "scratchndent.utils.io.write_tiff",
+    "metadata_tag": 65000,
+    "metadata_json": "{\"source\": \"scan_0001_rgbir_3200dpi.tiff\", \"rebate_rect\": null, \"crop\": {\"cx\": 12.5, \"cy\": 16.25, \"w\": 20.0, \"h\": 8.0, \"angle\": -1.5}, \"variant\": \"ir_cleaned_inverted\", \"stock\": \"kodak_gold\", \"contrast\": 1.15, \"dmin\": [0.1, 0.2, 0.3]}",
+    "metadata_json_expected": "{\"source\": \"scan_0001_rgbir_3200dpi.tiff\", \"rebate_rect\": null, \"crop\": {\"cx\": 12.5, \"cy\": 16.25, \"w\": 20.0, \"h\": 8.0, \"angle\": -1.5}, \"variant\": \"ir_cleaned_inverted\", \"stock\": \"kodak_gold\", \"contrast\": 1.15, \"dmin\": [0.1, 0.2, 0.3]}",
+    "shape": [
+      2,
+      2,
+      3
+    ],
+    "dtype": "uint8",
+    "samples_per_pixel": 3,
+    "bits_per_sample": 8,
+    "pixel_values": [
+      10,
+      20,
+      30,
+      40,
+      50,
+      60,
+      70,
+      80,
+      90,
+      100,
+      110,
+      120
+    ]
+  }
+}

@@ -1,0 +1,4637 @@
+const std = @import("std");
+
+const numeric = @import("numeric_fixture.zig");
+const tiff = @import("../tiff.zig");
+
+pub const FilmFormat = struct {
+    name: []const u8,
+    frame_mm: [2]f64,
+    pitch_mm: f64,
+    strip_width_mm: f64,
+    description: []const u8,
+
+    pub fn frameWidthMm(self: FilmFormat) f64 {
+        return self.frame_mm[0];
+    }
+
+    pub fn frameHeightMm(self: FilmFormat) f64 {
+        return self.frame_mm[1];
+    }
+
+    pub fn narrowMm(self: FilmFormat) f64 {
+        return @min(self.frame_mm[0], self.frame_mm[1]);
+    }
+
+    pub fn wideMm(self: FilmFormat) f64 {
+        return @max(self.frame_mm[0], self.frame_mm[1]);
+    }
+
+    pub fn gapMm(self: FilmFormat) f64 {
+        return self.pitch_mm - self.wideMm();
+    }
+
+    pub fn pitchRatio(self: FilmFormat) f64 {
+        return self.strip_width_mm / self.wideMm();
+    }
+
+    pub fn physicalAspect(self: FilmFormat) f64 {
+        return self.frame_mm[0] / self.frame_mm[1];
+    }
+};
+
+pub const format_35mm: FilmFormat = .{
+    .name = "35mm",
+    .frame_mm = .{ 36.0, 24.0 },
+    .pitch_mm = 38.0,
+    .strip_width_mm = 35.0,
+    .description = "35mm (135 film)",
+};
+
+pub const format_645: FilmFormat = .{
+    .name = "645",
+    .frame_mm = .{ 56.0, 41.5 },
+    .pitch_mm = 60.0,
+    .strip_width_mm = 61.5,
+    .description = "645 medium format",
+};
+
+pub const format_6x6: FilmFormat = .{
+    .name = "6x6",
+    .frame_mm = .{ 56.0, 56.0 },
+    .pitch_mm = 60.0,
+    .strip_width_mm = 61.5,
+    .description = "6x6 medium format",
+};
+
+pub const format_6x7: FilmFormat = .{
+    .name = "6x7",
+    .frame_mm = .{ 56.0, 69.0 },
+    .pitch_mm = 73.0,
+    .strip_width_mm = 61.5,
+    .description = "6x7 medium format",
+};
+
+pub const format_6x9: FilmFormat = .{
+    .name = "6x9",
+    .frame_mm = .{ 56.0, 84.0 },
+    .pitch_mm = 88.0,
+    .strip_width_mm = 61.5,
+    .description = "6x9 medium format",
+};
+
+pub const formats = [_]FilmFormat{
+    format_35mm,
+    format_645,
+    format_6x6,
+    format_6x7,
+    format_6x9,
+};
+
+pub fn formatByName(name: []const u8) ?FilmFormat {
+    for (formats) |format| {
+        if (std.mem.eql(u8, format.name, name)) return format;
+    }
+    return null;
+}
+
+pub const StripProfiles = struct {
+    profile_a: []f64,
+    profile_b: []f64,
+    profile_c: []f64,
+    cross_profile: []f64,
+
+    pub fn deinit(self: *StripProfiles, allocator: std.mem.Allocator) void {
+        allocator.free(self.profile_a);
+        allocator.free(self.profile_b);
+        allocator.free(self.profile_c);
+        allocator.free(self.cross_profile);
+        self.* = undefined;
+    }
+};
+
+pub const DtwOptions = struct {
+    max_len: usize = 1000,
+};
+
+pub const DtwAlignment = struct {
+    edge_positions: []usize,
+    dtw_scale: f64,
+    template_len: usize,
+    effective_frame_dim: usize,
+    effective_gap: usize,
+    band: usize,
+    end_j: usize,
+
+    pub fn deinit(self: *DtwAlignment, allocator: std.mem.Allocator) void {
+        allocator.free(self.edge_positions);
+        self.* = undefined;
+    }
+};
+
+pub const CrossStripMeasurement = struct {
+    left_t: f64,
+    right_t: f64,
+    cross_w: f64,
+    cross_center_offset: f64,
+    hw_idx: usize,
+    coarse_k: usize,
+};
+
+pub const EdgePeakPoint = struct {
+    x: f64,
+    y: f64,
+};
+
+const Point2 = struct {
+    x: f64,
+    y: f64,
+};
+
+pub const TheilSenAngle = struct {
+    median_slope: f64,
+    angle: f64,
+};
+
+pub const FrameRect = struct {
+    cx: f64,
+    cy: f64,
+    w: f64,
+    h: f64,
+    angle: f64,
+};
+
+pub const AffineTransform = struct {
+    values: [6]f64,
+};
+
+pub const ExpandedRotation = struct {
+    rotated_width: usize,
+    rotated_height: usize,
+    forward: AffineTransform,
+    inverse: AffineTransform,
+};
+
+pub const FilmExtent = struct {
+    strip_narrow_px: f64,
+    strip_long_px: f64,
+    strip_angle: f64 = 0.0,
+};
+
+pub const StripAnalysis = struct {
+    n_frames: usize,
+    frame_w: f64,
+    frame_h: f64,
+    pitch_px: f64,
+    is_vertical: bool,
+};
+
+pub const DetectFramesOptions = struct {
+    frame_count_override: ?usize = null,
+    film_extent: ?FilmExtent = null,
+    strip_angle: f64 = 0.0,
+    cross_gray_raw: ?[]const f64 = null,
+    dtw_options: DtwOptions = .{},
+};
+
+pub const DetectFramesImageOptions = struct {
+    frame_count_override: ?usize = null,
+    detect_film_extent: bool = true,
+    film_extent_override: ?FilmExtent = null,
+    apply_clahe: bool = true,
+    dtw_options: DtwOptions = .{},
+};
+
+pub const DetectFramesResult = struct {
+    frames: []FrameRect,
+    strip_info: StripAnalysis,
+    aspect: []const u8,
+
+    pub fn deinit(self: *DetectFramesResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.frames);
+        self.* = undefined;
+    }
+};
+
+pub const DetectionGrayOptions = struct {
+    invert: bool = false,
+};
+
+pub const ClaheOptions = struct {
+    clip_limit: f64 = 3.0,
+    tiles_x: usize = 8,
+    tiles_y: usize = 8,
+};
+
+pub const RotatedCrop = struct {
+    width: usize,
+    height: usize,
+    pixels: []f64,
+
+    pub fn deinit(self: *RotatedCrop, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+        self.* = undefined;
+    }
+};
+
+pub const RebateMaskRect = struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+};
+
+pub const RebateRect = struct {
+    cx: f64,
+    cy: f64,
+    w: f64,
+    h: f64,
+    angle: f64 = 0.0,
+};
+
+pub const RebateOriginRect = struct {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    angle: f64 = 0.0,
+};
+
+pub const PreviewGeometry = struct {
+    full_width: usize,
+    full_height: usize,
+    preview_width: usize,
+    preview_height: usize,
+    preview_scale: f64,
+};
+
+pub const PreviewSelection = struct {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    angle: f64 = 0.0,
+};
+
+pub fn prepareDetectionGray(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    width: usize,
+    height: usize,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    options: DetectionGrayOptions,
+) ![]f64 {
+    if (width == 0 or height == 0) return error.InvalidDetectionGrayInput;
+    if (samples_per_pixel != 1 and samples_per_pixel != 3) return error.InvalidDetectionGrayInput;
+    if (bits_per_sample != 8 and bits_per_sample != 16) return error.InvalidDetectionGrayInput;
+    const bytes_per_sample: usize = bits_per_sample / 8;
+    const pixel_count = try std.math.mul(usize, width, height);
+    const sample_count = try std.math.mul(usize, pixel_count, samples_per_pixel);
+    const expected_len = try std.math.mul(usize, sample_count, bytes_per_sample);
+    if (data.len != expected_len) return error.InvalidDetectionGrayInput;
+
+    const gray = try allocator.alloc(f64, pixel_count);
+    errdefer allocator.free(gray);
+    for (gray, 0..) |*value, pixel_index| {
+        const sample_index = pixel_index * samples_per_pixel;
+        var gray_u8: u8 = 0;
+        if (samples_per_pixel == 1) {
+            gray_u8 = sampleToPythonGray8(data, sample_index, bits_per_sample);
+        } else if (bits_per_sample == 16) {
+            const r = @as(f64, @floatFromInt(sampleToU16(data, sample_index, bits_per_sample)));
+            const g = @as(f64, @floatFromInt(sampleToU16(data, sample_index + 1, bits_per_sample)));
+            const b = @as(f64, @floatFromInt(sampleToU16(data, sample_index + 2, bits_per_sample)));
+            gray_u8 = @intFromFloat(@floor(((r + g + b) / 3.0) / 256.0));
+        } else {
+            const r = @as(f64, @floatFromInt(sampleToU16(data, sample_index, bits_per_sample)));
+            const g = @as(f64, @floatFromInt(sampleToU16(data, sample_index + 1, bits_per_sample)));
+            const b = @as(f64, @floatFromInt(sampleToU16(data, sample_index + 2, bits_per_sample)));
+            gray_u8 = @intFromFloat(@floor(0.299 * r + 0.587 * g + 0.114 * b + 0.5));
+        }
+        const prepared = if (options.invert) 255 - gray_u8 else gray_u8;
+        value.* = @as(f64, @floatFromInt(prepared)) / 255.0;
+    }
+    return gray;
+}
+
+pub fn resizeImageArea(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    width: usize,
+    height: usize,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    target_width: usize,
+    target_height: usize,
+) ![]u8 {
+    if (width == 0 or height == 0 or target_width == 0 or target_height == 0) return error.InvalidAreaResizeInput;
+    if (samples_per_pixel != 1 and samples_per_pixel != 3) return error.InvalidAreaResizeInput;
+    if (bits_per_sample != 8 and bits_per_sample != 16) return error.InvalidAreaResizeInput;
+    if (target_width > width or target_height > height) return error.InvalidAreaResizeInput;
+    const bytes_per_sample: usize = bits_per_sample / 8;
+    const input_sample_count = try std.math.mul(usize, try std.math.mul(usize, width, height), samples_per_pixel);
+    if (data.len != try std.math.mul(usize, input_sample_count, bytes_per_sample)) return error.InvalidAreaResizeInput;
+    if (target_width == width and target_height == height) return allocator.dupe(u8, data);
+
+    var x_weights = try buildAreaWeights(allocator, width, target_width);
+    defer x_weights.deinit(allocator);
+    var y_weights = try buildAreaWeights(allocator, height, target_height);
+    defer y_weights.deinit(allocator);
+
+    const output_sample_count = try std.math.mul(usize, try std.math.mul(usize, target_width, target_height), samples_per_pixel);
+    const output = try allocator.alloc(u8, try std.math.mul(usize, output_sample_count, bytes_per_sample));
+    errdefer allocator.free(output);
+
+    for (0..target_height) |y| {
+        const y_slice = y_weights.forOutput(y);
+        for (0..target_width) |x| {
+            const x_slice = x_weights.forOutput(x);
+            for (0..samples_per_pixel) |channel| {
+                var sum: f64 = 0.0;
+                for (y_slice) |yw| {
+                    for (x_slice) |xw| {
+                        const sample_index = (yw.index * width + xw.index) * samples_per_pixel + channel;
+                        sum += @as(f64, @floatFromInt(sampleToU16(data, sample_index, bits_per_sample))) * yw.weight * xw.weight;
+                    }
+                }
+                writeRoundedSample(output, (y * target_width + x) * samples_per_pixel + channel, bits_per_sample, sum);
+            }
+        }
+    }
+    return output;
+}
+
+pub fn applyClahe8(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    width: usize,
+    height: usize,
+    options: ClaheOptions,
+) ![]u8 {
+    if (width == 0 or height == 0 or input.len != width * height) return error.InvalidClaheInput;
+    if (options.tiles_x == 0 or options.tiles_y == 0 or !std.math.isFinite(options.clip_limit)) return error.InvalidClaheInput;
+
+    const tile_width = ceilDiv(width, options.tiles_x);
+    const tile_height = ceilDiv(height, options.tiles_y);
+    const ext_width = tile_width * options.tiles_x;
+    const ext_height = tile_height * options.tiles_y;
+    const tile_area = tile_width * tile_height;
+
+    const extended = try allocator.alloc(u8, ext_width * ext_height);
+    defer allocator.free(extended);
+    for (0..ext_height) |y| {
+        const source_y = reflect101Index(@intCast(y), height);
+        for (0..ext_width) |x| {
+            const source_x = reflect101Index(@intCast(x), width);
+            extended[y * ext_width + x] = input[source_y * width + source_x];
+        }
+    }
+
+    const luts = try allocator.alloc(u8, options.tiles_x * options.tiles_y * 256);
+    defer allocator.free(luts);
+    const clip_limit = claheClipLimit(options.clip_limit, tile_area);
+    const lut_scale = 255.0 / @as(f64, @floatFromInt(tile_area));
+    for (0..options.tiles_y) |tile_y| {
+        for (0..options.tiles_x) |tile_x| {
+            var hist = [_]usize{0} ** 256;
+            const start_x = tile_x * tile_width;
+            const start_y = tile_y * tile_height;
+            for (0..tile_height) |yy| {
+                for (0..tile_width) |xx| {
+                    hist[extended[(start_y + yy) * ext_width + start_x + xx]] += 1;
+                }
+            }
+            if (clip_limit > 0) {
+                clipHistogram(&hist, clip_limit);
+            }
+            const lut_offset = (tile_y * options.tiles_x + tile_x) * 256;
+            var sum: usize = 0;
+            for (hist, 0..) |count, bin| {
+                sum += count;
+                luts[lut_offset + bin] = saturateRoundU8(@as(f64, @floatFromInt(sum)) * lut_scale);
+            }
+        }
+    }
+
+    const output = try allocator.alloc(u8, width * height);
+    errdefer allocator.free(output);
+    const inv_tile_width = 1.0 / @as(f64, @floatFromInt(tile_width));
+    const inv_tile_height = 1.0 / @as(f64, @floatFromInt(tile_height));
+    for (0..height) |y| {
+        const tyf = @as(f64, @floatFromInt(y)) * inv_tile_height - 0.5;
+        const ty1_raw: isize = @intFromFloat(@floor(tyf));
+        const ty2_raw = ty1_raw + 1;
+        const ya = tyf - @as(f64, @floatFromInt(ty1_raw));
+        const ya1 = 1.0 - ya;
+        const ty1 = clampTileIndex(ty1_raw, options.tiles_y);
+        const ty2 = clampTileIndex(ty2_raw, options.tiles_y);
+
+        for (0..width) |x| {
+            const txf = @as(f64, @floatFromInt(x)) * inv_tile_width - 0.5;
+            const tx1_raw: isize = @intFromFloat(@floor(txf));
+            const tx2_raw = tx1_raw + 1;
+            const xa = txf - @as(f64, @floatFromInt(tx1_raw));
+            const xa1 = 1.0 - xa;
+            const tx1 = clampTileIndex(tx1_raw, options.tiles_x);
+            const tx2 = clampTileIndex(tx2_raw, options.tiles_x);
+            const value = input[y * width + x];
+            const lut11 = luts[(ty1 * options.tiles_x + tx1) * 256 + value];
+            const lut12 = luts[(ty1 * options.tiles_x + tx2) * 256 + value];
+            const lut21 = luts[(ty2 * options.tiles_x + tx1) * 256 + value];
+            const lut22 = luts[(ty2 * options.tiles_x + tx2) * 256 + value];
+            const top = @as(f64, @floatFromInt(lut11)) * xa1 + @as(f64, @floatFromInt(lut12)) * xa;
+            const bottom = @as(f64, @floatFromInt(lut21)) * xa1 + @as(f64, @floatFromInt(lut22)) * xa;
+            output[y * width + x] = saturateRoundU8(top * ya1 + bottom * ya);
+        }
+    }
+    return output;
+}
+
+pub fn detectFilmExtentAxisAligned(
+    allocator: std.mem.Allocator,
+    raw_gray: []const f64,
+    width: usize,
+    height: usize,
+) !?FilmExtent {
+    if (width == 0 or height == 0 or raw_gray.len != width * height) return error.InvalidFilmExtentInput;
+    const threshold = otsuThreshold(raw_gray);
+    const pixel_count = try std.math.mul(usize, width, height);
+    const mask = try allocator.alloc(bool, pixel_count);
+    defer allocator.free(mask);
+    for (mask, raw_gray) |*value, pixel| {
+        value.* = grayToU8(pixel) <= threshold;
+    }
+
+    var kernel = @max(@as(usize, 3), @min(width, height) / 20);
+    kernel |= 1;
+    try closeBinaryMask(allocator, mask, width, height, kernel);
+
+    const component_mask = try allocator.alloc(bool, pixel_count);
+    defer allocator.free(component_mask);
+    const component = try largestComponentBounds(allocator, mask, width, height, component_mask);
+    const bounds = component orelse return null;
+    if (@as(f64, @floatFromInt(bounds.area)) < @as(f64, @floatFromInt(pixel_count)) * 0.10) {
+        return null;
+    }
+    return try componentRotatedExtent(allocator, component_mask, width, height, bounds);
+}
+
+pub fn detectFramesFromImage(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    width: usize,
+    height: usize,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    format: FilmFormat,
+    options: DetectFramesImageOptions,
+) !DetectFramesResult {
+    const raw_gray = try prepareDetectionGray(
+        allocator,
+        data,
+        width,
+        height,
+        samples_per_pixel,
+        bits_per_sample,
+        .{ .invert = false },
+    );
+    defer allocator.free(raw_gray);
+
+    const film_extent = if (options.film_extent_override) |extent|
+        extent
+    else if (options.detect_film_extent)
+        try detectFilmExtentAxisAligned(allocator, raw_gray, width, height)
+    else
+        null;
+
+    const rotation_threshold_rad = 0.1 * std.math.pi / 180.0;
+    if (film_extent) |extent| {
+        if (@abs(extent.strip_angle) > rotation_threshold_rad) {
+            const transform = try expandedRotationTransform(width, height, extent.strip_angle);
+            var rotated_raw = try rotateImageExpandedReplicate(allocator, raw_gray, width, height, extent.strip_angle);
+            defer rotated_raw.deinit(allocator);
+            const rotated_strip = if (options.apply_clahe)
+                try prepareClaheStripGray(allocator, rotated_raw.pixels, rotated_raw.width, rotated_raw.height)
+            else
+                try allocator.dupe(f64, rotated_raw.pixels);
+            defer allocator.free(rotated_strip);
+
+            var detected = try detectFramesAxisAlignedPrepared(allocator, rotated_strip, rotated_raw.width, rotated_raw.height, format, .{
+                .frame_count_override = options.frame_count_override,
+                .film_extent = extent,
+                .cross_gray_raw = rotated_raw.pixels,
+                .dtw_options = options.dtw_options,
+            });
+            errdefer detected.deinit(allocator);
+            try transformFramesFromRotatedToOriginal(detected.frames, transform.inverse, extent.strip_angle);
+            return detected;
+        }
+    }
+
+    const strip_gray = if (options.apply_clahe)
+        try prepareClaheStripGray(allocator, raw_gray, width, height)
+    else
+        try allocator.dupe(f64, raw_gray);
+    defer allocator.free(strip_gray);
+
+    return detectFramesAxisAlignedPrepared(allocator, strip_gray, width, height, format, .{
+        .frame_count_override = options.frame_count_override,
+        .film_extent = film_extent,
+        .cross_gray_raw = raw_gray,
+        .dtw_options = options.dtw_options,
+    });
+}
+
+pub fn detectFramesWorkScale(width: usize, height: usize) !f64 {
+    if (width == 0 or height == 0) return error.InvalidDetectFramesInput;
+    const work_size = @max(width, height);
+    const scale = @as(f64, @floatFromInt(work_size)) / @as(f64, @floatFromInt(@max(width, height)));
+    return @min(scale, 1.0);
+}
+
+pub fn detectFramesAspect(format: FilmFormat, is_vertical: bool) []const u8 {
+    if (std.mem.eql(u8, format.name, "35mm")) return if (is_vertical) "24:36" else "36:24";
+    if (std.mem.eql(u8, format.name, "645")) return if (is_vertical) "41.5:56" else "56:41.5";
+    if (std.mem.eql(u8, format.name, "6x6")) return "56:56";
+    if (std.mem.eql(u8, format.name, "6x7")) return if (is_vertical) "56:69" else "69:56";
+    if (std.mem.eql(u8, format.name, "6x9")) return if (is_vertical) "56:84" else "84:56";
+    return if (is_vertical) "narrow:wide" else "wide:narrow";
+}
+
+pub fn expandedRotationTransform(orig_width: usize, orig_height: usize, angle_rad: f64) !ExpandedRotation {
+    if (orig_width == 0 or orig_height == 0 or !std.math.isFinite(angle_rad)) return error.InvalidRotationTransformInput;
+    const center_x = @as(f64, @floatFromInt(orig_width)) / 2.0;
+    const center_y = @as(f64, @floatFromInt(orig_height)) / 2.0;
+    const alpha = std.math.cos(angle_rad);
+    const beta = std.math.sin(angle_rad);
+    var forward = AffineTransform{ .values = .{
+        alpha,
+        beta,
+        (1.0 - alpha) * center_x - beta * center_y,
+        -beta,
+        alpha,
+        beta * center_x + (1.0 - alpha) * center_y,
+    } };
+    const rotated_width: usize = @intFromFloat(@as(f64, @floatFromInt(orig_height)) * @abs(beta) + @as(f64, @floatFromInt(orig_width)) * @abs(alpha));
+    const rotated_height: usize = @intFromFloat(@as(f64, @floatFromInt(orig_height)) * @abs(alpha) + @as(f64, @floatFromInt(orig_width)) * @abs(beta));
+    forward.values[2] += @as(f64, @floatFromInt(rotated_width)) / 2.0 - center_x;
+    forward.values[5] += @as(f64, @floatFromInt(rotated_height)) / 2.0 - center_y;
+    return .{
+        .rotated_width = rotated_width,
+        .rotated_height = rotated_height,
+        .forward = forward,
+        .inverse = try invertAffineTransform(forward),
+    };
+}
+
+pub fn transformFramesFromRotatedToOriginal(frames: []FrameRect, inverse: AffineTransform, strip_angle_rad: f64) !void {
+    if (!std.math.isFinite(strip_angle_rad)) return error.InvalidRotationTransformInput;
+    for (frames) |*frame| {
+        if (!std.math.isFinite(frame.cx) or !std.math.isFinite(frame.cy) or !std.math.isFinite(frame.angle)) {
+            return error.InvalidRotationTransformInput;
+        }
+        const rcx = frame.cx;
+        const rcy = frame.cy;
+        frame.cx = inverse.values[0] * rcx + inverse.values[1] * rcy + inverse.values[2];
+        frame.cy = inverse.values[3] * rcx + inverse.values[4] * rcy + inverse.values[5];
+        frame.angle += strip_angle_rad;
+    }
+}
+
+pub fn rotateImageExpandedReplicate(
+    allocator: std.mem.Allocator,
+    image: []const f64,
+    width: usize,
+    height: usize,
+    angle_rad: f64,
+) !RotatedCrop {
+    if (width == 0 or height == 0 or image.len != width * height) return error.InvalidRotationTransformInput;
+    const transform = try expandedRotationTransform(width, height, angle_rad);
+    const pixels = try allocator.alloc(f64, transform.rotated_width * transform.rotated_height);
+    errdefer allocator.free(pixels);
+    for (0..transform.rotated_height) |y| {
+        for (0..transform.rotated_width) |x| {
+            const src_x = transform.inverse.values[0] * @as(f64, @floatFromInt(x)) +
+                transform.inverse.values[1] * @as(f64, @floatFromInt(y)) +
+                transform.inverse.values[2];
+            const src_y = transform.inverse.values[3] * @as(f64, @floatFromInt(x)) +
+                transform.inverse.values[4] * @as(f64, @floatFromInt(y)) +
+                transform.inverse.values[5];
+            pixels[y * transform.rotated_width + x] = sampleReplicateBilinear(image, width, height, src_x, src_y);
+        }
+    }
+    return .{ .width = transform.rotated_width, .height = transform.rotated_height, .pixels = pixels };
+}
+
+fn prepareClaheStripGray(allocator: std.mem.Allocator, raw_gray: []const f64, width: usize, height: usize) ![]f64 {
+    if (width == 0 or height == 0 or raw_gray.len != width * height) return error.InvalidDetectionGrayInput;
+    const inverted = try grayImageToU8Bytes(allocator, raw_gray);
+    defer allocator.free(inverted);
+    for (inverted) |*value| {
+        value.* = 255 - value.*;
+    }
+    const clahe = try applyClahe8(allocator, inverted, width, height, .{ .clip_limit = 3.0, .tiles_x = 8, .tiles_y = 8 });
+    defer allocator.free(clahe);
+    return u8ImageToF64(allocator, clahe);
+}
+
+pub fn analyzeStrip(
+    img_width: usize,
+    img_height: usize,
+    format: FilmFormat,
+    film_extent: ?FilmExtent,
+) !StripAnalysis {
+    if (img_width == 0 or img_height == 0) return error.InvalidStripAnalysisInput;
+    const is_vertical = img_height > img_width;
+    const strip_narrow_px, const strip_long_px = if (film_extent) |extent|
+        .{ extent.strip_narrow_px, extent.strip_long_px }
+    else if (is_vertical)
+        .{ @as(f64, @floatFromInt(img_width)), @as(f64, @floatFromInt(img_height)) }
+    else
+        .{ @as(f64, @floatFromInt(img_height)), @as(f64, @floatFromInt(img_width)) };
+    if (!std.math.isFinite(strip_narrow_px) or !std.math.isFinite(strip_long_px) or strip_narrow_px <= 0.0 or strip_long_px <= 0.0) {
+        return error.InvalidStripAnalysisInput;
+    }
+
+    const px_per_mm = strip_narrow_px / format.strip_width_mm;
+    const narrow_mm = format.narrowMm();
+    const wide_mm = format.wideMm();
+    const frame_w_px = if (is_vertical) narrow_mm * px_per_mm else wide_mm * px_per_mm;
+    const frame_h_px = if (is_vertical) wide_mm * px_per_mm else narrow_mm * px_per_mm;
+    const pitch_px = format.pitch_mm * px_per_mm;
+    const n_float = format.pitchRatio() * strip_long_px / strip_narrow_px;
+    const n_frames = @max(@as(usize, 1), @as(usize, @intFromFloat(n_float)));
+    return .{
+        .n_frames = n_frames,
+        .frame_w = frame_w_px,
+        .frame_h = frame_h_px,
+        .pitch_px = pitch_px,
+        .is_vertical = is_vertical,
+    };
+}
+
+pub fn initialPlacement(
+    allocator: std.mem.Allocator,
+    img_width: usize,
+    img_height: usize,
+    n_frames: usize,
+    strip_info: StripAnalysis,
+    strip_angle: f64,
+) ![]FrameRect {
+    if (img_width == 0 or img_height == 0 or n_frames == 0 or !std.math.isFinite(strip_angle)) {
+        return error.InvalidInitialPlacementInput;
+    }
+    if (!std.math.isFinite(strip_info.frame_w) or !std.math.isFinite(strip_info.frame_h) or !std.math.isFinite(strip_info.pitch_px) or
+        strip_info.frame_w <= 0.0 or strip_info.frame_h <= 0.0 or strip_info.pitch_px <= 0.0)
+    {
+        return error.InvalidInitialPlacementInput;
+    }
+
+    const frames = try allocator.alloc(FrameRect, n_frames);
+    errdefer allocator.free(frames);
+    if (strip_info.is_vertical) {
+        const cx = @as(f64, @floatFromInt(img_width)) / 2.0;
+        const total_span = strip_info.pitch_px * @as(f64, @floatFromInt(n_frames));
+        const y_offset = (@as(f64, @floatFromInt(img_height)) - total_span) / 2.0 + strip_info.pitch_px / 2.0;
+        for (frames, 0..) |*frame, i| {
+            frame.* = .{
+                .cx = cx,
+                .cy = y_offset + @as(f64, @floatFromInt(i)) * strip_info.pitch_px,
+                .w = strip_info.frame_w,
+                .h = strip_info.frame_h,
+                .angle = strip_angle,
+            };
+        }
+    } else {
+        const cy = @as(f64, @floatFromInt(img_height)) / 2.0;
+        const total_span = strip_info.pitch_px * @as(f64, @floatFromInt(n_frames));
+        const x_offset = (@as(f64, @floatFromInt(img_width)) - total_span) / 2.0 + strip_info.pitch_px / 2.0;
+        for (frames, 0..) |*frame, i| {
+            frame.* = .{
+                .cx = x_offset + @as(f64, @floatFromInt(i)) * strip_info.pitch_px,
+                .cy = cy,
+                .w = strip_info.frame_w,
+                .h = strip_info.frame_h,
+                .angle = strip_angle,
+            };
+        }
+    }
+    return frames;
+}
+
+pub fn detectFramesAxisAlignedPrepared(
+    allocator: std.mem.Allocator,
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    format: FilmFormat,
+    options: DetectFramesOptions,
+) !DetectFramesResult {
+    if (width == 0 or height == 0 or gray.len != width * height) return error.InvalidDetectFramesInput;
+    var strip_info = try analyzeStrip(width, height, format, options.film_extent);
+    if (options.frame_count_override) |override| {
+        if (override == 0) return error.InvalidDetectFramesInput;
+        strip_info.n_frames = override;
+    }
+
+    var profiles = try computeStripProfiles(allocator, gray, width, height, strip_info.is_vertical);
+    defer profiles.deinit(allocator);
+
+    const grad_a = try computeAbsGradientBlurred(allocator, profiles.profile_a);
+    defer allocator.free(grad_a);
+    const grad_b = try computeAbsGradientBlurred(allocator, profiles.profile_b);
+    defer allocator.free(grad_b);
+    const grad_c = try computeAbsGradientBlurred(allocator, profiles.profile_c);
+    defer allocator.free(grad_c);
+    const grad_avg = try averageGradients(allocator, grad_a, grad_b, grad_c);
+    defer allocator.free(grad_avg);
+
+    const strip_len = if (strip_info.is_vertical) height else width;
+    const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
+    var alignment = try alignPitchDtw(allocator, grad_avg, strip_len, format, strip_info.n_frames, options.dtw_options);
+    defer alignment.deinit(allocator);
+
+    const edges = try allocator.alloc(usize, alignment.edge_positions.len);
+    errdefer allocator.free(edges);
+    try snapEdgesToGradients(grad_avg, alignment.edge_positions, edges, frame_strip_dim);
+    try applySizeConsistencyCorrection(grad_avg, edges, strip_info.n_frames, frame_strip_dim);
+    try repairTerminalFrames(
+        allocator,
+        grad_avg,
+        edges,
+        strip_info.n_frames,
+        frame_strip_dim,
+        @intFromFloat(frame_strip_dim * 0.15),
+        strip_info.pitch_px,
+    );
+    const frames = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
+    errdefer allocator.free(frames);
+    try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frames);
+    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames);
+    allocator.free(edges);
+    return .{ .frames = frames, .strip_info = strip_info, .aspect = detectFramesAspect(format, strip_info.is_vertical) };
+}
+
+pub fn computeStripProfiles(
+    allocator: std.mem.Allocator,
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    is_vertical: bool,
+) !StripProfiles {
+    if (width == 0 or height == 0 or gray.len != width * height) return error.InvalidFrameProfileBuffer;
+
+    const profile_len = if (is_vertical) height else width;
+    const cross_len = if (is_vertical) width else height;
+    var result = StripProfiles{
+        .profile_a = try allocator.alloc(f64, profile_len),
+        .profile_b = try allocator.alloc(f64, profile_len),
+        .profile_c = try allocator.alloc(f64, profile_len),
+        .cross_profile = try allocator.alloc(f64, cross_len),
+    };
+    errdefer result.deinit(allocator);
+
+    const cross_dim = if (is_vertical) width else height;
+    const band_width = @max(@as(usize, 1), cross_dim / 15);
+    const bands = [_]Band{
+        try profileBand(cross_dim, band_width, 0.30),
+        try profileBand(cross_dim, band_width, 0.50),
+        try profileBand(cross_dim, band_width, 0.70),
+    };
+
+    try computeBandProfile(gray, width, height, is_vertical, bands[0], result.profile_a);
+    try computeBandProfile(gray, width, height, is_vertical, bands[1], result.profile_b);
+    try computeBandProfile(gray, width, height, is_vertical, bands[2], result.profile_c);
+    try computeCrossProfile(gray, width, height, is_vertical, result.cross_profile);
+
+    try gaussianBlur1dInPlace(allocator, result.profile_a);
+    try gaussianBlur1dInPlace(allocator, result.profile_b);
+    try gaussianBlur1dInPlace(allocator, result.profile_c);
+    try gaussianBlur1dInPlace(allocator, result.cross_profile);
+    return result;
+}
+
+pub fn alignPitchDtw(
+    allocator: std.mem.Allocator,
+    gradient: []const f64,
+    strip_len: usize,
+    format: FilmFormat,
+    frame_count: usize,
+    options: DtwOptions,
+) !DtwAlignment {
+    if (gradient.len == 0 or strip_len == 0 or frame_count == 0) return error.InvalidDtwInput;
+    if (options.max_len == 0) return error.InvalidDtwInput;
+
+    const dtw_scale = @min(@as(f64, @floatFromInt(options.max_len)) / @as(f64, @floatFromInt(gradient.len)), 1.0);
+    const obs = if (dtw_scale < 1.0)
+        try resizeArea1d(allocator, gradient, @max(@as(usize, 1), @as(usize, @intFromFloat(@as(f64, @floatFromInt(gradient.len)) * dtw_scale))))
+    else
+        try allocator.dupe(f64, gradient);
+    defer allocator.free(obs);
+    normalizeMax(obs);
+
+    const total_mm = @as(f64, @floatFromInt(frame_count)) * format.pitch_mm;
+    const template_len_target = @min(obs.len, @as(usize, 1000));
+    const samples_per_mm = @as(f64, @floatFromInt(template_len_target)) / total_mm;
+    const effective_frame_dim = @max(@as(usize, 1), @as(usize, @intFromFloat(format.wideMm() * samples_per_mm)));
+    const effective_gap = @max(@as(usize, 1), @as(usize, @intFromFloat(format.gapMm() * samples_per_mm)));
+
+    const template = try buildDtwTemplate(allocator, frame_count, effective_frame_dim, effective_gap);
+    defer allocator.free(template);
+
+    const n_t = template.len;
+    const n_o = obs.len;
+    const scale_ratio = @as(f64, @floatFromInt(n_o)) / @as(f64, @floatFromInt(n_t));
+    const band = @as(usize, @intFromFloat(@max(
+        @as(f64, @floatFromInt(n_o)) * 0.1,
+        @as(f64, @floatFromInt(effective_frame_dim)) * 0.5,
+    )));
+    const columns = n_o + 1;
+    const cost = try allocator.alloc(f64, (n_t + 1) * columns);
+    defer allocator.free(cost);
+    @memset(cost, dtw_inf);
+    for (0..columns) |j| {
+        cost[j] = 0.0;
+    }
+
+    const parent = try allocator.alloc(DtwParent, (n_t + 1) * columns);
+    defer allocator.free(parent);
+    @memset(parent, .{});
+
+    for (1..n_t + 1) |i| {
+        const expected_j: usize = @intFromFloat(@as(f64, @floatFromInt(i)) * scale_ratio);
+        const j_lo = if (expected_j > band) expected_j - band else 1;
+        const j_hi = @min(n_o, expected_j + band);
+        if (j_hi < j_lo) continue;
+        for (j_lo..j_hi + 1) |j| {
+            const d = std.math.pow(f64, template[i - 1] - obs[j - 1], 2.0);
+            var best_cost = dtw_inf;
+            var best_parent = DtwParent{};
+            const diag = cost[dtwIndex(i - 1, j - 1, columns)];
+            if (diag < dtw_inf) {
+                best_cost = diag + d;
+                best_parent = .{ .i = i - 1, .j = j - 1 };
+            }
+            const left = cost[dtwIndex(i, j - 1, columns)];
+            if (left < dtw_inf and left + d * 0.5 < best_cost) {
+                best_cost = left + d * 0.5;
+                best_parent = .{ .i = i, .j = j - 1 };
+            }
+            const up = cost[dtwIndex(i - 1, j, columns)];
+            if (up < dtw_inf and up + d * 0.5 < best_cost) {
+                best_cost = up + d * 0.5;
+                best_parent = .{ .i = i - 1, .j = j };
+            }
+            const index = dtwIndex(i, j, columns);
+            if (best_cost < cost[index]) {
+                cost[index] = best_cost;
+                parent[index] = best_parent;
+            }
+        }
+    }
+
+    var end_j: usize = 0;
+    var end_cost = cost[dtwIndex(n_t, 0, columns)];
+    for (1..n_o + 1) |j| {
+        const value = cost[dtwIndex(n_t, j, columns)];
+        if (value < end_cost) {
+            end_cost = value;
+            end_j = j;
+        }
+    }
+    if (end_cost >= dtw_inf) return error.InvalidDtwAlignment;
+
+    const alignment = try allocator.alloc(?usize, n_t);
+    defer allocator.free(alignment);
+    @memset(alignment, null);
+    var i = n_t;
+    var j = end_j;
+    while (i > 0 and j > 0) {
+        alignment[i - 1] = j - 1;
+        const previous = parent[dtwIndex(i, j, columns)];
+        i = previous.i;
+        j = previous.j;
+    }
+
+    const edge_positions = try allocator.alloc(usize, frame_count * 2);
+    errdefer allocator.free(edge_positions);
+    var edge_index: usize = 0;
+    for (template, 0..) |value, template_index| {
+        if (value != 1.0) continue;
+        const pos_dtw = alignment[template_index] orelse try nearestAlignedIndex(alignment, template_index);
+        edge_positions[edge_index] = pythonRoundToUsize(@as(f64, @floatFromInt(pos_dtw)) / dtw_scale);
+        edge_index += 1;
+    }
+    if (edge_index != frame_count * 2) return error.InvalidDtwAlignment;
+
+    return .{
+        .edge_positions = edge_positions,
+        .dtw_scale = dtw_scale,
+        .template_len = template.len,
+        .effective_frame_dim = effective_frame_dim,
+        .effective_gap = effective_gap,
+        .band = band,
+        .end_j = end_j,
+    };
+}
+
+pub fn snapEdgesToGradients(
+    gradient: []const f64,
+    edge_positions: []const usize,
+    output: []usize,
+    frame_strip_dim: f64,
+) !void {
+    if (gradient.len == 0 or edge_positions.len == 0 or output.len != edge_positions.len) return error.InvalidGradientSnapInput;
+    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidGradientSnapInput;
+
+    const snap_radius: usize = @intFromFloat(frame_strip_dim * 0.15);
+    const n_edges = edge_positions.len;
+    for (edge_positions, 0..) |pos, edge_index| {
+        const is_frame_end = edge_index % 2 == 1;
+        const is_internal = edge_index > 0 and edge_index < n_edges - 1;
+        const min_pos = if (edge_index > 0) output[edge_index - 1] + 3 else 0;
+        const radius_lo = if (pos > snap_radius) pos - snap_radius else 0;
+        const lo = @max(min_pos, radius_lo);
+        const hi = @min(gradient.len, pos + snap_radius + 1);
+
+        if (hi > lo) {
+            const window = gradient[lo..hi];
+            const best = if (is_internal and is_frame_end)
+                lo + (firstProminentPeak(window) orelse argMax(window))
+            else if (is_internal and !is_frame_end)
+                lo + (lastProminentPeak(window) orelse argMax(window))
+            else
+                lo + argMax(window);
+            output[edge_index] = best;
+        } else {
+            output[edge_index] = @max(min_pos, pos);
+        }
+    }
+}
+
+pub fn snapToWeightedPeak(gradient: []const f64, target: usize, radius: usize, sigma: f64) !usize {
+    if (gradient.len == 0) return error.InvalidWeightedPeakInput;
+    if (!std.math.isFinite(sigma) or sigma <= 0.0) return error.InvalidWeightedPeakInput;
+    const lo = if (target > radius) target - radius else 0;
+    const hi = @min(gradient.len, target + radius + 1);
+    if (hi <= lo) return target;
+
+    var best_index = lo;
+    var best_value = weightedPeakValue(gradient[lo], lo, target, sigma);
+    for (gradient[lo + 1 .. hi], lo + 1..) |value, index| {
+        const weighted = weightedPeakValue(value, index, target, sigma);
+        if (weighted > best_value) {
+            best_value = weighted;
+            best_index = index;
+        }
+    }
+    return best_index;
+}
+
+pub fn applySizeConsistencyCorrection(
+    gradient: []const f64,
+    edge_positions: []usize,
+    frame_count: usize,
+    frame_strip_dim: f64,
+) !void {
+    if (gradient.len == 0 or edge_positions.len == 0) return error.InvalidSizeCorrectionInput;
+    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidSizeCorrectionInput;
+    if (frame_count < 2 or edge_positions.len != frame_count * 2) return;
+
+    for (0..frame_count) |frame_index| {
+        const start_index = 2 * frame_index;
+        const end_index = start_index + 1;
+        const start = edge_positions[start_index];
+        const end = edge_positions[end_index];
+        const dim_i = @as(f64, @floatFromInt(end)) - @as(f64, @floatFromInt(start));
+        const ratio = dim_i / frame_strip_dim;
+        if (ratio >= 0.7 and ratio <= 1.3) continue;
+
+        const end_target = start + pythonRoundToUsize(frame_strip_dim);
+        const end_radius = @max(@as(usize, @intFromFloat(frame_strip_dim * 0.05)), @as(usize, 4));
+        const half_dim: usize = @intFromFloat(frame_strip_dim * 0.5);
+        const min_end = start + half_dim;
+        const target_lo = if (end_target > end_radius) end_target - end_radius else 0;
+        const end_lo = @max(min_end, target_lo);
+        const end_hi = @min(gradient.len, end_target + end_radius + 1);
+        edge_positions[end_index] = if (end_hi > end_lo)
+            end_lo + argMax(gradient[end_lo..end_hi])
+        else
+            end_target;
+    }
+}
+
+pub fn repairTerminalFrames(
+    allocator: std.mem.Allocator,
+    gradient: []const f64,
+    edge_positions: []usize,
+    frame_count: usize,
+    frame_strip_dim: f64,
+    snap_radius: usize,
+    work_pitch_px: f64,
+) !void {
+    if (gradient.len == 0 or edge_positions.len == 0) return error.InvalidTerminalRepairInput;
+    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidTerminalRepairInput;
+    if (!std.math.isFinite(work_pitch_px) or work_pitch_px <= 0.0) return error.InvalidTerminalRepairInput;
+    if (edge_positions.len != frame_count * 2) return;
+
+    var run_last_frame_fix = false;
+    if (frame_count >= 3) {
+        run_last_frame_fix = true;
+    } else if (frame_count == 2) {
+        const last_dim = edge_positions[edge_positions.len - 1] - edge_positions[edge_positions.len - 2];
+        const last_dim_ratio = @as(f64, @floatFromInt(last_dim)) / frame_strip_dim;
+        run_last_frame_fix = last_dim_ratio < 0.85 or last_dim_ratio > 1.15;
+    }
+
+    if (run_last_frame_fix) {
+        const starts = try frameStarts(allocator, edge_positions, frame_count);
+        defer allocator.free(starts);
+        const dims = try frameDimsRange(allocator, edge_positions, 0, frame_count - 1);
+        defer allocator.free(dims);
+        const pitches = try framePitchesRange(allocator, starts, 0, if (frame_count >= 2) frame_count - 2 else 0);
+        defer allocator.free(pitches);
+
+        const median_pitch = if (pitches.len > 0) try medianTrunc(allocator, pitches) else pythonRoundToUsize(work_pitch_px);
+        const expected_dim = try medianTrunc(allocator, dims);
+        const expected_start = starts[frame_count - 2] + median_pitch;
+        const wide_radius = @max(snap_radius, expected_dim / 4);
+        var new_start = try snapToWeightedPeak(gradient, expected_start, wide_radius, @max(@as(f64, @floatFromInt(expected_dim)) * 0.01, 1.0));
+        new_start = @max(new_start, edge_positions[edge_positions.len - 3] + 3);
+
+        const end_target = new_start + expected_dim;
+        const dim_std = if (dims.len > 1) stdDevUsize(dims) else 3.0;
+        const end_radius = @max(@as(usize, @intFromFloat(dim_std * 1.5)) + 2, @as(usize, 4));
+        const end_lo = @max(new_start + expected_dim / 2, if (end_target > end_radius) end_target - end_radius else 0);
+        const end_hi = @min(gradient.len, end_target + end_radius + 1);
+        const new_end = if (end_hi > end_lo)
+            end_lo + argMax(gradient[end_lo..end_hi])
+        else
+            end_target;
+        edge_positions[edge_positions.len - 2] = new_start;
+        edge_positions[edge_positions.len - 1] = new_end;
+    }
+
+    if (frame_count >= 3) {
+        const starts = try frameStarts(allocator, edge_positions, frame_count);
+        defer allocator.free(starts);
+        const dims = try frameDimsRange(allocator, edge_positions, 1, frame_count);
+        defer allocator.free(dims);
+        const pitches = try framePitchesRange(allocator, starts, 1, frame_count - 1);
+        defer allocator.free(pitches);
+
+        const median_pitch = if (pitches.len > 0) try medianTrunc(allocator, pitches) else pythonRoundToUsize(work_pitch_px);
+        const expected_dim = try medianTrunc(allocator, dims);
+        const expected_end = starts[1] -| (median_pitch -| expected_dim);
+        const expected_start = expected_end -| expected_dim;
+        const wide_radius = @max(snap_radius, expected_dim / 4);
+        const new_start = try snapToWeightedPeak(gradient, expected_start, wide_radius, @max(@as(f64, @floatFromInt(expected_dim)) * 0.01, 1.0));
+
+        const end_target = new_start + expected_dim;
+        const dim_std = if (dims.len > 1) stdDevUsize(dims) else 3.0;
+        const end_radius = @max(@as(usize, @intFromFloat(dim_std * 1.5)) + 2, @as(usize, 4));
+        const second_start_limit = if (edge_positions[2] > 3) edge_positions[2] - 3 else 0;
+        const end_lo = @max(new_start + expected_dim / 2, if (end_target > end_radius) end_target - end_radius else 0);
+        const end_hi = @min(second_start_limit, end_target + end_radius + 1);
+        const new_end = if (end_hi > end_lo)
+            end_lo + argMax(gradient[end_lo..end_hi])
+        else
+            end_target;
+        edge_positions[0] = new_start;
+        edge_positions[1] = new_end;
+    }
+}
+
+pub fn measureCrossStripEdges(
+    allocator: std.mem.Allocator,
+    gradient_signed: []const f64,
+    cross_dim_est: f64,
+    cross_search_r: usize,
+) !?CrossStripMeasurement {
+    if (gradient_signed.len < 3) return error.InvalidCrossStripInput;
+    if (!std.math.isFinite(cross_dim_est) or cross_dim_est <= 0.0) return error.InvalidCrossStripInput;
+
+    const g_pos = try allocator.alloc(f64, gradient_signed.len);
+    defer allocator.free(g_pos);
+    const g_neg = try allocator.alloc(f64, gradient_signed.len);
+    defer allocator.free(g_neg);
+    for (gradient_signed, g_pos, g_neg) |value, *pos, *neg| {
+        pos.* = @max(value, 0.0);
+        neg.* = @max(-value, 0.0);
+    }
+
+    const n_pts = gradient_signed.len;
+    const denominator = @as(f64, @floatFromInt(n_pts - 1));
+    const half_w = cross_dim_est / 2.0;
+    const hw_idx = pythonRoundToUsize(half_w * denominator / denominator);
+    if (!(hw_idx > 0 and hw_idx < g_pos.len / 2)) return null;
+
+    const lo_c = hw_idx;
+    const hi_c = g_pos.len - hw_idx;
+    const paired_len = hi_c - lo_c;
+    const paired = try allocator.alloc(f64, paired_len);
+    defer allocator.free(paired);
+    for (paired, 0..) |*score, index| {
+        score.* = g_pos[index] * g_neg[index + 2 * hw_idx];
+    }
+
+    const center_target_idx = pythonRoundToUsize(@as(f64, @floatFromInt(n_pts - 1)) / 2.0) - lo_c;
+    const search_lo = if (center_target_idx > cross_search_r) center_target_idx - cross_search_r else 0;
+    const search_hi = @min(paired.len, center_target_idx + cross_search_r + 1);
+    if (search_hi <= search_lo) return null;
+    const search = paired[search_lo..search_hi];
+    if (maxSlice(search) <= 0.0) return null;
+
+    const coarse_k = search_lo + argMax(search);
+    const left_img_idx = coarse_k;
+    const right_img_idx = coarse_k + 2 * hw_idx;
+    const left_f = subpixelPeak(g_pos, if (left_img_idx > 2) left_img_idx - 2 else 0, @min(g_pos.len, left_img_idx + 3));
+    const right_f = subpixelPeak(g_neg, if (right_img_idx > 2) right_img_idx - 2 else 0, @min(g_neg.len, right_img_idx + 3));
+    const center = @as(f64, @floatFromInt(n_pts - 1)) / 2.0;
+    const left_t = left_f + 1.0 - center;
+    const right_t = right_f + 1.0 - center;
+    return .{
+        .left_t = left_t,
+        .right_t = right_t,
+        .cross_w = right_t - left_t,
+        .cross_center_offset = (left_t + right_t) / 2.0,
+        .hw_idx = hw_idx,
+        .coarse_k = coarse_k,
+    };
+}
+
+pub fn estimateAngleTheilSen(
+    allocator: std.mem.Allocator,
+    points: []const EdgePeakPoint,
+    max_angle_rad: f64,
+) !?TheilSenAngle {
+    if (!std.math.isFinite(max_angle_rad) or max_angle_rad <= 0.0) return error.InvalidTheilSenInput;
+    if (points.len < 2) return null;
+    const slopes = try allocator.alloc(f64, points.len * (points.len - 1) / 2);
+    defer allocator.free(slopes);
+    var slope_count: usize = 0;
+    for (0..points.len) |j| {
+        for (j + 1..points.len) |k| {
+            const dx = points[k].x - points[j].x;
+            if (@abs(dx) <= 1.0) continue;
+            slopes[slope_count] = (points[k].y - points[j].y) / dx;
+            slope_count += 1;
+        }
+    }
+    if (slope_count == 0) return null;
+    const values = slopes[0..slope_count];
+    std.sort.pdq(f64, values, {}, lessThanF64);
+    const median_slope = medianSortedF64(values);
+    const unclamped = std.math.atan(median_slope);
+    return .{
+        .median_slope = median_slope,
+        .angle = @max(-max_angle_rad, @min(max_angle_rad, unclamped)),
+    };
+}
+
+pub fn singleFrameFallback(frame_count: usize, frame: FrameRect, preview_width: f64, preview_height: f64) !?FrameRect {
+    if (!std.math.isFinite(preview_width) or !std.math.isFinite(preview_height) or preview_width <= 0.0 or preview_height <= 0.0) {
+        return error.InvalidSingleFrameFallbackInput;
+    }
+    if (frame_count != 1) return null;
+    const area_ratio = (frame.w * frame.h) / (preview_width * preview_height);
+    if (area_ratio < 0.3) {
+        return .{
+            .cx = preview_width / 2.0,
+            .cy = preview_height / 2.0,
+            .w = preview_width,
+            .h = preview_height,
+            .angle = 0.0,
+        };
+    }
+    return null;
+}
+
+pub fn computePreviewGeometry(full_width: usize, full_height: usize, preview_size: usize) !PreviewGeometry {
+    if (full_width == 0 or full_height == 0) return error.InvalidPreviewGeometry;
+    const max_dim = @max(full_width, full_height);
+    const preview_scale = if (preview_size > 0)
+        @min(@as(f64, @floatFromInt(preview_size)) / @as(f64, @floatFromInt(max_dim)), 1.0)
+    else
+        1.0;
+    const preview_width = if (preview_scale < 1.0)
+        @as(usize, @intFromFloat(@as(f64, @floatFromInt(full_width)) * preview_scale))
+    else
+        full_width;
+    const preview_height = if (preview_scale < 1.0)
+        @as(usize, @intFromFloat(@as(f64, @floatFromInt(full_height)) * preview_scale))
+    else
+        full_height;
+    if (preview_width == 0 or preview_height == 0) return error.InvalidPreviewGeometry;
+    return .{
+        .full_width = full_width,
+        .full_height = full_height,
+        .preview_width = preview_width,
+        .preview_height = preview_height,
+        .preview_scale = preview_scale,
+    };
+}
+
+pub fn previewFrameToFullResolution(frame: FrameRect, preview_scale: f64) !FrameRect {
+    try validatePreviewScale(preview_scale);
+    return .{
+        .cx = frame.cx / preview_scale,
+        .cy = frame.cy / preview_scale,
+        .w = frame.w / preview_scale,
+        .h = frame.h / preview_scale,
+        .angle = frame.angle,
+    };
+}
+
+pub fn previewSelectionToFullResolution(selection: PreviewSelection, preview_scale: f64) !FrameRect {
+    try validatePreviewScale(preview_scale);
+    return .{
+        .cx = (selection.x + selection.w / 2.0) / preview_scale,
+        .cy = (selection.y + selection.h / 2.0) / preview_scale,
+        .w = selection.w / preview_scale,
+        .h = selection.h / preview_scale,
+        .angle = selection.angle,
+    };
+}
+
+pub fn previewRebateToFullResolution(rect: RebateOriginRect, preview_scale: f64) !RebateOriginRect {
+    try validatePreviewScale(preview_scale);
+    return .{
+        .x = rect.x / preview_scale,
+        .y = rect.y / preview_scale,
+        .w = rect.w / preview_scale,
+        .h = rect.h / preview_scale,
+        .angle = rect.angle,
+    };
+}
+
+pub fn frameRmsError(detected_full: FrameRect, ground_truth_full: FrameRect) f64 {
+    const dx = detected_full.cx - ground_truth_full.cx;
+    const dy = detected_full.cy - ground_truth_full.cy;
+    const dw = detected_full.w - ground_truth_full.w;
+    const dh = detected_full.h - ground_truth_full.h;
+    return @sqrt(dx * dx + dy * dy + dw * dw + dh * dh);
+}
+
+pub fn frameAngleErrorRadians(detected_angle: f64, ground_truth_angle: f64) f64 {
+    return detected_angle - ground_truth_angle;
+}
+
+pub fn cropRotatedRect(
+    allocator: std.mem.Allocator,
+    image: []const f64,
+    img_width: usize,
+    img_height: usize,
+    cx: f64,
+    cy: f64,
+    w: f64,
+    h: f64,
+    angle_deg: f64,
+) !RotatedCrop {
+    if (img_width == 0 or img_height == 0 or image.len != img_width * img_height) return error.InvalidRotatedCropInput;
+    if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or !std.math.isFinite(w) or !std.math.isFinite(h) or !std.math.isFinite(angle_deg)) {
+        return error.InvalidRotatedCropInput;
+    }
+    if (w <= 0.0 or h <= 0.0) return error.InvalidRotatedCropInput;
+
+    const diag = @sqrt(w * w + h * h) / 2.0;
+    const margin: i64 = @as(i64, @intFromFloat(@ceil(diag))) + 4;
+    const cx_i: i64 = @intFromFloat(cx);
+    const cy_i: i64 = @intFromFloat(cy);
+    const x0_i = @max(cx_i - margin, 0);
+    const y0_i = @max(cy_i - margin, 0);
+    const x1_i = @min(cx_i + margin, @as(i64, @intCast(img_width)));
+    const y1_i = @min(cy_i + margin, @as(i64, @intCast(img_height)));
+    if (x1_i <= x0_i or y1_i <= y0_i) return error.InvalidRotatedCropInput;
+
+    const x0: usize = @intCast(x0_i);
+    const y0: usize = @intCast(y0_i);
+    const sub_w: usize = @intCast(x1_i - x0_i);
+    const sub_h: usize = @intCast(y1_i - y0_i);
+    const local_cx = cx - @as(f64, @floatFromInt(x0));
+    const local_cy = cy - @as(f64, @floatFromInt(y0));
+
+    const pad: usize = 2;
+    const out_w: usize = @as(usize, @intFromFloat(@ceil(w))) + pad * 2;
+    const out_h: usize = @as(usize, @intFromFloat(@ceil(h))) + pad * 2;
+    const final_w: usize = @intFromFloat(w);
+    const final_h: usize = @intFromFloat(h);
+    if (final_w == 0 or final_h == 0) return error.InvalidRotatedCropInput;
+
+    const radians = angle_deg * std.math.pi / 180.0;
+    const alpha = @cos(radians);
+    const beta = @sin(radians);
+    const m00 = alpha;
+    const m01 = beta;
+    var m02 = (1.0 - alpha) * local_cx - beta * local_cy;
+    const m10 = -beta;
+    const m11 = alpha;
+    var m12 = beta * local_cx + (1.0 - alpha) * local_cy;
+    m02 += @as(f64, @floatFromInt(out_w)) / 2.0 - local_cx;
+    m12 += @as(f64, @floatFromInt(out_h)) / 2.0 - local_cy;
+
+    const det = m00 * m11 - m01 * m10;
+    if (@abs(det) < 1e-12) return error.InvalidRotatedCropInput;
+    const inv00 = m11 / det;
+    const inv01 = -m01 / det;
+    const inv10 = -m10 / det;
+    const inv11 = m00 / det;
+
+    const pixels = try allocator.alloc(f64, final_w * final_h);
+    errdefer allocator.free(pixels);
+    for (0..final_h) |out_y| {
+        for (0..final_w) |out_x| {
+            const dst_x = @as(f64, @floatFromInt(out_x + pad));
+            const dst_y = @as(f64, @floatFromInt(out_y + pad));
+            const tx = dst_x - m02;
+            const ty = dst_y - m12;
+            const src_x = inv00 * tx + inv01 * ty;
+            const src_y = inv10 * tx + inv11 * ty;
+            pixels[out_y * final_w + out_x] = sampleReflectBilinear(image, img_width, x0, y0, sub_w, sub_h, src_x, src_y);
+        }
+    }
+    return .{ .width = final_w, .height = final_h, .pixels = pixels };
+}
+
+pub fn makeRebateMask(
+    allocator: std.mem.Allocator,
+    height: usize,
+    width: usize,
+    rect: ?RebateMaskRect,
+) !?[]bool {
+    if (height == 0 or width == 0) return error.InvalidRebateMaskInput;
+    const rebate = rect orelse return null;
+    if (rebate.width <= 0.0) return null;
+
+    const mask = try allocator.alloc(bool, height * width);
+    errdefer allocator.free(mask);
+    @memset(mask, false);
+
+    var x0: i64 = @intFromFloat(rebate.x);
+    var y0: i64 = @intFromFloat(rebate.y);
+    var x1: i64 = x0 + @as(i64, @intFromFloat(rebate.width));
+    var y1: i64 = y0 + @as(i64, @intFromFloat(rebate.height));
+    x0 = @max(0, x0);
+    y0 = @max(0, y0);
+    x1 = @min(@as(i64, @intCast(width)), x1);
+    y1 = @min(@as(i64, @intCast(height)), y1);
+    if (x1 > x0 and y1 > y0) {
+        for (@as(usize, @intCast(y0))..@as(usize, @intCast(y1))) |y| {
+            for (@as(usize, @intCast(x0))..@as(usize, @intCast(x1))) |x| {
+                mask[y * width + x] = true;
+            }
+        }
+    }
+    return mask;
+}
+
+pub fn rebateInBounds(image_width: usize, image_height: usize, rect: RebateOriginRect) bool {
+    const cx = rect.x + rect.w / 2.0;
+    const cy = rect.y + rect.h / 2.0;
+    return cx >= 0.0 and cy >= 0.0 and cx < @as(f64, @floatFromInt(image_width)) and cy < @as(f64, @floatFromInt(image_height));
+}
+
+pub fn extractRebatePixels(
+    allocator: std.mem.Allocator,
+    image: []const f64,
+    image_width: usize,
+    image_height: usize,
+    rect: RebateOriginRect,
+) !RotatedCrop {
+    const cx = rect.x + rect.w / 2.0;
+    const cy = rect.y + rect.h / 2.0;
+    return cropRotatedRect(
+        allocator,
+        image,
+        image_width,
+        image_height,
+        cx,
+        cy,
+        rect.w,
+        rect.h,
+        rect.angle * 180.0 / std.math.pi,
+    );
+}
+
+pub fn computeInterFrameRebate(frames: []const FrameRect) ?RebateRect {
+    if (frames.len < 2) return null;
+    const gap_idx = (frames.len - 1) / 2;
+    const f0 = frames[gap_idx];
+    const f1 = frames[gap_idx + 1];
+    const dcx = f1.cx - f0.cx;
+    const dcy = f1.cy - f0.cy;
+    const is_vertical = @abs(dcy) > @abs(dcx);
+    const gap_cx = (f0.cx + f1.cx) / 2.0;
+    const gap_cy = (f0.cy + f1.cy) / 2.0;
+    const pitch = @sqrt(dcx * dcx + dcy * dcy);
+    const f_strip_dim = if (is_vertical) (f0.h + f1.h) / 2.0 else (f0.w + f1.w) / 2.0;
+    const f_cross_dim = if (is_vertical) (f0.w + f1.w) / 2.0 else (f0.h + f1.h) / 2.0;
+    const gap_strip_size = pitch - f_strip_dim;
+    if (gap_strip_size <= 0.0) return null;
+
+    const strip_margin = @max(gap_strip_size * 0.2, 2.0);
+    const cross_margin = f_cross_dim * 0.1;
+    const rebate_strip_dim = @max(gap_strip_size - 2.0 * strip_margin, 1.0);
+    const rebate_cross_dim = @max(f_cross_dim - 2.0 * cross_margin, 1.0);
+    const angle = (f0.angle + f1.angle) / 2.0;
+
+    return if (is_vertical)
+        .{ .cx = gap_cx, .cy = gap_cy, .w = rebate_cross_dim, .h = rebate_strip_dim, .angle = angle }
+    else
+        .{ .cx = gap_cx, .cy = gap_cy, .w = rebate_strip_dim, .h = rebate_cross_dim, .angle = angle };
+}
+
+const Band = struct {
+    start: usize,
+    end: usize,
+};
+
+const AreaWeight = struct {
+    index: usize,
+    weight: f64,
+};
+
+const AreaWeights = struct {
+    offsets: []usize,
+    weights: []AreaWeight,
+
+    fn deinit(self: *AreaWeights, allocator: std.mem.Allocator) void {
+        allocator.free(self.offsets);
+        allocator.free(self.weights);
+        self.* = undefined;
+    }
+
+    fn forOutput(self: AreaWeights, output_index: usize) []const AreaWeight {
+        return self.weights[self.offsets[output_index]..self.offsets[output_index + 1]];
+    }
+};
+
+fn profileBand(cross_dim: usize, band_width: usize, fraction: f64) !Band {
+    const center: usize = @intFromFloat(@as(f64, @floatFromInt(cross_dim)) * fraction);
+    const half = band_width / 2;
+    if (center < half) return error.InvalidFrameProfileBand;
+    const start = center - half;
+    const end = center + half;
+    if (end <= start or end > cross_dim) return error.InvalidFrameProfileBand;
+    return .{ .start = start, .end = end };
+}
+
+fn buildAreaWeights(allocator: std.mem.Allocator, source_len: usize, target_len: usize) !AreaWeights {
+    if (source_len == 0 or target_len == 0 or target_len > source_len) return error.InvalidAreaResizeInput;
+    const offsets = try allocator.alloc(usize, target_len + 1);
+    errdefer allocator.free(offsets);
+    var weights: std.ArrayList(AreaWeight) = .empty;
+    errdefer weights.deinit(allocator);
+    const scale = @as(f64, @floatFromInt(source_len)) / @as(f64, @floatFromInt(target_len));
+    for (0..target_len) |out_index| {
+        offsets[out_index] = weights.items.len;
+        const start = @as(f64, @floatFromInt(out_index)) * scale;
+        const end = @as(f64, @floatFromInt(out_index + 1)) * scale;
+        const first: usize = @intFromFloat(@floor(start));
+        const last_exclusive: usize = @min(source_len, @as(usize, @intFromFloat(@ceil(end))));
+        for (first..last_exclusive) |source_index| {
+            const source_start = @as(f64, @floatFromInt(source_index));
+            const source_end = source_start + 1.0;
+            const overlap = @min(end, source_end) - @max(start, source_start);
+            if (overlap > 0.0) {
+                try weights.append(allocator, .{ .index = source_index, .weight = overlap / scale });
+            }
+        }
+    }
+    offsets[target_len] = weights.items.len;
+    return .{ .offsets = offsets, .weights = try weights.toOwnedSlice(allocator) };
+}
+
+fn computeBandProfile(
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    is_vertical: bool,
+    band: Band,
+    output: []f64,
+) !void {
+    const count = band.end - band.start;
+    if (count == 0) return error.InvalidFrameProfileBand;
+
+    if (is_vertical) {
+        if (output.len != height) return error.InvalidFrameProfileBuffer;
+        for (0..height) |y| {
+            var sum: f64 = 0.0;
+            for (band.start..band.end) |x| {
+                sum += gray[y * width + x];
+            }
+            output[y] = sum / @as(f64, @floatFromInt(count));
+        }
+    } else {
+        if (output.len != width) return error.InvalidFrameProfileBuffer;
+        for (0..width) |x| {
+            var sum: f64 = 0.0;
+            for (band.start..band.end) |y| {
+                sum += gray[y * width + x];
+            }
+            output[x] = sum / @as(f64, @floatFromInt(count));
+        }
+    }
+}
+
+fn computeCrossProfile(
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    is_vertical: bool,
+    output: []f64,
+) !void {
+    if (is_vertical) {
+        if (output.len != width) return error.InvalidFrameProfileBuffer;
+        for (0..width) |x| {
+            var sum: f64 = 0.0;
+            for (0..height) |y| {
+                sum += gray[y * width + x];
+            }
+            output[x] = sum / @as(f64, @floatFromInt(height));
+        }
+    } else {
+        if (output.len != height) return error.InvalidFrameProfileBuffer;
+        for (0..height) |y| {
+            var sum: f64 = 0.0;
+            for (0..width) |x| {
+                sum += gray[y * width + x];
+            }
+            output[y] = sum / @as(f64, @floatFromInt(width));
+        }
+    }
+}
+
+fn gaussianBlur1dInPlace(allocator: std.mem.Allocator, values: []f64) !void {
+    if (values.len == 0) return error.InvalidFrameProfileBuffer;
+    try gaussianBlur1dInPlaceWithKernel(allocator, values, profileBlurKernelSize(values.len));
+}
+
+fn gaussianBlur1dInPlaceWithKernel(allocator: std.mem.Allocator, values: []f64, kernel_size: usize) !void {
+    if (values.len == 0 or kernel_size == 0 or kernel_size % 2 == 0) return error.InvalidFrameProfileBuffer;
+    const kernel = try gaussianKernel(allocator, kernel_size);
+    defer allocator.free(kernel);
+    const input = try allocator.dupe(f64, values);
+    defer allocator.free(input);
+
+    const radius: i32 = @intCast(kernel_size / 2);
+    for (values, 0..) |*out, index| {
+        var sum: f64 = 0.0;
+        for (kernel, 0..) |weight, k| {
+            const offset = @as(i32, @intCast(k)) - radius;
+            const source = reflect101Index(@as(i32, @intCast(index)) + offset, input.len);
+            sum += input[source] * weight;
+        }
+        out.* = sum;
+    }
+}
+
+fn profileBlurKernelSize(len: usize) usize {
+    var kernel_size = @max(@as(usize, 3), len / 100);
+    kernel_size |= 1;
+    return kernel_size;
+}
+
+fn gradientBlurKernelSize(len: usize) usize {
+    var kernel_size = @max(@as(usize, 3), len / 200);
+    kernel_size |= 1;
+    return kernel_size;
+}
+
+fn computeAbsGradientBlurred(allocator: std.mem.Allocator, profile: []const f64) ![]f64 {
+    if (profile.len == 0) return error.InvalidDetectFramesInput;
+    const gradient = try allocator.alloc(f64, profile.len);
+    errdefer allocator.free(gradient);
+    if (profile.len == 1) {
+        gradient[0] = 0.0;
+        return gradient;
+    }
+    gradient[0] = 0.0;
+    for (1..profile.len - 1) |index| {
+        gradient[index] = @abs((profile[index + 1] - profile[index - 1]) / 2.0);
+    }
+    gradient[profile.len - 1] = 0.0;
+    try gaussianBlur1dInPlaceWithKernel(allocator, gradient, gradientBlurKernelSize(profile.len));
+    return gradient;
+}
+
+fn averageGradients(allocator: std.mem.Allocator, a: []const f64, b: []const f64, c: []const f64) ![]f64 {
+    if (a.len == 0 or a.len != b.len or a.len != c.len) return error.InvalidDetectFramesInput;
+    const out = try allocator.alloc(f64, a.len);
+    errdefer allocator.free(out);
+    for (out, a, b, c) |*value, av, bv, cv| {
+        value.* = (av + bv + cv) / 3.0;
+    }
+    return out;
+}
+
+const AngleGradientSet = struct {
+    gradients: [][]f64,
+    positions: []f64,
+
+    fn deinit(self: *AngleGradientSet, allocator: std.mem.Allocator) void {
+        for (self.gradients) |gradient| {
+            allocator.free(gradient);
+        }
+        allocator.free(self.gradients);
+        allocator.free(self.positions);
+        self.* = undefined;
+    }
+};
+
+fn estimateFrameAnglesAxisAligned(
+    allocator: std.mem.Allocator,
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    strip_info: StripAnalysis,
+    frame_strip_dim: f64,
+    edge_positions: []const usize,
+    frames: []FrameRect,
+) !void {
+    if (gray.len != width * height or edge_positions.len != strip_info.n_frames * 2 or frames.len != strip_info.n_frames) {
+        return error.InvalidDetectFramesInput;
+    }
+    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidDetectFramesInput;
+
+    var angle_set = try computeAngleGradientSet(allocator, gray, width, height, strip_info.is_vertical);
+    defer angle_set.deinit(allocator);
+
+    const search_r = @max(@as(usize, 5), @as(usize, @intFromFloat(frame_strip_dim * 0.025)));
+    const max_angle = 5.0 * std.math.pi / 180.0;
+    const points = try allocator.alloc(EdgePeakPoint, angle_set.gradients.len * 2);
+    defer allocator.free(points);
+
+    for (frames, 0..) |*frame, frame_index| {
+        var edge_indices = [_]usize{ 2 * frame_index, 2 * frame_index + 1 };
+        var edge_count: usize = 2;
+        if (strip_info.n_frames >= 3) {
+            if (frame_index == 0) {
+                edge_indices[0] = 2 * frame_index + 1;
+                edge_count = 1;
+            } else if (frame_index == strip_info.n_frames - 1) {
+                edge_indices[0] = 2 * frame_index;
+                edge_count = 1;
+            }
+        }
+
+        var point_count: usize = 0;
+        for (edge_indices[0..edge_count]) |edge_index| {
+            if (edge_index >= edge_positions.len) continue;
+            const pos = edge_positions[edge_index];
+            const gradient_len = angle_set.gradients[0].len;
+            const lo = if (pos > search_r) pos - search_r else 0;
+            const hi = @min(gradient_len, pos + search_r + 1);
+            if (hi <= lo) continue;
+
+            for (angle_set.gradients, angle_set.positions) |gradient, x_position| {
+                points[point_count] = .{
+                    .x = x_position,
+                    .y = subpixelPeak(gradient, lo, hi),
+                };
+                point_count += 1;
+            }
+        }
+
+        if (point_count >= 4) {
+            if (try estimateAngleTheilSen(allocator, points[0..point_count], max_angle)) |angle| {
+                frame.angle = angle.angle;
+            }
+        }
+    }
+}
+
+fn computeAngleGradientSet(
+    allocator: std.mem.Allocator,
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    is_vertical: bool,
+) !AngleGradientSet {
+    if (width == 0 or height == 0 or gray.len != width * height) return error.InvalidDetectFramesInput;
+    const strip_len = if (is_vertical) height else width;
+    const cross_dim = if (is_vertical) width else height;
+    if (strip_len < 3 or cross_dim == 0) return error.InvalidDetectFramesInput;
+
+    const angle_strip_count: usize = 20;
+    var gradients = try allocator.alloc([]f64, angle_strip_count);
+    errdefer allocator.free(gradients);
+    var initialized: usize = 0;
+    errdefer {
+        for (gradients[0..initialized]) |gradient| {
+            allocator.free(gradient);
+        }
+    }
+    const positions = try allocator.alloc(f64, angle_strip_count);
+    errdefer allocator.free(positions);
+    const profile = try allocator.alloc(f64, strip_len);
+    defer allocator.free(profile);
+
+    const angle_band_width = @max(@as(usize, 1), cross_dim / 20);
+    const half_band = angle_band_width / 2;
+    for (0..angle_strip_count) |strip_index| {
+        const fraction = 0.20 + 0.60 * @as(f64, @floatFromInt(strip_index)) / @as(f64, @floatFromInt(angle_strip_count - 1));
+        var center: usize = @intFromFloat(@as(f64, @floatFromInt(cross_dim)) * fraction);
+        center = @min(center, cross_dim - 1);
+        var start = if (center > half_band) center - half_band else 0;
+        var end = @min(cross_dim, center + half_band);
+        if (end <= start) {
+            end = @min(cross_dim, start + 1);
+        }
+        if (end <= start and start > 0) {
+            start -= 1;
+        }
+        const count = end - start;
+        if (count == 0) return error.InvalidDetectFramesInput;
+
+        if (is_vertical) {
+            for (0..height) |y| {
+                var sum: f64 = 0.0;
+                for (start..end) |x| {
+                    sum += gray[y * width + x];
+                }
+                profile[y] = sum / @as(f64, @floatFromInt(count));
+            }
+        } else {
+            for (0..width) |x| {
+                var sum: f64 = 0.0;
+                for (start..end) |y| {
+                    sum += gray[y * width + x];
+                }
+                profile[x] = sum / @as(f64, @floatFromInt(count));
+            }
+        }
+
+        try gaussianBlur1dInPlaceWithKernel(allocator, profile, profileBlurKernelSize(profile.len));
+        gradients[strip_index] = try computeAbsGradientBlurred(allocator, profile);
+        initialized += 1;
+        positions[strip_index] = @floatFromInt(center);
+    }
+
+    return .{ .gradients = gradients, .positions = positions };
+}
+
+fn framesFromStripEdges(
+    allocator: std.mem.Allocator,
+    edge_positions: []const usize,
+    width: usize,
+    height: usize,
+    format: FilmFormat,
+    strip_info: StripAnalysis,
+    angle: f64,
+) ![]FrameRect {
+    if (edge_positions.len != strip_info.n_frames * 2) return error.InvalidDetectFramesInput;
+    const frames = try allocator.alloc(FrameRect, strip_info.n_frames);
+    errdefer allocator.free(frames);
+    const cross_center = if (strip_info.is_vertical)
+        @as(f64, @floatFromInt(width)) / 2.0
+    else
+        @as(f64, @floatFromInt(height)) / 2.0;
+    const narrow_mm = format.narrowMm();
+    const wide_mm = format.wideMm();
+    for (frames, 0..) |*frame, frame_index| {
+        const e_start = edge_positions[2 * frame_index];
+        const e_end = edge_positions[2 * frame_index + 1];
+        if (e_end <= e_start) return error.InvalidDetectFramesInput;
+        const strip_center = (@as(f64, @floatFromInt(e_start)) + @as(f64, @floatFromInt(e_end))) / 2.0;
+        const strip_dim = @as(f64, @floatFromInt(e_end - e_start));
+        const cross_dim = strip_dim * narrow_mm / wide_mm;
+        frame.* = if (strip_info.is_vertical)
+            .{ .cx = cross_center, .cy = strip_center, .w = cross_dim, .h = strip_dim, .angle = angle }
+        else
+            .{ .cx = strip_center, .cy = cross_center, .w = strip_dim, .h = cross_dim, .angle = angle };
+    }
+    return frames;
+}
+
+fn refineCrossStripAxisAligned(
+    allocator: std.mem.Allocator,
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    format: FilmFormat,
+    strip_info: StripAnalysis,
+    frames: []FrameRect,
+) !void {
+    if (gray.len != width * height or frames.len != strip_info.n_frames) return error.InvalidDetectFramesInput;
+    const line_len = if (strip_info.is_vertical) width else height;
+    if (line_len < 3) return error.InvalidDetectFramesInput;
+
+    const narrow_mm = format.narrowMm();
+    const wide_mm = format.wideMm();
+    const cross_search_r = @max(@as(usize, 3), @as(usize, @intFromFloat(@as(f64, @floatFromInt(line_len)) * 0.04)));
+    const sample_count: usize = 15;
+    const margin_frac = 0.2;
+
+    const line = try allocator.alloc(f64, line_len);
+    defer allocator.free(line);
+    const left_edges = try allocator.alloc(f64, sample_count);
+    defer allocator.free(left_edges);
+    const right_edges = try allocator.alloc(f64, sample_count);
+    defer allocator.free(right_edges);
+
+    for (frames) |*frame| {
+        const cx = frame.cx;
+        const cy = frame.cy;
+        const angle = frame.angle;
+        const cos_a = std.math.cos(angle);
+        const sin_a = std.math.sin(angle);
+        const strip_dim = if (strip_info.is_vertical) frame.h else frame.w;
+        if (!std.math.isFinite(strip_dim) or strip_dim <= 0.0) continue;
+        const cross_dim_est = strip_dim * narrow_mm / wide_mm;
+        const start_offset = -strip_dim / 2.0 * (1.0 - margin_frac);
+        const end_offset = strip_dim / 2.0 * (1.0 - margin_frac);
+        var edge_count: usize = 0;
+
+        for (0..sample_count) |sample_index| {
+            const fraction = if (sample_count == 1)
+                0.0
+            else
+                @as(f64, @floatFromInt(sample_index)) / @as(f64, @floatFromInt(sample_count - 1));
+            const offset = start_offset + (end_offset - start_offset) * fraction;
+            const center_t = @as(f64, @floatFromInt(line_len - 1)) / 2.0;
+            var valid_count: usize = 0;
+            if (strip_info.is_vertical) {
+                const sample_y = cy + offset * cos_a;
+                const sample_x_base = cx + offset * sin_a;
+                for (line, 0..) |*value, index| {
+                    const t = @as(f64, @floatFromInt(index)) - center_t;
+                    const x = sample_x_base + t * cos_a;
+                    const y = sample_y - t * sin_a;
+                    if (isValidBilinearCoordinate(x, y, width, height)) valid_count += 1;
+                    value.* = sampleInvertedConstantBilinear(gray, width, height, x, y);
+                }
+            } else {
+                const sample_x_base = cx + offset * cos_a;
+                const sample_y = cy + offset * sin_a;
+                for (line, 0..) |*value, index| {
+                    const t = @as(f64, @floatFromInt(index)) - center_t;
+                    const x = sample_x_base - t * sin_a;
+                    const y = sample_y + t * cos_a;
+                    if (isValidBilinearCoordinate(x, y, width, height)) valid_count += 1;
+                    value.* = sampleInvertedConstantBilinear(gray, width, height, x, y);
+                }
+            }
+            if (@as(f64, @floatFromInt(valid_count)) < @as(f64, @floatFromInt(line_len)) * 0.5) continue;
+
+            var gradient = try signedGradientForCrossLine(allocator, line);
+            defer gradient.deinit(allocator);
+            if (try measureCrossStripEdges(allocator, gradient.values, cross_dim_est, cross_search_r)) |measurement| {
+                if (measurement.cross_w > 0.0 and edge_count < sample_count) {
+                    left_edges[edge_count] = measurement.left_t;
+                    right_edges[edge_count] = measurement.right_t;
+                    edge_count += 1;
+                }
+            }
+        }
+
+        if (edge_count == 0) continue;
+        const left_offset = try medianF64(allocator, left_edges[0..edge_count]);
+        const right_offset = try medianF64(allocator, right_edges[0..edge_count]);
+        const cross_w = right_offset - left_offset;
+        const cross_center_offset = (left_offset + right_offset) / 2.0;
+        if (cross_w <= 0.0) continue;
+        if (strip_info.is_vertical) {
+            frame.cx = cx + cross_center_offset * cos_a;
+            frame.w = cross_w;
+        } else {
+            frame.cy = cy + cross_center_offset * cos_a;
+            frame.h = cross_w;
+        }
+    }
+}
+
+const CrossLineGradient = struct {
+    values: []f64,
+
+    fn deinit(self: *CrossLineGradient, allocator: std.mem.Allocator) void {
+        allocator.free(self.values);
+        self.* = undefined;
+    }
+};
+
+fn signedGradientForCrossLine(allocator: std.mem.Allocator, line: []const f64) !CrossLineGradient {
+    if (line.len < 3) return error.InvalidDetectFramesInput;
+    const smoothed = try allocator.dupe(f64, line);
+    defer allocator.free(smoothed);
+    var smooth_kernel = @max(@as(usize, 3), line.len / 50);
+    smooth_kernel |= 1;
+    try gaussianBlur1dInPlaceWithKernel(allocator, smoothed, smooth_kernel);
+
+    const gradient = try allocator.alloc(f64, line.len);
+    errdefer allocator.free(gradient);
+    @memset(gradient, 0.0);
+    if (line.len > 4) {
+        for (2..line.len - 2) |index| {
+            gradient[index] = (smoothed[index + 1] - smoothed[index - 1]) / 2.0;
+        }
+    }
+    return .{ .values = gradient };
+}
+
+fn medianF64(allocator: std.mem.Allocator, values: []const f64) !f64 {
+    if (values.len == 0) return error.InvalidDetectFramesInput;
+    const sorted = try allocator.dupe(f64, values);
+    defer allocator.free(sorted);
+    std.sort.pdq(f64, sorted, {}, lessThanF64);
+    return medianSortedF64(sorted);
+}
+
+fn gaussianKernel(allocator: std.mem.Allocator, kernel_size: usize) ![]f64 {
+    const kernel = try allocator.alloc(f64, kernel_size);
+    errdefer allocator.free(kernel);
+    if (kernel_size == 3) {
+        @memcpy(kernel, &[_]f64{ 0.25, 0.5, 0.25 });
+        return kernel;
+    }
+    if (kernel_size == 5) {
+        @memcpy(kernel, &[_]f64{ 0.0625, 0.25, 0.375, 0.25, 0.0625 });
+        return kernel;
+    }
+    if (kernel_size == 7) {
+        @memcpy(kernel, &[_]f64{ 0.03125, 0.109375, 0.21875, 0.28125, 0.21875, 0.109375, 0.03125 });
+        return kernel;
+    }
+
+    const half = (@as(f64, @floatFromInt(kernel_size)) - 1.0) * 0.5;
+    const sigma = 0.3 * (half - 1.0) + 0.8;
+    var total: f64 = 0.0;
+    for (kernel, 0..) |*weight, index| {
+        const x = @as(f64, @floatFromInt(index)) - half;
+        weight.* = std.math.exp(-(x * x) / (2.0 * sigma * sigma));
+        total += weight.*;
+    }
+    for (kernel) |*weight| {
+        weight.* /= total;
+    }
+    return kernel;
+}
+
+fn reflect101Index(index: i32, len: usize) usize {
+    if (len <= 1) return 0;
+    const n: i32 = @intCast(len);
+    var reflected = index;
+    while (reflected < 0 or reflected >= n) {
+        if (reflected < 0) {
+            reflected = -reflected;
+        } else {
+            reflected = 2 * n - reflected - 2;
+        }
+    }
+    return @intCast(reflected);
+}
+
+const dtw_inf: f64 = 1e18;
+
+const DtwParent = struct {
+    i: usize = 0,
+    j: usize = 0,
+};
+
+fn dtwIndex(i: usize, j: usize, columns: usize) usize {
+    return i * columns + j;
+}
+
+fn resizeArea1d(allocator: std.mem.Allocator, input: []const f64, output_len: usize) ![]f64 {
+    if (input.len == 0 or output_len == 0) return error.InvalidDtwInput;
+    const output = try allocator.alloc(f64, output_len);
+    errdefer allocator.free(output);
+    const scale = @as(f64, @floatFromInt(output_len)) / @as(f64, @floatFromInt(input.len));
+    for (output, 0..) |*out, out_index| {
+        const start = @as(f64, @floatFromInt(out_index)) / scale;
+        const end = @as(f64, @floatFromInt(out_index + 1)) / scale;
+        const first: usize = @intFromFloat(@floor(start));
+        const last_exclusive: usize = @min(input.len, @as(usize, @intFromFloat(@ceil(end))));
+        var total: f64 = 0.0;
+        var weight_total: f64 = 0.0;
+        for (first..last_exclusive) |source| {
+            const source_start = @as(f64, @floatFromInt(source));
+            const source_end = source_start + 1.0;
+            const weight = @max(0.0, @min(end, source_end) - @max(start, source_start));
+            total += input[source] * weight;
+            weight_total += weight;
+        }
+        out.* = if (weight_total > 0.0) total / weight_total else input[@min(first, input.len - 1)];
+    }
+    return output;
+}
+
+fn normalizeMax(values: []f64) void {
+    var max_value: f64 = 0.0;
+    for (values) |value| {
+        max_value = @max(max_value, value);
+    }
+    if (max_value <= 0.0) return;
+    for (values) |*value| {
+        value.* /= max_value;
+    }
+}
+
+fn buildDtwTemplate(allocator: std.mem.Allocator, frame_count: usize, frame_dim: usize, gap: usize) ![]f64 {
+    const len = frame_count * (frame_dim + 2) + if (frame_count > 0) (frame_count - 1) * gap else 0;
+    const template = try allocator.alloc(f64, len);
+    errdefer allocator.free(template);
+    var index: usize = 0;
+    for (0..frame_count) |frame_index| {
+        template[index] = 1.0;
+        index += 1;
+        @memset(template[index .. index + frame_dim], 0.0);
+        index += frame_dim;
+        template[index] = 1.0;
+        index += 1;
+        if (frame_index < frame_count - 1) {
+            @memset(template[index .. index + gap], 0.0);
+            index += gap;
+        }
+    }
+    return template;
+}
+
+fn nearestAlignedIndex(alignment: []const ?usize, target: usize) !usize {
+    var best_distance: usize = std.math.maxInt(usize);
+    var best_value: ?usize = null;
+    for (alignment, 0..) |maybe_value, index| {
+        const value = maybe_value orelse continue;
+        const distance = if (index > target) index - target else target - index;
+        if (distance < best_distance) {
+            best_distance = distance;
+            best_value = value;
+        }
+    }
+    return best_value orelse error.InvalidDtwAlignment;
+}
+
+fn sampleToPythonGray8(data: []const u8, sample_index: usize, bits_per_sample: u16) u8 {
+    const sample = sampleToU16(data, sample_index, bits_per_sample);
+    if (bits_per_sample == 8) return @intCast(sample);
+    return @intFromFloat(@floor(@as(f64, @floatFromInt(sample)) / 256.0));
+}
+
+fn sampleToU16(data: []const u8, sample_index: usize, bits_per_sample: u16) u16 {
+    if (bits_per_sample == 8) return data[sample_index];
+    const byte_index = sample_index * 2;
+    return std.mem.readInt(u16, data[byte_index..][0..2], .little);
+}
+
+fn writeRoundedSample(data: []u8, sample_index: usize, bits_per_sample: u16, value: f64) void {
+    const max_value: f64 = if (bits_per_sample == 8) 255.0 else 65535.0;
+    const rounded: u16 = if (!std.math.isFinite(value) or value <= 0.0)
+        0
+    else if (value >= max_value)
+        @intFromFloat(max_value)
+    else
+        @intFromFloat(@floor(value + 0.5));
+    if (bits_per_sample == 8) {
+        data[sample_index] = @intCast(rounded);
+    } else {
+        const byte_index = sample_index * 2;
+        std.mem.writeInt(u16, data[byte_index..][0..2], rounded, .little);
+    }
+}
+
+fn ceilDiv(numerator: usize, denominator: usize) usize {
+    return (numerator + denominator - 1) / denominator;
+}
+
+fn claheClipLimit(clip_limit: f64, tile_area: usize) usize {
+    if (clip_limit <= 0.0) return 0;
+    const raw: usize = @intFromFloat(clip_limit * @as(f64, @floatFromInt(tile_area)) / 256.0);
+    return @max(@as(usize, 1), raw);
+}
+
+fn clipHistogram(hist: *[256]usize, clip_limit: usize) void {
+    var clipped: usize = 0;
+    for (hist) |*count| {
+        if (count.* > clip_limit) {
+            clipped += count.* - clip_limit;
+            count.* = clip_limit;
+        }
+    }
+    const redist_batch = clipped / 256;
+    const residual_count = clipped - redist_batch * 256;
+    for (hist) |*count| {
+        count.* += redist_batch;
+    }
+    if (residual_count == 0) return;
+    const residual_step = @max(@as(usize, 1), 256 / residual_count);
+    var residual = residual_count;
+    var index: usize = 0;
+    while (index < 256 and residual > 0) : (index += residual_step) {
+        hist[index] += 1;
+        residual -= 1;
+    }
+}
+
+fn clampTileIndex(index: isize, tile_count: usize) usize {
+    if (index <= 0) return 0;
+    const value: usize = @intCast(index);
+    return @min(value, tile_count - 1);
+}
+
+fn saturateRoundU8(value: f64) u8 {
+    if (value <= 0.0) return 0;
+    if (value >= 255.0) return 255;
+    return @intFromFloat(@floor(value + 0.5));
+}
+
+fn invertAffineTransform(transform: AffineTransform) !AffineTransform {
+    const a = transform.values[0];
+    const b = transform.values[1];
+    const c = transform.values[2];
+    const d = transform.values[3];
+    const e = transform.values[4];
+    const f = transform.values[5];
+    const det = a * e - b * d;
+    if (@abs(det) <= 1e-15) return error.InvalidRotationTransformInput;
+    return .{ .values = .{
+        e / det,
+        -b / det,
+        (b * f - c * e) / det,
+        -d / det,
+        a / det,
+        (c * d - a * f) / det,
+    } };
+}
+
+fn grayToU8(value: f64) u8 {
+    if (!std.math.isFinite(value) or value <= 0.0) return 0;
+    if (value >= 1.0) return 255;
+    return @intFromFloat(@floor(value * 255.0 + 0.5));
+}
+
+fn otsuThreshold(raw_gray: []const f64) u8 {
+    var hist = [_]usize{0} ** 256;
+    for (raw_gray) |value| {
+        hist[grayToU8(value)] += 1;
+    }
+
+    var total_sum: f64 = 0.0;
+    var total_count: usize = 0;
+    for (hist, 0..) |count, index| {
+        total_sum += @as(f64, @floatFromInt(index * count));
+        total_count += count;
+    }
+
+    var background_count: usize = 0;
+    var background_sum: f64 = 0.0;
+    var best_score: f64 = -1.0;
+    var best_threshold: u8 = 0;
+    for (hist, 0..) |count, index| {
+        background_count += count;
+        if (background_count == 0) continue;
+        const foreground_count = total_count - background_count;
+        if (foreground_count == 0) break;
+        background_sum += @as(f64, @floatFromInt(index * count));
+        const background_mean = background_sum / @as(f64, @floatFromInt(background_count));
+        const foreground_mean = (total_sum - background_sum) / @as(f64, @floatFromInt(foreground_count));
+        const delta = background_mean - foreground_mean;
+        const score = @as(f64, @floatFromInt(background_count)) * @as(f64, @floatFromInt(foreground_count)) * delta * delta;
+        if (score > best_score) {
+            best_score = score;
+            best_threshold = @intCast(index);
+        }
+    }
+    return best_threshold;
+}
+
+fn closeBinaryMask(allocator: std.mem.Allocator, mask: []bool, width: usize, height: usize, kernel_size: usize) !void {
+    if (kernel_size == 0 or kernel_size % 2 == 0 or mask.len != width * height) return error.InvalidFilmExtentInput;
+    const temp = try allocator.alloc(bool, mask.len);
+    defer allocator.free(temp);
+    try dilateBinaryMask(allocator, mask, temp, width, height, kernel_size);
+    try erodeBinaryMask(allocator, temp, mask, width, height, kernel_size);
+}
+
+fn dilateBinaryMask(allocator: std.mem.Allocator, input: []const bool, output: []bool, width: usize, height: usize, kernel_size: usize) !void {
+    if (input.len != output.len or input.len != width * height) return error.InvalidFilmExtentInput;
+    const radius = kernel_size / 2;
+    const temp = try allocator.alloc(bool, input.len);
+    defer allocator.free(temp);
+    const prefix = try allocator.alloc(usize, @max(width, height) + 1);
+    defer allocator.free(prefix);
+    try horizontalWindowAny(input, temp, width, height, radius, prefix);
+    try verticalWindowAny(temp, output, width, height, radius, prefix);
+}
+
+fn erodeBinaryMask(allocator: std.mem.Allocator, input: []const bool, output: []bool, width: usize, height: usize, kernel_size: usize) !void {
+    if (input.len != output.len or input.len != width * height) return error.InvalidFilmExtentInput;
+    const radius = kernel_size / 2;
+    const temp = try allocator.alloc(bool, input.len);
+    defer allocator.free(temp);
+    const prefix = try allocator.alloc(usize, @max(width, height) + 1);
+    defer allocator.free(prefix);
+    try horizontalWindowAll(input, temp, width, height, radius, prefix);
+    try verticalWindowAll(temp, output, width, height, radius, prefix);
+}
+
+fn horizontalWindowAny(input: []const bool, output: []bool, width: usize, height: usize, radius: usize, prefix: []usize) !void {
+    if (input.len != output.len or input.len != width * height or prefix.len < width + 1) return error.InvalidFilmExtentInput;
+    for (0..height) |y| {
+        prefix[0] = 0;
+        for (0..width) |x| {
+            prefix[x + 1] = prefix[x] + @intFromBool(input[y * width + x]);
+        }
+        for (0..width) |x| {
+            const x0 = if (x > radius) x - radius else 0;
+            const x1 = @min(width, x + radius + 1);
+            output[y * width + x] = prefix[x1] - prefix[x0] > 0;
+        }
+    }
+}
+
+fn verticalWindowAny(input: []const bool, output: []bool, width: usize, height: usize, radius: usize, prefix: []usize) !void {
+    if (input.len != output.len or input.len != width * height or prefix.len < height + 1) return error.InvalidFilmExtentInput;
+    for (0..width) |x| {
+        prefix[0] = 0;
+        for (0..height) |y| {
+            prefix[y + 1] = prefix[y] + @intFromBool(input[y * width + x]);
+        }
+        for (0..height) |y| {
+            const y0 = if (y > radius) y - radius else 0;
+            const y1 = @min(height, y + radius + 1);
+            output[y * width + x] = prefix[y1] - prefix[y0] > 0;
+        }
+    }
+}
+
+fn horizontalWindowAll(input: []const bool, output: []bool, width: usize, height: usize, radius: usize, prefix: []usize) !void {
+    if (input.len != output.len or input.len != width * height or prefix.len < width + 1) return error.InvalidFilmExtentInput;
+    for (0..height) |y| {
+        prefix[0] = 0;
+        for (0..width) |x| {
+            prefix[x + 1] = prefix[x] + @intFromBool(input[y * width + x]);
+        }
+        for (0..width) |x| {
+            const x0 = if (x > radius) x - radius else 0;
+            const x1 = @min(width, x + radius + 1);
+            output[y * width + x] = prefix[x1] - prefix[x0] == x1 - x0;
+        }
+    }
+}
+
+fn verticalWindowAll(input: []const bool, output: []bool, width: usize, height: usize, radius: usize, prefix: []usize) !void {
+    if (input.len != output.len or input.len != width * height or prefix.len < height + 1) return error.InvalidFilmExtentInput;
+    for (0..width) |x| {
+        prefix[0] = 0;
+        for (0..height) |y| {
+            prefix[y + 1] = prefix[y] + @intFromBool(input[y * width + x]);
+        }
+        for (0..height) |y| {
+            const y0 = if (y > radius) y - radius else 0;
+            const y1 = @min(height, y + radius + 1);
+            output[y * width + x] = prefix[y1] - prefix[y0] == y1 - y0;
+        }
+    }
+}
+
+const ComponentBounds = struct {
+    area: usize,
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
+};
+
+fn largestComponentBounds(allocator: std.mem.Allocator, mask: []const bool, width: usize, height: usize, component_mask: []bool) !?ComponentBounds {
+    if (mask.len != width * height or component_mask.len != mask.len) return error.InvalidFilmExtentInput;
+    @memset(component_mask, false);
+    const visited = try allocator.alloc(bool, mask.len);
+    defer allocator.free(visited);
+    @memset(visited, false);
+    const queue = try allocator.alloc(usize, mask.len);
+    defer allocator.free(queue);
+
+    var best: ?ComponentBounds = null;
+    for (mask, 0..) |is_film, start_index| {
+        if (!is_film or visited[start_index]) continue;
+        var head: usize = 0;
+        var tail: usize = 0;
+        queue[tail] = start_index;
+        tail += 1;
+        visited[start_index] = true;
+
+        var bounds = ComponentBounds{
+            .area = 0,
+            .min_x = width,
+            .min_y = height,
+            .max_x = 0,
+            .max_y = 0,
+        };
+
+        while (head < tail) {
+            const index = queue[head];
+            head += 1;
+            const x = index % width;
+            const y = index / width;
+            bounds.area += 1;
+            bounds.min_x = @min(bounds.min_x, x);
+            bounds.min_y = @min(bounds.min_y, y);
+            bounds.max_x = @max(bounds.max_x, x);
+            bounds.max_y = @max(bounds.max_y, y);
+
+            const y0 = if (y > 0) y - 1 else y;
+            const y1 = @min(height - 1, y + 1);
+            const x0 = if (x > 0) x - 1 else x;
+            const x1 = @min(width - 1, x + 1);
+            for (y0..y1 + 1) |yy| {
+                for (x0..x1 + 1) |xx| {
+                    const neighbor = yy * width + xx;
+                    if (visited[neighbor] or !mask[neighbor]) continue;
+                    visited[neighbor] = true;
+                    queue[tail] = neighbor;
+                    tail += 1;
+                }
+            }
+        }
+
+        if (best == null or bounds.area > best.?.area) {
+            best = bounds;
+            @memset(component_mask, false);
+            for (queue[0..tail]) |index| {
+                component_mask[index] = true;
+            }
+        }
+    }
+    return best;
+}
+
+fn componentRotatedExtent(allocator: std.mem.Allocator, component_mask: []const bool, width: usize, height: usize, bounds: ComponentBounds) !?FilmExtent {
+    if (component_mask.len != width * height or bounds.area == 0) return error.InvalidFilmExtentInput;
+    const boundary = try componentBoundaryPoints(allocator, component_mask, width, height, bounds);
+    defer allocator.free(boundary);
+    if (boundary.len < 3) return null;
+    const hull = try convexHull(allocator, boundary);
+    defer allocator.free(hull);
+    if (hull.len < 3) return null;
+
+    const rect = minAreaRectFromHull(hull) orelse return null;
+    const long_dim = rect.long_dim;
+    const cross_dim = rect.cross_dim;
+    const long_x = rect.long_x;
+    const long_y = rect.long_y;
+    if (long_dim < 1.0 or cross_dim < 1.0) return null;
+
+    var dx = long_x;
+    var dy = long_y;
+    const is_vertical_image = height > width;
+    const strip_angle = if (is_vertical_image) angle: {
+        if (dy < 0.0) {
+            dx = -dx;
+            dy = -dy;
+        }
+        break :angle -std.math.atan2(dx, dy);
+    } else angle: {
+        if (dx < 0.0) {
+            dx = -dx;
+            dy = -dy;
+        }
+        break :angle -std.math.atan2(dy, dx);
+    };
+
+    return .{
+        .strip_narrow_px = cross_dim,
+        .strip_long_px = long_dim,
+        .strip_angle = strip_angle,
+    };
+}
+
+const MinAreaRect = struct {
+    long_dim: f64,
+    cross_dim: f64,
+    long_x: f64,
+    long_y: f64,
+};
+
+fn componentBoundaryPoints(allocator: std.mem.Allocator, component_mask: []const bool, width: usize, height: usize, bounds: ComponentBounds) ![]Point2 {
+    var points: std.ArrayList(Point2) = .empty;
+    errdefer points.deinit(allocator);
+    for (bounds.min_y..bounds.max_y + 1) |y| {
+        for (bounds.min_x..bounds.max_x + 1) |x| {
+            if (!component_mask[y * width + x]) continue;
+            if (isComponentBoundary(component_mask, width, height, x, y)) {
+                try points.append(allocator, .{ .x = @floatFromInt(x), .y = @floatFromInt(y) });
+            }
+        }
+    }
+    return points.toOwnedSlice(allocator);
+}
+
+fn isComponentBoundary(component_mask: []const bool, width: usize, height: usize, x: usize, y: usize) bool {
+    if (x == 0 or y == 0 or x + 1 >= width or y + 1 >= height) return true;
+    return !component_mask[y * width + x - 1] or
+        !component_mask[y * width + x + 1] or
+        !component_mask[(y - 1) * width + x] or
+        !component_mask[(y + 1) * width + x];
+}
+
+fn convexHull(allocator: std.mem.Allocator, input_points: []const Point2) ![]Point2 {
+    if (input_points.len < 3) return allocator.dupe(Point2, input_points);
+    const points = try allocator.dupe(Point2, input_points);
+    defer allocator.free(points);
+    std.sort.heap(Point2, points, {}, pointLessThan);
+
+    const hull = try allocator.alloc(Point2, points.len * 2);
+    errdefer allocator.free(hull);
+    var count: usize = 0;
+    for (points) |point| {
+        while (count >= 2 and crossPoints(hull[count - 2], hull[count - 1], point) <= 0.0) {
+            count -= 1;
+        }
+        hull[count] = point;
+        count += 1;
+    }
+    const lower_count = count;
+    if (points.len > 1) {
+        var index = points.len - 1;
+        while (index > 0) {
+            index -= 1;
+            const point = points[index];
+            while (count > lower_count and crossPoints(hull[count - 2], hull[count - 1], point) <= 0.0) {
+                count -= 1;
+            }
+            hull[count] = point;
+            count += 1;
+        }
+    }
+    if (count > 1) count -= 1;
+    const result = try allocator.dupe(Point2, hull[0..count]);
+    allocator.free(hull);
+    return result;
+}
+
+fn minAreaRectFromHull(hull: []const Point2) ?MinAreaRect {
+    if (hull.len < 3) return null;
+    var best_area = std.math.inf(f64);
+    var best: ?MinAreaRect = null;
+    for (hull, 0..) |point, index| {
+        const next = hull[(index + 1) % hull.len];
+        const edge_x = next.x - point.x;
+        const edge_y = next.y - point.y;
+        const edge_len = @sqrt(edge_x * edge_x + edge_y * edge_y);
+        if (edge_len <= 0.0) continue;
+        var axis_x = edge_x / edge_len;
+        var axis_y = edge_y / edge_len;
+        var cross_x = -axis_y;
+        var cross_y = axis_x;
+        var min_axis = std.math.inf(f64);
+        var max_axis = -std.math.inf(f64);
+        var min_cross = std.math.inf(f64);
+        var max_cross = -std.math.inf(f64);
+        for (hull) |candidate| {
+            const p_axis = candidate.x * axis_x + candidate.y * axis_y;
+            const p_cross = candidate.x * cross_x + candidate.y * cross_y;
+            min_axis = @min(min_axis, p_axis);
+            max_axis = @max(max_axis, p_axis);
+            min_cross = @min(min_cross, p_cross);
+            max_cross = @max(max_cross, p_cross);
+        }
+        var axis_dim = max_axis - min_axis;
+        var cross_dim = max_cross - min_cross;
+        if (axis_dim <= 0.0 or cross_dim <= 0.0) continue;
+        if (axis_dim < cross_dim) {
+            std.mem.swap(f64, &axis_dim, &cross_dim);
+            axis_x = cross_x;
+            axis_y = cross_y;
+            cross_x = -axis_y;
+            cross_y = axis_x;
+        }
+        const area = axis_dim * cross_dim;
+        if (area < best_area) {
+            best_area = area;
+            best = .{ .long_dim = axis_dim, .cross_dim = cross_dim, .long_x = axis_x, .long_y = axis_y };
+        }
+    }
+    return best;
+}
+
+fn pointLessThan(_: void, lhs: Point2, rhs: Point2) bool {
+    if (lhs.x == rhs.x) return lhs.y < rhs.y;
+    return lhs.x < rhs.x;
+}
+
+fn crossPoints(origin: Point2, a: Point2, b: Point2) f64 {
+    return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
+}
+
+fn pythonRoundToUsize(value: f64) usize {
+    const floor_value = @floor(value);
+    const fraction = value - floor_value;
+    if (fraction < 0.5) return @intFromFloat(floor_value);
+    if (fraction > 0.5) return @intFromFloat(floor_value + 1.0);
+    const floor_int: usize = @intFromFloat(floor_value);
+    return if (floor_int % 2 == 0) floor_int else floor_int + 1;
+}
+
+fn argMax(values: []const f64) usize {
+    var best_index: usize = 0;
+    var best_value = values[0];
+    for (values[1..], 1..) |value, index| {
+        if (value > best_value) {
+            best_value = value;
+            best_index = index;
+        }
+    }
+    return best_index;
+}
+
+fn firstProminentPeak(values: []const f64) ?usize {
+    if (values.len < 3) return null;
+    const threshold = maxSlice(values) * 0.3;
+    for (1..values.len - 1) |index| {
+        if (isProminentPeak(values, index, threshold)) return index;
+    }
+    return null;
+}
+
+fn lastProminentPeak(values: []const f64) ?usize {
+    if (values.len < 3) return null;
+    const threshold = maxSlice(values) * 0.3;
+    var result: ?usize = null;
+    for (1..values.len - 1) |index| {
+        if (isProminentPeak(values, index, threshold)) result = index;
+    }
+    return result;
+}
+
+fn isProminentPeak(values: []const f64, index: usize, threshold: f64) bool {
+    if (!(values[index] > values[index - 1] and values[index] > values[index + 1])) return false;
+    const height = values[index];
+
+    var left_bound: usize = 0;
+    var left_scan = index;
+    while (left_scan > 0) {
+        left_scan -= 1;
+        if (values[left_scan] > height) {
+            left_bound = left_scan + 1;
+            break;
+        }
+    }
+    var left_min = height;
+    for (values[left_bound..index]) |value| {
+        left_min = @min(left_min, value);
+    }
+
+    var right_bound: usize = values.len - 1;
+    var right_scan = index + 1;
+    while (right_scan < values.len) : (right_scan += 1) {
+        if (values[right_scan] > height) {
+            right_bound = right_scan - 1;
+            break;
+        }
+    }
+    var right_min = height;
+    for (values[index + 1 .. right_bound + 1]) |value| {
+        right_min = @min(right_min, value);
+    }
+
+    const prominence = height - @max(left_min, right_min);
+    return prominence >= threshold;
+}
+
+fn maxSlice(values: []const f64) f64 {
+    var result = values[0];
+    for (values[1..]) |value| {
+        result = @max(result, value);
+    }
+    return result;
+}
+
+fn subpixelPeak(values: []const f64, lo: usize, hi: usize) f64 {
+    const index = lo + argMax(values[lo..hi]);
+    if (index > lo and index - lo < hi - lo - 1) {
+        const a = values[index - 1];
+        const b = values[index];
+        const c = values[index + 1];
+        const denom = a - 2.0 * b + c;
+        if (@abs(denom) > 1e-10) {
+            return @as(f64, @floatFromInt(index)) + 0.5 * (a - c) / denom;
+        }
+    }
+    return @floatFromInt(index);
+}
+
+fn weightedPeakValue(value: f64, index: usize, target: usize, sigma: f64) f64 {
+    const distance = if (index > target)
+        @as(f64, @floatFromInt(index - target))
+    else
+        @as(f64, @floatFromInt(target - index));
+    return value * std.math.exp(-0.5 * std.math.pow(f64, distance / sigma, 2.0));
+}
+
+fn frameStarts(allocator: std.mem.Allocator, edge_positions: []const usize, frame_count: usize) ![]usize {
+    const starts = try allocator.alloc(usize, frame_count);
+    errdefer allocator.free(starts);
+    for (starts, 0..) |*start, frame_index| {
+        start.* = edge_positions[2 * frame_index];
+    }
+    return starts;
+}
+
+fn frameDimsRange(
+    allocator: std.mem.Allocator,
+    edge_positions: []const usize,
+    start_frame: usize,
+    end_frame_exclusive: usize,
+) ![]usize {
+    const count = end_frame_exclusive - start_frame;
+    const dims = try allocator.alloc(usize, count);
+    errdefer allocator.free(dims);
+    for (dims, start_frame..) |*dim, frame_index| {
+        const start = edge_positions[2 * frame_index];
+        const end = edge_positions[2 * frame_index + 1];
+        dim.* = end - start;
+    }
+    return dims;
+}
+
+fn framePitchesRange(
+    allocator: std.mem.Allocator,
+    starts: []const usize,
+    start_index: usize,
+    end_index_exclusive: usize,
+) ![]usize {
+    const count = end_index_exclusive - start_index;
+    const pitches = try allocator.alloc(usize, count);
+    errdefer allocator.free(pitches);
+    for (pitches, start_index..) |*pitch, index| {
+        pitch.* = starts[index + 1] - starts[index];
+    }
+    return pitches;
+}
+
+fn medianTrunc(allocator: std.mem.Allocator, values: []const usize) !usize {
+    if (values.len == 0) return error.InvalidTerminalRepairInput;
+    const sorted = try allocator.dupe(usize, values);
+    defer allocator.free(sorted);
+    std.sort.pdq(usize, sorted, {}, lessThanUsize);
+    const mid = sorted.len / 2;
+    if (sorted.len % 2 == 1) return sorted[mid];
+    const median = (@as(f64, @floatFromInt(sorted[mid - 1])) + @as(f64, @floatFromInt(sorted[mid]))) / 2.0;
+    return @intFromFloat(median);
+}
+
+fn stdDevUsize(values: []const usize) f64 {
+    var total: f64 = 0.0;
+    for (values) |value| {
+        total += @floatFromInt(value);
+    }
+    const mean = total / @as(f64, @floatFromInt(values.len));
+    var sum_sq: f64 = 0.0;
+    for (values) |value| {
+        const diff = @as(f64, @floatFromInt(value)) - mean;
+        sum_sq += diff * diff;
+    }
+    return @sqrt(sum_sq / @as(f64, @floatFromInt(values.len)));
+}
+
+fn lessThanUsize(_: void, lhs: usize, rhs: usize) bool {
+    return lhs < rhs;
+}
+
+fn medianSortedF64(values: []const f64) f64 {
+    const mid = values.len / 2;
+    if (values.len % 2 == 1) return values[mid];
+    return (values[mid - 1] + values[mid]) / 2.0;
+}
+
+fn lessThanF64(_: void, lhs: f64, rhs: f64) bool {
+    return lhs < rhs;
+}
+
+fn isValidBilinearCoordinate(x: f64, y: f64, width: usize, height: usize) bool {
+    return x >= 0.0 and y >= 0.0 and
+        x < @as(f64, @floatFromInt(width - 1)) and
+        y < @as(f64, @floatFromInt(height - 1));
+}
+
+fn sampleInvertedConstantBilinear(image: []const f64, width: usize, height: usize, x: f64, y: f64) f64 {
+    if (!isValidBilinearCoordinate(x, y, width, height)) return 0.0;
+    const x_floor = @floor(x);
+    const y_floor = @floor(y);
+    const xi: usize = @intFromFloat(x_floor);
+    const yi: usize = @intFromFloat(y_floor);
+    const fx = x - x_floor;
+    const fy = y - y_floor;
+    const p00 = image[yi * width + xi];
+    const p10 = image[yi * width + xi + 1];
+    const p01 = image[(yi + 1) * width + xi];
+    const p11 = image[(yi + 1) * width + xi + 1];
+    const top = p00 * (1.0 - fx) + p10 * fx;
+    const bottom = p01 * (1.0 - fx) + p11 * fx;
+    return 1.0 - (top * (1.0 - fy) + bottom * fy);
+}
+
+fn sampleReplicateBilinear(image: []const f64, width: usize, height: usize, x: f64, y: f64) f64 {
+    const x_floor = @floor(x);
+    const y_floor = @floor(y);
+    const xi: i64 = @intFromFloat(x_floor);
+    const yi: i64 = @intFromFloat(y_floor);
+    const fx = x - x_floor;
+    const fy = y - y_floor;
+    const x0 = clampIndex(xi, width);
+    const x1 = clampIndex(xi + 1, width);
+    const y0 = clampIndex(yi, height);
+    const y1 = clampIndex(yi + 1, height);
+    const p00 = image[y0 * width + x0];
+    const p10 = image[y0 * width + x1];
+    const p01 = image[y1 * width + x0];
+    const p11 = image[y1 * width + x1];
+    const top = p00 * (1.0 - fx) + p10 * fx;
+    const bottom = p01 * (1.0 - fx) + p11 * fx;
+    return top * (1.0 - fy) + bottom * fy;
+}
+
+fn clampIndex(index: i64, len: usize) usize {
+    if (index <= 0) return 0;
+    const value: usize = @intCast(index);
+    return @min(value, len - 1);
+}
+
+fn sampleReflectBilinear(
+    image: []const f64,
+    img_width: usize,
+    x0: usize,
+    y0: usize,
+    sub_w: usize,
+    sub_h: usize,
+    x: f64,
+    y: f64,
+) f64 {
+    const x_floor = @floor(x);
+    const y_floor = @floor(y);
+    const xi: i64 = @intFromFloat(x_floor);
+    const yi: i64 = @intFromFloat(y_floor);
+    const fx = x - x_floor;
+    const fy = y - y_floor;
+    const x_a = reflectIndex(xi, sub_w);
+    const x_b = reflectIndex(xi + 1, sub_w);
+    const y_a = reflectIndex(yi, sub_h);
+    const y_b = reflectIndex(yi + 1, sub_h);
+    const p00 = image[(y0 + y_a) * img_width + x0 + x_a];
+    const p10 = image[(y0 + y_a) * img_width + x0 + x_b];
+    const p01 = image[(y0 + y_b) * img_width + x0 + x_a];
+    const p11 = image[(y0 + y_b) * img_width + x0 + x_b];
+    const top = p00 * (1.0 - fx) + p10 * fx;
+    const bottom = p01 * (1.0 - fx) + p11 * fx;
+    return top * (1.0 - fy) + bottom * fy;
+}
+
+fn reflectIndex(index: i64, len: usize) usize {
+    if (len <= 1) return 0;
+    const n: i64 = @intCast(len);
+    var reflected = index;
+    while (reflected < 0 or reflected >= n) {
+        if (reflected < 0) {
+            reflected = -reflected - 1;
+        } else {
+            reflected = 2 * n - reflected - 1;
+        }
+    }
+    return @intCast(reflected);
+}
+
+fn validatePreviewScale(preview_scale: f64) !void {
+    if (!std.math.isFinite(preview_scale) or preview_scale <= 0.0) return error.InvalidPreviewScale;
+}
+
+const StripProfileFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    shape: []const usize,
+    is_vertical: bool,
+    tolerance: numeric.Tolerance,
+    expected_profile_a: []const f64,
+    expected_profile_b: []const f64,
+    expected_profile_c: []const f64,
+    expected_cross_profile: []const f64,
+};
+
+const DtwFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    format: []const u8,
+    frame_count: usize,
+    strip_len: usize,
+    dtw_max_len: usize,
+    tolerance: numeric.Tolerance,
+    gradient: []const f64,
+    expected_edges: []const usize,
+    dtw_scale: f64,
+    template_len: usize,
+    effective_frame_dim: usize,
+    effective_gap: usize,
+    band: usize,
+    end_j: usize,
+};
+
+const GradientSnapFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    frame_strip_dim: f64,
+    gradient: []const f64,
+    edge_positions: []const usize,
+    expected: []const usize,
+    tolerance: numeric.Tolerance,
+};
+
+const WeightedPeakFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    gradient: []const f64,
+    cases: []const WeightedPeakCase,
+    tolerance: numeric.Tolerance,
+};
+
+const WeightedPeakCase = struct {
+    target: usize,
+    radius: usize,
+    sigma: f64,
+    expected: usize,
+};
+
+const SizeCorrectionFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    actual_n: usize,
+    frame_strip_dim: f64,
+    gradient: []const f64,
+    edge_positions: []const usize,
+    expected: []const usize,
+    tolerance: numeric.Tolerance,
+};
+
+const TerminalRepairFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    actual_n: usize,
+    frame_strip_dim: f64,
+    snap_radius: usize,
+    work_pitch_px: f64,
+    gradient: []const f64,
+    edge_positions: []const usize,
+    expected: []const usize,
+    tolerance: numeric.Tolerance,
+};
+
+const CrossStripFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cross_dim_est: f64,
+    cross_search_r: usize,
+    gradient_signed: []const f64,
+    expected: CrossStripMeasurement,
+    tolerance: numeric.Tolerance,
+};
+
+const TheilSenFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    points: []const EdgePeakPoint,
+    expected_angle: f64,
+    expected_median_slope: f64,
+    max_angle_degrees: f64,
+    tolerance: numeric.Tolerance,
+};
+
+const SingleFrameFallbackFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    preview_width: f64,
+    preview_height: f64,
+    frame: FrameRect,
+    expected: FrameRect,
+    tolerance: numeric.Tolerance,
+};
+
+const RotatedCropFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    shape: []const usize,
+    cx: f64,
+    cy: f64,
+    w: f64,
+    h: f64,
+    angle_deg: f64,
+    input: []const f64,
+    expected_shape: []const usize,
+    expected: []const f64,
+    tolerance: numeric.Tolerance,
+};
+
+const RebateHelpersFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    mask_shape: []const usize,
+    mask_rect: RebateMaskRect,
+    expected_mask: []const bool,
+    bounds_shape: []const usize,
+    bounds_rect: RebateOriginRect,
+    expected_bounds: bool,
+    inter_frames: []const FrameRect,
+    expected_inter_rebate: RebateRect,
+    tolerance: numeric.Tolerance,
+};
+
+const PreviewScalingFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    full_width: usize,
+    full_height: usize,
+    preview_size: usize,
+    expected_preview_scale: f64,
+    expected_preview_width: usize,
+    expected_preview_height: usize,
+    frame_preview: FrameRect,
+    expected_frame_full: FrameRect,
+    selection_preview: PreviewSelection,
+    expected_selection_full_frame: FrameRect,
+    rebate_preview: RebateOriginRect,
+    expected_rebate_full: RebateOriginRect,
+    no_downscale_full_width: usize,
+    no_downscale_full_height: usize,
+    no_downscale_preview_size: usize,
+    tolerance: numeric.Tolerance,
+};
+
+const TestDetectGroundTruthFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    case_count: usize,
+    total_frames: usize,
+    cases: []const TestDetectGroundTruthCase,
+    rms_acceptance_px: f64,
+    tolerance: numeric.Tolerance,
+};
+
+const TestDetectGroundTruthCase = struct {
+    name: []const u8,
+    scan: []const u8,
+    format: []const u8,
+    n_frames: usize,
+    preview_scale: f64,
+    ground_truth: []const PreviewSelection,
+    expected_full: []const FrameRect,
+};
+
+const TestDetectPythonOutputFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const TestDetectPythonOutputCase,
+    tolerance: numeric.Tolerance,
+    angle_tolerance_radians: f64,
+    geometry_tolerance: numeric.Tolerance,
+};
+
+const TestDetectPythonOutputCase = struct {
+    name: []const u8,
+    scan: []const u8,
+    format: []const u8,
+    n_frames: usize,
+    preview_width: usize,
+    preview_height: usize,
+    preview_scale: f64,
+    aspect: []const u8,
+    elapsed_seconds: ?f64 = null,
+    frames: []const FrameRect,
+};
+
+const SyntheticDetectionFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    generated_by: []const u8,
+    cases: []const SyntheticDetectionCase,
+    tolerance: numeric.Tolerance,
+};
+
+const AxisAlignedDetectionFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    generated_by: []const u8,
+    cases: []const SyntheticDetectionCase,
+    rms_acceptance_px: f64,
+    tolerance: numeric.Tolerance,
+};
+
+const SyntheticDetectionCase = struct {
+    name: []const u8,
+    format: []const u8,
+    orientation: []const u8,
+    width: usize,
+    height: usize,
+    preview_scale: f64,
+    background_level: f64,
+    strip_rect: RebateOriginRect,
+    strip_level: f64,
+    frame_level: f64,
+    expected_frames: []const PreviewSelection,
+    expected_full: []const FrameRect,
+    expected_frame_pixel_count: usize,
+    cross_center_tolerance: ?f64 = null,
+    cross_size_tolerance: ?f64 = null,
+    angle_tolerance: ?f64 = null,
+    expected_aspect: ?[]const u8 = null,
+};
+
+const DetectionGrayFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const DetectionGrayCase,
+    tolerance: numeric.Tolerance,
+};
+
+const DetectionGrayCase = struct {
+    name: []const u8,
+    width: usize,
+    height: usize,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    invert: bool,
+    sample_values: []const u16,
+    expected: []const f64,
+};
+
+const AreaResizeFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const AreaResizeCase,
+};
+
+const AreaResizeCase = struct {
+    name: []const u8,
+    width: usize,
+    height: usize,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    target_width: usize,
+    target_height: usize,
+    sample_values: []const u16,
+    expected: []const u16,
+};
+
+const ClaheFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const ClaheCase,
+};
+
+const ClaheCase = struct {
+    name: []const u8,
+    width: usize,
+    height: usize,
+    tiles_x: usize,
+    tiles_y: usize,
+    clip_limit: f64,
+    sample_values: []const u8,
+    expected: []const u8,
+};
+
+const RotationBackFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    orig_width: usize,
+    orig_height: usize,
+    strip_angle: f64,
+    expected_rotated_width: usize,
+    expected_rotated_height: usize,
+    forward_matrix: []const f64,
+    inverse_matrix: []const f64,
+    rotated_frames: []const FrameRect,
+    expected_original_frames: []const FrameRect,
+    tolerance: numeric.Tolerance,
+};
+
+const ExpandedRotationResampleFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    width: usize,
+    height: usize,
+    strip_angle: f64,
+    input: []const f64,
+    expected_width: usize,
+    expected_height: usize,
+    expected: []const f64,
+    tolerance: numeric.Tolerance,
+};
+
+const FilmExtentFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const FilmExtentCase,
+    tolerance: numeric.Tolerance,
+};
+
+const BinaryCloseFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const BinaryCloseCase,
+};
+
+const BinaryCloseCase = struct {
+    name: []const u8,
+    width: usize,
+    height: usize,
+    kernel_size: usize,
+    input: []const bool,
+    expected: []const bool,
+};
+
+const FilmExtentCase = struct {
+    name: []const u8,
+    width: usize,
+    height: usize,
+    background_level: f64,
+    film_rect: ?RebateOriginRect = null,
+    film_level: f64 = 0.2,
+    expected_extent: ?FilmExtent = null,
+};
+
+const StripAnalysisFixture = struct {
+    name: []const u8,
+    operation: []const u8,
+    python_oracle: []const u8,
+    generated_by: []const u8,
+    cases: []const StripAnalysisCase,
+    tolerance: numeric.Tolerance,
+};
+
+const StripAnalysisCase = struct {
+    name: []const u8,
+    format: []const u8,
+    width: usize,
+    height: usize,
+    film_extent: ?FilmExtent = null,
+    strip_angle: f64,
+    expected_analysis: StripAnalysis,
+    expected_initial_frames: []const FrameRect,
+};
+
+fn fillProfilePattern(gray: []f64, width: usize, height: usize) void {
+    for (0..height) |y| {
+        for (0..width) |x| {
+            const product_mod = (x * y) % 11;
+            gray[y * width + x] = @as(f64, @floatFromInt(y)) * 3.0 +
+                @as(f64, @floatFromInt(x)) * 7.0 +
+                @as(f64, @floatFromInt(product_mod)) * 0.5;
+        }
+    }
+}
+
+fn expectStripProfileFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(StripProfileFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidStripProfileFixture;
+    }
+    if (fixture.shape.len != 2) return error.InvalidStripProfileFixture;
+    const height = fixture.shape[0];
+    const width = fixture.shape[1];
+    const profile_len = if (fixture.is_vertical) height else width;
+    const cross_len = if (fixture.is_vertical) width else height;
+    if (fixture.expected_profile_a.len != profile_len or
+        fixture.expected_profile_b.len != profile_len or
+        fixture.expected_profile_c.len != profile_len or
+        fixture.expected_cross_profile.len != cross_len)
+    {
+        return error.InvalidStripProfileFixture;
+    }
+
+    const gray = try allocator.alloc(f64, width * height);
+    defer allocator.free(gray);
+    fillProfilePattern(gray, width, height);
+
+    var profiles = try computeStripProfiles(allocator, gray, width, height, fixture.is_vertical);
+    defer profiles.deinit(allocator);
+    try numeric.assertCloseSlices(fixture.expected_profile_a, profiles.profile_a, fixture.tolerance);
+    try numeric.assertCloseSlices(fixture.expected_profile_b, profiles.profile_b, fixture.tolerance);
+    try numeric.assertCloseSlices(fixture.expected_profile_c, profiles.profile_c, fixture.tolerance);
+    try numeric.assertCloseSlices(fixture.expected_cross_profile, profiles.cross_profile, fixture.tolerance);
+}
+
+fn expectDtwFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(DtwFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidDtwFixture;
+    }
+    if (fixture.expected_edges.len != fixture.frame_count * 2) return error.InvalidDtwFixture;
+    const format = formatByName(fixture.format) orelse return error.InvalidDtwFixture;
+    var alignment = try alignPitchDtw(allocator, fixture.gradient, fixture.strip_len, format, fixture.frame_count, .{
+        .max_len = fixture.dtw_max_len,
+    });
+    defer alignment.deinit(allocator);
+
+    try std.testing.expectEqualSlices(usize, fixture.expected_edges, alignment.edge_positions);
+    try std.testing.expectApproxEqAbs(fixture.dtw_scale, alignment.dtw_scale, fixture.tolerance.abs);
+    try std.testing.expectEqual(fixture.template_len, alignment.template_len);
+    try std.testing.expectEqual(fixture.effective_frame_dim, alignment.effective_frame_dim);
+    try std.testing.expectEqual(fixture.effective_gap, alignment.effective_gap);
+    try std.testing.expectEqual(fixture.band, alignment.band);
+    try std.testing.expectEqual(fixture.end_j, alignment.end_j);
+}
+
+fn expectGradientSnapFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(GradientSnapFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidGradientSnapFixture;
+    }
+    if (fixture.edge_positions.len != fixture.expected.len) return error.InvalidGradientSnapFixture;
+
+    const output = try allocator.alloc(usize, fixture.expected.len);
+    defer allocator.free(output);
+    try snapEdgesToGradients(fixture.gradient, fixture.edge_positions, output, fixture.frame_strip_dim);
+    try std.testing.expectEqualSlices(usize, fixture.expected, output);
+    _ = fixture.tolerance;
+}
+
+fn expectWeightedPeakFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(WeightedPeakFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidWeightedPeakFixture;
+    }
+    if (fixture.cases.len == 0) return error.InvalidWeightedPeakFixture;
+    for (fixture.cases) |case| {
+        const actual = try snapToWeightedPeak(fixture.gradient, case.target, case.radius, case.sigma);
+        try std.testing.expectEqual(case.expected, actual);
+    }
+    _ = fixture.tolerance;
+}
+
+fn expectSizeCorrectionFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(SizeCorrectionFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidSizeCorrectionFixture;
+    }
+    if (fixture.edge_positions.len != fixture.expected.len) return error.InvalidSizeCorrectionFixture;
+
+    const positions = try allocator.dupe(usize, fixture.edge_positions);
+    defer allocator.free(positions);
+    try applySizeConsistencyCorrection(fixture.gradient, positions, fixture.actual_n, fixture.frame_strip_dim);
+    try std.testing.expectEqualSlices(usize, fixture.expected, positions);
+    _ = fixture.tolerance;
+}
+
+fn expectTerminalRepairFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(TerminalRepairFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidTerminalRepairFixture;
+    }
+    if (fixture.edge_positions.len != fixture.expected.len) return error.InvalidTerminalRepairFixture;
+
+    const positions = try allocator.dupe(usize, fixture.edge_positions);
+    defer allocator.free(positions);
+    try repairTerminalFrames(
+        allocator,
+        fixture.gradient,
+        positions,
+        fixture.actual_n,
+        fixture.frame_strip_dim,
+        fixture.snap_radius,
+        fixture.work_pitch_px,
+    );
+    try std.testing.expectEqualSlices(usize, fixture.expected, positions);
+    _ = fixture.tolerance;
+}
+
+fn expectCrossStripFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(CrossStripFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidCrossStripFixture;
+    }
+
+    const actual = (try measureCrossStripEdges(allocator, fixture.gradient_signed, fixture.cross_dim_est, fixture.cross_search_r)) orelse return error.InvalidCrossStripFixture;
+    try std.testing.expectApproxEqAbs(fixture.expected.left_t, actual.left_t, fixture.tolerance.abs);
+    try std.testing.expectApproxEqAbs(fixture.expected.right_t, actual.right_t, fixture.tolerance.abs);
+    try std.testing.expectApproxEqAbs(fixture.expected.cross_w, actual.cross_w, fixture.tolerance.abs);
+    try std.testing.expectApproxEqAbs(fixture.expected.cross_center_offset, actual.cross_center_offset, fixture.tolerance.abs);
+    try std.testing.expectEqual(fixture.expected.hw_idx, actual.hw_idx);
+    try std.testing.expectEqual(fixture.expected.coarse_k, actual.coarse_k);
+}
+
+fn expectTheilSenFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(TheilSenFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidTheilSenFixture;
+    }
+
+    const max_angle = fixture.max_angle_degrees * std.math.pi / 180.0;
+    const actual = (try estimateAngleTheilSen(allocator, fixture.points, max_angle)) orelse return error.InvalidTheilSenFixture;
+    try std.testing.expectApproxEqAbs(fixture.expected_median_slope, actual.median_slope, fixture.tolerance.abs);
+    try std.testing.expectApproxEqAbs(fixture.expected_angle, actual.angle, fixture.tolerance.abs);
+}
+
+fn expectSingleFrameFallbackFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(SingleFrameFallbackFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidSingleFrameFallbackFixture;
+    }
+
+    const actual = (try singleFrameFallback(1, fixture.frame, fixture.preview_width, fixture.preview_height)) orelse return error.InvalidSingleFrameFallbackFixture;
+    try expectFrameRect(fixture.expected, actual, fixture.tolerance.abs);
+}
+
+fn expectFrameRect(expected: FrameRect, actual: FrameRect, tolerance: f64) !void {
+    try std.testing.expectApproxEqAbs(expected.cx, actual.cx, tolerance);
+    try std.testing.expectApproxEqAbs(expected.cy, actual.cy, tolerance);
+    try std.testing.expectApproxEqAbs(expected.w, actual.w, tolerance);
+    try std.testing.expectApproxEqAbs(expected.h, actual.h, tolerance);
+    try std.testing.expectApproxEqAbs(expected.angle, actual.angle, tolerance);
+}
+
+fn expectRotatedCropFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(RotatedCropFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidRotatedCropFixture;
+    }
+    if (fixture.shape.len != 2 or fixture.expected_shape.len != 2) return error.InvalidRotatedCropFixture;
+    const height = fixture.shape[0];
+    const width = fixture.shape[1];
+    if (fixture.input.len != width * height) return error.InvalidRotatedCropFixture;
+
+    var crop = try cropRotatedRect(allocator, fixture.input, width, height, fixture.cx, fixture.cy, fixture.w, fixture.h, fixture.angle_deg);
+    defer crop.deinit(allocator);
+    try std.testing.expectEqual(fixture.expected_shape[1], crop.width);
+    try std.testing.expectEqual(fixture.expected_shape[0], crop.height);
+    try numeric.assertCloseSlices(fixture.expected, crop.pixels, fixture.tolerance);
+}
+
+fn expectRebateHelpersFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(RebateHelpersFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidRebateFixture;
+    }
+    if (fixture.mask_shape.len != 2 or fixture.bounds_shape.len != 2) return error.InvalidRebateFixture;
+    const mask_h = fixture.mask_shape[0];
+    const mask_w = fixture.mask_shape[1];
+    const mask = (try makeRebateMask(allocator, mask_h, mask_w, fixture.mask_rect)) orelse return error.InvalidRebateFixture;
+    defer allocator.free(mask);
+    try std.testing.expectEqualSlices(bool, fixture.expected_mask, mask);
+
+    const bounds_h = fixture.bounds_shape[0];
+    const bounds_w = fixture.bounds_shape[1];
+    try std.testing.expectEqual(fixture.expected_bounds, rebateInBounds(bounds_w, bounds_h, fixture.bounds_rect));
+
+    const actual_rebate = computeInterFrameRebate(fixture.inter_frames) orelse return error.InvalidRebateFixture;
+    try expectRebateRect(fixture.expected_inter_rebate, actual_rebate, fixture.tolerance.abs);
+}
+
+fn expectRebateRect(expected: RebateRect, actual: RebateRect, tolerance: f64) !void {
+    try std.testing.expectApproxEqAbs(expected.cx, actual.cx, tolerance);
+    try std.testing.expectApproxEqAbs(expected.cy, actual.cy, tolerance);
+    try std.testing.expectApproxEqAbs(expected.w, actual.w, tolerance);
+    try std.testing.expectApproxEqAbs(expected.h, actual.h, tolerance);
+    try std.testing.expectApproxEqAbs(expected.angle, actual.angle, tolerance);
+}
+
+fn expectPreviewScalingFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(PreviewScalingFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidPreviewScalingFixture;
+    }
+
+    const geometry = try computePreviewGeometry(fixture.full_width, fixture.full_height, fixture.preview_size);
+    try std.testing.expectEqual(fixture.full_width, geometry.full_width);
+    try std.testing.expectEqual(fixture.full_height, geometry.full_height);
+    try std.testing.expectEqual(fixture.expected_preview_width, geometry.preview_width);
+    try std.testing.expectEqual(fixture.expected_preview_height, geometry.preview_height);
+    try std.testing.expectApproxEqAbs(fixture.expected_preview_scale, geometry.preview_scale, fixture.tolerance.abs);
+
+    try expectFrameRect(fixture.expected_frame_full, try previewFrameToFullResolution(fixture.frame_preview, geometry.preview_scale), fixture.tolerance.abs);
+    try expectFrameRect(
+        fixture.expected_selection_full_frame,
+        try previewSelectionToFullResolution(fixture.selection_preview, geometry.preview_scale),
+        fixture.tolerance.abs,
+    );
+    try expectRebateOriginRect(fixture.expected_rebate_full, try previewRebateToFullResolution(fixture.rebate_preview, geometry.preview_scale), fixture.tolerance.abs);
+
+    const no_downscale = try computePreviewGeometry(
+        fixture.no_downscale_full_width,
+        fixture.no_downscale_full_height,
+        fixture.no_downscale_preview_size,
+    );
+    try std.testing.expectEqual(fixture.no_downscale_full_width, no_downscale.preview_width);
+    try std.testing.expectEqual(fixture.no_downscale_full_height, no_downscale.preview_height);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), no_downscale.preview_scale, fixture.tolerance.abs);
+}
+
+fn expectTestDetectGroundTruthFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(512 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(TestDetectGroundTruthFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidTestDetectGroundTruthFixture;
+    }
+    try std.testing.expectEqual(fixture.case_count, fixture.cases.len);
+    try std.testing.expectApproxEqAbs(@as(f64, 30.0), fixture.rms_acceptance_px, fixture.tolerance.abs);
+
+    var total_frames: usize = 0;
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.scan.len == 0 or test_case.format.len == 0) {
+            return error.InvalidTestDetectGroundTruthFixture;
+        }
+        _ = formatByName(test_case.format) orelse return error.InvalidTestDetectGroundTruthFixture;
+        if (!std.math.isFinite(test_case.preview_scale) or test_case.preview_scale <= 0.0) {
+            return error.InvalidTestDetectGroundTruthFixture;
+        }
+        if (test_case.n_frames != test_case.ground_truth.len or test_case.expected_full.len != test_case.ground_truth.len) {
+            return error.InvalidTestDetectGroundTruthFixture;
+        }
+
+        total_frames += test_case.ground_truth.len;
+        for (test_case.ground_truth, test_case.expected_full) |ground_truth_preview, expected_full| {
+            const actual_full = try previewSelectionToFullResolution(ground_truth_preview, test_case.preview_scale);
+            try expectFrameRect(expected_full, actual_full, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(@as(f64, 0.0), frameRmsError(actual_full, expected_full), fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 0.0),
+                frameAngleErrorRadians(actual_full.angle, ground_truth_preview.angle),
+                fixture.tolerance.abs,
+            );
+        }
+    }
+    try std.testing.expectEqual(fixture.total_frames, total_frames);
+}
+
+fn expectScanDetectorParity(path: []const u8, scan_path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(512 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(TestDetectPythonOutputFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidTestDetectPythonOutputFixture;
+    }
+
+    var selected: ?TestDetectPythonOutputCase = null;
+    for (fixture.cases) |test_case| {
+        if (std.mem.eql(u8, test_case.scan, scan_path)) {
+            selected = test_case;
+            break;
+        }
+    }
+    const test_case = selected orelse return error.InvalidTestDetectPythonOutputFixture;
+    std.Io.Dir.cwd().access(std.testing.io, test_case.scan, .{}) catch return error.SkipZigTest;
+
+    const format = formatByName(test_case.format) orelse return error.InvalidTestDetectPythonOutputFixture;
+    if (test_case.name.len == 0 or test_case.scan.len == 0 or test_case.format.len == 0 or test_case.aspect.len == 0) {
+        return error.InvalidTestDetectPythonOutputFixture;
+    }
+    if (test_case.frames.len != test_case.n_frames or fixture.angle_tolerance_radians <= 0.0) {
+        return error.InvalidTestDetectPythonOutputFixture;
+    }
+    const rgb = try tiff.loadRgbPage(allocator, test_case.scan);
+    defer rgb.deinit(allocator);
+    const geometry = try computePreviewGeometry(@intCast(rgb.width), @intCast(rgb.height), 8192);
+    try std.testing.expectEqual(test_case.preview_width, geometry.preview_width);
+    try std.testing.expectEqual(test_case.preview_height, geometry.preview_height);
+    try std.testing.expectApproxEqAbs(test_case.preview_scale, geometry.preview_scale, fixture.geometry_tolerance.abs);
+
+    const preview_data = try resizeImageArea(
+        allocator,
+        rgb.data,
+        @intCast(rgb.width),
+        @intCast(rgb.height),
+        rgb.samples_per_pixel,
+        rgb.bits_per_sample,
+        geometry.preview_width,
+        geometry.preview_height,
+    );
+    defer allocator.free(preview_data);
+    var detected = try detectFramesFromImage(
+        allocator,
+        preview_data,
+        geometry.preview_width,
+        geometry.preview_height,
+        rgb.samples_per_pixel,
+        rgb.bits_per_sample,
+        format,
+        .{
+            .frame_count_override = test_case.n_frames,
+            .detect_film_extent = true,
+            .apply_clahe = true,
+        },
+    );
+    defer detected.deinit(allocator);
+
+    try std.testing.expectEqualStrings(test_case.aspect, detected.aspect);
+    try std.testing.expectEqual(test_case.frames.len, detected.frames.len);
+    var all_frames_match = true;
+    for (test_case.frames, detected.frames, 0..) |expected, actual, frame_index| {
+        const max_spatial_delta = @max(
+            @max(@abs(actual.cx - expected.cx), @abs(actual.cy - expected.cy)),
+            @max(@abs(actual.w - expected.w), @abs(actual.h - expected.h)),
+        );
+        const angle_delta = @abs(frameAngleErrorRadians(actual.angle, expected.angle));
+        if (max_spatial_delta > fixture.tolerance.abs or angle_delta > fixture.angle_tolerance_radians) {
+            all_frames_match = false;
+            std.debug.print("{s} frame {d}: expected ({d:.3},{d:.3},{d:.3},{d:.3},{d:.6}) actual ({d:.3},{d:.3},{d:.3},{d:.3},{d:.6}) max_delta {d:.3} angle_delta {d:.6}\n", .{
+                test_case.scan,
+                frame_index + 1,
+                expected.cx,
+                expected.cy,
+                expected.w,
+                expected.h,
+                expected.angle,
+                actual.cx,
+                actual.cy,
+                actual.w,
+                actual.h,
+                actual.angle,
+                max_spatial_delta,
+                angle_delta,
+            });
+        }
+    }
+    try std.testing.expect(all_frames_match);
+}
+
+fn expectSyntheticDetectionFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(SyntheticDetectionFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidSyntheticDetectionFixture;
+    }
+    if (fixture.cases.len == 0) return error.InvalidSyntheticDetectionFixture;
+
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.format.len == 0 or test_case.orientation.len == 0) {
+            return error.InvalidSyntheticDetectionFixture;
+        }
+        _ = formatByName(test_case.format) orelse return error.InvalidSyntheticDetectionFixture;
+        const is_vertical = if (std.mem.eql(u8, test_case.orientation, "vertical"))
+            true
+        else if (std.mem.eql(u8, test_case.orientation, "horizontal"))
+            false
+        else
+            return error.InvalidSyntheticDetectionFixture;
+        if (test_case.width == 0 or test_case.height == 0 or test_case.expected_frames.len == 0) {
+            return error.InvalidSyntheticDetectionFixture;
+        }
+        if (test_case.expected_full.len != test_case.expected_frames.len) {
+            return error.InvalidSyntheticDetectionFixture;
+        }
+
+        const image = try synthesizeDetectionImage(allocator, test_case);
+        defer allocator.free(image);
+        try std.testing.expectEqual(test_case.expected_frame_pixel_count, countExactPixels(image, test_case.frame_level));
+
+        for (test_case.expected_frames, test_case.expected_full) |frame_preview, expected_full| {
+            try expectFrameRect(expected_full, try previewSelectionToFullResolution(frame_preview, test_case.preview_scale), fixture.tolerance.abs);
+        }
+
+        var profiles = try computeStripProfiles(allocator, image, test_case.width, test_case.height, is_vertical);
+        defer profiles.deinit(allocator);
+        try std.testing.expectEqual(if (is_vertical) test_case.height else test_case.width, profiles.profile_a.len);
+        try std.testing.expectEqual(if (is_vertical) test_case.width else test_case.height, profiles.cross_profile.len);
+    }
+}
+
+fn expectAxisAlignedDetectionFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(AxisAlignedDetectionFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidSyntheticDetectionFixture;
+    }
+    if (!std.math.isFinite(fixture.rms_acceptance_px) or fixture.rms_acceptance_px <= 0.0) {
+        return error.InvalidSyntheticDetectionFixture;
+    }
+
+    for (fixture.cases) |test_case| {
+        const format = formatByName(test_case.format) orelse return error.InvalidSyntheticDetectionFixture;
+        const image = try synthesizeDetectionImage(allocator, test_case);
+        defer allocator.free(image);
+        var detected = try detectFramesAxisAlignedPrepared(allocator, image, test_case.width, test_case.height, format, .{
+            .frame_count_override = test_case.expected_frames.len,
+        });
+        defer detected.deinit(allocator);
+        try std.testing.expectEqual(test_case.expected_full.len, detected.frames.len);
+        if (test_case.expected_aspect) |expected_aspect| {
+            try std.testing.expectEqualStrings(expected_aspect, detected.aspect);
+        }
+        for (test_case.expected_full, detected.frames) |expected, actual| {
+            try std.testing.expect(frameRmsError(actual, expected) <= fixture.rms_acceptance_px);
+            try expectFrameRect(expected, actual, fixture.tolerance.abs);
+            if (test_case.cross_center_tolerance) |cross_tolerance| {
+                if (detected.strip_info.is_vertical) {
+                    try std.testing.expectApproxEqAbs(expected.cx, actual.cx, cross_tolerance);
+                } else {
+                    try std.testing.expectApproxEqAbs(expected.cy, actual.cy, cross_tolerance);
+                }
+            }
+            if (test_case.cross_size_tolerance) |cross_tolerance| {
+                if (detected.strip_info.is_vertical) {
+                    try std.testing.expectApproxEqAbs(expected.w, actual.w, cross_tolerance);
+                } else {
+                    try std.testing.expectApproxEqAbs(expected.h, actual.h, cross_tolerance);
+                }
+            }
+            if (test_case.angle_tolerance) |angle_tolerance| {
+                try std.testing.expectApproxEqAbs(expected.angle, actual.angle, angle_tolerance);
+            }
+        }
+
+        const image_bytes = try grayImageToU8Bytes(allocator, image);
+        defer allocator.free(image_bytes);
+        var detected_from_image = try detectFramesFromImage(
+            allocator,
+            image_bytes,
+            test_case.width,
+            test_case.height,
+            1,
+            8,
+            format,
+            .{
+                .frame_count_override = test_case.expected_frames.len,
+                .detect_film_extent = false,
+                .apply_clahe = false,
+            },
+        );
+        defer detected_from_image.deinit(allocator);
+        try std.testing.expectEqual(test_case.expected_full.len, detected_from_image.frames.len);
+        if (test_case.expected_aspect) |expected_aspect| {
+            try std.testing.expectEqualStrings(expected_aspect, detected_from_image.aspect);
+        }
+        for (test_case.expected_full, detected_from_image.frames) |expected, actual| {
+            try std.testing.expect(frameRmsError(actual, expected) <= fixture.rms_acceptance_px);
+            try expectFrameRect(expected, actual, fixture.tolerance.abs);
+        }
+
+        var detected_with_clahe = try detectFramesFromImage(
+            allocator,
+            image_bytes,
+            test_case.width,
+            test_case.height,
+            1,
+            8,
+            format,
+            .{
+                .frame_count_override = test_case.expected_frames.len,
+                .detect_film_extent = false,
+                .apply_clahe = true,
+            },
+        );
+        defer detected_with_clahe.deinit(allocator);
+        try std.testing.expectEqual(test_case.expected_full.len, detected_with_clahe.frames.len);
+        if (test_case.expected_aspect) |expected_aspect| {
+            try std.testing.expectEqualStrings(expected_aspect, detected_with_clahe.aspect);
+        }
+    }
+}
+
+fn expectRotatedWrapperDetectionFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(AxisAlignedDetectionFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidSyntheticDetectionFixture;
+    }
+    if (!std.math.isFinite(fixture.rms_acceptance_px) or fixture.rms_acceptance_px <= 0.0) {
+        return error.InvalidSyntheticDetectionFixture;
+    }
+
+    for (fixture.cases) |test_case| {
+        const format = formatByName(test_case.format) orelse return error.InvalidSyntheticDetectionFixture;
+        const image = try synthesizeDetectionImage(allocator, test_case);
+        defer allocator.free(image);
+        const extent = FilmExtent{
+            .strip_narrow_px = @min(test_case.strip_rect.w, test_case.strip_rect.h),
+            .strip_long_px = @max(test_case.strip_rect.w, test_case.strip_rect.h),
+            .strip_angle = test_case.strip_rect.angle,
+        };
+        try std.testing.expect(@abs(extent.strip_angle) > 0.1 * std.math.pi / 180.0);
+
+        const image_bytes = try grayImageToU8Bytes(allocator, image);
+        defer allocator.free(image_bytes);
+        var detected = try detectFramesFromImage(
+            allocator,
+            image_bytes,
+            test_case.width,
+            test_case.height,
+            1,
+            8,
+            format,
+            .{
+                .frame_count_override = test_case.expected_full.len,
+                .detect_film_extent = false,
+                .film_extent_override = extent,
+                .apply_clahe = false,
+            },
+        );
+        defer detected.deinit(allocator);
+
+        try std.testing.expectEqual(test_case.expected_full.len, detected.frames.len);
+        if (test_case.expected_aspect) |expected_aspect| {
+            try std.testing.expectEqualStrings(expected_aspect, detected.aspect);
+        }
+        const angle_tolerance = test_case.angle_tolerance orelse fixture.tolerance.abs;
+        for (test_case.expected_full, detected.frames) |expected, actual| {
+            const rms = frameRmsError(actual, expected);
+            try std.testing.expect(rms <= fixture.rms_acceptance_px);
+            try std.testing.expectApproxEqAbs(expected.cx, actual.cx, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(expected.cy, actual.cy, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(expected.w, actual.w, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(expected.h, actual.h, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(expected.angle, actual.angle, angle_tolerance);
+        }
+    }
+}
+
+fn expectDetectionGrayFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(DetectionGrayFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidDetectionGrayFixture;
+    }
+
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.width == 0 or test_case.height == 0) return error.InvalidDetectionGrayFixture;
+        const pixel_count = try std.math.mul(usize, test_case.width, test_case.height);
+        const sample_count = try std.math.mul(usize, pixel_count, test_case.samples_per_pixel);
+        if (test_case.sample_values.len != sample_count or test_case.expected.len != pixel_count) {
+            return error.InvalidDetectionGrayFixture;
+        }
+        const data = try sampleValuesToBytes(allocator, test_case.sample_values, test_case.bits_per_sample);
+        defer allocator.free(data);
+        const actual = try prepareDetectionGray(
+            allocator,
+            data,
+            test_case.width,
+            test_case.height,
+            test_case.samples_per_pixel,
+            test_case.bits_per_sample,
+            .{ .invert = test_case.invert },
+        );
+        defer allocator.free(actual);
+        for (test_case.expected, actual) |expected, value| {
+            try std.testing.expectApproxEqAbs(expected, value, fixture.tolerance.abs);
+        }
+    }
+}
+
+fn expectAreaResizeFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(AreaResizeFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidAreaResizeInput;
+    }
+
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.width == 0 or test_case.height == 0 or test_case.target_width == 0 or test_case.target_height == 0) {
+            return error.InvalidAreaResizeInput;
+        }
+        const input_sample_count = try std.math.mul(usize, try std.math.mul(usize, test_case.width, test_case.height), test_case.samples_per_pixel);
+        const output_sample_count = try std.math.mul(usize, try std.math.mul(usize, test_case.target_width, test_case.target_height), test_case.samples_per_pixel);
+        if (test_case.sample_values.len != input_sample_count or test_case.expected.len != output_sample_count) {
+            return error.InvalidAreaResizeInput;
+        }
+        const data = try sampleValuesToBytes(allocator, test_case.sample_values, test_case.bits_per_sample);
+        defer allocator.free(data);
+        const actual_bytes = try resizeImageArea(
+            allocator,
+            data,
+            test_case.width,
+            test_case.height,
+            test_case.samples_per_pixel,
+            test_case.bits_per_sample,
+            test_case.target_width,
+            test_case.target_height,
+        );
+        defer allocator.free(actual_bytes);
+        for (test_case.expected, 0..) |expected, sample_index| {
+            try std.testing.expectEqual(expected, sampleToU16(actual_bytes, sample_index, test_case.bits_per_sample));
+        }
+    }
+}
+
+fn expectClaheFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(ClaheFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidClaheFixture;
+    }
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.width == 0 or test_case.height == 0) return error.InvalidClaheFixture;
+        const pixel_count = try std.math.mul(usize, test_case.width, test_case.height);
+        if (test_case.sample_values.len != pixel_count or test_case.expected.len != pixel_count) {
+            return error.InvalidClaheFixture;
+        }
+        const actual = try applyClahe8(allocator, test_case.sample_values, test_case.width, test_case.height, .{
+            .clip_limit = test_case.clip_limit,
+            .tiles_x = test_case.tiles_x,
+            .tiles_y = test_case.tiles_y,
+        });
+        defer allocator.free(actual);
+        try std.testing.expectEqualSlices(u8, test_case.expected, actual);
+    }
+}
+
+fn expectRotationBackFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(RotationBackFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidRotationTransformFixture;
+    }
+    if (fixture.forward_matrix.len != 6 or fixture.inverse_matrix.len != 6 or fixture.rotated_frames.len != fixture.expected_original_frames.len) {
+        return error.InvalidRotationTransformFixture;
+    }
+
+    const transform = try expandedRotationTransform(fixture.orig_width, fixture.orig_height, fixture.strip_angle);
+    try std.testing.expectEqual(fixture.expected_rotated_width, transform.rotated_width);
+    try std.testing.expectEqual(fixture.expected_rotated_height, transform.rotated_height);
+    for (fixture.forward_matrix, transform.forward.values) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, fixture.tolerance.abs);
+    }
+    for (fixture.inverse_matrix, transform.inverse.values) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, fixture.tolerance.abs);
+    }
+
+    const frames = try allocator.dupe(FrameRect, fixture.rotated_frames);
+    defer allocator.free(frames);
+    try transformFramesFromRotatedToOriginal(frames, transform.inverse, fixture.strip_angle);
+    for (fixture.expected_original_frames, frames) |expected, actual| {
+        try expectFrameRect(expected, actual, fixture.tolerance.abs);
+    }
+}
+
+fn expectExpandedRotationResampleFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(ExpandedRotationResampleFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidRotationTransformFixture;
+    }
+    if (fixture.input.len != fixture.width * fixture.height or fixture.expected.len != fixture.expected_width * fixture.expected_height) {
+        return error.InvalidRotationTransformFixture;
+    }
+
+    var actual = try rotateImageExpandedReplicate(allocator, fixture.input, fixture.width, fixture.height, fixture.strip_angle);
+    defer actual.deinit(allocator);
+    try std.testing.expectEqual(fixture.expected_width, actual.width);
+    try std.testing.expectEqual(fixture.expected_height, actual.height);
+    for (fixture.expected, actual.pixels) |expected, value| {
+        try std.testing.expectApproxEqAbs(expected, value, fixture.tolerance.abs);
+    }
+}
+
+fn expectFilmExtentFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(FilmExtentFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidFilmExtentFixture;
+    }
+
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.width == 0 or test_case.height == 0) return error.InvalidFilmExtentFixture;
+        const image = try synthesizeFilmExtentImage(allocator, test_case);
+        defer allocator.free(image);
+        const actual = try detectFilmExtentAxisAligned(allocator, image, test_case.width, test_case.height);
+        if (test_case.expected_extent) |expected| {
+            const extent = actual orelse return error.InvalidFilmExtentFixture;
+            try std.testing.expectApproxEqAbs(expected.strip_narrow_px, extent.strip_narrow_px, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(expected.strip_long_px, extent.strip_long_px, fixture.tolerance.abs);
+            try std.testing.expectApproxEqAbs(expected.strip_angle, extent.strip_angle, fixture.tolerance.abs);
+        } else {
+            try std.testing.expect(actual == null);
+        }
+    }
+}
+
+fn expectBinaryCloseFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(BinaryCloseFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
+        return error.InvalidFilmExtentFixture;
+    }
+
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.input.len != test_case.width * test_case.height or test_case.expected.len != test_case.input.len) {
+            return error.InvalidFilmExtentFixture;
+        }
+        const mask = try allocator.dupe(bool, test_case.input);
+        defer allocator.free(mask);
+        try closeBinaryMask(allocator, mask, test_case.width, test_case.height, test_case.kernel_size);
+        try std.testing.expectEqualSlices(bool, test_case.expected, mask);
+    }
+}
+
+fn expectStripAnalysisFixture(path: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
+    defer allocator.free(text);
+    var parsed = try std.json.parseFromSlice(StripAnalysisFixture, allocator, text, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
+        return error.InvalidStripAnalysisFixture;
+    }
+
+    for (fixture.cases) |test_case| {
+        if (test_case.name.len == 0 or test_case.format.len == 0) return error.InvalidStripAnalysisFixture;
+        const format = formatByName(test_case.format) orelse return error.InvalidStripAnalysisFixture;
+        const analysis = try analyzeStrip(test_case.width, test_case.height, format, test_case.film_extent);
+        try expectStripAnalysis(test_case.expected_analysis, analysis, fixture.tolerance.abs);
+        try std.testing.expectEqual(test_case.expected_analysis.n_frames, test_case.expected_initial_frames.len);
+        const frames = try initialPlacement(
+            allocator,
+            test_case.width,
+            test_case.height,
+            analysis.n_frames,
+            analysis,
+            test_case.strip_angle,
+        );
+        defer allocator.free(frames);
+        try std.testing.expectEqual(test_case.expected_initial_frames.len, frames.len);
+        for (test_case.expected_initial_frames, frames) |expected, actual| {
+            try expectFrameRect(expected, actual, fixture.tolerance.abs);
+        }
+    }
+}
+
+fn expectStripAnalysis(expected: StripAnalysis, actual: StripAnalysis, tolerance: f64) !void {
+    try std.testing.expectEqual(expected.n_frames, actual.n_frames);
+    try std.testing.expectApproxEqAbs(expected.frame_w, actual.frame_w, tolerance);
+    try std.testing.expectApproxEqAbs(expected.frame_h, actual.frame_h, tolerance);
+    try std.testing.expectApproxEqAbs(expected.pitch_px, actual.pitch_px, tolerance);
+    try std.testing.expectEqual(expected.is_vertical, actual.is_vertical);
+}
+
+fn synthesizeDetectionImage(allocator: std.mem.Allocator, test_case: SyntheticDetectionCase) ![]f64 {
+    if (test_case.width == 0 or test_case.height == 0) return error.InvalidSyntheticDetectionFixture;
+    const image = try allocator.alloc(f64, test_case.width * test_case.height);
+    errdefer allocator.free(image);
+    @memset(image, test_case.background_level);
+    fillRect(image, test_case.width, test_case.height, .{
+        .x = test_case.strip_rect.x,
+        .y = test_case.strip_rect.y,
+        .width = test_case.strip_rect.w,
+        .height = test_case.strip_rect.h,
+    }, test_case.strip_level);
+    for (test_case.expected_frames) |frame| {
+        fillSyntheticFrame(image, test_case.width, test_case.height, frame, test_case.frame_level);
+    }
+    return image;
+}
+
+fn synthesizeFilmExtentImage(allocator: std.mem.Allocator, test_case: FilmExtentCase) ![]f64 {
+    const image = try allocator.alloc(f64, test_case.width * test_case.height);
+    errdefer allocator.free(image);
+    @memset(image, test_case.background_level);
+    if (test_case.film_rect) |rect| {
+        fillSyntheticFrame(image, test_case.width, test_case.height, .{
+            .x = rect.x,
+            .y = rect.y,
+            .w = rect.w,
+            .h = rect.h,
+            .angle = rect.angle,
+        }, test_case.film_level);
+    }
+    return image;
+}
+
+fn sampleValuesToBytes(allocator: std.mem.Allocator, values: []const u16, bits_per_sample: u16) ![]u8 {
+    if (bits_per_sample != 8 and bits_per_sample != 16) return error.InvalidDetectionGrayFixture;
+    const bytes_per_sample: usize = bits_per_sample / 8;
+    const data = try allocator.alloc(u8, values.len * bytes_per_sample);
+    errdefer allocator.free(data);
+    if (bits_per_sample == 8) {
+        for (values, data) |value, *byte| {
+            if (value > 255) return error.InvalidDetectionGrayFixture;
+            byte.* = @intCast(value);
+        }
+    } else {
+        for (values, 0..) |value, index| {
+            std.mem.writeInt(u16, data[index * 2 ..][0..2], value, .little);
+        }
+    }
+    return data;
+}
+
+fn grayImageToU8Bytes(allocator: std.mem.Allocator, image: []const f64) ![]u8 {
+    const data = try allocator.alloc(u8, image.len);
+    errdefer allocator.free(data);
+    for (image, data) |value, *byte| {
+        byte.* = grayToU8(value);
+    }
+    return data;
+}
+
+fn u8ImageToF64(allocator: std.mem.Allocator, image: []const u8) ![]f64 {
+    const data = try allocator.alloc(f64, image.len);
+    errdefer allocator.free(data);
+    for (image, data) |value, *out| {
+        out.* = @as(f64, @floatFromInt(value)) / 255.0;
+    }
+    return data;
+}
+
+fn fillSyntheticFrame(image: []f64, width: usize, height: usize, frame: PreviewSelection, value: f64) void {
+    if (@abs(frame.angle) <= 1e-12) {
+        fillRect(image, width, height, .{
+            .x = frame.x,
+            .y = frame.y,
+            .width = frame.w,
+            .height = frame.h,
+        }, value);
+        return;
+    }
+
+    const cx = frame.x + frame.w / 2.0;
+    const cy = frame.y + frame.h / 2.0;
+    const half_w = frame.w / 2.0;
+    const half_h = frame.h / 2.0;
+    const cos_a = std.math.cos(frame.angle);
+    const sin_a = std.math.sin(frame.angle);
+    const extent_x = @abs(half_w * cos_a) + @abs(half_h * sin_a) + 2.0;
+    const extent_y = @abs(half_w * sin_a) + @abs(half_h * cos_a) + 2.0;
+
+    var x0: i64 = @intFromFloat(@floor(cx - extent_x));
+    var x1: i64 = @intFromFloat(@ceil(cx + extent_x));
+    var y0: i64 = @intFromFloat(@floor(cy - extent_y));
+    var y1: i64 = @intFromFloat(@ceil(cy + extent_y));
+    x0 = @max(0, x0);
+    y0 = @max(0, y0);
+    x1 = @min(@as(i64, @intCast(width)), x1);
+    y1 = @min(@as(i64, @intCast(height)), y1);
+    if (x1 <= x0 or y1 <= y0) return;
+
+    for (@as(usize, @intCast(y0))..@as(usize, @intCast(y1))) |y| {
+        const py = @as(f64, @floatFromInt(y)) + 0.5;
+        for (@as(usize, @intCast(x0))..@as(usize, @intCast(x1))) |x| {
+            const px = @as(f64, @floatFromInt(x)) + 0.5;
+            const dx = px - cx;
+            const dy = py - cy;
+            const local_x = dx * cos_a + dy * sin_a;
+            const local_y = -dx * sin_a + dy * cos_a;
+            if (@abs(local_x) <= half_w and @abs(local_y) <= half_h) {
+                image[y * width + x] = value;
+            }
+        }
+    }
+}
+
+fn fillRect(image: []f64, width: usize, height: usize, rect: RebateMaskRect, value: f64) void {
+    var x0: i64 = @intFromFloat(rect.x);
+    var y0: i64 = @intFromFloat(rect.y);
+    var x1: i64 = x0 + @as(i64, @intFromFloat(rect.width));
+    var y1: i64 = y0 + @as(i64, @intFromFloat(rect.height));
+    x0 = @max(0, x0);
+    y0 = @max(0, y0);
+    x1 = @min(@as(i64, @intCast(width)), x1);
+    y1 = @min(@as(i64, @intCast(height)), y1);
+    if (x1 <= x0 or y1 <= y0) return;
+    for (@as(usize, @intCast(y0))..@as(usize, @intCast(y1))) |y| {
+        for (@as(usize, @intCast(x0))..@as(usize, @intCast(x1))) |x| {
+            image[y * width + x] = value;
+        }
+    }
+}
+
+fn countExactPixels(image: []const f64, value: f64) usize {
+    var count: usize = 0;
+    for (image) |pixel| {
+        if (pixel == value) count += 1;
+    }
+    return count;
+}
+
+fn expectRebateOriginRect(expected: RebateOriginRect, actual: RebateOriginRect, tolerance: f64) !void {
+    try std.testing.expectApproxEqAbs(expected.x, actual.x, tolerance);
+    try std.testing.expectApproxEqAbs(expected.y, actual.y, tolerance);
+    try std.testing.expectApproxEqAbs(expected.w, actual.w, tolerance);
+    try std.testing.expectApproxEqAbs(expected.h, actual.h, tolerance);
+    try std.testing.expectApproxEqAbs(expected.angle, actual.angle, tolerance);
+}
+
+fn expectFormat(
+    actual: FilmFormat,
+    name: []const u8,
+    frame_mm: [2]f64,
+    pitch_mm: f64,
+    strip_width_mm: f64,
+    description: []const u8,
+) !void {
+    try std.testing.expectEqualStrings(name, actual.name);
+    try std.testing.expectEqual(frame_mm[0], actual.frame_mm[0]);
+    try std.testing.expectEqual(frame_mm[1], actual.frame_mm[1]);
+    try std.testing.expectEqual(pitch_mm, actual.pitch_mm);
+    try std.testing.expectEqual(strip_width_mm, actual.strip_width_mm);
+    try std.testing.expectEqualStrings(description, actual.description);
+}
+
+test "ports Python frame format constants" {
+    try std.testing.expectEqual(@as(usize, 5), formats.len);
+    try expectFormat(formats[0], "35mm", .{ 36.0, 24.0 }, 38.0, 35.0, "35mm (135 film)");
+    try expectFormat(formats[1], "645", .{ 56.0, 41.5 }, 60.0, 61.5, "645 medium format");
+    try expectFormat(formats[2], "6x6", .{ 56.0, 56.0 }, 60.0, 61.5, "6x6 medium format");
+    try expectFormat(formats[3], "6x7", .{ 56.0, 69.0 }, 73.0, 61.5, "6x7 medium format");
+    try expectFormat(formats[4], "6x9", .{ 56.0, 84.0 }, 88.0, 61.5, "6x9 medium format");
+}
+
+test "looks up frame formats by Python key" {
+    const medium_square = formatByName("6x6").?;
+    try std.testing.expectEqualStrings("6x6 medium format", medium_square.description);
+    try std.testing.expect(formatByName("35_mm") == null);
+}
+
+test "computes strip-analysis format ratios" {
+    const f35 = formatByName("35mm").?;
+    try std.testing.expectEqual(@as(f64, 24.0), f35.narrowMm());
+    try std.testing.expectEqual(@as(f64, 36.0), f35.wideMm());
+    try std.testing.expectEqual(@as(f64, 2.0), f35.gapMm());
+    try std.testing.expectApproxEqAbs(@as(f64, 35.0 / 36.0), f35.pitchRatio(), 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), f35.physicalAspect(), 1e-12);
+
+    const f645 = formatByName("645").?;
+    try std.testing.expectEqual(@as(f64, 41.5), f645.narrowMm());
+    try std.testing.expectEqual(@as(f64, 56.0), f645.wideMm());
+    try std.testing.expectEqual(@as(f64, 4.0), f645.gapMm());
+    try std.testing.expectApproxEqAbs(@as(f64, 61.5 / 56.0), f645.pitchRatio(), 1e-12);
+
+    const f6x9 = formatByName("6x9").?;
+    try std.testing.expectEqual(@as(f64, 56.0), f6x9.narrowMm());
+    try std.testing.expectEqual(@as(f64, 84.0), f6x9.wideMm());
+    try std.testing.expectEqual(@as(f64, 4.0), f6x9.gapMm());
+    try std.testing.expectApproxEqAbs(@as(f64, 61.5 / 84.0), f6x9.pitchRatio(), 1e-12);
+}
+
+test "prepares detection grayscale inputs against Python fixture" {
+    try expectDetectionGrayFixture("test/fixtures/processing/frames/detection-gray-preprocess-smoke.json");
+}
+
+test "resizes preview images with OpenCV INTER_AREA parity" {
+    try expectAreaResizeFixture("test/fixtures/processing/frames/area-resize-smoke.json");
+}
+
+test "rejects invalid detection grayscale inputs" {
+    var data = [_]u8{ 0, 1, 2 };
+    try std.testing.expectError(error.InvalidDetectionGrayInput, prepareDetectionGray(std.testing.allocator, &data, 0, 1, 1, 8, .{}));
+    try std.testing.expectError(error.InvalidDetectionGrayInput, prepareDetectionGray(std.testing.allocator, &data, 1, 1, 2, 8, .{}));
+    try std.testing.expectError(error.InvalidDetectionGrayInput, prepareDetectionGray(std.testing.allocator, &data, 1, 1, 1, 12, .{}));
+    try std.testing.expectError(error.InvalidDetectionGrayInput, prepareDetectionGray(std.testing.allocator, &data, 2, 1, 1, 8, .{}));
+}
+
+test "rejects invalid area resize inputs" {
+    var data = [_]u8{0};
+    try std.testing.expectError(error.InvalidAreaResizeInput, resizeImageArea(std.testing.allocator, &data, 0, 1, 1, 8, 1, 1));
+    try std.testing.expectError(error.InvalidAreaResizeInput, resizeImageArea(std.testing.allocator, &data, 1, 1, 4, 8, 1, 1));
+    try std.testing.expectError(error.InvalidAreaResizeInput, resizeImageArea(std.testing.allocator, &data, 1, 1, 1, 12, 1, 1));
+    try std.testing.expectError(error.InvalidAreaResizeInput, resizeImageArea(std.testing.allocator, &data, 1, 1, 1, 8, 2, 1));
+    try std.testing.expectError(error.InvalidAreaResizeInput, resizeImageArea(std.testing.allocator, &data, 2, 1, 1, 8, 1, 1));
+}
+
+test "applies OpenCV-style CLAHE against Python fixture" {
+    try expectClaheFixture("test/fixtures/processing/frames/clahe-8bit-smoke.json");
+}
+
+test "rejects invalid CLAHE inputs" {
+    var data = [_]u8{0};
+    try std.testing.expectError(error.InvalidClaheInput, applyClahe8(std.testing.allocator, &data, 0, 1, .{}));
+    try std.testing.expectError(error.InvalidClaheInput, applyClahe8(std.testing.allocator, &data, 1, 1, .{ .tiles_x = 0 }));
+    try std.testing.expectError(error.InvalidClaheInput, applyClahe8(std.testing.allocator, &data, 1, 1, .{ .tiles_y = 0 }));
+    try std.testing.expectError(error.InvalidClaheInput, applyClahe8(std.testing.allocator, &data, 2, 1, .{}));
+}
+
+test "applies detect_frames rotation-back transform against Python fixture" {
+    try expectRotationBackFixture("test/fixtures/processing/frames/rotation-back-transform-smoke.json");
+}
+
+test "rejects invalid rotation-back transform inputs" {
+    try std.testing.expectError(error.InvalidRotationTransformInput, expandedRotationTransform(0, 10, 0.1));
+    try std.testing.expectError(error.InvalidRotationTransformInput, expandedRotationTransform(10, 10, std.math.nan(f64)));
+    var frames = [_]FrameRect{.{ .cx = std.math.inf(f64), .cy = 1.0, .w = 1.0, .h = 1.0, .angle = 0.0 }};
+    try std.testing.expectError(error.InvalidRotationTransformInput, transformFramesFromRotatedToOriginal(&frames, .{ .values = .{ 1.0, 0.0, 0.0, 0.0, 1.0, 0.0 } }, 0.0));
+}
+
+test "rotates image into expanded replicate-border canvas against Python fixture" {
+    try expectExpandedRotationResampleFixture("test/fixtures/processing/frames/expanded-rotation-resample-smoke.json");
+}
+
+test "matches OpenCV square binary close used by film extent detection" {
+    try expectBinaryCloseFixture("test/fixtures/processing/frames/film-extent-close-binary-smoke.json");
+}
+
+test "detects axis-aligned film extent against synthetic fixture" {
+    try expectFilmExtentFixture("test/fixtures/processing/frames/film-extent-axis-aligned-smoke.json");
+}
+
+test "detects rotated film extent angle against synthetic fixture" {
+    try expectFilmExtentFixture("test/fixtures/processing/frames/film-extent-rotated-smoke.json");
+}
+
+test "detects rotated image-buffer frames and transforms them back" {
+    try expectRotatedWrapperDetectionFixture("test/fixtures/processing/frames/rotated-wrapper-detect-smoke.json");
+}
+
+test "pins frozen detect_frames work scale as no-op" {
+    try std.testing.expectEqual(@as(f64, 1.0), try detectFramesWorkScale(100, 300));
+    try std.testing.expectEqual(@as(f64, 1.0), try detectFramesWorkScale(300, 100));
+    try std.testing.expectEqual(@as(f64, 1.0), try detectFramesWorkScale(4000, 6000));
+    try std.testing.expectError(error.InvalidDetectFramesInput, detectFramesWorkScale(0, 10));
+}
+
+test "formats detect_frames aspect string like Python result" {
+    try std.testing.expectEqualStrings("24:36", detectFramesAspect(format_35mm, true));
+    try std.testing.expectEqualStrings("36:24", detectFramesAspect(format_35mm, false));
+    try std.testing.expectEqualStrings("41.5:56", detectFramesAspect(format_645, true));
+    try std.testing.expectEqualStrings("56:41.5", detectFramesAspect(format_645, false));
+    try std.testing.expectEqualStrings("56:56", detectFramesAspect(format_6x6, true));
+    try std.testing.expectEqualStrings("56:56", detectFramesAspect(format_6x6, false));
+    try std.testing.expectEqualStrings("56:69", detectFramesAspect(format_6x7, true));
+    try std.testing.expectEqualStrings("84:56", detectFramesAspect(format_6x9, false));
+}
+
+test "computes vertical strip profiles against Python fixture" {
+    try expectStripProfileFixture("test/fixtures/processing/frames/strip-profiles-vertical.json");
+}
+
+test "computes horizontal strip profiles against Python fixture" {
+    try expectStripProfileFixture("test/fixtures/processing/frames/strip-profiles-horizontal.json");
+}
+
+test "rejects invalid strip profile inputs" {
+    var pixel = [_]f64{1.0};
+    try std.testing.expectError(error.InvalidFrameProfileBuffer, computeStripProfiles(std.testing.allocator, &pixel, 0, 1, true));
+    try std.testing.expectError(error.InvalidFrameProfileBuffer, computeStripProfiles(std.testing.allocator, &pixel, 2, 1, true));
+    try std.testing.expectError(error.InvalidFrameProfileBand, computeStripProfiles(std.testing.allocator, &pixel, 1, 1, true));
+}
+
+test "aligns frame pitch with subsequence DTW against Python fixture" {
+    try expectDtwFixture("test/fixtures/processing/frames/dtw-pitch-35mm-two-frame.json");
+}
+
+test "rejects invalid DTW inputs" {
+    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{}, 1, format_35mm, 1, .{}));
+    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 0, format_35mm, 1, .{}));
+    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 1, format_35mm, 0, .{}));
+    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 1, format_35mm, 1, .{ .max_len = 0 }));
+}
+
+test "snaps DTW edges to gradient peaks against Python fixture" {
+    try expectGradientSnapFixture("test/fixtures/processing/frames/gradient-snap-internal-peaks.json");
+    try expectGradientSnapFixture("test/fixtures/processing/frames/gradient-snap-scipy-prominence-bounds.json");
+}
+
+test "rejects invalid gradient snap inputs" {
+    var out = [_]usize{0};
+    try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{}, &.{1}, &out, 10.0));
+    try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{1.0}, &.{1}, &.{}, 10.0));
+    try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{1.0}, &.{1}, &out, 0.0));
+}
+
+test "selects Gaussian-weighted peaks against Python fixture" {
+    try expectWeightedPeakFixture("test/fixtures/processing/frames/gaussian-weighted-peak-smoke.json");
+}
+
+test "rejects invalid weighted peak inputs" {
+    try std.testing.expectError(error.InvalidWeightedPeakInput, snapToWeightedPeak(&.{}, 0, 1, 1.0));
+    try std.testing.expectError(error.InvalidWeightedPeakInput, snapToWeightedPeak(&.{1.0}, 0, 1, 0.0));
+}
+
+test "repairs inconsistent frame sizes against Python fixture" {
+    try expectSizeCorrectionFixture("test/fixtures/processing/frames/size-consistency-correction-smoke.json");
+}
+
+test "rejects invalid size correction inputs" {
+    var positions = [_]usize{ 0, 1 };
+    try std.testing.expectError(error.InvalidSizeCorrectionInput, applySizeConsistencyCorrection(&.{}, &positions, 1, 10.0));
+    try std.testing.expectError(error.InvalidSizeCorrectionInput, applySizeConsistencyCorrection(&.{1.0}, &positions, 1, 0.0));
+}
+
+test "repairs first and last frame edges against Python fixture" {
+    try expectTerminalRepairFixture("test/fixtures/processing/frames/terminal-frame-repair-smoke.json");
+}
+
+test "rejects invalid terminal frame repair inputs" {
+    var positions = [_]usize{ 0, 1 };
+    try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{}, &positions, 1, 10.0, 1, 10.0));
+    try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{1.0}, &positions, 1, 0.0, 1, 10.0));
+    try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{1.0}, &positions, 1, 10.0, 1, 0.0));
+}
+
+test "measures cross-strip paired-gradient edges against Python fixture" {
+    try expectCrossStripFixture("test/fixtures/processing/frames/cross-strip-paired-gradient-smoke.json");
+}
+
+test "rejects invalid cross-strip inputs" {
+    try std.testing.expectError(error.InvalidCrossStripInput, measureCrossStripEdges(std.testing.allocator, &.{ 0.0, 1.0 }, 10.0, 1));
+    try std.testing.expectError(error.InvalidCrossStripInput, measureCrossStripEdges(std.testing.allocator, &.{ 0.0, 1.0, 0.0 }, 0.0, 1));
+}
+
+test "estimates Theil-Sen frame angle against Python fixture" {
+    try expectTheilSenFixture("test/fixtures/processing/frames/theil-sen-angle-smoke.json");
+}
+
+test "handles missing Theil-Sen slopes and invalid options" {
+    try std.testing.expect((try estimateAngleTheilSen(std.testing.allocator, &.{}, 0.1)) == null);
+    try std.testing.expect((try estimateAngleTheilSen(std.testing.allocator, &.{ .{ .x = 1.0, .y = 1.0 }, .{ .x = 1.5, .y = 2.0 } }, 0.1)) == null);
+    try std.testing.expectError(error.InvalidTheilSenInput, estimateAngleTheilSen(std.testing.allocator, &.{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 2.0, .y = 1.0 } }, 0.0));
+}
+
+test "applies single-frame fallback guard against Python fixture" {
+    try expectSingleFrameFallbackFixture("test/fixtures/processing/frames/single-frame-fallback-smoke.json");
+}
+
+test "preserves single-frame fallback boundaries" {
+    const preview_w = 100.0;
+    const preview_h = 100.0;
+    try std.testing.expect((try singleFrameFallback(2, .{ .cx = 0.0, .cy = 0.0, .w = 10.0, .h = 10.0, .angle = 0.0 }, preview_w, preview_h)) == null);
+    try std.testing.expect((try singleFrameFallback(1, .{ .cx = 0.0, .cy = 0.0, .w = 30.0, .h = 100.0, .angle = 0.0 }, preview_w, preview_h)) == null);
+    try std.testing.expectError(error.InvalidSingleFrameFallbackInput, singleFrameFallback(1, .{ .cx = 0.0, .cy = 0.0, .w = 1.0, .h = 1.0, .angle = 0.0 }, 0.0, preview_h));
+}
+
+test "crops rotated rectangle against Python fixture" {
+    try expectRotatedCropFixture("test/fixtures/processing/frames/rotated-rect-crop-smoke.json");
+}
+
+test "rejects invalid rotated crop inputs" {
+    try std.testing.expectError(error.InvalidRotatedCropInput, cropRotatedRect(std.testing.allocator, &.{}, 0, 1, 0.0, 0.0, 1.0, 1.0, 0.0));
+    try std.testing.expectError(error.InvalidRotatedCropInput, cropRotatedRect(std.testing.allocator, &.{1.0}, 1, 1, 0.0, 0.0, 0.0, 1.0, 0.0));
+}
+
+test "ports rebate helper behavior against fixture" {
+    try expectRebateHelpersFixture("test/fixtures/processing/frames/rebate-helpers-smoke.json");
+}
+
+test "handles empty rebate helper cases" {
+    try std.testing.expect((try makeRebateMask(std.testing.allocator, 4, 4, null)) == null);
+    try std.testing.expect((try makeRebateMask(std.testing.allocator, 4, 4, .{ .x = 0.0, .y = 0.0, .width = 0.0, .height = 2.0 })) == null);
+    try std.testing.expect(!rebateInBounds(10, 10, .{ .x = -20.0, .y = 0.0, .w = 2.0, .h = 2.0 }));
+    try std.testing.expect(computeInterFrameRebate(&.{}) == null);
+    try std.testing.expect(computeInterFrameRebate(&.{
+        .{ .cx = 0.0, .cy = 0.0, .w = 10.0, .h = 10.0, .angle = 0.0 },
+        .{ .cx = 0.0, .cy = 5.0, .w = 10.0, .h = 10.0, .angle = 0.0 },
+    }) == null);
+}
+
+test "ports preview-to-full coordinate scaling against Python fixture" {
+    try expectPreviewScalingFixture("test/fixtures/processing/frames/preview-coordinate-scaling-smoke.json");
+}
+
+test "rejects invalid preview coordinate scaling inputs" {
+    try std.testing.expectError(error.InvalidPreviewGeometry, computePreviewGeometry(0, 1, 8192));
+    try std.testing.expectError(error.InvalidPreviewGeometry, computePreviewGeometry(1, 0, 8192));
+    try std.testing.expectError(error.InvalidPreviewScale, previewFrameToFullResolution(.{ .cx = 1.0, .cy = 1.0, .w = 1.0, .h = 1.0, .angle = 0.0 }, 0.0));
+    try std.testing.expectError(error.InvalidPreviewScale, previewSelectionToFullResolution(.{ .x = 0.0, .y = 0.0, .w = 1.0, .h = 1.0, .angle = 0.0 }, -1.0));
+    try std.testing.expectError(error.InvalidPreviewScale, previewRebateToFullResolution(.{ .x = 0.0, .y = 0.0, .w = 1.0, .h = 1.0, .angle = 0.0 }, std.math.nan(f64)));
+}
+
+test "pins test_detect ground truth conversion and scoring semantics" {
+    try expectTestDetectGroundTruthFixture("test/fixtures/processing/frames/test-detect-ground-truth.json");
+}
+
+test "matches test_detect scan_0006 detector parity when local scan fixture exists" {
+    try expectScanDetectorParity("test/fixtures/processing/frames/test-detect-python-output.json", "scans/scan_0006_rgbir_800dpi.tiff");
+}
+
+test "matches test_detect scan_0001 detector parity when local scan fixture exists" {
+    try expectScanDetectorParity("test/fixtures/processing/frames/test-detect-python-output.json", "scans/scan_0001_rgbir_3200dpi.tiff");
+}
+
+test "matches test_detect scan_0003 detector parity when local scan fixture exists" {
+    try expectScanDetectorParity("test/fixtures/processing/frames/test-detect-python-output.json", "scans/scan_0003_rgbir_3200dpi.tiff");
+}
+
+test "matches test_detect scan_0004 detector parity when local scan fixture exists" {
+    try expectScanDetectorParity("test/fixtures/processing/frames/test-detect-python-output.json", "scans/scan_0004_rgbir_3200dpi.tiff");
+}
+
+test "validates synthetic frame detection fixtures without scan TIFFs" {
+    try expectSyntheticDetectionFixture("test/fixtures/processing/frames/synthetic-detection-fixtures.json");
+}
+
+test "runs axis-aligned detector wiring on synthetic fixtures" {
+    try expectAxisAlignedDetectionFixture("test/fixtures/processing/frames/axis-aligned-detect-smoke.json");
+}
+
+test "ports strip analysis and initial placement against Python fixture" {
+    try expectStripAnalysisFixture("test/fixtures/processing/frames/strip-analysis-initial-placement-smoke.json");
+}
+
+test "rejects invalid strip analysis and initial placement inputs" {
+    try std.testing.expectError(error.InvalidStripAnalysisInput, analyzeStrip(0, 1, format_35mm, null));
+    try std.testing.expectError(error.InvalidStripAnalysisInput, analyzeStrip(1, 0, format_35mm, null));
+    try std.testing.expectError(error.InvalidStripAnalysisInput, analyzeStrip(1, 1, format_35mm, .{ .strip_narrow_px = 0.0, .strip_long_px = 10.0, .strip_angle = 0.0 }));
+    try std.testing.expectError(error.InvalidInitialPlacementInput, initialPlacement(std.testing.allocator, 1, 1, 0, .{
+        .n_frames = 1,
+        .frame_w = 1.0,
+        .frame_h = 1.0,
+        .pitch_px = 1.0,
+        .is_vertical = true,
+    }, 0.0));
+}

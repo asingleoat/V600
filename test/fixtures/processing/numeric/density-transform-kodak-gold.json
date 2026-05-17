@@ -1,0 +1,24 @@
+{
+  "name": "density-transform-kodak-gold",
+  "operation": "apply_density_transform:kodak_gold",
+  "python_oracle": "scratchndent/calibration/film_stocks.py:72 apply_density_transform and default_kodak_gold_coeffs",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.calibration.film_stocks.apply_density_transform",
+  "shape": [3, 3],
+  "tolerance": {
+    "abs": 0.000000000001,
+    "rel": 0.000000000001,
+    "reason": "Kodak Gold polynomial transform is pure f64 arithmetic; tolerance only covers textual JSON round-trip."
+  },
+  "input": [0.2, 0.3, 0.4, 0.0, 1.0, 0.5, 1.2, 0.7, 0.1],
+  "expected": [
+    0.21,
+    0.246,
+    0.39,
+    -0.1,
+    0.88,
+    0.45,
+    1.3699999999999999,
+    0.578,
+    0.06000000000000001
+  ]
+}

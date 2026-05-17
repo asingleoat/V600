@@ -1,0 +1,40 @@
+{
+  "name": "subtract-dmin",
+  "operation": "subtract_dmin",
+  "python_oracle": "scratchndent/calibration/measurement.py:96 subtract_dmin",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.calibration.measurement.subtract_dmin with dmin=[0.45,0.85,1.05]",
+  "shape": [4, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python subtracts float32 density values and clamps at zero; this tolerance allows only float32 rounding drift."
+  },
+  "input": [
+    0.5,
+    0.800000011920929,
+    1.100000023841858,
+    0.6000000238418579,
+    0.699999988079071,
+    1.2000000476837158,
+    1.5,
+    1.7999999523162842,
+    2.0,
+    0.4000000059604645,
+    0.8999999761581421,
+    1.0
+  ],
+  "expected": [
+    0.050000011920928955,
+    0.0,
+    0.05000007152557373,
+    0.15000003576278687,
+    0.0,
+    0.15000009536743164,
+    1.0499999523162842,
+    0.9499999284744263,
+    0.9500000476837158,
+    0.0,
+    0.04999995231628418,
+    0.0
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "software": "v600-zig",
+  "device": "epkowa:interpreter:001:017",
+  "model": "Epson Perfection V600 Photo",
+  "source": "tpu",
+  "kind": "rgb",
+  "requested_dpi": 400,
+  "effective_dpi": 400,
+  "depth": 16,
+  "output": "/tmp/v600-zig-progress-smoke.tiff",
+  "custom_luts_applied": false,
+  "tiff_metadata": {
+    "make": "EPSON",
+    "model": "Epson Perfection V600 Photo",
+    "software": "epdaughter-sane"
+  },
+  "argv": [
+    "scanimage-v600",
+    "--progress",
+    "--device-name",
+    "epkowa:interpreter:001:017",
+    "--mode",
+    "Color",
+    "--source",
+    "Transparency Unit",
+    "--resolution",
+    "400",
+    "--format",
+    "tiff",
+    "--depth",
+    "16",
+    "-l",
+    "0.0",
+    "-t",
+    "0.0",
+    "-x",
+    "5.1",
+    "-y",
+    "5.1",
+    "-o",
+    "/tmp/v600-zig-progress-smoke.tiff"
+  ]
+}

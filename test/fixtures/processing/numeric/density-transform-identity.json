@@ -1,0 +1,14 @@
+{
+  "name": "density-transform-identity",
+  "operation": "apply_density_transform:identity",
+  "python_oracle": "scratchndent/calibration/film_stocks.py:72 apply_density_transform and default_identity_coeffs",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.calibration.film_stocks.apply_density_transform",
+  "shape": [3, 3],
+  "tolerance": {
+    "abs": 0.000000000001,
+    "rel": 0.000000000001,
+    "reason": "Identity polynomial transform is pure f64 arithmetic; tolerance only covers textual JSON round-trip."
+  },
+  "input": [0.2, 0.3, 0.4, 0.0, 1.0, 0.5, 1.2, 0.7, 0.1],
+  "expected": [0.2, 0.3, 0.4, 0.0, 1.0, 0.5, 1.2, 0.7, 0.1]
+}

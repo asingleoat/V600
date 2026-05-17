@@ -1,0 +1,1 @@
+device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner

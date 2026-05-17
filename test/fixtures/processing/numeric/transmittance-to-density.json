@@ -1,0 +1,28 @@
+{
+  "name": "transmittance-to-density",
+  "operation": "transmittance_to_density",
+  "python_oracle": "scratchndent/calibration/measurement.py:57 transmittance_to_density",
+  "generated_by": "nix-shell --run python3 script importing scratchndent.calibration.measurement.transmittance_to_density",
+  "shape": [2, 3],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python computes density from float32 inputs; this tolerance allows only float32 rounding drift."
+  },
+  "input": [
+    9.999999960041972e-13,
+    9.99999993922529e-09,
+    0.009999999776482582,
+    0.18000000715255737,
+    0.5,
+    1.0
+  ],
+  "expected": [
+    8.000000953674316,
+    8.000000953674316,
+    2.000000238418579,
+    0.7447274923324585,
+    0.3010300099849701,
+    -0.0
+  ]
+}

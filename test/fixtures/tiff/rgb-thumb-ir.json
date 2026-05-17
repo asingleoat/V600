@@ -1,0 +1,66 @@
+{
+  "fixture": "test/fixtures/tiff/rgb-thumb-ir.tiff",
+  "generator": "python+tifffile 2025.3.30: TiffWriter writes uint16 RGB page 0 at 800 DPI, uint8 RGB thumbnail page 1, uint8 grayscale IR page 2",
+  "python_oracle": {
+    "function": "scratchndent.utils.io.load_tiff_pages",
+    "dpi_function": "scratchndent.utils.io.read_tiff_dpi",
+    "dpi": 800,
+    "page_count": 3,
+    "rgb_shape": [
+      2,
+      2,
+      3
+    ],
+    "rgb_dtype": "uint16",
+    "rgb_values": [
+      1000,
+      1001,
+      1002,
+      1010,
+      1011,
+      1012,
+      1020,
+      1021,
+      1022,
+      1030,
+      1031,
+      1032
+    ],
+    "ir_shape": [
+      2,
+      3
+    ],
+    "ir_dtype": "uint8",
+    "ir_values": [
+      31,
+      32,
+      33,
+      34,
+      35,
+      36
+    ]
+  },
+  "ignored_thumbnail": {
+    "page_index": 1,
+    "shape": [
+      1,
+      2,
+      3
+    ],
+    "dtype": "uint8",
+    "values": [
+      9,
+      8,
+      7,
+      6,
+      5,
+      4
+    ]
+  },
+  "tiff_tags": {
+    "page0_samples_per_pixel": 3,
+    "page0_bits_per_sample": 16,
+    "page2_samples_per_pixel": 1,
+    "page2_bits_per_sample": 8
+  }
+}

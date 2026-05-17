@@ -1,0 +1,44 @@
+{
+  "name": "apply-srgb-gamma",
+  "operation": "apply_srgb_gamma",
+  "python_oracle": "scratchndent.processing.negative.render",
+  "generated_by": "nix-shell --run python3 (2026-05-15)",
+  "shape": [
+    2,
+    2,
+    3
+  ],
+  "tolerance": {
+    "abs": 0.000001,
+    "rel": 0.000001,
+    "reason": "Python oracle numeric parity"
+  },
+  "input": [
+    -0.25,
+    0.0,
+    0.0031308,
+    0.01,
+    0.18,
+    0.5,
+    1.0,
+    1.25,
+    2.0,
+    0.04045,
+    0.25,
+    0.75
+  ],
+  "expected": [
+    0.0,
+    0.0,
+    0.04044990986585617,
+    0.09985282272100449,
+    0.46135613322257996,
+    0.7353569865226746,
+    1.0,
+    1.102794885635376,
+    1.3532559871673584,
+    0.2222055047750473,
+    0.5370987057685852,
+    0.8808250427246094
+  ]
+}
