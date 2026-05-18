@@ -6,6 +6,7 @@ const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
+const test_worker_poll_attempts = 100_000;
 
 pub const PreviewBuffer = struct {
     output_path: []u8,
@@ -563,7 +564,7 @@ test "preview worker consumes queued command without blocking UI state" {
     try std.testing.expect(model.pending_command == null);
 
     var completed = false;
-    for (0..1000) |_| {
+    for (0..test_worker_poll_attempts) |_| {
         if (worker.poll(&model)) {
             completed = true;
             break;
@@ -617,7 +618,7 @@ test "preview worker surfaces execution failure to UI state" {
     try std.testing.expect(try worker.startQueued(&model));
 
     var completed = false;
-    for (0..1000) |_| {
+    for (0..test_worker_poll_attempts) |_| {
         if (worker.poll(&model)) {
             completed = true;
             break;

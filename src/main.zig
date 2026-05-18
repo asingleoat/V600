@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         };
         try stdout.flush();
     } else if (std.mem.eql(u8, command, "processing")) {
-        handleProcessing(init.gpa, io, &args, stdout) catch |err| {
+        handleProcessing(init.gpa, io, init.environ_map, &args, stdout) catch |err| {
             try stdout.flush();
             return err;
         };
@@ -132,7 +132,7 @@ fn handleScannerSane(
             options.request.area.height = 0.25;
         }
         try runtime.scan(options);
-        try v600.processing.cli.runCommand(allocator, io, .{ .info = .{ .input = options.output_path } }, stdout);
+        try v600.processing.cli.runCommand(allocator, io, .{ .info = .{ .input = options.output_path } }, stdout, .{});
     } else {
         try printScannerUsage();
         return error.UnknownScannerCommand;
@@ -165,6 +165,7 @@ fn macosHardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
 fn handleProcessing(
     allocator: std.mem.Allocator,
     io: std.Io,
+    environ_map: *std.process.Environ.Map,
     args: *std.process.Args.Iterator,
     stdout: anytype,
 ) !void {
@@ -177,7 +178,8 @@ fn handleProcessing(
         try printProcessingUsage();
         return err;
     };
-    v600.processing.cli.runCommand(allocator, io, command, stdout) catch |err| {
+    const processing_gpu_request = try v600.processing.inversion.invertNegativeRequestFromEnvironment(environ_map);
+    v600.processing.cli.runCommand(allocator, io, command, stdout, processing_gpu_request) catch |err| {
         v600.processing.events.emitProcessingError(.{
             .operation = "processing",
             .detail = @errorName(err),

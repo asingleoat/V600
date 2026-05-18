@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> {}, withWebGPU ? false }:
 
 let
   zigPkg =
@@ -100,6 +100,10 @@ in pkgs.mkShell {
     sdl3
   ] ++ [
     nuklear
+  ] ++ lib.optionals withWebGPU [
+    wgpu-native
+  ] ++ lib.optionals (withWebGPU && stdenv.isLinux) [
+    vulkan-loader
   ] ++ lib.optionals stdenv.isLinux [
     # Qt platform plugins (xcb for X11, wayland)
     qt6.qtbase
@@ -107,6 +111,8 @@ in pkgs.mkShell {
   ];
 
   CPPFLAGS = "-DSANE_FRAME_IR";
+  WGPU_NATIVE_INCLUDE_DIR = pkgs.lib.optionalString withWebGPU "${pkgs.wgpu-native.dev}/include";
+  WGPU_NATIVE_LIBRARY_DIR = pkgs.lib.optionalString withWebGPU "${pkgs.wgpu-native}/lib";
 
   # Qt needs to find its platform plugins at runtime
   QT_PLUGIN_PATH = pkgs.lib.optionalString pkgs.stdenv.isLinux
@@ -116,6 +122,10 @@ in pkgs.mkShell {
     zig_version="$(zig version 2>/dev/null || true)"
     if [ "$zig_version" != "0.16.0" ]; then
       echo "warning: expected Zig 0.16.0, got ''${zig_version:-missing}" >&2
+    fi
+    if [ "${if withWebGPU then "1" else "0"}" = "1" ]; then
+      export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath ([ pkgs.wgpu-native ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.vulkan-loader ])}''${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH"
+      echo "V600 WebGPU shell: using nixpkgs wgpu-native (libwgpu_native, include/webgpu)" >&2
     fi
   '';
 }

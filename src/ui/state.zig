@@ -5,6 +5,7 @@ const processing_config = @import("../processing/config.zig");
 const processing_export = @import("../processing/export.zig");
 const processing_events = @import("../processing/events.zig");
 const processing_frames = @import("../processing/frames.zig");
+const processing_webgpu = @import("../processing/webgpu.zig");
 const processing_workflow = @import("../processing/workflow.zig");
 const scanner_config = @import("../scanner/config.zig");
 const scanner_contracts = @import("../scanner/contracts.zig");
@@ -386,6 +387,7 @@ pub const State = struct {
     process_export_files_written: usize = 0,
     process_status_buffer: [128]u8 = undefined,
     process_dmin_buffer: [64]u8 = undefined,
+    processing_gpu_request: processing_webgpu.Request = .{},
     processing_generation: usize = 0,
     gallery_index: usize = 0,
 
@@ -996,6 +998,19 @@ pub const State = struct {
         self.processing_preview_inversion_enabled = enabled;
     }
 
+    pub fn setProcessingGpuRequest(
+        self: *State,
+        allocator: std.mem.Allocator,
+        request: processing_webgpu.Request,
+    ) void {
+        if (self.processing_gpu_request.backend != request.backend or
+            self.processing_gpu_request.fallback != request.fallback)
+        {
+            self.processing_inverted_cache.invalidate(allocator);
+        }
+        self.processing_gpu_request = request;
+    }
+
     pub fn renderInvertedProcessingPreview(
         self: *State,
         allocator: std.mem.Allocator,
@@ -1050,6 +1065,7 @@ pub const State = struct {
                 .color_temp = processingConfigFloat(&self.processing_config, "color_temp"),
                 .color_tint = processingConfigFloat(&self.processing_config, "color_tint"),
             },
+            .invert_request = self.processing_gpu_request,
         };
     }
 
@@ -1465,6 +1481,7 @@ pub const State = struct {
             .rebate_rect = rebate,
             .current_dpi = self.processing.current_dpi,
             .config_overrides = overrides,
+            .invert_request = self.processing_gpu_request,
             .total_seconds_override = total_seconds_override,
         });
         errdefer result.deinit(allocator);
@@ -2737,6 +2754,23 @@ test "native UI process preview mode falls back like extract_ui preview image" {
     try std.testing.expect((try no_preview.renderSelectedProcessingPreview(allocator, .{
         .stock = "kodak_gold",
     })) == null);
+}
+
+test "native UI processing GPU request is state-owned and feeds inverted preview options" {
+    const allocator = std.testing.allocator;
+    var state = State.init("scans", "frames", 0);
+    defer state.deinit(allocator);
+
+    try std.testing.expectEqual(processing_webgpu.Backend.cpu, state.processingInvertedPreviewOptions().invert_request.backend);
+    state.processing_inverted_cache.scene_linear = try allocator.alloc(f64, 3);
+    state.setProcessingGpuRequest(allocator, .{
+        .backend = .webgpu,
+        .fallback = .allow_cpu,
+    });
+    const options = state.processingInvertedPreviewOptions();
+    try std.testing.expectEqual(processing_webgpu.Backend.webgpu, options.invert_request.backend);
+    try std.testing.expectEqual(processing_webgpu.FallbackPolicy.allow_cpu, options.invert_request.fallback);
+    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
 }
 
 test "native UI process settings and stocks mirror process_handlers routes" {

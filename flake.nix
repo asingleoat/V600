@@ -123,6 +123,7 @@ EOF
           ui = mkPackage { enableUi = true; };
         in {
           inherit cli ui;
+          webgpuNative = pkgs.wgpu-native;
           default = ui;
         });
 
@@ -157,6 +158,8 @@ EOF
       devShells = forAllSystems (pkgs:
         let
           nuklear = nuklearPackage pkgs;
+          webgpuRuntimeInputs = [ pkgs.wgpu-native ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.vulkan-loader ];
           pythonProcessing = pkgs.python3.withPackages (ps: with ps; [
             numpy
             opencv4
@@ -168,9 +171,7 @@ EOF
             tomli
             tomli-w
           ]);
-        in {
-        default = pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [
+          baseNativeBuildInputs = with pkgs; [
             zig
             zls
             stdenv.cc
@@ -180,8 +181,7 @@ EOF
             pythonProcessing
             basedpyright
           ];
-
-          buildInputs = with pkgs; [
+          baseBuildInputs = with pkgs; [
             sane-backends
             libusb1
             libtiff
@@ -192,12 +192,26 @@ EOF
             sdl3
             nuklear
           ];
-
           shellHook = ''
             zig_version="$(zig version)"
             if [ "$zig_version" != "0.16.0" ]; then
               echo "warning: expected Zig 0.16.0, got $zig_version" >&2
             fi
+          '';
+        in {
+        default = pkgs.mkShell {
+          nativeBuildInputs = baseNativeBuildInputs;
+          buildInputs = baseBuildInputs;
+          inherit shellHook;
+        };
+        webgpu = pkgs.mkShell {
+          nativeBuildInputs = baseNativeBuildInputs;
+          buildInputs = baseBuildInputs ++ webgpuRuntimeInputs;
+          WGPU_NATIVE_INCLUDE_DIR = "${pkgs.wgpu-native.dev}/include";
+          WGPU_NATIVE_LIBRARY_DIR = "${pkgs.wgpu-native}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath webgpuRuntimeInputs;
+          shellHook = shellHook + ''
+            echo "V600 WebGPU shell: using nixpkgs wgpu-native (libwgpu_native, include/webgpu)" >&2
           '';
         };
       });

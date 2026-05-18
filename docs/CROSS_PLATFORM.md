@@ -17,7 +17,8 @@ live-tested.
 - Windows is a UI and processing target only until a scanner backend is
   explicitly designed.
 - The native UI target is SDL3 plus Nuklear. Future GPU acceleration targets
-  Dawn/WebGPU, with CPU fallback preserved.
+  WebGPU through nixpkgs `wgpu-native` first, with CPU fallback preserved and a
+  backend boundary that can support Google Dawn later if needed.
 
 ## macOS Build Plan And SDK Constraints
 
@@ -56,8 +57,9 @@ SDK and dependency constraints:
   `/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/ES00A1/Interpreter A1.bundle/Contents/MacOS/Interpreter A1`.
 - If Epson Scanner Monitor or another vendor service claims the USB device,
   stop it before live scanner validation.
-- Future Dawn/WebGPU work on macOS must use the Metal backend through an
-  optional Dawn package. Do not make Metal/Dawn required for the CPU UI build.
+- Future WebGPU work on macOS must use the Metal backend through optional
+  native WebGPU packaging. Do not make Metal/WebGPU required for the CPU UI
+  build.
 
 Current macOS scanner gaps:
 
@@ -126,7 +128,7 @@ Required work before Windows can be claimed:
    paths for Windows semantics.
 5. Add Windows CI or a real Windows host validation pass before calling the UI
    supported.
-6. Add Dawn/WebGPU D3D12 planning only after CPU UI and processing parity are
+6. Add WebGPU D3D12 planning only after CPU UI and processing parity are
    stable.
 
 Windows validation commands, once available:
@@ -167,7 +169,7 @@ Before declaring the Zig rewrite version-one replacement complete:
     deferred.
 12. Native UI real-display screenshot verification is recorded for scan,
     process, gallery, confirmation, and pan/zoom workflows.
-13. No default build path requires Dawn/WebGPU.
+13. No default build path requires WebGPU.
 14. No default check path requires scanner hardware.
 15. `scratchndent_config.toml`, scanner config files, scans, frames, TIFF/PNG/JPEG
     outputs, and temporary smoke files remain untracked/generated outputs.

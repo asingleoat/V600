@@ -3,12 +3,14 @@ const std = @import("std");
 pub const ScalarType = enum {
     u8,
     u16,
+    f32,
     f64,
 
     pub fn byteSize(self: ScalarType) usize {
         return switch (self) {
             .u8 => 1,
             .u16 => 2,
+            .f32 => 4,
             .f64 => 8,
         };
     }
@@ -19,14 +21,16 @@ pub const PixelFormat = enum {
     rgb_u8,
     gray_u16,
     rgb_u16,
+    gray_f32,
+    rgb_f32,
     gray_f64,
     rgb_f64,
     mask_u8,
 
     pub fn channels(self: PixelFormat) usize {
         return switch (self) {
-            .gray_u8, .gray_u16, .gray_f64, .mask_u8 => 1,
-            .rgb_u8, .rgb_u16, .rgb_f64 => 3,
+            .gray_u8, .gray_u16, .gray_f32, .gray_f64, .mask_u8 => 1,
+            .rgb_u8, .rgb_u16, .rgb_f32, .rgb_f64 => 3,
         };
     }
 
@@ -34,6 +38,7 @@ pub const PixelFormat = enum {
         return switch (self) {
             .gray_u8, .rgb_u8, .mask_u8 => .u8,
             .gray_u16, .rgb_u16 => .u16,
+            .gray_f32, .rgb_f32 => .f32,
             .gray_f64, .rgb_f64 => .f64,
         };
     }
@@ -212,14 +217,14 @@ pub const gpu_kernel_candidates = [_]KernelCandidate{
         .output_format = .rgb_u16,
     },
     .{
-        .name = "negadoctor",
+        .name = "invert_negative",
         .priority = .p1,
-        .python_contract = "scratchndent/processing/negative/color_transforms.py:48 _negadoctor_kernel; :355 negadoctor",
-        .cpu_symbol = "src/processing/color.zig negadoctor",
+        .python_contract = "scratchndent/processing/negative/inversion.py:61 invert_negative",
+        .cpu_symbol = "src/processing/inversion.zig invertNegative",
         .input_role = .tiff_page,
         .output_role = .scene_linear,
-        .input_format = .rgb_f64,
-        .output_format = .rgb_f64,
+        .input_format = .rgb_f32,
+        .output_format = .rgb_f32,
     },
     .{
         .name = "apply_sigmoid",
@@ -228,8 +233,8 @@ pub const gpu_kernel_candidates = [_]KernelCandidate{
         .cpu_symbol = "src/processing/color.zig applySigmoid",
         .input_role = .scene_linear,
         .output_role = .scene_linear,
-        .input_format = .rgb_f64,
-        .output_format = .rgb_f64,
+        .input_format = .rgb_f32,
+        .output_format = .rgb_f32,
     },
     .{
         .name = "srgb_to_linear",
@@ -321,6 +326,25 @@ pub fn requiredBytes(
     return checkedAdd(skipped_rows, row_bytes);
 }
 
+pub fn sceneLinearF64ToF32Staging(input: []const f64, output: []f32) !void {
+    try validateRgbSlices(input.len, output.len);
+    for (input, output) |value, *out| {
+        out.* = @floatCast(value);
+    }
+}
+
+pub fn sceneLinearF32DownloadToF64(input: []const f32, output: []f64) !void {
+    try validateRgbSlices(input.len, output.len);
+    for (input, output) |value, *out| {
+        out.* = @floatCast(value);
+    }
+}
+
+fn validateRgbSlices(input_len: usize, output_len: usize) !void {
+    if (input_len != output_len) return error.InvalidGpuStagingBuffer;
+    if (input_len % 3 != 0) return error.InvalidGpuStagingBuffer;
+}
+
 fn checkedMul(lhs: usize, rhs: usize) !usize {
     return std.math.mul(usize, lhs, rhs) catch error.IntegerOverflow;
 }
@@ -333,8 +357,13 @@ test "pixel formats define explicit CPU GPU byte geometry" {
     try std.testing.expectEqual(@as(usize, 1), PixelFormat.gray_u8.channels());
     try std.testing.expectEqual(@as(usize, 3), PixelFormat.rgb_u8.channels());
     try std.testing.expectEqual(@as(usize, 6), PixelFormat.rgb_u16.bytesPerPixel());
+    try std.testing.expectEqual(@as(usize, 4), PixelFormat.gray_f32.bytesPerPixel());
+    try std.testing.expectEqual(@as(usize, 12), PixelFormat.rgb_f32.bytesPerPixel());
     try std.testing.expectEqual(@as(usize, 24), PixelFormat.rgb_f64.bytesPerPixel());
     try std.testing.expectEqual(ScalarType.u8, PixelFormat.mask_u8.scalar());
+    try std.testing.expectEqual(ScalarType.f32, PixelFormat.rgb_f32.scalar());
+    try std.testing.expectEqual(@as(usize, 48), try tightRowStride(4, .rgb_f32));
+    try std.testing.expectEqual(@as(usize, 144), try tightByteLen(4, 3, .rgb_f32));
 }
 
 test "CPU image views validate tight and padded interleaved rows" {
@@ -380,6 +409,49 @@ test "transfer plans keep CPU source of truth and parity downloads explicit" {
     try std.testing.expectEqual(MemoryDomain.cpu, download_plan.destination);
     try std.testing.expect(download_plan.requiresCpuParityBuffer());
     try std.testing.expectEqual(@as(usize, 12), download_plan.row_stride_bytes);
+
+    const f32_descriptor = GpuImageDescriptor{
+        .width = 3,
+        .height = 2,
+        .format = .rgb_f32,
+        .role = .gpu_parity_download,
+    };
+    const f32_download = try TransferPlan.download(f32_descriptor);
+    try std.testing.expectEqual(@as(usize, 36), f32_download.row_stride_bytes);
+    try std.testing.expect(f32_download.requiresCpuParityBuffer());
+}
+
+test "scene-linear f64 f32 staging preserves explicit representation semantics" {
+    const input = [_]f64{
+        0.0,
+        -0.0,
+        1.0 / 3.0,
+        std.math.inf(f64),
+        -std.math.inf(f64),
+        std.math.nan(f64),
+    };
+    var staged: [input.len]f32 = undefined;
+    try sceneLinearF64ToF32Staging(&input, &staged);
+
+    try std.testing.expectEqual(@as(f32, @floatCast(input[0])), staged[0]);
+    try std.testing.expect(std.math.isNegativeZero(staged[1]));
+    try std.testing.expectEqual(@as(f32, @floatCast(input[2])), staged[2]);
+    try std.testing.expect(std.math.isPositiveInf(staged[3]));
+    try std.testing.expect(std.math.isNegativeInf(staged[4]));
+    try std.testing.expect(std.math.isNan(staged[5]));
+
+    var downloaded: [input.len]f64 = undefined;
+    try sceneLinearF32DownloadToF64(&staged, &downloaded);
+    try std.testing.expectEqual(@as(f64, staged[0]), downloaded[0]);
+    try std.testing.expect(std.math.isNegativeZero(downloaded[1]));
+    try std.testing.expectEqual(@as(f64, staged[2]), downloaded[2]);
+    try std.testing.expect(std.math.isPositiveInf(downloaded[3]));
+    try std.testing.expect(std.math.isNegativeInf(downloaded[4]));
+    try std.testing.expect(std.math.isNan(downloaded[5]));
+
+    var mismatched: [input.len - 1]f32 = undefined;
+    try std.testing.expectError(error.InvalidGpuStagingBuffer, sceneLinearF64ToF32Staging(&input, &mismatched));
+    try std.testing.expectError(error.InvalidGpuStagingBuffer, sceneLinearF64ToF32Staging(input[0..4], staged[0..4]));
 }
 
 test "every future GPU kernel candidate requires CPU fallback and download comparison" {
@@ -400,4 +472,10 @@ test "every future GPU kernel candidate requires CPU fallback and download compa
     const density = candidateByName("apply_density_transform") orelse return error.MissingGpuCandidate;
     try std.testing.expectEqual(BufferRole.net_density, density.input_role);
     try std.testing.expectEqual(BufferRole.scene_linear, density.output_role);
+
+    const sigmoid = candidateByName("apply_sigmoid") orelse return error.MissingGpuCandidate;
+    try std.testing.expectEqual(PixelFormat.rgb_f32, sigmoid.input_format);
+    try std.testing.expectEqual(PixelFormat.rgb_f32, sigmoid.output_format);
+    try std.testing.expectEqual(BufferRole.scene_linear, sigmoid.input_role);
+    try std.testing.expectEqual(BufferRole.scene_linear, sigmoid.output_role);
 }

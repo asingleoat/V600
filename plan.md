@@ -65,6 +65,11 @@ measured reason.
     no longer sufficient, stop and ask the human to update or re-open the nix
     shell. Do not run Nix commands to repair or refresh the environment
     yourself.
+16. Treat items marked `PENDING USER UPDATE` as parked external blockers, not
+    as selectable unchecked work. Do not revisit macOS-only hardware, SDK, or
+    live scanner validation while the conversation is on Linux. Resume those
+    items only after the user explicitly says a macOS host or other required
+    environment is available.
 
 ## Autonomous Goal Loop
 
@@ -132,6 +137,7 @@ unchecked item that satisfies all of these conditions:
 - The work will not force unrelated architecture decisions prematurely.
 - The item improves parity, testability, performance, or platform readiness in
   the order this plan lays out.
+- The item is not marked `PENDING USER UPDATE`.
 
 If two items are available, prefer in this order:
 
@@ -319,7 +325,9 @@ with the Python project:
 - Same user workflows, first in CLI/headless form and later in a native UI.
 - Native UI built with SDL3 for cross-platform windowing and events.
 - Nuklear remains the immediate-mode UI framework.
-- Future GPU acceleration targets WebGPU through Dawn.
+- Future GPU acceleration targets WebGPU, using nixpkgs `wgpu-native` first
+  and keeping the backend boundary narrow enough to swap to Google Dawn later
+  if that becomes necessary.
 - Nix remains the dependency and build environment for development, checks,
   and packaging.
 
@@ -358,7 +366,7 @@ with the Python project:
 - Do not add pip, poetry, conda, venv, npm, or other parallel dependency
   systems.
 - Add new native dependencies to `flake.nix` when they are required.
-- SDL3, Nuklear, Dawn/WebGPU, libtiff, libusb, SANE, and platform SDK
+- SDL3, Nuklear, WebGPU via `wgpu-native`, libtiff, libusb, SANE, and platform SDK
   dependencies should be introduced through Nix where possible.
 - Keep checks split into hardware-free checks and explicitly gated hardware
   smoke checks.
@@ -395,7 +403,10 @@ with the Python project:
   dialogs where practical, and cross-platform event integration.
 - Nuklear remains the immediate-mode GUI layer.
 - Rendering may start simple and CPU-backed if needed, but the long-term target
-  is WebGPU through Dawn for GPU acceleration.
+  is WebGPU for GPU acceleration. The first Nix-backed implementation target is
+  nixpkgs `wgpu-native`; keep Zig GPU code behind an internal backend boundary
+  so Google Dawn remains a future implementation option rather than a hard
+  project dependency.
 - Do not prematurely redesign workflows. First preserve the Python UI's user
   behavior; then improve native ergonomics after parity is credible.
 
@@ -743,8 +754,11 @@ the durable source of current goal-loop state going forward.
 - Added Phase 1 checklist items to create `docs/PARITY_MANIFEST.md` and
   committed scanner replay fixture directories before continuing deeper scanner
   work.
-- Verified the requested SDL3, Nuklear, WebGPU, and Dawn direction remains
-  present in the plan.
+- Verified the requested SDL3, Nuklear, WebGPU, and initially Dawn-oriented
+  direction remains present in the plan. Updated on 2026-05-17 to use nixpkgs
+  `wgpu-native` as the first concrete WebGPU dependency because nixpkgs `dawn`
+  is an unrelated PostScript package and the Google Dawn tree is not packaged
+  as a reusable standalone dependency in the pinned package set.
 
 ### 2026-05-15: Direct Zig Shell Requirement Tightened
 
@@ -1030,7 +1044,8 @@ the durable source of current goal-loop state going forward.
   the full TIFF.
 - Added hot color path benchmarks.
 - Recorded SIMD and GPU acceleration targets. CPU parity remains first; future
-  GPU work targets WebGPU through Dawn.
+  GPU work targets WebGPU through nixpkgs `wgpu-native` first, while preserving
+  an internal boundary that can support Google Dawn later if needed.
 
 ### 2026-05-15: Dust Removal Core Progress
 
@@ -1921,7 +1936,7 @@ manifest row, test fixture, or recorded hardware evidence.
 - [x] Create committed fixture directories and README notes for scanner replay
   fixtures.
 - [x] Target Zig 0.16.0 through Nix.
-- [x] Record SDL3, Nuklear, Dawn/WebGPU direction.
+- [x] Record SDL3, Nuklear, WebGPU direction.
 - [x] Restore `plan.md` after the 2026-05-15 disk-full truncation.
 
 ### Phase 1: Scanner Backend Parity
@@ -1949,7 +1964,10 @@ manifest row, test fixture, or recorded hardware evidence.
     ordering, and TPU calibration sequencing.
   - Live bundle loading and USB endpoint binding remain covered by the next
     macOS hardware smoke item.
-- [ ] Add live macOS scanner smoke tests.
+- PENDING USER UPDATE: Add live macOS scanner smoke tests.
+  - Parked external blocker: do not select this item in the autonomous Linux
+    loop and do not re-litigate the Linux-host limitation. Resume only after
+    the user explicitly says a macOS scanner host is available.
   - Blocked: cannot be completed on the current Linux host. Definition of done
     requires a macOS scanner host with the Epson Interpreter bundle available
     and a connected supported scanner; current Linux validation can only prove
@@ -2073,6 +2091,29 @@ manifest row, test fixture, or recorded hardware evidence.
     failed before hardware access with `UnsupportedPlatform`. The remaining
     definition of done still requires a macOS scanner host with the Epson
     Interpreter bundle and connected scanner. No Nix command was run.
+  - Still blocked 2026-05-18 after the WebGPU/runtime-switch work: the
+    completion audit found this is the only unchecked item in the plan. Do not
+    mark it complete from Linux. Resume on a macOS host with the scanner
+    connected and the Epson Interpreter bundle installed, then:
+    - Confirm the interpreter bundle can be found with the existing
+      `ensureInterpreterManual`/`findInterpreter` path rules. Do not add
+      automatic Epson ICA download/extract behavior unless a human explicitly
+      approves that policy change.
+    - Implement live macOS USB open/claim/interface binding and endpoint
+      discovery around the already replay-tested `UsbIo`, `InterpreterSession`,
+      `LoadedInterpreter`, `selectEndpointPair`, `planScan`,
+      `startExtendedScan`, and `readScanData` pieces.
+    - Wire `scanner macos-smoke` through the live interpreter runtime only
+      behind `V600_MACOS_HARDWARE_SMOKE=1`.
+    - Required macOS validation before checking this item: skipped smoke with
+      no env var, unsupported/missing-interpreter diagnostic if applicable,
+      live device open/identity/capabilities probe, one tiny RGB smoke scan,
+      one tiny IR or RGB+IR smoke if supported, and `zig build test --summary
+      all` on macOS.
+    - Update `docs/PARITY_MANIFEST.md`, `docs/CROSS_PLATFORM.md`, and this
+      item with the exact macOS host, adapter/scanner model, bundle path, smoke
+      output paths, and command output. No Nix command is required unless the
+      macOS dependency shell/package definition changes.
 
 ### Phase 2: TIFF And Image I/O
 
@@ -4741,28 +4782,33 @@ human shell reload.
     `run-ui -- --scan-interaction-smoke` passed. Direct dummy-SDL `ui-smoke`
     passed. No Nix command was run.
 
-### Phase 10: WebGPU/Dawn Preparation
+### Phase 10: WebGPU Preparation
 
-- [x] Add Dawn/WebGPU dependency strategy through Nix.
-  - Strategy is documented in `docs/PERFORMANCE_STRATEGY.md`. Dawn/WebGPU stays
+- [x] Add WebGPU dependency strategy through Nix.
+  - Strategy is documented in `docs/PERFORMANCE_STRATEGY.md`. WebGPU stays
     optional and out of the default CPU parity shell until a CPU implementation
     of the same operation is accepted and fixture-covered. Future dependency
-    wiring must use an unambiguous Google Dawn package or local derivation,
-    default `-Dwebgpu=false`, preserve CPU fallback, and stop for a human shell
-    reload after any `flake.nix`/`shell.nix` edit.
+    wiring must use an unambiguous native WebGPU package, default
+    `-Dwebgpu=false`, preserve CPU fallback, and stop for a human shell reload
+    after any `flake.nix`/`shell.nix` edit.
+  - Update 2026-05-17: use nixpkgs `wgpu-native` as the first concrete backend
+    dependency. The pinned nixpkgs `dawn` package is unrelated to Google Dawn,
+    and the Google Dawn source checkout visible to Nix at the attempted
+    revision has no standalone `CMakeLists.txt`. Keep Google Dawn as a possible
+    future backend behind the same internal Zig boundary.
   - Validation 2026-05-15: docs-only checkpoint. Updated the baseline benchmark
     command to direct ambient-shell Zig usage and did not run `nix develop`,
     `nix-shell`, `nix build`, or `nix flake check`.
 - [x] Define CPU/GPU image buffer ownership boundaries.
   - Added `src/processing/gpu_boundary.zig` as a dependency-free contract for
-    future Dawn/WebGPU work. The boundary records explicit pixel formats,
+    future WebGPU work. The boundary records explicit pixel formats,
     scanner/TIFF/preview/scene-linear/display/mask/UI/parity buffer roles,
     CPU/GPU memory domains, row-stride validation, transfer directions, and the
     requirement that GPU parity downloads materialize tightly packed CPU
     comparison buffers.
   - Documented the ownership rules in `docs/PERFORMANCE_STRATEGY.md` and added
     a rewrite-infrastructure manifest row in `docs/PARITY_MANIFEST.md`. No
-    Dawn dependency, shell change, or Nix command was introduced.
+    WebGPU dependency, shell change, or Nix command was introduced.
   - Validation 2026-05-15: direct `zig version` reported `0.16.0`; direct
     `zig fmt src/processing/gpu_boundary.zig src/processing.zig`; direct
     `zig build test --summary all` passed `302/302`; direct
@@ -4774,7 +4820,7 @@ human shell reload.
     `docs/PERFORMANCE_STRATEGY.md`, tied each candidate to its frozen Python
     contract and Zig CPU function, and ranked them by current measured payoff
     and GPU suitability. `render_to_display` is P0 but requires exact percentile
-    handling; `negadoctor` and darktable `apply_sigmoid` are P1 per-pixel
+    handling; custom `invert_negative` and darktable `apply_sigmoid` are P1
     nonlinear kernels; transfer functions, matrix multiply, and film-stock
     density transforms are P2/fusion candidates; scanner startup, config, TIFF
     metadata, XMP parsing, filesystem/gallery work, and Nuklear layout are
@@ -4795,7 +4841,7 @@ human shell reload.
     comparison`, which rejects candidates with missing Python contracts, missing
     CPU symbols, missing CPU fallback, missing GPU download comparison, or
     inconsistent RGB channel geometry. This makes CPU fallback a checked rule
-    before any Dawn backend exists.
+    before any WebGPU backend exists.
   - Validation 2026-05-15: direct
     `zig fmt src/processing/gpu_boundary.zig src/processing.zig`; direct
     `zig build test --summary all` passed `303/303`; direct
@@ -4861,6 +4907,769 @@ human shell reload.
     `native-process-worker-smoke`, `run-ui -- --process-render-smoke`, `run-ui
     -- --process-interaction-smoke`, and `run-ui -- --process-selector-smoke`
     passed. No Nix command was run.
+
+### Phase 10A: WebGPU Bootstrap And First GPGPU Kernel
+
+This phase turns the completed WebGPU preparation into a real optional backend.
+It is intentionally split into small checkpoints so an agent can keep moving
+without repeatedly rebuilding Nix or guessing at GPU parity. The CPU path
+remains the production correctness path until a GPU kernel has a CPU fallback,
+headless CPU-vs-GPU comparison, benchmark evidence, and an explicit integration
+gate.
+
+#### Phase 10A Operating Rules
+
+- Do not run `nix develop`, `nix-shell`, `nix build`, `nix flake check`, or
+  `nix search` from the agent loop.
+- If a checkpoint requires a new WebGPU dependency, edit the Nix files and
+  stop. Ask the human to reload the requested shell. Resume only after the
+  human confirms the shell was reloaded.
+- Default builds must stay CPU-only. `zig build`, `zig build test`, and
+  `zig build -Dui=true` must not require WebGPU, a GPU, Vulkan, Metal, D3D12,
+  or GPU runtime permissions.
+- Every WebGPU build option must default off. Use an explicit build flag such
+  as `-Dwebgpu=true` and, later, an explicit runtime flag or environment value
+  before GPU execution is used by UI/export workflows.
+- Do not claim performance progress from a GPU-only algorithm. The GPU path
+  must implement the same Python-shaped operation already accepted on CPU, with
+  an explicit CPU fallback and comparison against downloaded GPU output.
+- WebGPU/WGSL generally means 32-bit float math. Before porting any current
+  `f64` CPU path, add an explicit representation decision and fixture
+  tolerance: either introduce a CPU `f32` staging/reference path that is
+  compared to Python within documented tolerance, or choose a kernel whose
+  existing parity contract already includes float32-like staging. Silent f64 to
+  f32 downcasts are not acceptable.
+- The first kernel should be small enough to debug. Prefer `apply_sigmoid` as
+  the first real GPGPU kernel unless fresh benchmark and fixture evidence shows
+  another per-pixel candidate is lower risk. Do not start with full
+  `render_to_display`; its exact percentile behavior is a separate reduction
+  problem.
+- GPU work must not touch scanner startup, scanner command planning, TIFF
+  metadata, config I/O, XMP parsing, filesystem gallery operations, or Nuklear
+  layout.
+
+- [x] Refresh the GPU readiness baseline and choose the first kernel.
+  - Start by reading `docs/PERFORMANCE_STRATEGY.md`,
+    `src/processing/gpu_boundary.zig`, `src/benchmarks/color_paths.zig`, and
+    the CPU implementation for the candidate kernel.
+  - Run only direct Zig commands from the ambient shell:
+    - `zig build test --summary all`
+    - `zig build -Dui=true --summary all`
+    - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands`
+  - Record the current benchmark output under this item before editing GPU
+    code.
+  - Select exactly one first kernel and write the choice under this item with:
+    Python source function, Zig CPU function, input/output buffer role,
+    input/output scalar representation, expected tolerance, and why the kernel
+    is a better first target than the alternatives.
+  - Default decision if there is no contrary evidence: choose
+    `apply_sigmoid` because it is per-channel, branch-light, already fixture
+    covered, and avoids the percentile/reduction complexity of
+    `render_to_display`.
+  - Completion evidence: benchmark output recorded, first-kernel choice
+    recorded, and no source changes beyond docs unless the selected checkpoint
+    explicitly requires them.
+  - Completed 2026-05-17: selected `apply_sigmoid` as the first GPGPU kernel.
+    Python source contract:
+    `scratchndent/processing/negative/color_transforms.py:96`
+    `_sigmoid_kernel` and `:333` `apply_sigmoid`. Zig CPU contract:
+    `src/processing/color.zig:196` `applySigmoid`. Buffer boundary:
+    `.scene_linear` to `.scene_linear`, currently `rgb_f64` CPU buffers with
+    deliberate `roundF32` input/output staging in the accepted CPU parity path.
+    Expected first GPU tolerance should start from the committed Python oracle
+    fixture `test/fixtures/processing/numeric/apply-darktable-sigmoid.json`
+    tolerance, `abs=0.000002`, `rel=0.000002`, because the existing CPU path
+    already mirrors Python's float32 output storage parity. Keep
+    `sigmoidCommitParams` on CPU for the first shader unless a later fixture
+    proves identical committed constants on GPU.
+  - Rationale: `apply_sigmoid` is a hot scalar nonlinear path
+    (`darktable_sigmoid=174651 ns_per_pixel_x1000` in this refresh), is
+    per-channel and branch-light, has no inter-pixel dependency, is already
+    covered by Python oracle fixtures, and avoids the exact percentile/reduction
+    complexity that makes `render_to_display` a poor first shader despite its
+    P0 priority. Corrected later: darktable `negadoctor` is a non-goal for GPU
+    work because it is not the active UI/export inversion path; the second
+    target is the custom `invert_negative` scene-linear stage.
+  - Validation 2026-05-17: direct `zig build test --summary all` passed
+    `367/367`; direct `zig build -Dui=true --summary all` passed; direct
+    `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+    passed with:
+    `srgb_to_linear=55614`, `linear_to_srgb=49605`,
+    `color_matrix_rec2020=663`, `density_transform_kodak_gold=3114`,
+    `darktable_sigmoid=174651`, `negadoctor=228136`,
+    `render_to_display=188852`, and
+    `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`.
+    Direct `zig build -Doptimize=ReleaseFast bench-processing-commands`
+    passed with `render_synthetic=157085 us`, `load_preview=1027938 us`,
+    `inverted_preview=1314158 us`, `auto_detect=416457 us`,
+    `rebate_dmin=159662 us`, `export_inv_only=327803 us`, and
+    `export_all=2474111 us` on `scans/scan_0006_rgbir_800dpi.tiff`.
+    No Nix command was run.
+
+- [x] Probe the ambient shell for an existing WebGPU package without Nix.
+  - Run only non-Nix probes:
+    - `pkg-config --list-all | rg -i 'dawn|webgpu|wgpu'`
+    - if a candidate appears, `pkg-config --modversion <name>`
+    - `pkg-config --cflags <name>`
+    - `pkg-config --libs <name>`
+  - If no candidate appears, record that the ambient shell lacks WebGPU and
+    continue to the dependency-edit checkpoint.
+  - If a candidate appears, verify it is a native WebGPU implementation usable
+    from Zig, not the unrelated DAWN PostScript package or a browser-only shim.
+    Evidence must include the pkg-config name if available, version, include
+    path, library flags, and which header provides the C ABI expected by Zig.
+  - Do not link Zig code in this checkpoint unless the package identity is
+    unambiguous.
+  - Completed 2026-05-17: direct
+    `pkg-config --list-all | rg -i 'dawn|webgpu|wgpu'` exited with status `1`
+    and no output, so the ambient shell does not expose a usable WebGPU
+    pkg-config target. No `pkg-config --modversion`, `--cflags`, or `--libs`
+    follow-up was possible because there was no candidate package name. Later
+    Nix package queries confirmed nixpkgs provides `wgpu-native`; that package
+    installs headers and `libwgpu_native` but does not expose a pkg-config file
+    in its Nix expression. No Nix build or shell reload was run by the agent.
+
+- [x] Add an optional nixpkgs `wgpu-native` dependency to Nix, then stop for
+      shell reload.
+  - Own files: `flake.nix` and `shell.nix`.
+  - Use the pinned nixpkgs `wgpu-native` package rather than a local Google Dawn
+    derivation. Nix package queries on 2026-05-17 showed:
+    - `nixpkgs#wgpu-native.version` = `27.0.4.0`
+    - `nixpkgs#wgpu-utils.version` = `29.0.1`
+    - `nixpkgs#python3Packages.wgpu-py.version` = `0.31.0`
+    - `nixpkgs#dawn.meta.description` = unrelated PostScript processor
+  - Keep default package/check/dev shell paths CPU-only unless the human
+    explicitly asks for WebGPU in the default shell. Prefer `devShells.webgpu`
+    and the legacy `shell.nix` opt-in argument `withWebGPU`.
+  - Because nixpkgs `wgpu-native` installs headers and `libwgpu_native` but no
+    pkg-config target in its package expression, expose explicit environment
+    variables for Zig build plumbing:
+    - `WGPU_NATIVE_INCLUDE_DIR`
+    - `WGPU_NATIVE_LIBRARY_DIR`
+    - `LD_LIBRARY_PATH` including `wgpu-native` and platform GPU loader
+  - Do not invent a local pkg-config shim unless later Zig build plumbing proves
+    it materially simpler than using those explicit include/library variables.
+  - Stop immediately after the Nix edit and ask the human to reload the
+    requested shell. The handoff must state exactly which shell/output should
+    be reloaded and which variables/files should exist afterward.
+  - Completion evidence before checking off: after the human reloads the shell,
+    direct probes succeed:
+    - `test -r "$WGPU_NATIVE_INCLUDE_DIR/webgpu/wgpu.h"`
+    - `test -r "$WGPU_NATIVE_INCLUDE_DIR/webgpu/webgpu.h"`
+    - `test -e "$WGPU_NATIVE_LIBRARY_DIR/libwgpu_native.so"` on Linux, or the
+      host platform's equivalent shared library extension
+    - `zig version` still reports `0.16.0`
+  - Progress 2026-05-17: replaced the local `nix/webgpu-dawn.nix` attempt with
+    nixpkgs `wgpu-native`, exported `packages.webgpuNative`, kept
+    `devShells.webgpu`, and kept legacy `shell.nix` `withWebGPU`. The prior
+    local Google Dawn derivation is removed because the fetched tree had no
+    standalone CMake project and nixpkgs `dawn` is not Google Dawn. Stop here;
+    ask the human to reload `nix develop .#webgpu` or `nix-shell --arg
+    withWebGPU true`, then run the direct probes above.
+  - Completion evidence 2026-05-17: after the human confirmed the chat was
+    reloaded inside the new `nix develop` shell, direct probes showed
+    `WGPU_NATIVE_INCLUDE_DIR=/nix/store/hi09iq4mclwgrjpm8h1lsqzk5npnwab7-wgpu-native-27.0.4.0-dev/include`,
+    `WGPU_NATIVE_LIBRARY_DIR=/nix/store/4zlzfq4h64367nndz89z4824z559zg7v-wgpu-native-27.0.4.0/lib`,
+    readable `webgpu/wgpu.h`, readable `webgpu/webgpu.h`, present
+    `libwgpu_native.so`, and `zig version` reported `0.16.0`.
+
+- [x] Add `-Dwebgpu=true` build plumbing with CPU-only default behavior.
+  - Own files: `build.zig`, `src/processing.zig`, and a minimal new module such
+    as `src/processing/webgpu.zig` if needed.
+  - Add a build option that defaults to false. When false, no WebGPU headers,
+    libraries, imports, link flags, pkg-config lookup, GPU tests, or GPU runtime
+    code may be required.
+  - When true, use `WGPU_NATIVE_INCLUDE_DIR` and `WGPU_NATIVE_LIBRARY_DIR` from
+    the WebGPU shell and link only the GPU executable/test steps that need
+    `libwgpu_native`. Keep ordinary `zig build test` and
+    `zig build -Dui=true` valid without `-Dwebgpu=true`.
+  - Add a compile-time capability constant or small API that lets tests and
+    processing code ask whether WebGPU support was compiled in without using
+    stringly build-state checks.
+  - Add direct validation commands:
+    - `zig build test --summary all`
+    - `zig build -Dui=true --summary all`
+    - `zig build -Dwebgpu=true --summary all`
+  - Do not add real GPU execution yet unless the next smoke checkpoint is also
+    selected and the dependency has been verified in the ambient shell.
+  - Completed 2026-05-17: added `-Dwebgpu=true` to `build.zig`, injected a
+    generated `build_options` module, and added `src/processing/webgpu.zig` as
+    a backend capability boundary with `compiled`, `Backend`, `Request`,
+    `FallbackPolicy`, `requireCompiled`, `canUseWebGpu`, and `shouldUseCpu`.
+    Default builds do not read WebGPU environment variables, add WebGPU include
+    paths, link `libwgpu_native`, or require a GPU runtime. WebGPU-enabled
+    builds read `WGPU_NATIVE_INCLUDE_DIR` and `WGPU_NATIVE_LIBRARY_DIR`, add the
+    include/library/RPATH paths, and link `wgpu_native`.
+  - Validation 2026-05-17: direct `zig build test --summary all` passed
+    `371/371`; direct `zig build -Dui=true --summary all` passed; direct
+    `zig build -Dwebgpu=true --summary all` passed; direct
+    `zig build -Dwebgpu=true test --summary all` passed `371/371`, exercising
+    the compile-time `compiled=true` capability branch; direct
+    `zig build -Dui=true -Dwebgpu=true --summary all` passed. No `nix develop`,
+    `nix-shell`, `nix build`, or `nix flake check` command was run.
+
+- [x] Add a minimal WebGPU adapter-device smoke that is never part of the
+      default build.
+  - Own files: `src/processing/webgpu.zig`, `build.zig`, and any tiny C ABI
+    wrapper needed to keep Zig 0.16 integration simple.
+  - The smoke should initialize the native WebGPU instance, request an adapter,
+    request a device, install uncaptured-error/device-lost callbacks if the C
+    API requires them, then release all objects cleanly.
+  - Add a build step such as `webgpu-smoke` that requires `-Dwebgpu=true`.
+    It must not run as part of `zig build test`, `zig build`, `zig build
+    -Dui=true`, or default flake checks.
+  - If no adapter is available on the current host, the smoke may report a
+    structured skip only when a documented environment value asks for
+    no-hardware/no-adapter behavior. Otherwise it should fail clearly, because
+    a GPU backend cannot be validated without an adapter.
+  - Record the backend selected by `wgpu-native` when available, for example
+    Vulkan on Linux, Metal on macOS, or D3D12 on Windows.
+  - Validation commands:
+    - `zig build -Dwebgpu=true --summary all`
+    - `zig build -Dwebgpu=true webgpu-smoke --summary all`
+    - `zig build test --summary all`
+    - `zig build -Dui=true --summary all`
+  - Completed 2026-05-17: added `src/processing/webgpu_native.zig` with the
+    native WebGPU C import isolated behind the compile-time `webgpu` flag,
+    added `src/tools/webgpu_smoke.zig`, and added a `webgpu-smoke` build step
+    that fails clearly unless invoked with `-Dwebgpu=true`. The smoke creates a
+    `wgpu-native` instance, requests an adapter, records adapter info, requests
+    a device with device-lost and uncaptured-error callbacks installed, releases
+    device/adapter/instance handles, and prints structured backend metadata.
+    `V600_WEBGPU_SMOKE_ALLOW_NO_ADAPTER=1` is the explicit no-adapter skip gate;
+    without it, no adapter is a failure.
+  - Validation 2026-05-17: direct
+    `zig build -Dwebgpu=true webgpu-smoke --summary all` passed and reported
+    `webgpu_smoke,status,ok,backend,vulkan,adapter_type,discrete,adapter,590.48.01,vendor_id,4318,device_id,10114,version,452985856`.
+    Direct `zig build -Dwebgpu=true --summary all` passed. Direct
+    `zig build test --summary all` passed `372/372`. Direct
+    `zig build -Dui=true --summary all` passed. No `nix develop`, `nix-shell`,
+    `nix build`, or `nix flake check` command was run.
+
+- [x] Extend the CPU/GPU boundary for the first kernel's real representation.
+  - If the first kernel uses 32-bit float buffers, add `f32` to
+    `ScalarType`, add the needed `PixelFormat` values such as `rgb_f32`, and
+    update `CpuImageView`, `GpuImageDescriptor`, transfer-plan tests, and
+    `gpu_kernel_candidates`.
+  - Add explicit conversion helpers only where the first kernel needs them.
+    The helper names must say what representation is being produced, for
+    example `sceneLinearF64ToF32Staging`, not a vague `prepareGpuBuffer`.
+  - Add tests for byte geometry, stride validation, tight download buffers,
+    and conversion edge cases including NaN/Inf/clamp behavior if the CPU path
+    can produce them.
+  - Record the Python oracle tolerance and the CPU f64-to-GPU-representation
+    tolerance under the selected kernel item. A broad visual smoke is not
+    enough.
+  - Validation commands:
+    - `zig build test --summary all`
+    - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+  - Completed 2026-05-17: extended `src/processing/gpu_boundary.zig` with
+    `ScalarType.f32`, `PixelFormat.gray_f32`, `PixelFormat.rgb_f32`, and f32
+    byte/channel geometry. The selected first kernel, `apply_sigmoid`, now
+    declares `.scene_linear` `rgb_f32` upload/download formats while preserving
+    the CPU `f64` public path. Added explicit conversion helpers
+    `sceneLinearF64ToF32Staging` and `sceneLinearF32DownloadToF64`.
+  - Representation and tolerance: the Python oracle tolerance remains the
+    committed `apply-darktable-sigmoid.json` tolerance,
+    `abs=0.000002`, `rel=0.000002`. The CPU-to-WebGPU representation boundary
+    is explicit f64-to-f32 staging with no hidden clamp. Tests preserve finite
+    float32 rounding, signed zero, NaN, positive infinity, and negative
+    infinity; invalid mismatched or non-RGB-multiple slices return
+    `InvalidGpuStagingBuffer`.
+  - Validation 2026-05-17: direct `zig build test --summary all` passed
+    `373/373`. Direct
+    `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+    passed with `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`
+    and benchmark values `srgb_to_linear=55350`, `linear_to_srgb=49293`,
+    `color_matrix_rec2020=657`, `density_transform_kodak_gold=3102`,
+    `darktable_sigmoid=173965`, `negadoctor=224777`, and
+    `render_to_display=129849`. No Nix command was run.
+  - Refreshed 2026-05-18 after adding custom `invert_negative` to the GPU
+    candidate registry: direct
+    `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+    passed with `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`
+    and benchmark values `srgb_to_linear=70282`, `linear_to_srgb=67782`,
+    `color_matrix_rec2020=654`, `density_transform_kodak_gold=3119`,
+    `invert_negative=37297`, `darktable_sigmoid=177594`,
+    `negadoctor=227647`, and `render_to_display=129809`. No Nix command was
+    run.
+  - Release-audit refresh 2026-05-18 after the CPU SIMD inversion work:
+    direct
+    `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+    passed with `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`
+    and benchmark values `srgb_to_linear=56555`, `linear_to_srgb=50487`,
+    `color_matrix_rec2020=722`, `density_transform_kodak_gold=3125`,
+    `invert_negative_scalar=38942`, `invert_negative=18524`,
+    `invert_negative_simd=18498`, `darktable_sigmoid=176263`,
+    `negadoctor=225133`, and `render_to_display=128230`. No Nix command was
+    run.
+
+- [x] Add a backend-neutral first-kernel interface with scalar fallback.
+  - Own the smallest CPU-call boundary for the selected kernel, not the whole
+    processing pipeline.
+  - Add a backend enum or options struct with at least `cpu` and `webgpu`
+    choices. Default must be `cpu`.
+  - The public processing function must keep its current CPU behavior unless
+    the caller explicitly selects WebGPU and the binary was built with
+    `-Dwebgpu=true`.
+  - If WebGPU was requested but not compiled in, return a clear error or fall
+    back only if the caller explicitly allowed fallback. Silent fallback is not
+    acceptable in parity/performance benchmarks because it can fake a GPU pass.
+  - Add unit tests for CPU default, explicit CPU, WebGPU-not-compiled behavior,
+    and fallback policy.
+  - Do not connect this interface to the native UI or export workflow yet.
+  - Completed 2026-05-17: added `ApplySigmoidOptions` and
+    `applySigmoidWithBackend` in `src/processing/color.zig`. The existing
+    `applySigmoid` CPU implementation remains the parity source of truth.
+    Default and explicit CPU requests call the scalar path. Explicit WebGPU
+    requests return `WebGpuNotCompiled` in CPU-only builds, may use the scalar
+    fallback only when `fallback = .allow_cpu`, and return
+    `WebGpuKernelNotImplemented` in WebGPU builds until the WGSL kernel exists.
+    This keeps benchmarks from accidentally counting silent CPU fallback as a
+    GPU pass.
+  - Validation 2026-05-17: direct `zig build test --summary all` passed
+    `377/377`; direct `zig build -Dwebgpu=true test --summary all` passed
+    `377/377`. No Nix command was run.
+
+- [x] Implement the first WGSL compute shader and CPU-vs-GPU comparison harness.
+  - Keep shader ownership obvious. Use a dedicated shader file or a clearly
+    named embedded string; avoid burying WGSL in unrelated processing code.
+  - The shader must operate only on the selected kernel's explicit staging
+    buffers and parameters. Do not add a fused multi-kernel pipeline in the
+    first pass.
+  - Dispatch geometry must cover exact image lengths and handle non-multiple
+    workgroup tails without reading or writing out of bounds.
+  - Download GPU output into a tightly packed CPU buffer through the
+    `TransferPlan.download` policy.
+  - Compare GPU output to the accepted CPU reference over committed fixtures.
+    Record max absolute error, RMS error, and tolerance. If tolerance needs to
+    differ from existing Python fixtures because WGSL uses f32, document why the
+    difference is representational and not algorithmic.
+  - Add a GPU comparison build step or test that only runs with
+    `-Dwebgpu=true` and an explicit GPU validation command.
+  - Required validation:
+    - `zig build test --summary all`
+    - `zig build -Dui=true --summary all`
+    - `zig build -Dwebgpu=true --summary all`
+    - `zig build -Dwebgpu=true webgpu-smoke --summary all`
+    - `zig build -Dwebgpu=true <first-kernel-gpu-compare-step> --summary all`
+  - Completed 2026-05-17: added the dedicated shader file
+    `src/processing/shaders/apply_sigmoid.wgsl`, native `wgpu-native`
+    dispatch/download code in `src/processing/webgpu_native.zig`, the public
+    gated `webgpu.applySigmoidKernel` entrypoint, and the
+    `webgpu-sigmoid-compare` build step. The shader operates on the explicit
+    `.scene_linear` `rgb_f32` staging buffers selected in the CPU/GPU boundary
+    item, uses CPU-committed sigmoid constants, guards non-multiple workgroup
+    tails with `index >= count`, and downloads through the tight
+    `TransferPlan.download` `rgb_f32` parity buffer before converting back to
+    `rgb_f64` for comparison.
+  - Comparison evidence 2026-05-17: direct
+    `zig build -Dwebgpu=true webgpu-sigmoid-compare --summary all` passed
+    against `test/fixtures/processing/numeric/apply-darktable-sigmoid.json`
+    with `count=18`, `max_abs=0.000000477`, `max_index=10`,
+    `rms=0.000000184`, `tolerance_abs=0.000002000`, and
+    `tolerance_rel=0.000002000`. No broader tolerance was needed; the
+    observed difference is within the existing Python oracle tolerance.
+  - Validation 2026-05-17: direct `zig build test --summary all` passed
+    `378/378`; direct `zig build -Dui=true --summary all` passed; direct
+    `zig build -Dwebgpu=true --summary all` passed; direct
+    `zig build -Dwebgpu=true test --summary all` passed `378/378`; direct
+    `zig build -Dwebgpu=true webgpu-smoke --summary all` passed on Vulkan
+    discrete adapter `590.48.01`. No Nix command was run.
+
+- [x] Benchmark the first GPU kernel against CPU at realistic sizes.
+  - Add or extend a ReleaseFast benchmark that measures:
+    - CPU reference kernel only.
+    - GPU upload plus dispatch plus download.
+    - GPU dispatch on already-resident buffers if the backend supports it.
+    - End-to-end cost at preview-sized and export-frame-sized dimensions.
+  - The benchmark must print enough metadata to interpret the result: image
+    dimensions, bytes uploaded, bytes downloaded, selected adapter/backend,
+    iterations, CPU time, GPU end-to-end time, GPU resident-dispatch time, and
+    speedup or slowdown.
+  - Do not integrate the GPU path into UI/export unless end-to-end GPU time is
+    faster for a documented size threshold or there is a clear follow-up plan
+    to amortize transfers by fusing kernels.
+  - Record results under this item and update `docs/PERFORMANCE_STRATEGY.md`.
+  - Validation command:
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast <first-kernel-gpu-bench-step> --summary all`
+  - Completed 2026-05-17: added `src/benchmarks/webgpu_sigmoid.zig` and the
+    `bench-webgpu-sigmoid` build step. The benchmark creates deterministic
+    scene-linear `rgb_f64` input, measures the existing CPU `applySigmoid`
+    reference, measures WebGPU upload + dispatch + readback, and separately
+    measures resident-buffer dispatch after upload. The first benchmark attempt
+    exposed WebGPU's 65,535-workgroup per-dimension limit; the shader and
+    dispatch planner now use 2D workgroup geometry with a uniform
+    `dispatch_width`, so export-sized buffers are covered without reading or
+    writing past `count`.
+  - Results 2026-05-17 on `wgpu-native` Vulkan adapter `590.48.01`:
+    - `preview_1024x768`: `786432` pixels, `2359296` samples,
+      `9437216` bytes uploaded per end-to-end iteration, `9437184` bytes
+      downloaded, CPU `2` iterations in `260132211 ns`, GPU end-to-end `3`
+      iterations in `4690388 ns`, resident dispatch `20` iterations in
+      `2513597 ns`, `e2e_speedup_x1000=83191`,
+      `resident_speedup_x1000=1034907`.
+    - `export_frame_2048x3072`: `6291456` pixels, `18874368` samples,
+      `75497504` bytes uploaded, `75497472` bytes downloaded, CPU `1`
+      iteration in `1060823646 ns`, GPU end-to-end `1` iteration in
+      `13297413 ns`, resident dispatch `10` iterations in `6715031 ns`,
+      `e2e_speedup_x1000=79776`, `resident_speedup_x1000=1579774`.
+  - Validation 2026-05-17: direct
+    `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-webgpu-sigmoid --summary all`
+    passed; direct `zig build -Dwebgpu=true webgpu-sigmoid-compare --summary all`
+    still passed with `max_abs=0.000000477`, `rms=0.000000184`; direct
+    `zig build test --summary all` passed `378/378`; direct
+    `zig build -Dwebgpu=true test --summary all` passed `378/378`; direct
+    `zig build -Dwebgpu=true --summary all` passed; direct
+    `zig build -Dui=true --summary all` passed. No Nix command was run.
+
+- [x] Integrate the first GPU kernel behind an explicit non-default runtime
+      switch.
+  - Wire the backend only into the narrow workflow that uses the selected
+    kernel. Do not turn on GPU globally.
+  - Add an explicit opt-in, for example a CLI flag or `V600_PROCESSING_GPU=1`.
+    The default runtime behavior remains CPU.
+  - If the GPU backend fails after opt-in, surface a diagnostic with the native
+    WebGPU backend, adapter name if available, operation name, and fallback
+    policy.
+  - Add tests proving default CPU behavior is unchanged and opt-in requests use
+    the GPU backend only when compiled with `-Dwebgpu=true`.
+  - Add one UI/export smoke only after the backend-neutral comparison and
+    benchmark checkpoints are complete.
+  - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and this
+    plan with evidence. Do not mark this item complete based on a shader smoke
+    alone.
+  - Completed 2026-05-18: changed `applySigmoidWithBackend` so explicit
+    WebGPU requests call `webgpu.applySigmoidKernel` and copy the downloaded
+    result into the caller's output buffer. The original `applySigmoid` scalar
+    function remains unchanged and remains the default path. Added
+    `applySigmoidRequestFromEnvironment`, where missing, empty, or `0`
+    `V600_PROCESSING_GPU` selects CPU; `1` or `webgpu` selects WebGPU with
+    fail-fast fallback; and `allow-cpu`/`webgpu-allow-cpu` selects explicit
+    CPU fallback only when WebGPU is unavailable.
+  - Added `webgpu-sigmoid-runtime-smoke`, which runs the same
+    `apply-darktable-sigmoid.json` fixture twice in a WebGPU build: once with
+    no runtime env var and once with `V600_PROCESSING_GPU=1`. The explicit GPU
+    run performs an adapter/device preflight so failure diagnostics include the
+    operation, `wgpu-native`, fallback policy, and adapter information when
+    available. Successful runtime output on 2026-05-18 showed default CPU
+    `max_abs=0.000000000`, explicit WebGPU `max_abs=0.000000477`,
+    `rms=0.000000184`, and adapter `590.48.01` on Vulkan.
+  - Added `native-process-export-smoke` as the post-comparison UI/export smoke.
+    This validates that the native Process export flow still starts from the UI
+    while the new GPU backend remains opt-in and disconnected from default
+    UI/export behavior.
+  - Validation 2026-05-18: direct `zig build test --summary all` passed
+    `379/379`; direct `zig build -Dwebgpu=true test --summary all` passed
+    `380/380`; direct `zig build -Dwebgpu=true webgpu-sigmoid-runtime-smoke --summary all`
+    passed; direct `zig build -Dwebgpu=true webgpu-sigmoid-compare --summary all`
+    passed with `max_abs=0.000000477`; direct
+    `zig build -Dwebgpu=true --summary all` passed; direct
+    `zig build -Dui=true native-process-export-smoke --summary all` passed;
+    direct `zig build -Dui=true --summary all` passed. No Nix command was run.
+
+- [x] Decide the second GPU kernel only after first-kernel evidence is recorded.
+  - Use the benchmark results to decide whether to:
+    - fuse `apply_sigmoid` with the custom inversion or color-matrix work,
+    - target custom `invert_negative` as the next standalone per-pixel kernel,
+    - target transfer functions only as part of a fused pipeline,
+    - or postpone more GPU work until CPU/UI parity gaps are smaller.
+  - Do not start `render_to_display` GPU reduction work until there is a written
+    plan for exact percentile parity or a user-approved post-parity approximate
+    percentile mode.
+  - Record the decision, next kernel, expected buffer residency strategy, and
+    required fixtures before adding more shader code.
+  - Corrected 2026-05-18 decision: target the custom `invert_negative`
+    scene-linear stage, not darktable `negadoctor`. Rationale: the active
+    native UI/export path uses the custom density-domain pipeline
+    `normalize_transmittance -> transmittance_to_density -> subtract_dmin ->
+    apply_density_transform -> non-negative clamp`. `negadoctor` is retained
+    for darktable/XMP parity but is not the production inversion path.
+  - Buffer residency strategy: keep the initial `invert_negative` comparison as
+    a standalone upload-dispatch-download pass using explicit staging buffers.
+    Do not fuse it with `apply_sigmoid`, render, TIFF loading, or Dmin
+    estimation until the standalone CPU-vs-GPU error and benchmark are
+    recorded. The follow-up residency goal is raw/TIFF `rgb_f32` input on GPU,
+    `scene_linear` `rgb_f32` output kept resident for later render work, and a
+    tightly packed CPU download only for parity comparison.
+  - Required fixtures before shader acceptance: reuse the committed
+    `test/fixtures/processing/numeric/invert-negative-identity-dmin.json` and
+    `test/fixtures/processing/numeric/invert-negative-kodak-gold-dmin.json`
+    fixtures; add an edge-case fixture before integration that covers low/zero
+    raw samples, Dmin clamp behavior, all 10 polynomial basis terms,
+    cross-channel terms, and non-negative output clamp. Compare against the
+    existing CPU implementation and document any f32 WGSL tolerance separately
+    from algorithmic differences.
+  - Deferred: do not start `render_to_display` GPU reduction work yet. It is
+    likely the best user-visible target, but exact percentile parity is the
+    hard part and needs a separate written reduction/selection plan before any
+    shader implementation. Do not use an approximate percentile mode unless
+    the user explicitly approves it as a post-parity divergence.
+
+### Phase 10B: Custom Inversion WebGPU Kernel
+
+This phase starts only because Phase 10A recorded first-kernel comparison and
+benchmark evidence and selected the active custom inversion path as the next
+GPU target. It must preserve the frozen Python
+`scratchndent.processing.negative.inversion.invert_negative` algorithm and the
+Zig CPU `src/processing/inversion.zig` oracle. Do not fuse with
+`apply_sigmoid`, render, TIFF loading, or Dmin estimation until the standalone
+shader has fixture comparison and benchmark evidence.
+
+Non-goal: darktable `negadoctor` is not a GPU acceleration target. It remains
+ported only for darktable/XMP compatibility and oracle coverage; autonomous
+work must not select it as a WebGPU kernel.
+
+- [x] Add custom inversion GPU edge-case fixture and CPU oracle coverage.
+  - Add a Python-generated fixture for `invert_negative` with provided Dmin and
+    custom coefficients. It must cover low/zero raw samples, transmittance EPS
+    clamping, Dmin subtraction clamp, all 10 polynomial basis terms,
+    cross-channel terms, and non-negative output clamp.
+  - Make the fixture carry the Dmin and coefficients needed by the comparison
+    harness so GPU work cannot silently depend on built-in stock defaults.
+  - Update the parity manifest and performance strategy with the fixture
+    purpose.
+  - Completed 2026-05-18: added
+    `test/fixtures/processing/numeric/invert-negative-custom-edge-dmin.json`,
+    generated from Python `invert_negative` with uint16 input semantics,
+    provided Dmin, and custom coefficients. Added a Zig CPU oracle test in
+    `src/processing/inversion.zig` that reads fixture-local Dmin and coeffs and
+    verifies output against Python.
+
+- [x] Implement custom inversion WGSL shader and CPU-vs-GPU comparison harness.
+  - Add an explicit `InvertNegativeKernelParams` WebGPU ABI. The ABI must
+    include Dmin, default light, optional dark/light handling policy for this
+    checkpoint, and the 10x3 stock coefficient matrix.
+  - Stage scanner/TIFF `rgb_f64` input as explicit `rgb_f32` samples, run the
+    same normalize-transmittance, density, Dmin subtraction, 10-term polynomial
+    transform, and non-negative clamp sequence as the CPU oracle, then download
+    tightly packed `rgb_f32` output and convert to `rgb_f64` for comparison.
+  - Add a `webgpu-invert-negative-compare` build step gated by `-Dwebgpu=true`.
+    It must compare the identity-Dmin, Kodak-Gold-Dmin, and edge fixtures
+    against CPU output and record max absolute error and RMS.
+  - Do not integrate the shader into UI/export yet.
+  - Completed 2026-05-18: added
+    `src/processing/shaders/invert_negative.wgsl`,
+    `webgpu.InvertNegativeKernelParams`,
+    `webgpu.applyInvertNegativeKernel`, native `wgpu-native` dispatch/readback,
+    and `src/tools/webgpu_invert_negative_compare.zig`. The comparison first
+    checks Zig CPU output against the Python fixture, then compares downloaded
+    GPU output to the Zig CPU oracle. Validation:
+    `zig build -Dwebgpu=true webgpu-invert-negative-compare --summary all`
+    passed with identity `max_abs=0.000000109`, Kodak Gold
+    `max_abs=0.000000190`, and custom edge `max_abs=0.000000874`.
+
+- [x] Benchmark custom inversion WebGPU against CPU at realistic sizes.
+  - Add `bench-webgpu-invert-negative` with preview-sized and export-frame-sized
+    deterministic RGB16-like inputs.
+  - Report CPU time, GPU upload-dispatch-download time, resident dispatch time,
+    transfer sizes, adapter/backend, speedup, and a checksum.
+  - Record benchmark evidence in this plan and
+    `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-18: added
+    `src/benchmarks/webgpu_invert_negative.zig` and
+    `bench-webgpu-invert-negative`. ReleaseFast results on `wgpu-native` Vulkan
+    adapter `590.48.01`:
+    - Release-audit refresh after chunking:
+      `preview_1024x768`: CPU `1` iteration in `49391124 ns`, GPU
+      end-to-end `3` iterations in `4837440 ns`, resident dispatch `20`
+      iterations in `2632473 ns`, `e2e_speedup_x1000=30630`,
+      `resident_speedup_x1000=375246`.
+    - Release-audit refresh after chunking:
+      `export_frame_2048x3072`: CPU `1` iteration in `374313447 ns`, GPU
+      end-to-end `1` iteration in `13765099 ns`, resident dispatch `10`
+      iterations in `8738861 ns`, `e2e_speedup_x1000=27192`,
+      `resident_speedup_x1000=428332`.
+    - Validation command:
+      `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-webgpu-invert-negative --summary all`.
+
+- [x] Integrate custom inversion behind an explicit non-default runtime switch.
+  - Keep default UI/export behavior CPU.
+  - Reuse the explicit processing GPU runtime policy; silent fallback remains
+    forbidden for benchmark evidence.
+  - Add a runtime smoke proving default CPU behavior and explicit WebGPU
+    behavior against the custom inversion fixtures.
+  - Completed 2026-05-18: added shared `webgpu.requestFromEnvironment` for
+    `V600_PROCESSING_GPU`, added `InvertOptions.request`, and routed explicit
+    WebGPU requests through `webgpu.applyInvertNegativeKernel`. Unsupported
+    dark/light flat-field options stay CPU with explicit `allow_cpu` fallback
+    and fail fast otherwise. The processing CLI export path parses the ambient
+    environment once and passes the request through workflow/export to
+    `invertNegative`; native UI callers remain CPU until a UI setting is
+    intentionally wired.
+  - Added `webgpu-invert-negative-runtime-smoke`, which runs the Kodak Gold
+    Dmin fixture once with default CPU behavior and once with
+    `V600_PROCESSING_GPU=1`. Validation:
+    `zig build -Dwebgpu=true webgpu-invert-negative-runtime-smoke --summary all`
+    passed with default CPU `max_abs=0.000000132`, `rms=0.000000046`; explicit
+    WebGPU `max_abs=0.000000322`, `rms=0.000000113`; and adapter preflight on
+    Vulkan adapter `590.48.01`.
+
+- [x] Decide the next GPU residency/fusion checkpoint.
+  - Use custom inversion evidence to decide whether to keep building standalone
+    kernels, fuse inversion with render setup or `apply_sigmoid`, or stop GPU
+    work until more CPU/UI parity gaps are closed.
+  - Do not start `render_to_display` percentile/reduction work without an exact
+    parity plan or explicit user-approved post-parity divergence.
+  - Completed 2026-05-18: do not fuse kernels yet. The standalone
+    `invert_negative` kernel is already much faster than the Zig CPU path, but
+    end-to-end user-visible benefit still depends on transfer cost, render
+    percentile work, TIFF/crop cost, and native UI worker scheduling. The next
+    checkpoint is end-to-end opt-in measurement through the real processing
+    workflow/CLI export path with `V600_PROCESSING_GPU=1`, followed by a written
+    exact-percentile plan before any `render_to_display` WebGPU reduction work.
+    Keep `apply_sigmoid` separate for now because it is not on the active
+    custom inversion export path.
+
+### Phase 10C: End-To-End GPU Inversion Adoption
+
+This phase measures whether the now-working custom inversion GPU kernel
+improves real user workflows before adding more shaders or fusing kernels.
+
+- [x] Add end-to-end processing benchmarks for CPU vs explicit GPU inversion.
+  - Extend or add a benchmark that runs the same processing workflow/export path
+    with default CPU inversion and an explicit WebGPU inversion request. The
+    CLI/export runtime path still reaches that same request through
+    `V600_PROCESSING_GPU=1`.
+  - Include preview-sized and real/export-sized cases when fixtures are
+    available.
+  - Report total wall time, inversion time if separately observable, transfer
+    sizes, files written or preview bytes produced, and CPU/GPU speedup.
+  - Compare output pixels/metadata against the CPU path or existing Python
+    fixtures; do not accept speedup without parity evidence.
+  - Completed 2026-05-18 with direct Zig commands only. The benchmark now has
+    paired `inverted_preview_cpu_vs_gpu` and `export_inv_only_cpu_vs_gpu`
+    cases in `src/benchmarks/processing_commands.zig`. Both compare explicit
+    WebGPU inversion against the Zig CPU path while Python remains the frozen
+    fixture oracle for CPU behavior.
+  - The benchmark reports cold and warm GPU wall time separately because the
+    production WebGPU path now caches the invert-negative device/queue/pipeline
+    per process. Cold numbers include first-use setup; warm numbers represent
+    repeated Process work after the cache is live.
+  - Validation:
+    - `zig build bench-processing-commands --summary all -- --case inverted_preview_cpu_vs_gpu`
+      in a non-WebGPU build skipped cleanly with `skipped_webgpu_not_compiled`.
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --case inverted_preview_cpu_vs_gpu`
+      on `scans/scan_0006_rgbir_800dpi.tiff` reported
+      `cpu_us=1313962`, `gpu_cold_us=1275732`, `gpu_warm_us=1099184`,
+      `cold_speedup_x1000=1029`, `warm_speedup_x1000=1195`,
+      `max_abs=1`, `rms=0.002`, and `mismatches=137`.
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --case export_inv_only_cpu_vs_gpu`
+      on the representative scan-0006 crop reported `cpu_us=354957`,
+      `gpu_cold_us=480207`, `gpu_warm_us=267855`,
+      `cold_speedup_x1000=739`, `warm_speedup_x1000=1325`,
+      `max_abs=1`, `rms=0.052`, `mismatches=7216`,
+      `metadata_equal=true`, `file_name_equal=true`, and `files=1`.
+  - Performance interpretation: preview and export are now faster after the
+    WebGPU runtime is warm, but the first export remains slower because it pays
+    adapter/device/pipeline setup. UI adoption must therefore decide whether an
+    explicit GPU opt-in should prewarm the cache or surface first-use latency.
+
+- [x] Decide native UI opt-in control for GPU inversion.
+  - Keep default CPU behavior.
+  - Decide whether the native UI should expose a processing GPU toggle, read the
+    environment once at startup, or stay CLI-only until render GPU work exists.
+  - Include the cache lifecycle in the decision. Warm GPU inversion is faster
+    in the current benchmark, but cold single-frame export is slower; an
+    explicit UI opt-in may need prewarm diagnostics before it feels faster.
+  - If a UI setting is added, persist it through config only after documenting
+    the behavior and adding headless state tests.
+  - Completed 2026-05-18: native UI now reads `V600_PROCESSING_GPU` once at
+    startup through the same `invertNegativeRequestFromEnvironment` parser used
+    by the CLI. Missing, empty, or `0` keeps CPU default. `1`/`webgpu` requests
+    WebGPU fail-fast. `allow-cpu`/`webgpu-allow-cpu` requests WebGPU with the
+    already-defined explicit CPU fallback policy.
+  - Decision: do not add a visible persisted toggle yet. The current
+    end-to-end benchmark shows warm WebGPU inversion is faster, but cold
+    single-frame export is still slower. Persisting a UI preference before
+    prewarm/status diagnostics would make first-use latency look like a broken
+    setting. The native UI therefore has an operator/debug opt-in through the
+    environment only, with CPU as the stable default.
+  - Implementation notes:
+    - `State.processing_gpu_request` owns the native UI runtime request.
+    - `processingInvertedPreviewOptions` passes the request to async inverted
+      preview rendering, and request changes invalidate the inverted-preview
+      cache.
+    - `ProcessExportWorker.Context` and direct `State.runProcessExport` pass
+      the request into `ExportWorkflowOptions.invert_request`.
+    - No `scratchndent_config.toml` key was added and no persisted setting was
+      introduced.
+  - Validation:
+    - Refreshed after CPU SIMD inversion work: `zig build test --summary all`
+      passed `391/391`, including headless state tests for preview option
+      propagation and export-worker context propagation.
+    - `zig build -Dui=true ui-smoke --summary all` passed.
+    - `zig build -Dui=true -Dwebgpu=true ui-smoke --summary all` passed.
+    - `V600_PROCESSING_GPU=allow-cpu zig build -Dui=true ui-smoke --summary all`
+      passed, proving the non-WebGPU UI build can parse the explicit fallback
+      request.
+    - `V600_PROCESSING_GPU=1 zig build -Dui=true -Dwebgpu=true ui-smoke --summary all`
+      passed, proving the WebGPU-enabled native UI startup accepts the explicit
+      GPU request.
+
+- [x] Write exact `render_to_display` percentile GPU plan.
+  - Preserve Python/Zig percentile semantics exactly unless the user explicitly
+    approves a post-parity approximate mode.
+  - Decide CPU percentile plus GPU render, GPU reduction/selection, or a hybrid
+    approach before any WGSL render shader is written.
+  - Completed 2026-05-18: chosen plan is a hybrid exact-parity path:
+    keep robust luminance percentile selection on CPU, then optionally run only
+    the per-sample display transform on WebGPU. This preserves the frozen
+    Python/Zig percentile contract while still moving the parallel color
+    balance, exposure, S-curve, clamp, and uint16 write stage to the GPU.
+  - Non-negotiable percentile invariants:
+    - Luminance is computed in current Python/Zig order:
+      `0.2126 * R + 0.7152 * G + 0.0722 * B`.
+    - The positive sample set is exactly `luminance > 0.001`; zeros, negative
+      luminance, and tiny positive values at or below the threshold are excluded.
+    - Empty positive set returns `lo=0.0`, `hi=1.0`.
+    - Percentiles use NumPy-style linear interpolation over the sorted positive
+      luminance values:
+      `rank = (n - 1) * percentile / 100`, floor/ceil neighbors, and linear
+      interpolation by the fractional rank.
+    - If `hi <= lo`, set `hi = lo + 1.0`.
+    - Percentile inputs outside `[0, 100]` or non-finite values remain boundary
+      errors before any GPU dispatch.
+  - First acceptable GPU implementation:
+    - Extract or expose a CPU `robustLuminanceRange` helper only if needed for
+      testing; do not change its semantics.
+    - Add `RenderToDisplayGpuParams` containing exact CPU `lo`, `hi`, color
+      balance multipliers, exposure gamma, contrast constants, and flags.
+    - Stage input `scene_linear` as the established GPU boundary format. The
+      percentile range itself is computed from the existing CPU `f64` input
+      before staging so WebGPU `f32` luminance cannot perturb the selected
+      range.
+    - WGSL applies only:
+      normalize/clamp -> optional color balance -> optional exposure power ->
+      optional logistic S-curve -> final clamp -> uint16-compatible display
+      quantization.
+    - Download the GPU display output and compare against the Zig CPU
+      `renderToDisplay` output on every fixture before any workflow integration.
+      Any tolerance must be justified solely by f32 WGSL arithmetic and final
+      integer quantization; percentile value changes are not allowed.
+  - Deferred GPU percentile/reduction work:
+    - Do not implement histogram, t-digest, sampling, fixed-bin CDF, or other
+      approximate percentile methods in the parity path.
+    - Do not compute robust percentile on GPU with WGSL `f32` luminance and
+      call it exact relative to the current Zig CPU `f64` contract.
+    - If CPU percentile selection remains a bottleneck, first optimize the CPU
+      exact path with an order-statistics selection algorithm that returns the
+      same lower/upper percentile values as full sorting.
+    - A full GPU percentile path is a separate post-parity design item and
+      requires either a proven exact representation contract or explicit user
+      approval for an approximate mode.
+  - Required implementation gates when this plan is executed:
+    - Reuse `render-to-display-baseline.json`,
+      `render-to-display-adjusted.json`, and
+      `render-to-display-no-positive-luminance.json`.
+    - Add a dedicated WebGPU compare step, for example
+      `webgpu-render-to-display-compare`, gated behind `-Dwebgpu=true`.
+    - Add a realistic-size benchmark that reports CPU total time, CPU
+      percentile time, GPU transform/download time, transfer sizes, output
+      max/RMS difference, and speedup against the Zig CPU render path.
+    - Only after the standalone comparison and benchmark pass may preview/export
+      integration route render work through an explicit WebGPU request.
 
 ### Phase 11: Packaging And Cross-Platform
 
@@ -4931,7 +5740,493 @@ human shell reload.
     `plan.md` evidence, parity manifest status, direct Zig gates, GPU readiness
     benchmark gate, Linux package/check builds, refreshed Linux live scanner
     evidence, macOS host validation, real-display UI screenshots, no required
-    Dawn/WebGPU default path, no hardware-dependent default checks, and generated
+    WebGPU default path, no hardware-dependent default checks, and generated
     output hygiene.
   - Validation 2026-05-15: docs-only checkpoint. `git diff --check` passed for
     the touched docs and plan files.
+
+### Phase 12: Release Acceptance Audit
+
+This phase maps the active `/goal` and `docs/CROSS_PLATFORM.md` release
+checklist to concrete evidence. Do not mark the thread goal complete until
+every item below is either checked with current evidence or explicitly deferred
+by the user for the release claim. Passing tests, a full-looking manifest, or
+the absence of older unchecked boxes is not enough by itself.
+
+Prompt-to-artifact checklist:
+
+| Requirement | Artifact/evidence source | Current decision |
+| --- | --- | --- |
+| Choose next smallest `plan.md` checkpoint until complete | This checklist and `rg -n "\[ \]" plan.md` | Active in Phase 12 |
+| Implement and validate checkpoints | Source diffs, direct Zig gates, hardware smokes, benchmarks | Partially current; release refresh below |
+| Update fixtures, verification log, and parity manifest | `test/fixtures/**`, this log, `docs/PARITY_MANIFEST.md` | Needs final audit after release gates |
+| Complete parity, native UI, GPU, packaging, and exit criteria | `docs/CROSS_PLATFORM.md` release checklist items 1-15 | Not complete until this phase is done |
+| Avoid proxy completion | Per-item evidence must name commands, files, blockers, or deferrals | Required for all items below |
+
+- [x] Perform current-state completion audit and expose remaining release work.
+  - Completed 2026-05-18: the audit restated the goal as a version-one
+    parity-accepted Zig replacement with current evidence for all release
+    checklist items. `rg -n "\[ \]" plan.md` returned no older unchecked
+    checklist items before this Phase 12 section was added, but
+    `docs/CROSS_PLATFORM.md` still requires release evidence that was not
+    represented as selectable plan work.
+  - Evidence inspected: `plan.md`, `docs/CROSS_PLATFORM.md`,
+    `docs/PARITY_MANIFEST.md`, `docs/PERFORMANCE_STRATEGY.md`, `git status
+    --short`, and local generated-output listings.
+  - Missing or weak evidence found: current direct Zig release-gate refresh,
+    release-time Nix package/check gates, release-time Linux live scanner smoke
+    refresh, macOS host build/test evidence, and real-display native UI
+    screenshots.
+  - Completion decision: this audit item is complete, but the thread goal is
+    not complete.
+
+- [x] Refresh direct Zig release gates from the ambient shell.
+  - Covers release checklist items 3, 4, 5, 6, 13, and 14.
+  - Run only direct Zig commands:
+    - `zig build test --summary all`
+    - `zig build --summary all`
+    - `zig build -Dui=true --summary all`
+    - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+  - Required evidence before checking off: exact pass/fail results, test
+    counts when available, and confirmation that default build/test paths did
+    not require WebGPU or scanner hardware.
+  - Completed 2026-05-18 with direct Zig commands only:
+    - Refreshed after CPU SIMD and preview buffer-fusion work:
+      `zig build test --summary all` passed. Build summary:
+      `9/9 steps succeeded; 395/395 tests passed`.
+    - `zig build --summary all` passed. Build summary:
+      `9/9 steps succeeded`; installed `v600-zig`.
+    - `zig build -Dui=true --summary all` passed. Build summary:
+      `12/12 steps succeeded`; installed `v600-zig` and `v600-ui`.
+    - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+      passed. Build summary: `9/9 steps succeeded`; benchmark gate:
+      `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`.
+      Refreshed after the preview buffer-fusion work with
+      `ns_per_pixel_x1000` values:
+      `srgb_to_linear=71629`, `linear_to_srgb=69382`,
+      `color_matrix_rec2020=773`, `density_transform_kodak_gold=987`,
+      `invert_negative_scalar=40930`, `invert_negative=20877`,
+      `invert_negative_simd=20714`, `invert_negative_u16_simd=20857`,
+      `darktable_sigmoid=188053`, `negadoctor=276806`,
+      `render_to_display=135889`, `render_to_display_u16_then_u8=131381`,
+      and `render_to_display_u8=137533`.
+  - Default build/test confirmation: none of these commands used
+    `-Dwebgpu=true`, `V600_PROCESSING_GPU`, `V600_HARDWARE_SMOKE=1`, or Nix.
+
+- [x] Refresh WebGPU opt-in performance/parity gates after current changes.
+  - Covers the GPU portion of the goal and confirms the latest tree still
+    compares explicit WebGPU against the Zig CPU oracle.
+  - Run only from an already-loaded WebGPU-capable ambient shell:
+    - `zig build -Dwebgpu=true test --summary all`
+    - `zig build -Dwebgpu=true webgpu-invert-negative-compare --summary all`
+    - `zig build -Dwebgpu=true webgpu-invert-negative-runtime-smoke --summary all`
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-webgpu-invert-negative --summary all`
+  - Required evidence before checking off: CPU-vs-GPU max/RMS differences,
+    cold/warm or end-to-end/resident timings where reported, and confirmation
+    that Python remains the behavior oracle while Zig CPU is the performance
+    comparison baseline.
+  - If the ambient shell is no longer WebGPU-capable, do not run Nix; record
+    the missing variable/library and ask the human to reload the WebGPU shell.
+  - Completed 2026-05-18 from the already-loaded WebGPU ambient shell. Direct
+    probes confirmed readable `$WGPU_NATIVE_INCLUDE_DIR/webgpu/wgpu.h` and
+    present `$WGPU_NATIVE_LIBRARY_DIR/libwgpu_native.so`; no Nix command was
+    run.
+  - Validation:
+    - Refreshed after CPU SIMD and preview buffer-fusion work:
+      `zig build -Dwebgpu=true test --summary all` passed. Build summary:
+      `9/9 steps succeeded; 397/397 tests passed`.
+    - `zig build -Dwebgpu=true webgpu-invert-negative-compare --summary all`
+      passed with identity `max_abs=0.000000109`, `rms=0.000000043`; Kodak
+      Gold `max_abs=0.000000190`, `rms=0.000000073`; and custom edge
+      `max_abs=0.000000874`, `rms=0.000000243`.
+    - `zig build -Dwebgpu=true webgpu-invert-negative-runtime-smoke --summary all`
+      passed. Default CPU request reported `max_abs=0.000000132`,
+      `rms=0.000000046`; explicit WebGPU reported `max_abs=0.000000322`,
+      `rms=0.000000113`; adapter preflight selected Vulkan adapter
+      `590.48.01`.
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-webgpu-invert-negative --summary all`
+      passed after the CPU SIMD and linear-coefficient fast paths changed the
+      Zig CPU baseline. `preview_1024x768`: CPU `20873284 ns`,
+      GPU end-to-end `4827842 ns`, resident `2628179 ns`, end-to-end speedup
+      `12.970x`, resident speedup `158.843x`. `export_frame_2048x3072`:
+      CPU `156608114 ns`, GPU end-to-end `14024699 ns`, resident
+      `9126367 ns`, end-to-end speedup `11.166x`, resident speedup `171.599x`.
+  - Performance comparison baseline: these GPU numbers compare against the Zig
+    CPU `invert_negative` pipeline. Python remains the behavior oracle through
+    the committed fixtures and CPU oracle tests.
+
+- [x] Benchmark large real scan data from `scans/` for preview and full-res
+      export throughput.
+  - Added `export_fullres_inv_cpu_vs_gpu` to
+    `src/benchmarks/processing_commands.zig`. The case derives a 35mm-sized
+    full-resolution crop from the real TIFF page geometry and DPI, then runs
+    the normal export workflow with CPU inversion, explicit WebGPU cold
+    inversion, and explicit WebGPU warm inversion.
+  - Fixed the production `invert_negative` WebGPU path to chunk large inputs
+    into 64 MiB RGB-f32 slices. The first large real scan attempt on
+    `scan_0004_rgbir_3200dpi.tiff` aborted in `wgpuQueueSubmit` because the
+    one-shot storage-buffer bind group exceeded the native backend's binding
+    size limit. Added a chunk-range unit test covering the `1738x8192` preview
+    case that exposed the problem.
+  - Large scan discovery:
+    - `scans/scan_0004_rgbir_3200dpi.tiff`: 864682512 bytes; RGB page
+      `5120x24125`; IR page `5120x24125`.
+    - `scans/scan_0003_rgbir_3200dpi.tiff`: 727783712 bytes.
+  - Validation and benchmark evidence:
+    - `zig build -Dwebgpu=true test --summary all` passed `397/397`.
+    - `zig build -Dwebgpu=true webgpu-invert-negative-compare --summary all`
+      passed after chunking with identity `max_abs=0.000000109`, Kodak Gold
+      `max_abs=0.000000190`, and custom edge `max_abs=0.000000874`.
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case load_preview`
+      loaded a `1738x8192` preview in `2330243 us`.
+    - Refreshed after the CPU SIMD, linear-coefficient, direct-u16, and
+      direct-u8 fast paths:
+      `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview_cpu_vs_gpu`
+      reported CPU `1800749 us`, GPU cold `2378655 us`, GPU warm
+      `2194852 us`, warm speedup `0.820x`, `max_abs=1`, `rms=0.002`.
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0003_rgbir_3200dpi.tiff --case load_preview`
+      loaded a `1901x8192` preview in `2446635 us`.
+    - Refreshed after the CPU SIMD fast path:
+      `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0003_rgbir_3200dpi.tiff --case inverted_preview_cpu_vs_gpu`
+      reported CPU `2060415 us`, GPU cold `2544158 us`, GPU warm
+      `2323564 us`, warm speedup `0.886x`, `max_abs=1`, `rms=0.002`.
+    - Refreshed after the CPU SIMD, linear-coefficient, and direct-u16 export
+      fast paths:
+      `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_fullres_inv_cpu_vs_gpu`
+      exported a full-resolution `4535x3023` crop and reported CPU
+      `4786929 us`, GPU cold `5249665 us`, GPU warm `5056970 us`, warm
+      speedup `0.946x`, `max_abs=1`, `rms=0.050`,
+      `metadata_equal=true`.
+    - Refreshed after the CPU SIMD fast path:
+      `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0003_rgbir_3200dpi.tiff --case export_fullres_inv_cpu_vs_gpu`
+      exported a full-resolution `4420x3023` crop and reported CPU
+      `4468992 us`, GPU cold `4858133 us`, GPU warm `4681464 us`, warm
+      speedup `0.954x`, `max_abs=1`, `rms=0.051`,
+      `metadata_equal=true`.
+  - Performance decision: after the CPU SIMD fast path, large real-scan
+    WebGPU preview/export workflows are slower than the CPU path despite the
+    standalone GPU kernel still being faster. TIFF loading, CPU render/display,
+    crop/write work, transfers, and repeated CPU/GPU boundaries dominate. Keep
+    WebGPU opt-in/default-off and next reduce those workflow costs or move
+    additional render/display stages behind the same explicit WebGPU request.
+
+- [x] Add fused CPU SIMD fast path for provided-Dmin `invert_negative`.
+  - Scope: same custom Python `invert_negative` algorithm, not `negadoctor`.
+    The production CPU path may use SIMD only when Dmin is provided, dark/light
+    calibration is absent, the input is valid RGB triples, and `default_light`
+    has the same effective denominator as the scalar path. Other cases keep the
+    scalar oracle path.
+  - Implementation notes:
+    - Added `invertNegativeProvidedDminScalar` as an explicit scalar oracle for
+      benchmarks and fallback.
+    - Added `invertNegativeProvidedDminSimd` as the fused per-pixel path:
+      raw/default-light normalization, density, Dmin subtraction, 10-term
+      coefficient transform, and non-negative clamp in one pass.
+    - Added `film_stocks.usesOnlyLinearTerms` and `applyLinearTerms` so the
+      built-in identity, Kodak Gold, and Portra profiles use a direct 3x3
+      linear transform while custom profiles with nonzero higher-order rows
+      keep the general 10-term path.
+    - Wired `invertNegative` to select SIMD for the safe provided-Dmin CPU case
+      while preserving explicit WebGPU request behavior and scalar fallback.
+    - Added `invert_negative_scalar` and `invert_negative_simd` benchmark rows
+      beside the production `invert_negative` row.
+  - Validation:
+    - `zig build test --summary all` passed `394/394`.
+    - `zig build -Dwebgpu=true test --summary all` passed `396/396`.
+    - `zig build -Dwebgpu=true webgpu-invert-negative-compare --summary all`
+      passed with unchanged identity/Kodak/custom-edge tolerances.
+    - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+      passed with `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case invert_negative_preview_cpu_vs_simd`
+      reported scalar `841762 us`, SIMD `344512 us`, speedup `2.443x`,
+      `max_abs=0`, `rms=0`, and equal checksums on a `1738x8192` preview.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case invert_negative_fullres_cpu_vs_simd`
+      reported scalar `835616 us`, SIMD `344307 us`, speedup `2.426x`,
+      `max_abs=0`, `rms=0`, and equal checksums on a `4535x3023` crop.
+
+- [x] Record additional CPU waste/fusion optimization targets.
+  - Added to `docs/PERFORMANCE_STRATEGY.md` as parity-constrained fusion
+    targets:
+    - Export u16 render/rotate/write path to avoid display-valued `f64`
+      temporaries.
+    - Exact percentile selection to avoid full luminance sorting without
+      changing NumPy-style interpolation semantics.
+  - The coefficient-shape fast path is now complete under the fused CPU SIMD
+    checkpoint above; it remains listed in `docs/PERFORMANCE_STRATEGY.md` as a
+    completed fusion target, not a pending follow-up.
+  - Preview render-to-u8 and u16-input raw staging fusion are now complete under
+    the preview buffer-fusion checkpoint below.
+
+- [x] Implement preview buffer-fusion wins for direct-u8 render and direct-u16
+      inversion.
+  - Scope: keep the frozen Python custom `invert_negative` and
+    `render_to_display` algorithms. These are representation/pass reductions,
+    not alternate processing algorithms.
+  - Implementation notes:
+    - Added `render.renderToDisplayU8`, sharing the exact display math with
+      `renderToDisplay` and preserving the old preview quantization contract:
+      output byte equals `renderToDisplay(... u16) >> 8`.
+    - Routed `workflow.renderInvertedPreviewRgb8` through
+      `renderToDisplayU8`, removing the temporary preview `u16` display buffer
+      and downshift pass.
+    - Added `inversion.invertNegativeProvidedDminU16Simd`, covering both
+      linear-only coefficient and general 10-term coefficient paths, so
+      provided-Dmin previews can avoid expanding the whole `u16` preview into a
+      temporary `f64` raw buffer.
+    - Routed CPU provided-Dmin preview inversion through the direct `u16` path
+      while preserving explicit WebGPU requests and the non-Dmin fallback path.
+    - Added `render_to_display_u16_then_u8`,
+      `render_to_display_u8`, and `invert_negative_u16_simd` benchmark rows.
+    - Added `preview_render_u8_vs_u16` and
+      `invert_negative_preview_u16_vs_f64` real-scan benchmark cases.
+  - Validation:
+    - `zig build test --summary all` passed `394/394`.
+    - `zig build -Dwebgpu=true test --summary all` passed `396/396`.
+    - `zig build -Dwebgpu=true webgpu-invert-negative-compare --summary all`
+      passed with identity `max_abs=0.000000109`, Kodak Gold
+      `max_abs=0.000000190`, and custom edge `max_abs=0.000000874`.
+    - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
+      passed with `gpu_readiness_gate,active_candidates,7,benchmarked_candidates,7`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case preview_render_u8_vs_u16`
+      reported old `u16_then_u8_us=1462721`, direct `u8` `1428256 us`,
+      speedup `1.024x`, `max_abs=0`, `rms=0.000`, and equal checksums.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case invert_negative_preview_u16_vs_f64`
+      reported staged `f64` `474283 us`, direct `u16` `341936 us`, speedup
+      `1.387x`, `max_abs=0`, `rms=0.000000000000`, and equal checksums.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview`
+      reported full CPU inverted preview `1796580 us`, down from the earlier
+      current-session post-render-fusion run of `1947054 us`, with checksum
+      `3913296606`.
+
+- [x] Implement approved sampled render range and dynamic display LUTs.
+  - Scope: same frozen `render_to_display` transform and final quantized
+    preview/export outputs. Exact semantics remain available through
+    `percentile_sample_limit=0` and fixture-sized fallback; large production
+    previews use the explicitly approved approximate robust-statistic mode.
+  - Implementation notes:
+    - Added `RenderToDisplayOptions.percentile_sample_limit`, public
+      `LuminanceRange`, and `estimateDisplayLuminanceRange`.
+    - Kept exact f64 full-sort percentile behavior for oracle and small fixture
+      paths.
+    - Added deterministic f32 robust-range sampling with a default 16k sample
+      cap to avoid image-sized sort/scratch work on large previews.
+    - Added separate dynamic display LUTs for the separate constraints:
+      256-entry nearest `u8` LUT for preview and 1024-entry linear f32 LUT for
+      export-shaped `u16` display.
+    - Updated the export parallelism memory heuristic so render percentile
+      scratch uses the exact/sampled render option instead of always assuming a
+      full f64 luminance buffer.
+    - Added `bench-render-curves` and `preview_render_quantile_tradeoff` to
+      measure exact-vs-LUT accuracy and runtime on real scan data.
+  - Validation:
+    - `zig build test --summary all` passed `400/400`.
+    - `zig build -Doptimize=ReleaseFast bench-color --summary all` passed; the
+      current synthetic rows include `invert_negative=16772`,
+      `invert_negative_u16_simd=16824`, `render_to_display=129087`,
+      `render_to_display_u16_then_u8=125588`, and
+      `render_to_display_u8=127761` ns-per-pixel x1000.
+    - `zig build -Doptimize=ReleaseFast bench-render-curves --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --iterations 3`
+      showed the accepted LUT sizes: 256-entry nearest preview LUT around
+      `37.1 ms` with `max_abs=1`, RMS `0.361`; 1024-entry linear export LUT
+      around `89.6 ms` with `max_abs=1`, RMS `0.039`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case preview_render_quantile_tradeoff`
+      reported exact full-sort/full-curve preview render `1335115 us`; the
+      production 16k-sample plus preview LUT path took `71011 us`, speedup
+      `18.801x`, with final `u8` `max_abs=1`, RMS `0.364`, and scratch reduced
+      from `113901568` bytes to `65536` bytes.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview`
+      reported full CPU inverted preview `410896 us`, checksum `3912223882`.
+
+- [x] Optimize the next preview hotspot: `invert_negative` density/log.
+  - Start here after the sampled render/LUT checkpoint unless a newer benchmark
+    invalidates it.
+  - Starting evidence:
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview`
+      reported full inverted preview `410896 us`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case invert_negative_preview_u16_vs_f64`
+      reported direct-u16 preview inversion `348303 us`, so inversion is now
+      roughly 85 percent of the visible preview operation.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case preview_render_u8_vs_u16`
+      reported direct preview display render `69388 us`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case invert_negative_preview_breakdown`
+      reported fused direct-u16 inversion `347419 us`; a benchmark-only staged
+      split measured `density_us=340854` and `linear_transform_us=138941` with
+      exact output equality, showing the `u16 -> net density` log conversion is
+      the next target.
+  - Implementation notes:
+    - Added dynamic per-channel density LUT types to `inversion.zig`:
+      `DensityLutF64` and `DensityLutF32`.
+    - Added LUT-backed `u16` provided-Dmin inversion helpers for f64 scene
+      output, f32-density/f64 scene output, and f32-density/f32 scene output.
+    - Added `render.renderToDisplayU8F32` so the preview path can keep f32
+      scene-linear data through display rendering instead of widening back to
+      f64.
+    - `InvertedPreviewCache` now keeps a separate `scene_linear_f32` buffer for
+      the provided-Dmin/default CPU preview path. Existing f64 cache behavior
+      remains for no-Dmin, WebGPU, exact fixture, and non-preview paths.
+    - The native inverted-preview worker now includes
+      `percentile_sample_limit` in render-option cache keys so preview quality
+      changes cannot reuse stale render results.
+  - Validation:
+    - `zig build test --summary all` passed `402/402`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case invert_negative_preview_lut_tradeoff`
+      reported direct-u16 SIMD `345713 us`; f64 density LUT to f64 scene
+      `138229 us`, exact final `u8/u16`; f32 density LUT to f64 scene
+      `136506 us`, preview `u8 max_abs=2`, `u8_mse=0.000001967`,
+      export-shaped `u16 max_abs=1`, `u16_mse=0.000391519`; and accepted f32
+      density LUT to f32 scene `74063 us`, speedup `4.667x`,
+      `scene_mse=0.000000000000000194`, preview `u8 max_abs=2`,
+      `u8_mse=0.000004987`, export-shaped `u16 max_abs=1`,
+      `u16_mse=0.001272631`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview`
+      reported full CPU inverted preview `146687 us`, checksum `3912224049`,
+      down from `410896 us` before the density LUT checkpoint and `208072 us`
+      with the conservative f64 density-LUT preview path.
+
+- [ ] Re-benchmark preview after f32 density LUT adoption and select the next
+      hotspot.
+  - Current expectation: first-use inverted preview is now roughly split between
+    f32 density-LUT inversion (`74063 us` including LUT build) and display
+    rendering/range work (full preview `146687 us`).
+  - Before changing algorithms, add or run a benchmark that reports the current
+    f32 inversion, f32 render range/LUT, and output write costs in one command.
+
+- [x] Implement direct-u16 inverted-positive export output.
+  - Scope: same `invert_negative` plus `render_to_display` export result as the
+    frozen Python path. This is a representation/pass reduction after
+    `renderToDisplay`, not an output-format or algorithm change.
+  - Implementation notes:
+    - Added `export.ImageU16`, `applyRotationU16`, and
+      `prepareInvertedPositiveOutputU16`.
+    - Routed inverted export variants through the direct `u16` path, avoiding
+      the old `u16 -> f64 -> rotated f64 -> rounded u16` display-output cycle.
+    - Kept the existing f64-returning `prepareInvertedPositiveOutput` helper as
+      an oracle/test surface.
+    - Added `export_render_u16_vs_f64` to the real-scan benchmark commands.
+  - Validation:
+    - `zig build test --summary all` passed `395/395`.
+    - `zig build -Dwebgpu=true test --summary all` passed `397/397`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_render_u16_vs_f64`
+      reported old display-f64 helper `2184971 us`, direct-u16 helper
+      `1976225 us`, speedup `1.105x`, `max_abs=0`, `rms=0.000`, and equal
+      checksums on the `4535x3023` full-resolution crop.
+    - `zig build -Dwebgpu=true -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_fullres_inv_cpu_vs_gpu`
+      reported CPU `4786929 us`, GPU cold `5249665 us`, GPU warm
+      `5056970 us`, warm speedup `0.946x`, `max_abs=1`, `rms=0.050`, and
+      `metadata_equal=true`.
+
+- [x] Restore and improve multi-frame export parallelism.
+  - Parity note: frozen Python `v600/gui/process_handlers.py:345` uses
+    `ThreadPoolExecutor(max_workers=min(n_rects, 4))` when exporting more than
+    one selected frame. Zig had been processing frames serially inside
+    `processExportFromTiff`, which was both a parity miss and a throughput miss.
+    The fixed Python worker cap is not a parity invariant; the invariant is the
+    per-frame job boundary, precomputed output paths, read-only shared source
+    images, and completion-order result collection.
+  - Implementation notes:
+    - Added `parallel_frames` to `ExportWorkflowOptions`, defaulting to true.
+    - `processExportFromTiff` now builds all per-frame output paths first, then
+      uses `planExportParallelism` for multi-frame exports, sharing loaded RGB
+      and aligned IR images read-only.
+    - The planner is a compile-time-evaluable declarative memory model, not code
+      introspection. Zig cannot inspect arbitrary function bodies at comptime to
+      infer allocator calls, so the estimator lives beside the workflow and
+      mirrors the export branches using `@sizeOf`, frame dimensions, output
+      toggles, source image shapes, crop scratch, render percentile scratch,
+      inverted-output buffers, and IR-clean scratch estimates.
+    - Worker count is bounded by frame count, available CPU cores minus one, and
+      predicted memory headroom. On Linux the runtime probe reads
+      `/proc/meminfo` `MemAvailable`; the budget subtracts a named system
+      reserve, uses a named fraction of the remaining memory, and applies a
+      named safety multiplier to the per-worker peak estimate.
+    - Frame workers now use `std.heap.smp_allocator` instead of a per-job arena.
+      The arena kept temporary crop/render/write buffers alive until the whole
+      batch finished, which distorted both real memory use and the scheduler's
+      memory model.
+    - `ExportWorkflowResult.parallelism` records the selected worker count,
+      CPU limit, memory limit, available-memory budget, and raw/adjusted
+      per-worker peak estimate for benchmark diagnostics.
+    - Each frame worker still uses a deterministic frame-index seed to avoid
+      sharing PRNG state across threads.
+    - Single-frame exports and explicit `parallel_frames=false` retain a serial
+      path for benchmark comparison.
+    - Added `export_detected_frames` benchmark case. It runs automatic frame
+      detection on the real preview, scales detected rectangles to full
+      resolution, then exports those real frame geometries.
+  - Validation:
+    - `zig build test --summary all` passed `400/400`.
+    - `zig build -Dwebgpu=true test --summary all` passed `402/402`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames`
+      detected 5 frames, exported 5 files, selected 5 workers
+      (`cpu_limit=31`, `mem_limit=25`, adjusted peak `2159506560` bytes/worker),
+      and reported serial `18125889 us`, parallel `5981208 us`, speedup
+      `3.030x`.
+
+- [ ] Refresh Linux live scanner release smoke evidence.
+  - Covers release checklist item 9.
+  - Required modes/evidence: RGB, IR, RGB+IR, metadata, LUT, native preview
+    worker, native scan worker, and scanner-to-processing workflow.
+  - Use only gated commands with `V600_HARDWARE_SMOKE=1`; never add scanner
+    access to default builds or checks.
+  - Required evidence before checking off: exact commands, device identity,
+    output paths, TIFF page/depth/geometry summaries, relevant metadata sidecar
+    fields, and any event/progress output needed to prove the worker and
+    workflow paths.
+  - Blocked 2026-05-18: direct gated command
+    `env V600_HARDWARE_SMOKE=1 zig build run -- scanner smoke --out /tmp/v600-release-rgb.tiff --source tpu --dpi 400 --kind rgb --depth 16 --x 0.1 --y 0.1 --width 0.25 --height 0.25`
+    selected cached device `epkowa:interpreter:001:018` and emitted
+    `scan-start`, then refreshed discovery and failed with `NoV600Device`.
+    Follow-up `zig build run -- scanner devices` reported
+    `devices_found=0`, and `zig build run -- scanner probe` failed with
+    `NoV600Device`. No release hardware output TIFF was produced.
+  - Required next input: make the scanner visible to SANE again, then rerun the
+    RGB, IR, RGB+IR, metadata, LUT, native preview-worker, native scan-worker,
+    and scanner-to-processing smoke commands.
+
+- [ ] Refresh Linux Nix package and no-hardware check gates.
+  - Covers release checklist items 7 and 8.
+  - Required commands:
+    - `nix build path:.#cli path:.#ui --no-link --print-build-logs`
+    - `nix build path:.#checks.x86_64-linux.zig-tests --no-link --print-build-logs`
+  - Blocked 2026-05-18: the user explicitly directed agents to avoid redundant
+    Nix evaluations and to rely on the ambient shell for ordinary work. Do not
+    run these release gates until the user explicitly authorizes release-time
+    Nix validation or asks for a packaging refresh.
+
+- [ ] Record macOS direct build/test evidence on a macOS host.
+  - Covers release checklist item 10.
+  - Blocked 2026-05-18: current machine is Linux. This remains parked under the
+    `PENDING USER UPDATE` macOS policy until the user says a macOS host is
+    available.
+
+- [x] Keep macOS live scanner support explicitly deferred from the release claim.
+  - Covers release checklist item 11 for the current Linux-hosted audit.
+  - Evidence: `docs/CROSS_PLATFORM.md` records macOS scanner support as planned
+    through Epson Interpreter, replay-tested only, with live build/scanner
+    validation pending. The parked `PENDING USER UPDATE: Add live macOS scanner
+    smoke tests` item in this plan requires a macOS scanner host and Epson
+    Interpreter bundle before live scanner support can be claimed.
+  - Completion decision: checked only as an explicit deferral, not as live
+    macOS scanner support.
+
+- [ ] Record native UI real-display screenshot verification.
+  - Covers release checklist item 12.
+  - Required workflows: scan, process, gallery, confirmation, and pan/zoom.
+  - Use `docs/NATIVE_UI_VERIFICATION.md` as the checklist. Headless SDL dummy
+    smokes are useful but not sufficient for this release item.
+  - Required evidence before checking off: date, display environment, command,
+    screenshot paths, viewport/window sizes, and visual defects or explicit
+    "no defect observed" notes.
+
+- [ ] Final parity manifest and generated-output hygiene audit.
+  - Covers release checklist items 1, 2, and 15 after all other Phase 12 work.
+  - Required checks:
+    - every selectable `plan.md` item is checked or has a user-approved release
+      deferral/blocker;
+    - every applicable `docs/PARITY_MANIFEST.md` row is `parity-accepted` or
+      has an explicit release-approved deferred/blocker reason;
+    - `git status --short` contains only intended source/docs/fixture changes,
+      not generated scans, frames, configs, TIFF/PNG/JPEG outputs, or temporary
+      smoke files.
+  - Completion decision: leave unchecked until all unblocked Phase 12 evidence
+    has been refreshed.

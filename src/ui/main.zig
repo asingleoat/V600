@@ -430,6 +430,10 @@ pub fn main(init: std.process.Init) !void {
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const processing_config_path = v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
     model.loadProcessingConfig(std.heap.page_allocator, init.io, processing_config_path) catch {};
+    model.setProcessingGpuRequest(
+        std.heap.page_allocator,
+        try v600.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
+    );
     syncProcessUiFromConfig(&process_ui, &model);
     var connect_worker = ConnectWorker.init(std.heap.page_allocator, init.io, init.environ_map);
     defer connect_worker.deinit();

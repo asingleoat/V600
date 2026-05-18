@@ -9,6 +9,7 @@ const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
+const webgpu = @import("webgpu.zig");
 
 pub const CommandTag = enum {
     info,
@@ -95,12 +96,13 @@ pub fn runCommand(
     io: std.Io,
     command: ProcessingCommand,
     stdout: anytype,
+    processing_gpu_request: webgpu.Request,
 ) !void {
     switch (command) {
         .info => |options| try runInfo(allocator, options, stdout),
         .detect => |options| try runDetect(allocator, options, stdout),
         .rebate => |options| try runRebate(allocator, io, options, stdout),
-        .export_frames => |options| try runExport(allocator, io, options, stdout),
+        .export_frames => |options| try runExport(allocator, io, options, stdout, processing_gpu_request),
     }
 }
 
@@ -374,7 +376,13 @@ fn runRebate(allocator: std.mem.Allocator, io: std.Io, options: RebateOptions, s
     try stdout.print("{{\"ok\":true,\"dmin\":[{d},{d},{d}]}}\n", .{ dmin[0], dmin[1], dmin[2] });
 }
 
-fn runExport(allocator: std.mem.Allocator, io: std.Io, options: ExportOptions, stdout: anytype) !void {
+fn runExport(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ExportOptions,
+    stdout: anytype,
+    processing_gpu_request: webgpu.Request,
+) !void {
     try std.Io.Dir.cwd().createDirPath(io, options.output_dir);
     const need_ir = options.outputs.needIr();
     var pages = try loadPagesAsF64(allocator, options.input, need_ir);
@@ -456,6 +464,7 @@ fn runExport(allocator: std.mem.Allocator, io: std.Io, options: ExportOptions, s
                 .dmin = options.dmin,
                 .render_options = renderOptions(options.current_dpi),
                 .ir_clean_options = irCleanOptions(options.current_dpi),
+                .invert_request = processing_gpu_request,
                 .random = prng.random(),
             },
         );

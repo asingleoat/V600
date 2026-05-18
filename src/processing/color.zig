@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const numeric = @import("numeric_fixture.zig");
+const webgpu = @import("webgpu.zig");
 
 pub const middle_grey: f64 = 0.1845;
 
@@ -47,6 +48,12 @@ pub const DarktableSigmoidCommit = struct {
     film_power: f64,
     paper_power: f64,
 };
+
+pub const ApplySigmoidOptions = struct {
+    request: webgpu.Request = .{},
+};
+
+pub const processing_gpu_env_var = webgpu.processing_gpu_env_var;
 
 pub const NegadoctorParams = struct {
     film_stock: i32 = 0,
@@ -208,6 +215,30 @@ pub fn applySigmoid(input: []const f64, output: []f64, params: DarktableSigmoidP
     }
 }
 
+pub fn applySigmoidWithBackend(
+    allocator: std.mem.Allocator,
+    input: []const f64,
+    output: []f64,
+    params: DarktableSigmoidParams,
+    options: ApplySigmoidOptions,
+) !void {
+    try validateRgbBuffers(input, output);
+    if (try webgpu.shouldUseCpu(options.request)) {
+        return applySigmoid(input, output, params);
+    }
+    const committed = sigmoidCommitParams(params);
+    const gpu_output = try webgpu.applySigmoidKernel(allocator, input, .{
+        .white_target = committed.white_target,
+        .paper_exposure = committed.paper_exposure,
+        .film_fog = committed.film_fog,
+        .film_power = committed.film_power,
+        .paper_power = committed.paper_power,
+    }, .{});
+    defer allocator.free(gpu_output);
+    if (gpu_output.len != output.len) return error.InvalidColorBuffer;
+    @memcpy(output, gpu_output);
+}
+
 pub fn negadoctor(input: []const f64, output: []f64, params: NegadoctorParams) !void {
     try validateRgbBuffers(input, output);
     const threshold = 2.3283064365386963e-10;
@@ -265,6 +296,10 @@ fn roundF32(value: f64) f64 {
     return @floatCast(rounded);
 }
 
+pub fn applySigmoidRequestFromEnvironment(environ_map: *const std.process.Environ.Map) !webgpu.Request {
+    return webgpu.requestFromEnvironment(environ_map);
+}
+
 fn expectMatrixFlat(matrix: [3][3]f64, expected: []const f64) !void {
     var actual: [9]f64 = undefined;
     var index: usize = 0;
@@ -276,6 +311,17 @@ fn expectMatrixFlat(matrix: [3][3]f64, expected: []const f64) !void {
     }
     const tolerance: numeric.Tolerance = .{ .abs = 0.0, .rel = 0.0, .reason = "constant equality" };
     try numeric.assertCloseSlices(expected, &actual, tolerance);
+}
+
+fn testSigmoidParams() DarktableSigmoidParams {
+    return .{
+        .middle_grey_contrast = 1.5,
+        .contrast_skewness = -0.25,
+        .display_white_target = 5.0,
+        .display_black_target = 0.015,
+        .color_processing = 2,
+        .hue_preservation = 0.65,
+    };
 }
 
 test "color matrix constants match Python oracle values" {
@@ -373,15 +419,98 @@ test "darktable sigmoid apply matches Python fixture" {
     const value = fixture.value();
     const actual = try allocator.alloc(f64, value.expected.len);
     defer allocator.free(actual);
-    try applySigmoid(value.input, actual, .{
-        .middle_grey_contrast = 1.5,
-        .contrast_skewness = -0.25,
-        .display_white_target = 5.0,
-        .display_black_target = 0.015,
-        .color_processing = 2,
-        .hue_preservation = 0.65,
-    });
+    try applySigmoid(value.input, actual, testSigmoidParams());
     try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
+}
+
+test "darktable sigmoid backend interface defaults to CPU parity path" {
+    const input = [_]f64{ 0.0, 0.05, 0.1845, 0.75, 1.5, 3.0 };
+    var expected: [input.len]f64 = undefined;
+    var actual: [input.len]f64 = undefined;
+
+    try std.testing.expectEqual(webgpu.Backend.cpu, (ApplySigmoidOptions{}).request.backend);
+    try applySigmoid(&input, &expected, testSigmoidParams());
+    try applySigmoidWithBackend(std.testing.allocator, &input, &actual, testSigmoidParams(), .{});
+    try std.testing.expectEqualSlices(f64, &expected, &actual);
+}
+
+test "darktable sigmoid backend interface honors explicit CPU request" {
+    const input = [_]f64{ -1.0, 0.01, 0.25, 0.5, 1.0, 2.0 };
+    var expected: [input.len]f64 = undefined;
+    var actual: [input.len]f64 = undefined;
+
+    try applySigmoid(&input, &expected, testSigmoidParams());
+    try applySigmoidWithBackend(
+        std.testing.allocator,
+        &input,
+        &actual,
+        testSigmoidParams(),
+        .{ .request = .{ .backend = .cpu } },
+    );
+    try std.testing.expectEqualSlices(f64, &expected, &actual);
+}
+
+test "darktable sigmoid backend interface rejects unavailable WebGPU and runs compiled GPU" {
+    const input = [_]f64{ 0.0, 0.1, 0.2 };
+    var actual: [input.len]f64 = undefined;
+
+    const result = applySigmoidWithBackend(
+        std.testing.allocator,
+        &input,
+        &actual,
+        testSigmoidParams(),
+        .{ .request = .{ .backend = .webgpu } },
+    );
+    if (webgpu.compiled) {
+        try result;
+        var expected: [input.len]f64 = undefined;
+        try applySigmoid(&input, &expected, testSigmoidParams());
+        const tolerance: numeric.Tolerance = .{ .abs = 0.000002, .rel = 0.000002, .reason = "GPU f32 parity" };
+        try numeric.assertCloseSlices(&expected, &actual, tolerance);
+    } else {
+        try std.testing.expectError(error.WebGpuNotCompiled, result);
+    }
+}
+
+test "darktable sigmoid backend interface uses explicit CPU fallback only when WebGPU is not compiled" {
+    const input = [_]f64{ 0.0, 0.05, 0.1845, 0.75, 1.5, 3.0 };
+    var expected: [input.len]f64 = undefined;
+    var actual: [input.len]f64 = undefined;
+
+    const options = ApplySigmoidOptions{
+        .request = .{ .backend = .webgpu, .fallback = .allow_cpu },
+    };
+    if (webgpu.compiled) {
+        try applySigmoidWithBackend(std.testing.allocator, &input, &actual, testSigmoidParams(), options);
+        try applySigmoid(&input, &expected, testSigmoidParams());
+        const tolerance: numeric.Tolerance = .{ .abs = 0.000002, .rel = 0.000002, .reason = "GPU f32 parity" };
+        try numeric.assertCloseSlices(&expected, &actual, tolerance);
+    } else {
+        try applySigmoid(&input, &expected, testSigmoidParams());
+        try applySigmoidWithBackend(std.testing.allocator, &input, &actual, testSigmoidParams(), options);
+        try std.testing.expectEqualSlices(f64, &expected, &actual);
+    }
+}
+
+test "darktable sigmoid runtime request honors explicit processing GPU env" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    try std.testing.expectEqual(webgpu.Backend.cpu, (try applySigmoidRequestFromEnvironment(&env)).backend);
+    try env.put(processing_gpu_env_var, "0");
+    try std.testing.expectEqual(webgpu.Backend.cpu, (try applySigmoidRequestFromEnvironment(&env)).backend);
+    try env.put(processing_gpu_env_var, "1");
+    const webgpu_request = try applySigmoidRequestFromEnvironment(&env);
+    try std.testing.expectEqual(webgpu.Backend.webgpu, webgpu_request.backend);
+    try std.testing.expectEqual(webgpu.FallbackPolicy.fail, webgpu_request.fallback);
+
+    try env.put(processing_gpu_env_var, "allow-cpu");
+    const fallback_request = try applySigmoidRequestFromEnvironment(&env);
+    try std.testing.expectEqual(webgpu.Backend.webgpu, fallback_request.backend);
+    try std.testing.expectEqual(webgpu.FallbackPolicy.allow_cpu, fallback_request.fallback);
+
+    try env.put(processing_gpu_env_var, "yes-please");
+    try std.testing.expectError(error.InvalidProcessingGpuEnv, applySigmoidRequestFromEnvironment(&env));
 }
 
 test "negadoctor matches Python smoke fixture" {

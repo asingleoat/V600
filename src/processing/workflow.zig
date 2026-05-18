@@ -8,6 +8,41 @@ const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
+const webgpu = @import("webgpu.zig");
+
+const export_parallel_min_system_reserve_bytes: usize = 512 * 1024 * 1024;
+const export_parallel_memory_budget_numerator: usize = 3;
+const export_parallel_memory_budget_denominator: usize = 4;
+const export_parallel_estimate_safety_numerator: usize = 3;
+const export_parallel_estimate_safety_denominator: usize = 2;
+
+pub const ExportImageShape = struct {
+    width: usize,
+    height: usize,
+    channels: usize,
+};
+
+pub const ExportParallelismRequest = struct {
+    rects: []const export_pipeline.FrameRect,
+    outputs: export_pipeline.OutputSelection,
+    rgb_shape: ExportImageShape,
+    aligned_ir_shape: ?ExportImageShape = null,
+    render_options: render.RenderToDisplayOptions = .{},
+    cpu_count: usize,
+    available_memory_bytes: ?usize = null,
+};
+
+pub const ExportParallelismDecision = struct {
+    worker_count: usize,
+    cpu_count: usize,
+    cpu_worker_limit: usize,
+    memory_worker_limit: ?usize,
+    available_memory_bytes: ?usize,
+    memory_budget_bytes: ?usize,
+    estimated_worker_peak_bytes: usize,
+    adjusted_worker_peak_bytes: usize,
+    memory_limited: bool,
+};
 
 extern fn v600_process_quick_preview(
     input: [*]const u8,
@@ -77,11 +112,16 @@ pub const QuickPreview = struct {
 
 pub const InvertedPreviewCache = struct {
     scene_linear: ?[]f64 = null,
+    scene_linear_f32: ?[]f32 = null,
 
     pub fn deinit(self: *InvertedPreviewCache, allocator: std.mem.Allocator) void {
         if (self.scene_linear) |scene| {
             allocator.free(scene);
             self.scene_linear = null;
+        }
+        if (self.scene_linear_f32) |scene| {
+            allocator.free(scene);
+            self.scene_linear_f32 = null;
         }
     }
 
@@ -94,6 +134,7 @@ pub const InvertedPreviewOptions = struct {
     stock: ?[]const u8 = null,
     dmin: ?[3]f64 = null,
     render_options: render.RenderToDisplayOptions = .{},
+    invert_request: webgpu.Request = .{},
 };
 
 pub const AutoDetectOptions = struct {
@@ -142,6 +183,10 @@ pub const ExportWorkflowOptions = struct {
     current_dpi: ?u32 = null,
     config_overrides: []const config.Override = &.{},
     align_ir: bool = true,
+    invert_request: webgpu.Request = .{},
+    parallel_frames: bool = true,
+    parallel_cpu_count_override: ?usize = null,
+    parallel_available_memory_override: ?usize = null,
     total_seconds_override: ?f64 = null,
     progress_sink: ?ExportProgressSink = null,
 };
@@ -161,6 +206,7 @@ pub const ExportWorkflowResult = struct {
     message: []u8,
     files: [][]u8,
     dmin: ?[3]f64 = null,
+    parallelism: ?ExportParallelismDecision = null,
     progress: export_pipeline.ExportProgressList,
 
     pub fn deinit(self: ExportWorkflowResult, allocator: std.mem.Allocator) void {
@@ -368,35 +414,64 @@ pub fn renderInvertedPreviewRgb8(
     const sample_count = try std.math.mul(usize, try std.math.mul(usize, preview.preview_width, preview.preview_height), 3);
     if (preview.preview_raw.len != sample_count) return error.InvalidPreviewBuffer;
 
-    if (cache.scene_linear == null) {
-        const raw_f64 = try allocator.alloc(f64, preview.preview_raw.len);
-        defer allocator.free(raw_f64);
-        for (preview.preview_raw, raw_f64) |sample, *out| {
-            out.* = @floatFromInt(sample);
-        }
-        const scene = try allocator.alloc(f64, raw_f64.len);
-        errdefer allocator.free(scene);
+    if (cache.scene_linear == null and cache.scene_linear_f32 == null) {
         const coeffs = if (film_stocks.builtinStock(stock)) |profile|
             profile.coeffs
         else
             return error.UnknownFilmStock;
-        _ = try inversion.invertNegative(allocator, raw_f64, scene, .{
-            .dmin = options.dmin,
-            .coeffs = coeffs,
-        });
-        cache.scene_linear = scene;
+        const use_cpu = try webgpu.shouldUseCpu(options.invert_request);
+        if (use_cpu and options.dmin != null and film_stocks.usesOnlyLinearTerms(coeffs)) {
+            const scene = try allocator.alloc(f32, preview.preview_raw.len);
+            errdefer allocator.free(scene);
+            const density_lut = try inversion.DensityLutF32.init(allocator, options.dmin.?, 65535.0);
+            defer density_lut.deinit(allocator);
+            try inversion.invertNegativeProvidedDminU16WithDensityLutF32OutputF32(preview.preview_raw, scene, density_lut, coeffs);
+            cache.scene_linear_f32 = scene;
+        } else {
+            const scene = try allocator.alloc(f64, preview.preview_raw.len);
+            errdefer allocator.free(scene);
+            if (use_cpu) {
+                if (options.dmin) |dmin| {
+                    const density_lut = try inversion.DensityLutF64.init(allocator, dmin, 65535.0);
+                    defer density_lut.deinit(allocator);
+                    try inversion.invertNegativeProvidedDminU16WithDensityLutF64(preview.preview_raw, scene, density_lut, coeffs);
+                } else {
+                    const raw_f64 = try previewRawToF64(allocator, preview.preview_raw);
+                    defer allocator.free(raw_f64);
+                    _ = try inversion.invertNegative(allocator, raw_f64, scene, .{
+                        .coeffs = coeffs,
+                    });
+                }
+            } else {
+                const raw_f64 = try previewRawToF64(allocator, preview.preview_raw);
+                defer allocator.free(raw_f64);
+                _ = try inversion.invertNegative(allocator, raw_f64, scene, .{
+                    .dmin = options.dmin,
+                    .coeffs = coeffs,
+                    .request = options.invert_request,
+                });
+            }
+            cache.scene_linear = scene;
+        }
     }
-
-    const rendered_u16 = try allocator.alloc(u16, sample_count);
-    defer allocator.free(rendered_u16);
-    try render.renderToDisplay(allocator, cache.scene_linear.?, rendered_u16, options.render_options);
 
     const display8 = try allocator.alloc(u8, sample_count);
     errdefer allocator.free(display8);
-    for (rendered_u16, display8) |sample, *out| {
-        out.* = @intCast(sample >> 8);
+    if (cache.scene_linear_f32) |scene| {
+        try render.renderToDisplayU8F32(allocator, scene, display8, options.render_options);
+    } else {
+        try render.renderToDisplayU8(allocator, cache.scene_linear.?, display8, options.render_options);
     }
     return display8;
+}
+
+fn previewRawToF64(allocator: std.mem.Allocator, preview_raw: []const u16) ![]f64 {
+    const raw_f64 = try allocator.alloc(f64, preview_raw.len);
+    errdefer allocator.free(raw_f64);
+    for (preview_raw, raw_f64) |sample, *out| {
+        out.* = @floatFromInt(sample);
+    }
+    return raw_f64;
 }
 
 pub fn autoDetectPreview(
@@ -603,7 +678,6 @@ pub fn processExportFromTiff(
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input_path));
     const film_stock = if (need_invert) options.active_stock else null;
     const stock_coeffs = if (need_invert) options.stock_coeffs else null;
-    var prng = std.Random.DefaultPrng.init(0x563030);
     var written = std.array_list.Managed([]u8).init(allocator);
     defer written.deinit();
     errdefer {
@@ -618,45 +692,111 @@ pub fn processExportFromTiff(
         null,
     );
 
+    const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(full.rgb.width)) else 1.0;
+    const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(full.rgb.height)) else 1.0;
+    const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
+    const ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides);
+
+    const jobs = try allocator.alloc(FrameExportJob, options.rects.len);
+    var jobs_len: usize = 0;
+    errdefer {
+        for (jobs[0..jobs_len]) |*job| job.paths.deinit(allocator);
+        allocator.free(jobs);
+    }
+    defer {
+        for (jobs[0..jobs_len]) |*job| job.paths.deinit(allocator);
+        allocator.free(jobs);
+    }
     for (options.rects, 0..) |rect, frame_index| {
-        const paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs);
-        defer paths.deinit(allocator);
-        const result = try export_pipeline.processFrame(
-            allocator,
-            frame_index,
-            rect,
-            full.rgb,
-            aligned_ir,
-            if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(full.rgb.width)) else 1.0,
-            if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(full.rgb.height)) else 1.0,
-            .{
-                .outputs = options.outputs,
-                .paths = paths.paths,
-                .base_meta = .{
-                    .source = std.fs.path.basename(options.input_path),
-                    .rebate_rect = options.rebate_rect,
-                    .crop = rect,
-                },
-                .film_stock = film_stock,
-                .stock_coeffs = stock_coeffs,
-                .dmin = dmin,
-                .render_options = renderOptionsForConfig(current_dpi, options.config_overrides),
-                .ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides),
-                .random = prng.random(),
-            },
-        );
-        defer result.deinit(allocator);
-        for (result.written) |name| {
-            try written.append(try allocator.dupe(u8, name));
-            try emitExportProgressFmt(
+        jobs[jobs_len] = .{
+            .frame_index = frame_index,
+            .rect = rect,
+            .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs),
+        };
+        jobs_len += 1;
+    }
+
+    const parallel_decision: ExportParallelismDecision = if (jobs.len > 1 and options.parallel_frames)
+        planExportParallelism(.{
+            .rects = options.rects,
+            .outputs = options.outputs,
+            .rgb_shape = exportImageShape(full.rgb),
+            .aligned_ir_shape = if (aligned_ir) |ir| exportImageShape(ir) else null,
+            .render_options = render_options,
+            .cpu_count = options.parallel_cpu_count_override orelse (std.Thread.getCpuCount() catch 1),
+            .available_memory_bytes = options.parallel_available_memory_override orelse availableSystemMemoryBytes(io),
+        })
+    else
+        .{
+            .worker_count = if (jobs.len == 0) 0 else 1,
+            .cpu_count = options.parallel_cpu_count_override orelse 1,
+            .cpu_worker_limit = 1,
+            .memory_worker_limit = null,
+            .available_memory_bytes = options.parallel_available_memory_override,
+            .memory_budget_bytes = null,
+            .estimated_worker_peak_bytes = 0,
+            .adjusted_worker_peak_bytes = 0,
+            .memory_limited = false,
+        };
+
+    if (jobs.len <= 1 or !options.parallel_frames or parallel_decision.worker_count <= 1) {
+        for (jobs) |job| {
+            var prng = std.Random.DefaultPrng.init(frameExportSeed(job.frame_index));
+            const result = try export_pipeline.processFrame(
                 allocator,
-                options.progress_sink,
-                .wrote_file,
-                "Wrote {s}",
-                .{name},
-                name,
+                job.frame_index,
+                job.rect,
+                full.rgb,
+                aligned_ir,
+                ir_scale_x,
+                ir_scale_y,
+                .{
+                    .outputs = options.outputs,
+                    .paths = job.paths.paths,
+                    .base_meta = .{
+                        .source = std.fs.path.basename(options.input_path),
+                        .rebate_rect = options.rebate_rect,
+                        .crop = job.rect,
+                    },
+                    .film_stock = film_stock,
+                    .stock_coeffs = stock_coeffs,
+                    .dmin = dmin,
+                    .render_options = render_options,
+                    .ir_clean_options = ir_clean_options,
+                    .invert_request = options.invert_request,
+                    .random = prng.random(),
+                },
             );
+            defer result.deinit(allocator);
+            for (result.written) |name| {
+                try written.append(try allocator.dupe(u8, name));
+                try emitExportProgressFmt(
+                    allocator,
+                    options.progress_sink,
+                    .wrote_file,
+                    "Wrote {s}",
+                    .{name},
+                    name,
+                );
+            }
         }
+    } else {
+        try processExportFramesParallel(allocator, &written, jobs, parallel_decision.worker_count, .{
+            .rgb = full.rgb,
+            .aligned_ir = aligned_ir,
+            .ir_scale_x = ir_scale_x,
+            .ir_scale_y = ir_scale_y,
+            .source = std.fs.path.basename(options.input_path),
+            .rebate_rect = options.rebate_rect,
+            .outputs = options.outputs,
+            .film_stock = film_stock,
+            .stock_coeffs = stock_coeffs,
+            .dmin = dmin,
+            .render_options = render_options,
+            .ir_clean_options = ir_clean_options,
+            .invert_request = options.invert_request,
+            .progress_sink = options.progress_sink,
+        });
     }
 
     const files = try written.toOwnedSlice();
@@ -692,8 +832,389 @@ pub fn processExportFromTiff(
         .message = message,
         .files = files,
         .dmin = dmin,
+        .parallelism = parallel_decision,
         .progress = progress,
     };
+}
+
+pub fn planExportParallelism(request: ExportParallelismRequest) ExportParallelismDecision {
+    const frame_count = request.rects.len;
+    const cpu_count = @max(request.cpu_count, 1);
+    const cpu_worker_limit = if (cpu_count <= 1) 1 else cpu_count - 1;
+    const estimated_worker_peak_bytes = estimateMaxExportWorkerPeakBytes(
+        request.rgb_shape,
+        request.aligned_ir_shape,
+        request.outputs,
+        request.render_options,
+        request.rects,
+    );
+    const adjusted_worker_peak_bytes = applyExportMemorySafetyFactor(estimated_worker_peak_bytes);
+    const memory_budget_bytes = if (request.available_memory_bytes) |available| exportParallelMemoryBudget(available) else null;
+    const memory_worker_limit = if (memory_budget_bytes) |budget| memoryWorkerLimit(budget, adjusted_worker_peak_bytes) else null;
+
+    var worker_count = @min(frame_count, cpu_worker_limit);
+    var memory_limited = false;
+    if (memory_worker_limit) |limit| {
+        if (limit < worker_count) memory_limited = true;
+        worker_count = @min(worker_count, limit);
+    }
+    if (frame_count > 0) worker_count = @max(worker_count, 1);
+
+    return .{
+        .worker_count = worker_count,
+        .cpu_count = cpu_count,
+        .cpu_worker_limit = cpu_worker_limit,
+        .memory_worker_limit = memory_worker_limit,
+        .available_memory_bytes = request.available_memory_bytes,
+        .memory_budget_bytes = memory_budget_bytes,
+        .estimated_worker_peak_bytes = estimated_worker_peak_bytes,
+        .adjusted_worker_peak_bytes = adjusted_worker_peak_bytes,
+        .memory_limited = memory_limited,
+    };
+}
+
+pub fn estimateMaxExportWorkerPeakBytes(
+    rgb_shape: ExportImageShape,
+    aligned_ir_shape: ?ExportImageShape,
+    outputs: export_pipeline.OutputSelection,
+    render_options: render.RenderToDisplayOptions,
+    rects: []const export_pipeline.FrameRect,
+) usize {
+    var peak: usize = 0;
+    for (rects) |rect| {
+        peak = @max(peak, estimateFrameExportPeakBytes(rgb_shape, aligned_ir_shape, outputs, render_options, rect));
+    }
+    return peak;
+}
+
+pub fn estimateFrameExportPeakBytes(
+    rgb_shape: ExportImageShape,
+    aligned_ir_shape: ?ExportImageShape,
+    outputs: export_pipeline.OutputSelection,
+    render_options: render.RenderToDisplayOptions,
+    rect: export_pipeline.FrameRect,
+) usize {
+    const crop_pixels = rectPixelCount(rect);
+    if (crop_pixels == 0 or rgb_shape.channels == 0) return 0;
+    const raw_samples = satMul(crop_pixels, rgb_shape.channels);
+    const raw_crop_bytes = bytesFor(f64, raw_samples);
+    const crop_channel_bytes = bytesFor(f64, crop_pixels);
+    const rgb_plane_bytes = bytesFor(f64, shapePixels(rgb_shape));
+
+    var retained_bytes = raw_crop_bytes;
+    var peak = satAdd(satAdd(raw_crop_bytes, rgb_plane_bytes), crop_channel_bytes);
+    var cleaned_crop_bytes: usize = 0;
+
+    if (outputs.needIr()) {
+        if (aligned_ir_shape) |ir_shape| {
+            const ir_crop_pixels = scaledIrCropPixels(rgb_shape, ir_shape, rect);
+            const ir_samples = satMul(ir_crop_pixels, ir_shape.channels);
+            const ir_crop_bytes = bytesFor(f64, ir_samples);
+            const ir_plane_bytes = bytesFor(f64, shapePixels(ir_shape));
+            const ir_crop_channel_bytes = bytesFor(f64, ir_crop_pixels);
+            peak = @max(peak, satAdd(retained_bytes, satAdd(satAdd(ir_crop_bytes, ir_plane_bytes), ir_crop_channel_bytes)));
+
+            cleaned_crop_bytes = raw_crop_bytes;
+            const ir_clean_peak = satAdd(
+                retained_bytes,
+                satAdd(ir_crop_bytes, satAdd(cleaned_crop_bytes, estimateIrCleanScratchBytes(crop_pixels, ir_crop_pixels))),
+            );
+            peak = @max(peak, ir_clean_peak);
+            retained_bytes = satAdd(raw_crop_bytes, cleaned_crop_bytes);
+        }
+    }
+
+    if (outputs.ir_neg) {
+        const source_bytes = if (cleaned_crop_bytes != 0) cleaned_crop_bytes else raw_crop_bytes;
+        peak = @max(peak, satAdd(retained_bytes, satAdd(source_bytes, bytesFor(u16, raw_samples))));
+    }
+
+    if (outputs.ir_inv) {
+        peak = @max(peak, estimateInvertedOutputPeakBytes(retained_bytes, crop_pixels, raw_samples, render_options));
+    }
+    if (outputs.inv_only) {
+        peak = @max(peak, estimateInvertedOutputPeakBytes(retained_bytes, crop_pixels, raw_samples, render_options));
+    }
+
+    return peak;
+}
+
+fn estimateInvertedOutputPeakBytes(
+    retained_bytes: usize,
+    crop_pixels: usize,
+    rgb_samples: usize,
+    render_options: render.RenderToDisplayOptions,
+) usize {
+    const scene_linear_bytes = bytesFor(f64, rgb_samples);
+    const rendered_u16_bytes = bytesFor(u16, rgb_samples);
+    const rotated_u16_bytes = bytesFor(u16, rgb_samples);
+    const percentile_samples = render.percentileScratchSampleCount(crop_pixels, render_options.percentile_sample_limit);
+    const percentile_sample_bytes: usize = if (percentile_samples == crop_pixels) @sizeOf(f64) else @sizeOf(f32);
+    const percentile_scratch_bytes = satMul(percentile_samples, percentile_sample_bytes);
+    const render_peak = satAdd(scene_linear_bytes, satAdd(rendered_u16_bytes, percentile_scratch_bytes));
+    const rotation_peak = satAdd(scene_linear_bytes, satAdd(rendered_u16_bytes, rotated_u16_bytes));
+    return satAdd(retained_bytes, @max(render_peak, rotation_peak));
+}
+
+fn estimateIrCleanScratchBytes(rgb_crop_pixels: usize, ir_crop_pixels: usize) usize {
+    const rgb_samples = satMul(rgb_crop_pixels, 3);
+    const defect_mask_peak = satAdd(
+        bytesFor(f64, satMul(ir_crop_pixels, 8)),
+        satAdd(bytesFor(u8, satMul(ir_crop_pixels, 6)), satAdd(bytesFor(bool, ir_crop_pixels), bytesFor(usize, satMul(ir_crop_pixels, 2)))),
+    );
+    const inpaint_peak = satAdd(bytesFor(f64, satMul(rgb_samples, 3)), bytesFor(u8, satMul(rgb_crop_pixels, 2)));
+    return satAdd(defect_mask_peak, inpaint_peak);
+}
+
+fn exportImageShape(image: export_pipeline.Image) ExportImageShape {
+    return .{ .width = image.width, .height = image.height, .channels = image.channels };
+}
+
+fn availableSystemMemoryBytes(io: std.Io) ?usize {
+    if (linuxMemAvailableBytes(io)) |available| return available;
+    const total = std.process.totalSystemMemory() catch return null;
+    return std.math.cast(usize, total / 2) orelse null;
+}
+
+fn linuxMemAvailableBytes(io: std.Io) ?usize {
+    var file = std.Io.Dir.openFileAbsolute(io, "/proc/meminfo", .{
+        .mode = .read_only,
+        .allow_directory = false,
+    }) catch return null;
+    defer file.close(io);
+
+    var buffer: [64 * 1024]u8 = undefined;
+    var len: usize = 0;
+    var reader = file.readerStreaming(io, &.{});
+    while (len < buffer.len) {
+        const read_len = reader.interface.readSliceShort(buffer[len..]) catch return null;
+        if (read_len == 0) break;
+        len += read_len;
+    }
+    return parseLinuxMemAvailableBytes(buffer[0..len]);
+}
+
+fn parseLinuxMemAvailableBytes(text: []const u8) ?usize {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const key = "MemAvailable:";
+        if (!std.mem.startsWith(u8, line, key)) continue;
+        var fields = std.mem.tokenizeAny(u8, line[key.len..], " \t");
+        const value_text = fields.next() orelse return null;
+        const kb = std.fmt.parseInt(u64, value_text, 10) catch return null;
+        const bytes = std.math.mul(u64, kb, 1024) catch return null;
+        return std.math.cast(usize, bytes) orelse null;
+    }
+    return null;
+}
+
+fn exportParallelMemoryBudget(available_memory_bytes: usize) usize {
+    if (available_memory_bytes <= export_parallel_min_system_reserve_bytes) return 0;
+    const after_reserve = available_memory_bytes - export_parallel_min_system_reserve_bytes;
+    return satMul(after_reserve, export_parallel_memory_budget_numerator) / export_parallel_memory_budget_denominator;
+}
+
+fn memoryWorkerLimit(memory_budget_bytes: usize, adjusted_worker_peak_bytes: usize) usize {
+    if (adjusted_worker_peak_bytes == 0) return 1;
+    return @max(@as(usize, 1), memory_budget_bytes / adjusted_worker_peak_bytes);
+}
+
+fn applyExportMemorySafetyFactor(estimated_bytes: usize) usize {
+    if (estimated_bytes == 0) return 0;
+    return satAdd(
+        satMul(estimated_bytes, export_parallel_estimate_safety_numerator),
+        export_parallel_estimate_safety_denominator - 1,
+    ) / export_parallel_estimate_safety_denominator;
+}
+
+fn shapePixels(shape: ExportImageShape) usize {
+    return satMul(shape.width, shape.height);
+}
+
+fn rectPixelCount(rect: export_pipeline.FrameRect) usize {
+    return satMul(finitePositiveToUsize(rect.w), finitePositiveToUsize(rect.h));
+}
+
+fn scaledIrCropPixels(rgb_shape: ExportImageShape, ir_shape: ExportImageShape, rect: export_pipeline.FrameRect) usize {
+    if (rgb_shape.width == 0 or rgb_shape.height == 0) return rectPixelCount(rect);
+    const scale_x = @as(f64, @floatFromInt(ir_shape.width)) / @as(f64, @floatFromInt(rgb_shape.width));
+    const scale_y = @as(f64, @floatFromInt(ir_shape.height)) / @as(f64, @floatFromInt(rgb_shape.height));
+    return satMul(finitePositiveToUsize(rect.w * scale_x), finitePositiveToUsize(rect.h * scale_y));
+}
+
+fn finitePositiveToUsize(value: f64) usize {
+    if (!std.math.isFinite(value) or value <= 0.0) return 0;
+    const max_value: f64 = @floatFromInt(std.math.maxInt(usize));
+    if (value >= max_value) return std.math.maxInt(usize);
+    return @intFromFloat(value);
+}
+
+fn bytesFor(comptime T: type, element_count: usize) usize {
+    return satMul(element_count, @sizeOf(T));
+}
+
+fn satAdd(lhs: usize, rhs: usize) usize {
+    return std.math.add(usize, lhs, rhs) catch std.math.maxInt(usize);
+}
+
+fn satMul(lhs: usize, rhs: usize) usize {
+    return std.math.mul(usize, lhs, rhs) catch std.math.maxInt(usize);
+}
+
+const FrameExportJob = struct {
+    frame_index: usize,
+    rect: export_pipeline.FrameRect,
+    paths: OwnedOutputPaths,
+};
+
+const FrameExportShared = struct {
+    rgb: export_pipeline.Image,
+    aligned_ir: ?export_pipeline.Image,
+    ir_scale_x: f64,
+    ir_scale_y: f64,
+    source: []const u8,
+    rebate_rect: ?frames.RebateOriginRect,
+    outputs: export_pipeline.OutputSelection,
+    film_stock: ?[]const u8,
+    stock_coeffs: ?film_stocks.Coefficients,
+    dmin: ?[3]f64,
+    render_options: render.RenderToDisplayOptions,
+    ir_clean_options: ir_processing.IrCleanOptions,
+    invert_request: webgpu.Request,
+    progress_sink: ?ExportProgressSink,
+};
+
+const FrameExportOutcome = struct {
+    backing_allocator: std.mem.Allocator = std.heap.smp_allocator,
+    result: ?export_pipeline.ProcessFrameResult = null,
+    err: ?anyerror = null,
+
+    fn allocator(self: *FrameExportOutcome) std.mem.Allocator {
+        return self.backing_allocator;
+    }
+
+    fn deinit(self: *FrameExportOutcome) void {
+        const local_allocator = self.allocator();
+        if (self.result) |result| result.deinit(local_allocator);
+    }
+};
+
+const FrameExportQueue = struct {
+    next_job: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    completed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    jobs: []const FrameExportJob,
+    shared: FrameExportShared,
+    outcomes: []FrameExportOutcome,
+    completion_order: []usize,
+};
+
+fn processExportFramesParallel(
+    allocator: std.mem.Allocator,
+    written: *std.array_list.Managed([]u8),
+    jobs: []const FrameExportJob,
+    worker_count: usize,
+    shared: FrameExportShared,
+) !void {
+    std.debug.assert(jobs.len > 1);
+    std.debug.assert(worker_count > 1);
+    std.debug.assert(worker_count <= jobs.len);
+
+    const outcomes = try allocator.alloc(FrameExportOutcome, jobs.len);
+    defer allocator.free(outcomes);
+    for (outcomes) |*outcome| outcome.* = .{};
+    defer for (outcomes) |*outcome| outcome.deinit();
+
+    const completion_order = try allocator.alloc(usize, jobs.len);
+    defer allocator.free(completion_order);
+
+    var queue = FrameExportQueue{
+        .jobs = jobs,
+        .shared = shared,
+        .outcomes = outcomes,
+        .completion_order = completion_order,
+    };
+
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+    var thread_count: usize = 0;
+    errdefer for (threads[0..thread_count]) |thread| thread.join();
+    while (thread_count < worker_count) : (thread_count += 1) {
+        threads[thread_count] = try std.Thread.spawn(.{}, frameExportWorker, .{&queue});
+    }
+    for (threads[0..thread_count]) |thread| thread.join();
+
+    const completed = queue.completed.load(.seq_cst);
+    if (completed != jobs.len) return error.ExportFrameWorkerIncomplete;
+
+    for (completion_order[0..completed]) |job_index| {
+        const outcome = &outcomes[job_index];
+        if (outcome.err) |err| return err;
+        const result = outcome.result orelse return error.ExportFrameWorkerIncomplete;
+        for (result.written) |name| {
+            try written.append(try allocator.dupe(u8, name));
+        }
+    }
+}
+
+fn frameExportWorker(queue: *FrameExportQueue) void {
+    while (true) {
+        const job_index = queue.next_job.fetchAdd(1, .seq_cst);
+        if (job_index >= queue.jobs.len) return;
+
+        const job = queue.jobs[job_index];
+        const outcome = &queue.outcomes[job_index];
+        const local_allocator = outcome.allocator();
+        var prng = std.Random.DefaultPrng.init(frameExportSeed(job.frame_index));
+        outcome.result = export_pipeline.processFrame(
+            local_allocator,
+            job.frame_index,
+            job.rect,
+            queue.shared.rgb,
+            queue.shared.aligned_ir,
+            queue.shared.ir_scale_x,
+            queue.shared.ir_scale_y,
+            .{
+                .outputs = queue.shared.outputs,
+                .paths = job.paths.paths,
+                .base_meta = .{
+                    .source = queue.shared.source,
+                    .rebate_rect = queue.shared.rebate_rect,
+                    .crop = job.rect,
+                },
+                .film_stock = queue.shared.film_stock,
+                .stock_coeffs = queue.shared.stock_coeffs,
+                .dmin = queue.shared.dmin,
+                .render_options = queue.shared.render_options,
+                .ir_clean_options = queue.shared.ir_clean_options,
+                .invert_request = queue.shared.invert_request,
+                .random = prng.random(),
+            },
+        ) catch |err| {
+            outcome.err = err;
+            const slot = queue.completed.fetchAdd(1, .seq_cst);
+            queue.completion_order[slot] = job_index;
+            return;
+        };
+
+        if (outcome.result) |result| {
+            for (result.written) |name| {
+                emitExportProgressFmt(
+                    local_allocator,
+                    queue.shared.progress_sink,
+                    .wrote_file,
+                    "Wrote {s}",
+                    .{name},
+                    name,
+                ) catch {};
+            }
+        }
+        const slot = queue.completed.fetchAdd(1, .seq_cst);
+        queue.completion_order[slot] = job_index;
+    }
+}
+
+fn frameExportSeed(frame_index: usize) u64 {
+    return 0x563030 + @as(u64, @intCast(frame_index));
 }
 
 fn emitExportProgress(sink: ?ExportProgressSink, notice: ExportProgressNotice) void {
@@ -1106,6 +1627,119 @@ test "process export workflow computes Dmin and writes route-shaped result" {
     try std.testing.expect(std.mem.indexOf(u8, metadata, "\"variant\":\"inverted\"") != null);
 }
 
+test "process export workflow runs multi-frame exports through Python-shaped parallel jobs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/frames", .{tmp.sub_path[0..]});
+    defer allocator.free(output_dir);
+    const rects = [_]export_pipeline.FrameRect{
+        .{ .cx = 1.0, .cy = 1.0, .w = 2.0, .h = 2.0, .angle = 0.0, .rotation = 0 },
+        .{ .cx = 1.0, .cy = 1.0, .w = 2.0, .h = 2.0, .angle = 0.0, .rotation = 180 },
+    };
+
+    const result = try processExportFromTiff(allocator, std.testing.io, .{
+        .input_path = "test/fixtures/tiff/rgb-thumb-ir.tiff",
+        .output_dir = output_dir,
+        .basename = "roll",
+        .rects = &rects,
+        .outputs = .{ .ir_neg = false, .ir_inv = false, .inv_only = true },
+        .active_stock = "kodak_gold",
+        .stock_coeffs = film_stocks.kodak_gold_coeffs,
+        .dmin = .{ 0.0, 0.0, 0.0 },
+        .parallel_cpu_count_override = 4,
+        .parallel_available_memory_override = export_parallel_min_system_reserve_bytes + 64 * 1024 * 1024,
+        .total_seconds_override = 1.24,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.files.len);
+    try expectStringSetContains(result.files, "roll_01_inv.tif");
+    try expectStringSetContains(result.files, "roll_02_inv.tif");
+    for (result.files) |file| {
+        const output_path = try std.fs.path.join(allocator, &.{ output_dir, file });
+        defer allocator.free(output_path);
+        try std.Io.Dir.cwd().access(std.testing.io, output_path, .{});
+    }
+    try std.testing.expectEqualStrings("Processing 2 frames...", result.progress.events[1].message);
+    const expected_complete = try std.fmt.allocPrint(allocator, "Exported 2 files to {s}/ (1.2s)", .{output_dir});
+    defer allocator.free(expected_complete);
+    try std.testing.expectEqualStrings(expected_complete, result.progress.events[result.progress.events.len - 1].message);
+}
+
+test "export parallelism planner leaves one cpu free" {
+    const rects = [_]export_pipeline.FrameRect{
+        .{ .cx = 50.0, .cy = 50.0, .w = 32.0, .h = 24.0 },
+        .{ .cx = 150.0, .cy = 50.0, .w = 32.0, .h = 24.0 },
+        .{ .cx = 250.0, .cy = 50.0, .w = 32.0, .h = 24.0 },
+        .{ .cx = 350.0, .cy = 50.0, .w = 32.0, .h = 24.0 },
+    };
+    const decision = planExportParallelism(.{
+        .rects = &rects,
+        .outputs = .{ .ir_neg = false, .ir_inv = false, .inv_only = true },
+        .rgb_shape = .{ .width = 512, .height = 512, .channels = 3 },
+        .cpu_count = 4,
+        .available_memory_bytes = export_parallel_min_system_reserve_bytes + 1024 * 1024 * 1024,
+    });
+    try std.testing.expectEqual(@as(usize, 4), decision.cpu_count);
+    try std.testing.expectEqual(@as(usize, 3), decision.cpu_worker_limit);
+    try std.testing.expectEqual(@as(usize, 3), decision.worker_count);
+    try std.testing.expect(!decision.memory_limited);
+}
+
+test "export parallelism planner limits workers by predicted memory" {
+    const rects = [_]export_pipeline.FrameRect{
+        .{ .cx = 50.0, .cy = 50.0, .w = 64.0, .h = 64.0 },
+        .{ .cx = 150.0, .cy = 50.0, .w = 64.0, .h = 64.0 },
+        .{ .cx = 250.0, .cy = 50.0, .w = 64.0, .h = 64.0 },
+        .{ .cx = 350.0, .cy = 50.0, .w = 64.0, .h = 64.0 },
+    };
+    const estimated = estimateMaxExportWorkerPeakBytes(
+        .{ .width = 1024, .height = 1024, .channels = 3 },
+        null,
+        .{ .ir_neg = false, .ir_inv = false, .inv_only = true },
+        .{},
+        &rects,
+    );
+    const adjusted = applyExportMemorySafetyFactor(estimated);
+    const target_budget = adjusted * 2 + adjusted / 4;
+    const after_reserve = (target_budget * export_parallel_memory_budget_denominator + export_parallel_memory_budget_numerator - 1) /
+        export_parallel_memory_budget_numerator;
+    const decision = planExportParallelism(.{
+        .rects = &rects,
+        .outputs = .{ .ir_neg = false, .ir_inv = false, .inv_only = true },
+        .rgb_shape = .{ .width = 1024, .height = 1024, .channels = 3 },
+        .cpu_count = 8,
+        .available_memory_bytes = export_parallel_min_system_reserve_bytes + after_reserve,
+    });
+    try std.testing.expectEqual(@as(usize, 2), decision.memory_worker_limit.?);
+    try std.testing.expectEqual(@as(usize, 2), decision.worker_count);
+    try std.testing.expect(decision.memory_limited);
+}
+
+test "export memory estimate is comptime evaluable and includes crop scratch" {
+    const estimated = comptime estimateFrameExportPeakBytes(
+        .{ .width = 400, .height = 300, .channels = 3 },
+        null,
+        .{ .ir_neg = false, .ir_inv = false, .inv_only = true },
+        .{},
+        .{ .cx = 100.0, .cy = 100.0, .w = 80.0, .h = 60.0 },
+    );
+    const raw_crop_bytes = comptime bytesFor(f64, 80 * 60 * 3);
+    try std.testing.expect(estimated > raw_crop_bytes);
+}
+
+test "linux MemAvailable parser reads kB values" {
+    const text =
+        \\MemTotal:       32768000 kB
+        \\MemFree:         1024000 kB
+        \\MemAvailable:    2048000 kB
+        \\Buffers:          100000 kB
+        \\
+    ;
+    try std.testing.expectEqual(@as(?usize, 2048000 * 1024), parseLinuxMemAvailableBytes(text));
+}
+
 const QuickPreviewFixture = struct {
     name: []const u8,
     python_oracle: []const u8,
@@ -1371,4 +2005,11 @@ fn expectDminApprox(expected: [3]f64, actual: [3]f64, tolerance: f64) !void {
     try std.testing.expectApproxEqAbs(expected[0], actual[0], tolerance);
     try std.testing.expectApproxEqAbs(expected[1], actual[1], tolerance);
     try std.testing.expectApproxEqAbs(expected[2], actual[2], tolerance);
+}
+
+fn expectStringSetContains(values: []const []const u8, expected: []const u8) !void {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, expected)) return;
+    }
+    return error.MissingExpectedString;
 }

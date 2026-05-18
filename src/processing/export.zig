@@ -7,6 +7,7 @@ const ir_processing = @import("ir.zig");
 const numeric = @import("numeric_fixture.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
+const webgpu = @import("webgpu.zig");
 
 pub const ExportVariant = enum {
     ir_neg,
@@ -111,6 +112,7 @@ pub const ProcessFrameOptions = struct {
     dmin: ?[3]f64 = null,
     render_options: render.RenderToDisplayOptions = .{},
     ir_clean_options: ir_processing.IrCleanOptions = .{},
+    invert_request: webgpu.Request = .{},
     captured_noise: ?[]const f64 = null,
     random: ?std.Random = null,
 };
@@ -133,6 +135,17 @@ pub const Image = struct {
     pixels: []f64,
 
     pub fn deinit(self: Image, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+    }
+};
+
+pub const ImageU16 = struct {
+    width: usize,
+    height: usize,
+    channels: usize,
+    pixels: []u16,
+
+    pub fn deinit(self: ImageU16, allocator: std.mem.Allocator) void {
         allocator.free(self.pixels);
     }
 };
@@ -262,6 +275,42 @@ pub fn applyRotation(
     return .{ .width = out_width, .height = out_height, .channels = channels, .pixels = output };
 }
 
+pub fn applyRotationU16(
+    allocator: std.mem.Allocator,
+    image: []const u16,
+    width: usize,
+    height: usize,
+    channels: usize,
+    rotation: i32,
+) !ImageU16 {
+    if (width == 0 or height == 0 or channels == 0 or image.len != width * height * channels) {
+        return error.InvalidExportImage;
+    }
+
+    const out_width = if (rotation == 90 or rotation == 270) height else width;
+    const out_height = if (rotation == 90 or rotation == 270) width else height;
+    const output = try allocator.alloc(u16, out_width * out_height * channels);
+    errdefer allocator.free(output);
+
+    const Point = struct { x: usize, y: usize };
+    for (0..out_height) |y| {
+        for (0..out_width) |x| {
+            const src: Point = switch (rotation) {
+                0 => .{ .x = x, .y = y },
+                90 => .{ .x = y, .y = height - 1 - x },
+                180 => .{ .x = width - 1 - x, .y = height - 1 - y },
+                270 => .{ .x = width - 1 - y, .y = x },
+                else => .{ .x = x, .y = y },
+            };
+            for (0..channels) |channel| {
+                output[(y * out_width + x) * channels + channel] = image[(src.y * width + src.x) * channels + channel];
+            }
+        }
+    }
+
+    return .{ .width = out_width, .height = out_height, .channels = channels, .pixels = output };
+}
+
 pub fn prepareRgbNegativeOutput(allocator: std.mem.Allocator, raw_crop: Image, rotation: i32) !Image {
     return applyRotation(allocator, raw_crop.pixels, raw_crop.width, raw_crop.height, raw_crop.channels, rotation);
 }
@@ -364,6 +413,26 @@ pub fn prepareInvertedPositiveOutput(
     return applyRotation(allocator, rendered, crop.width, crop.height, crop.channels, rotation);
 }
 
+pub fn prepareInvertedPositiveOutputU16(
+    allocator: std.mem.Allocator,
+    crop: Image,
+    invert_options: inversion.InvertOptions,
+    render_options: render.RenderToDisplayOptions,
+    rotation: i32,
+) !ImageU16 {
+    if (crop.channels != 3) return error.InvalidExportImage;
+
+    const scene_linear = try allocator.alloc(f64, crop.pixels.len);
+    defer allocator.free(scene_linear);
+    _ = try inversion.invertNegative(allocator, crop.pixels, scene_linear, invert_options);
+
+    const rendered_u16 = try allocator.alloc(u16, crop.pixels.len);
+    defer allocator.free(rendered_u16);
+    try render.renderToDisplay(allocator, scene_linear, rendered_u16, render_options);
+
+    return applyRotationU16(allocator, rendered_u16, crop.width, crop.height, crop.channels, rotation);
+}
+
 pub fn processFrame(
     allocator: std.mem.Allocator,
     frame_index: usize,
@@ -425,30 +494,32 @@ pub fn processFrame(
 
     if (options.outputs.ir_inv and options.outputs.needIr()) {
         const source = cleaned_crop orelse raw_crop;
-        const out = try prepareInvertedPositiveOutput(allocator, source, .{
+        const out = try prepareInvertedPositiveOutputU16(allocator, source, .{
             .dmin = options.dmin,
             .coeffs = options.stock_coeffs,
             .stock = options.film_stock orelse "kodak_gold",
+            .request = options.invert_request,
         }, options.render_options, rect.rotation);
         defer out.deinit(allocator);
         const metadata = try exportMetadataJson(allocator, options.base_meta, .ir_inv, options.film_stock, options.render_options.contrast, options.dmin);
         defer allocator.free(metadata);
         const path = try options.paths.path(.ir_inv);
-        try writeU16Tiff(allocator, path, out, metadata);
+        try writeU16TiffSamples(allocator, path, out, metadata);
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
 
     if (options.outputs.inv_only) {
-        const out = try prepareInvertedPositiveOutput(allocator, raw_crop, .{
+        const out = try prepareInvertedPositiveOutputU16(allocator, raw_crop, .{
             .dmin = options.dmin,
             .coeffs = options.stock_coeffs,
             .stock = options.film_stock orelse "kodak_gold",
+            .request = options.invert_request,
         }, options.render_options, rect.rotation);
         defer out.deinit(allocator);
         const metadata = try exportMetadataJson(allocator, options.base_meta, .inv_only, options.film_stock, options.render_options.contrast, options.dmin);
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
-        try writeU16Tiff(allocator, path, out, metadata);
+        try writeU16TiffSamples(allocator, path, out, metadata);
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
 
@@ -477,6 +548,21 @@ fn writeU16Tiff(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(samples),
+    }, .{ .metadata_json = metadata_json });
+}
+
+fn writeU16TiffSamples(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    image: ImageU16,
+    metadata_json: []const u8,
+) !void {
+    try tiff.writeImage(allocator, path, .{
+        .width = @intCast(image.width),
+        .height = @intCast(image.height),
+        .samples_per_pixel = @intCast(image.channels),
+        .bits_per_sample = 16,
+        .data = std.mem.sliceAsBytes(image.pixels),
     }, .{ .metadata_json = metadata_json });
 }
 
@@ -1065,6 +1151,34 @@ test "export apply rotation matches Python cv2.rotate orientations" {
     try std.testing.expectEqualSlices(f64, &image, unchanged.pixels);
 }
 
+test "export u16 rotation matches Python cv2.rotate orientations" {
+    const allocator = std.testing.allocator;
+    const image = [_]u16{
+        1, 2, 3,
+        4, 5, 6,
+    };
+
+    const cw = try applyRotationU16(allocator, &image, 3, 2, 1, 90);
+    defer cw.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), cw.width);
+    try std.testing.expectEqual(@as(usize, 3), cw.height);
+    try std.testing.expectEqualSlices(u16, &.{ 4, 1, 5, 2, 6, 3 }, cw.pixels);
+
+    const half = try applyRotationU16(allocator, &image, 3, 2, 1, 180);
+    defer half.deinit(allocator);
+    try std.testing.expectEqualSlices(u16, &.{ 6, 5, 4, 3, 2, 1 }, half.pixels);
+
+    const ccw = try applyRotationU16(allocator, &image, 3, 2, 1, 270);
+    defer ccw.deinit(allocator);
+    try std.testing.expectEqualSlices(u16, &.{ 3, 6, 2, 5, 1, 4 }, ccw.pixels);
+
+    const unchanged = try applyRotationU16(allocator, &image, 3, 2, 1, 360);
+    defer unchanged.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), unchanged.width);
+    try std.testing.expectEqual(@as(usize, 2), unchanged.height);
+    try std.testing.expectEqualSlices(u16, &image, unchanged.pixels);
+}
+
 test "export crop and rotation validate inputs" {
     var out = [_]f64{1};
     try std.testing.expectError(error.InvalidExportImage, cropFrame(std.testing.allocator, &out, 1, 1, 0, .{
@@ -1180,6 +1294,25 @@ test "inverted positive output matches real-scan Python oracle fixture" {
     defer output.deinit(allocator);
 
     try numeric.assertCloseSlices(value.expected, output.pixels, value.tolerance);
+
+    const direct_u16 = try prepareInvertedPositiveOutputU16(allocator, crop, .{
+        .stock = "kodak_gold",
+    }, .{
+        .contrast = 1.4,
+        .curve_k = 5.0,
+        .percentile_lo = 0.5,
+        .percentile_hi = 99.5,
+        .exposure_compensation = 0.0,
+        .color_temp = 0.0,
+        .color_tint = 0.0,
+    }, 0);
+    defer direct_u16.deinit(allocator);
+
+    try std.testing.expectEqual(output.pixels.len, direct_u16.pixels.len);
+    for (output.pixels, direct_u16.pixels) |old_value, direct_value| {
+        const clipped = @min(@max(old_value, 0.0), 65535.0);
+        try std.testing.expectEqual(@as(u16, @intFromFloat(@round(clipped))), direct_value);
+    }
 }
 
 test "processFrame writes all fallback variants like Python real-scan fixture" {

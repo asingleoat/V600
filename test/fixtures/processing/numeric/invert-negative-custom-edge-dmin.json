@@ -1,0 +1,125 @@
+{
+  "name": "invert-negative-custom-edge-dmin",
+  "operation": "invert_negative:provided_dmin_custom_coeffs_edge",
+  "python_oracle": "scratchndent/processing/negative/inversion.py:61 invert_negative with provided Dmin and custom coeffs",
+  "generated_by": "python3 in the ambient nix shell importing scratchndent.processing.negative.inversion.invert_negative with uint16 input (2026-05-18)",
+  "shape": [
+    2,
+    4,
+    3
+  ],
+  "tolerance": {
+    "abs": 0.000002,
+    "rel": 0.000002,
+    "reason": "Python oracle numeric parity; stresses EPS clamp, Dmin clamp, polynomial cross terms, and non-negative output clamp"
+  },
+  "dmin": [
+    0.08,
+    0.06,
+    0.04
+  ],
+  "coeffs": [
+    [
+      0.9,
+      0.02,
+      0.0
+    ],
+    [
+      0.01,
+      0.85,
+      0.02
+    ],
+    [
+      0.0,
+      0.01,
+      0.8
+    ],
+    [
+      0.01,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.01,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.01
+    ],
+    [
+      0.01,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.01,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.01
+    ],
+    [
+      -0.05,
+      -0.02,
+      -0.03
+    ]
+  ],
+  "input": [
+    0.0,
+    0.0,
+    0.0,
+    256.0,
+    512.0,
+    1024.0,
+    4096.0,
+    8192.0,
+    16384.0,
+    65535.0,
+    65535.0,
+    65535.0,
+    12000.0,
+    18000.0,
+    24000.0,
+    30000.0,
+    42000.0,
+    54000.0,
+    65535.0,
+    32768.0,
+    1024.0,
+    120.0,
+    32768.0,
+    65535.0
+  ],
+  "expected": [
+    8.413513169625186,
+    8.227869136012257,
+    7.762441086158862,
+    2.1677524821769706,
+    1.867380420931138,
+    1.4912335723646723,
+    0.9922463833177242,
+    0.7381496907819371,
+    0.44440200984103365,
+    0.0,
+    0.0,
+    0.0,
+    0.5541895364648148,
+    0.42824576142957517,
+    0.3005899775228591,
+    0.1857672589621958,
+    0.09916006796757886,
+    0.008006268171236448,
+    0.0,
+    0.20311254141128827,
+    1.423209697159029,
+    2.4209897926872485,
+    0.23859664890885665,
+    0.0
+  ]
+}

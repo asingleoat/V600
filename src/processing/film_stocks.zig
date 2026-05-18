@@ -111,9 +111,44 @@ pub fn applyBasis(coeffs: Coefficients, basis: [basis_len]f64) [channel_count]f6
     return out;
 }
 
+pub fn usesOnlyLinearTerms(coeffs: Coefficients) bool {
+    for (coeffs[3..]) |row| {
+        inline for (0..channel_count) |channel| {
+            if (row[channel] != 0.0) return false;
+        }
+    }
+    return true;
+}
+
+pub fn applyLinearTerms(coeffs: Coefficients, rgb: [channel_count]f64) [channel_count]f64 {
+    var out = [_]f64{ 0.0, 0.0, 0.0 };
+    inline for (0..channel_count) |channel| {
+        out[channel] =
+            rgb[0] * coeffs[0][channel] +
+            rgb[1] * coeffs[1][channel] +
+            rgb[2] * coeffs[2][channel];
+    }
+    return out;
+}
+
 pub fn applyDensityTransform(net_density: []const f64, output: []f64, coeffs: Coefficients) !void {
     try validateDensityInput(net_density);
     if (output.len != net_density.len) return error.InvalidDensityTransformBuffer;
+
+    if (usesOnlyLinearTerms(coeffs)) {
+        var index: usize = 0;
+        while (index < net_density.len) : (index += channel_count) {
+            const transformed = applyLinearTerms(coeffs, .{
+                net_density[index],
+                net_density[index + 1],
+                net_density[index + 2],
+            });
+            output[index] = transformed[0];
+            output[index + 1] = transformed[1];
+            output[index + 2] = transformed[2];
+        }
+        return;
+    }
 
     var index: usize = 0;
     while (index < net_density.len) : (index += channel_count) {
@@ -197,8 +232,18 @@ test "preserves film stock coefficient shapes and builtin metadata" {
 }
 
 test "preserves selected identity and stock polynomial outputs" {
+    try std.testing.expect(usesOnlyLinearTerms(identity_coeffs));
+    try std.testing.expect(usesOnlyLinearTerms(kodak_gold_coeffs));
+    try std.testing.expect(usesOnlyLinearTerms(kodak_portra_coeffs));
+    var quadratic = kodak_gold_coeffs;
+    quadratic[3][0] = 0.001;
+    try std.testing.expect(!usesOnlyLinearTerms(quadratic));
+
     try expectChannels(.{ 0.2, 0.3, 0.4 }, applyBasis(identity_coeffs, .{
         0.2, 0.3, 0.4, 0.04, 0.09, 0.16, 0.06, 0.08, 0.12, 1.0,
+    }));
+    try expectChannels(.{ 0.2, 0.3, 0.4 }, applyLinearTerms(identity_coeffs, .{
+        0.2, 0.3, 0.4,
     }));
     try expectChannels(.{ 1.20, -0.04, 0.0 }, applyBasis(kodak_gold_coeffs, .{
         1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,

@@ -1,17 +1,25 @@
 # AGENTS.md
 
 Film scanning and post-processing application for Epson V600 and related
-flatbed scanners with transparency units. Single Python codebase, browser
-UI, runs on Linux and macOS.
+flatbed scanners with transparency units. The Python/browser implementation is
+the frozen version-one behavior oracle. The active work is a
+function-for-function Zig 0.16 rewrite with an SDL3/Nuklear native UI, optional
+WebGPU processing acceleration, and full parity evidence before replacement.
 
 ## Quick reference
 
-    Entry point:    ./scan.py
-    Server:         http://127.0.0.1:8432
+    Python entry:   ./scan.py
+    Python server:  http://127.0.0.1:8432
+    Zig CLI:        zig build run -- <command>
+    Zig UI:         zig build -Dui=true run-ui
+    Rewrite plan:   plan.md
+    Parity log:     docs/PARITY_MANIFEST.md
+    Performance:    docs/PERFORMANCE_STRATEGY.md
     Scanner driver: scanner.py (SANE on Linux, Epson interpreter on macOS)
     Config file:    scratchndent_config.toml (gitignored, generated at runtime)
-    Test suite:     python test_detect.py (requires scan TIFFs in scans/)
-    Dependencies:   nix-shell (shell.nix)
+    Python tests:   python test_detect.py (requires scan TIFFs in scans/)
+    Zig tests:      zig build test --summary all
+    Dependencies:   ambient nix shell from shell.nix/flake.nix
     Type checker:   basedpyright
 
 ## What you can and cannot do without hardware
@@ -34,6 +42,52 @@ UI, runs on Linux and macOS.
 - Import any project module (dependencies come from nix)
 
 If you can't run code, say so. Don't claim success based on type-checking alone.
+
+## Zig rewrite and performance rules
+
+- Read `plan.md`, `docs/PARITY_MANIFEST.md`, and
+  `docs/PERFORMANCE_STRATEGY.md` before selecting Zig rewrite work.
+- Select the logically next unchecked `plan.md` item and finish its tests,
+  parity evidence, docs, and manifest updates before checking it off. Items
+  marked `PENDING USER UPDATE` are parked external blockers.
+- Do not change Python behavior while claiming rewrite progress. Python is the
+  frozen behavior oracle; Zig CPU code is the accepted implementation path once
+  it matches Python fixtures and replay/hardware evidence.
+- Performance work must optimize the same operation. Better layout, fewer
+  allocations, caching, exact order-statistic selection, SIMD, threading, or
+  GPU execution are valid only when the observable behavior remains traceable
+  to the frozen Python function. A different detector, renderer, interpolator,
+  or image-processing algorithm is a post-parity experiment and needs explicit
+  approval.
+- Benchmark optimized Zig against the current Zig CPU path for speed. Use
+  Python for behavioral parity, not as the performance baseline once the CPU
+  port is accepted. If Zig is slower than Python for the same algorithm and
+  workload, treat that as a bug or missing optimization, not an acceptable
+  tradeoff.
+- Record before/after performance evidence for meaningful optimization work.
+  Use `-Doptimize=ReleaseFast` benchmarks, include the exact command, input
+  image or fixture, dimensions, wall time, speedup, and parity metric
+  (`max_abs`, RMS, mismatches, metadata equality, or the relevant scanner
+  replay/hardware check).
+- For user-visible Process latency, prefer:
+  `zig build -Doptimize=ReleaseFast bench-processing-commands`. For GPU
+  candidate coverage, prefer:
+  `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`.
+- GPU work must keep CPU fallback, default off behavior, and headless
+  CPU-vs-GPU download comparisons before UI/export integration. Report cold
+  and warm timings separately because adapter/device/pipeline setup can
+  dominate first-use latency.
+- The active custom inversion pipeline is `invert_negative`; `negadoctor` is
+  retained for darktable/XMP parity and is not a WebGPU acceleration goal.
+- Scanner startup is high priority and known to be slow. Do not add blocking
+  probes or repeated discovery on UI startup or hot paths without benchmark
+  evidence. Prefer cached capabilities, lazy connection, structured progress,
+  and replayable scanner tests.
+- Do not run `nix develop`, `nix-shell`, `nix build`, `nix flake check`, or
+  `nix search` for ordinary build/test loops. Assume the conversation is
+  already inside the correct nix shell and use direct `zig ...` commands. If a
+  dependency or Zig version is missing, edit the Nix files if needed, then stop
+  and ask the human to reload the shell.
 
 ## Project layout
 

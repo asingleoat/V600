@@ -13,6 +13,7 @@ pub const ir = @import("processing/ir.zig");
 pub const measurement = @import("processing/measurement.zig");
 pub const numeric_fixture = @import("processing/numeric_fixture.zig");
 pub const render = @import("processing/render.zig");
+pub const webgpu = @import("processing/webgpu.zig");
 pub const workflow = @import("processing/workflow.zig");
 pub const xmp = @import("processing/xmp.zig");
 

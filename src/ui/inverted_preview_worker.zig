@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const processing_render = @import("../processing/render.zig");
+const processing_webgpu = @import("../processing/webgpu.zig");
 const processing_workflow = @import("../processing/workflow.zig");
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
@@ -13,6 +14,7 @@ pub const Key = struct {
     stock: ?[]u8 = null,
     dmin: ?[3]f64 = null,
     render_options: processing_render.RenderToDisplayOptions = .{},
+    invert_request: processing_webgpu.Request = .{},
 
     pub fn empty() Key {
         return .{
@@ -39,6 +41,7 @@ pub const Key = struct {
             .stock = stock,
             .dmin = options.dmin,
             .render_options = options.render_options,
+            .invert_request = options.invert_request,
         };
     }
 
@@ -61,7 +64,8 @@ pub const Key = struct {
             self.height == preview.preview_height and
             stockEqual(self.stock, options.stock) and
             dminEqual(self.dmin, options.dmin) and
-            renderOptionsEqual(self.render_options, options.render_options);
+            renderOptionsEqual(self.render_options, options.render_options) and
+            webgpuRequestEqual(self.invert_request, options.invert_request);
     }
 };
 
@@ -214,6 +218,7 @@ fn runInvertedPreviewRender(context: *Context) !void {
             .stock = context.key.stock,
             .dmin = context.key.dmin,
             .render_options = context.key.render_options,
+            .invert_request = context.key.invert_request,
         },
     )) orelse return error.InvertedPreviewUnavailable;
 }
@@ -248,7 +253,8 @@ pub fn renderOptionsEqual(
         a.percentile_hi == b.percentile_hi and
         a.exposure_compensation == b.exposure_compensation and
         a.color_temp == b.color_temp and
-        a.color_tint == b.color_tint;
+        a.color_tint == b.color_tint and
+        a.percentile_sample_limit == b.percentile_sample_limit;
 }
 
 pub fn stockEqual(a: ?[]const u8, b: ?[]const u8) bool {
@@ -261,6 +267,10 @@ pub fn dminEqual(a: ?[3]f64, b: ?[3]f64) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
     return a.?[0] == b.?[0] and a.?[1] == b.?[1] and a.?[2] == b.?[2];
+}
+
+pub fn webgpuRequestEqual(a: processing_webgpu.Request, b: processing_webgpu.Request) bool {
+    return a.backend == b.backend and a.fallback == b.fallback;
 }
 
 fn waitForPoll(worker: *Worker) !Result {
@@ -351,4 +361,17 @@ test "inverted preview worker does not start without renderable inverted inputs"
     try std.testing.expect(!(try worker.start(preview, 1, .{})));
     preview.info.is_grayscale = true;
     try std.testing.expect(!(try worker.start(preview, 1, .{ .stock = "kodak_gold" })));
+}
+
+test "inverted preview key includes inversion backend request" {
+    var preview = try fakePreview(std.testing.allocator, 3, 2);
+    defer preview.deinit(std.testing.allocator);
+
+    var key = try Key.initCopy(std.testing.allocator, preview, 1, .{ .stock = "kodak_gold" });
+    defer key.deinit(std.testing.allocator);
+    try std.testing.expect(key.matches(preview, 1, .{ .stock = "kodak_gold" }));
+    try std.testing.expect(!key.matches(preview, 1, .{
+        .stock = "kodak_gold",
+        .invert_request = .{ .backend = .webgpu },
+    }));
 }

@@ -3,6 +3,7 @@ const std = @import("std");
 const processing_config = @import("../processing/config.zig");
 const processing_export = @import("../processing/export.zig");
 const processing_frames = @import("../processing/frames.zig");
+const processing_webgpu = @import("../processing/webgpu.zig");
 const processing_workflow = @import("../processing/workflow.zig");
 const ui_state = @import("state.zig");
 
@@ -112,6 +113,7 @@ pub const Context = struct {
     current_dpi: ?u32,
     config_overrides: []processing_config.Override,
     config_override_names: [][]u8,
+    invert_request: processing_webgpu.Request,
     total_seconds_override: ?f64 = null,
     result: ?processing_workflow.ExportWorkflowResult = null,
     error_detail: []const u8 = "",
@@ -282,6 +284,7 @@ pub const Worker = struct {
             .current_dpi = model.processing.current_dpi,
             .config_overrides = overrides,
             .config_override_names = override_names,
+            .invert_request = model.processing_gpu_request,
             .done = &self.done,
             .failed = &self.failed,
             .event_queue = &self.event_queue,
@@ -334,6 +337,7 @@ fn runProcessingExport(context: *Context) !void {
         .rebate_rect = context.rebate_rect,
         .current_dpi = context.current_dpi,
         .config_overrides = context.config_overrides,
+        .invert_request = context.invert_request,
         .total_seconds_override = context.total_seconds_override,
         .progress_sink = .{
             .context = context,
@@ -434,6 +438,16 @@ fn fakeExportWaitForRelease(context: *Context) !void {
     };
 }
 
+fn fakeExportAssertGpuRequest(context: *Context) !void {
+    try std.testing.expectEqual(processing_webgpu.Backend.webgpu, context.invert_request.backend);
+    try std.testing.expectEqual(processing_webgpu.FallbackPolicy.allow_cpu, context.invert_request.fallback);
+    context.result = .{
+        .message = try context.allocator.dupe(u8, "GPU request observed"),
+        .files = try context.allocator.alloc([]u8, 0),
+        .progress = .{ .events = try context.allocator.alloc(processing_export.ExportProgressEvent, 0) },
+    };
+}
+
 test "process export worker keeps UI state live and rejects duplicate starts" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -495,4 +509,48 @@ test "process export worker keeps UI state live and rejects duplicate starts" {
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, model.status);
     try std.testing.expectApproxEqAbs(0.2, model.processing.dmin.?[1], 0.0);
+}
+
+test "process export worker copies native processing GPU request into workflow context" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/frames", .{tmp.sub_path[0..]});
+    defer allocator.free(output_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, output_dir);
+
+    var model = ui_state.State.init("scans", output_dir, 0);
+    defer model.deinit(allocator);
+    model.setProcessingGpuRequest(allocator, .{
+        .backend = .webgpu,
+        .fallback = .allow_cpu,
+    });
+    model.processing.output_dir = output_dir;
+    model.processing.preview_scale = 1.0;
+    model.processing.current_dpi = 800;
+    model.processing_images.paths = try allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
+    model.processing.image_count = 1;
+    model.processing.image_idx = 0;
+    model.process_selections[0] = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .rotation = 0 };
+    model.process_selection_count = 1;
+
+    var worker = Worker.initWithExecutor(allocator, std.testing.io, fakeExportAssertGpuRequest);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startFromState(&model, .{
+        .basename = "roll",
+        .export_ir_inv = false,
+        .export_inv_only = true,
+    }));
+
+    var completed = false;
+    for (0..1000) |_| {
+        if (worker.poll(&model)) {
+            completed = true;
+            break;
+        }
+        try std.Thread.yield();
+    }
+    try std.testing.expect(completed);
+    try std.testing.expectEqualStrings("GPU request observed", model.status);
 }
