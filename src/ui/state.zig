@@ -1745,22 +1745,48 @@ pub const State = struct {
         return true;
     }
 
+    pub fn refreshGalleryFilesPreservingStatus(
+        self: *State,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) !bool {
+        const old_index = self.gallery_index;
+        var next = try processing_export.listGalleryFiles(allocator, io, self.processing.output_dir);
+        errdefer next.deinit(allocator);
+        if (galleryFileListsEqual(self.gallery_files.files, next.files)) {
+            next.deinit(allocator);
+            return false;
+        }
+        self.acceptGalleryFilesWithStatusPolicy(allocator, next, old_index, false);
+        return true;
+    }
+
     fn acceptGalleryFiles(
         self: *State,
         allocator: std.mem.Allocator,
         next: processing_export.GalleryFileList,
         old_index: usize,
     ) void {
+        self.acceptGalleryFilesWithStatusPolicy(allocator, next, old_index, true);
+    }
+
+    fn acceptGalleryFilesWithStatusPolicy(
+        self: *State,
+        allocator: std.mem.Allocator,
+        next: processing_export.GalleryFileList,
+        old_index: usize,
+        update_status: bool,
+    ) void {
         self.gallery_files.deinit(allocator);
         self.gallery_files = next;
         if (self.gallery_files.files.len == 0) {
             self.gallery_index = 0;
-            self.status = "No exports found";
+            if (update_status) self.status = "No exports found";
             return;
         }
 
         self.gallery_index = if (old_index < self.gallery_files.files.len) old_index else 0;
-        self.setGalleryCountStatus();
+        if (update_status) self.setGalleryCountStatus();
     }
 
     pub fn showGalleryImage(self: *State, index: usize) !GalleryInfo {

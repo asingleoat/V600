@@ -1,6 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const processing_config = @import("../processing/config.zig");
+const processing_events = @import("../processing/events.zig");
 const processing_export = @import("../processing/export.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
@@ -213,13 +215,31 @@ pub const Worker = struct {
             } });
         } else if (context.result) |result| {
             if (result.dmin) |dmin| model.processing.dmin = dmin;
-            const message = std.fmt.bufPrint(
-                &model.process_status_buffer,
-                "{s}",
-                .{result.message},
-            ) catch "Export complete";
-            model.finishProcessExport(message, result.files.len);
+            var missing_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+            if (firstMissingExportFile(self.io, context.output_dir, result.files, &missing_path_buffer)) |path| {
+                var detail_buffer: [std.fs.max_path_bytes + 64]u8 = undefined;
+                const detail = std.fmt.bufPrint(
+                    &detail_buffer,
+                    "reported output missing on disk: {s}",
+                    .{path},
+                ) catch "reported output missing on disk";
+                emitExportError("export", detail);
+                model.applyProcessingBackendEvent(.{ .processing_error = .{
+                    .operation = "export",
+                    .detail = detail,
+                } });
+            } else {
+                const message = std.fmt.bufPrint(
+                    &model.process_status_buffer,
+                    "{s}",
+                    .{result.message},
+                ) catch "Export complete";
+                emitExportComplete(context.output_dir, result.files.len);
+                model.finishProcessExport(message, result.files.len);
+                _ = model.refreshGalleryFilesPreservingStatus(self.allocator, self.io) catch false;
+            }
         } else {
+            emitExportError("export", "export produced no result");
             model.applyProcessingBackendEvent(.{ .processing_error = .{
                 .operation = "export",
                 .detail = "export produced no result",
@@ -325,8 +345,10 @@ pub const Worker = struct {
 };
 
 fn threadMain(context: *Context) void {
+    emitExportStart(context);
     context.execute(context) catch |err| {
         context.error_detail = @errorName(err);
+        emitExportError("export", @errorName(err));
         context.failed.store(true, .release);
     };
     context.done.store(true, .release);
@@ -385,13 +407,91 @@ fn enqueueWorkflowProgress(raw_context: *anyopaque, notice: processing_workflow.
     switch (notice.kind) {
         .wrote_file => {
             if (notice.file_name) |file_name| {
+                emitFileWritten(file_name);
                 context.event_queue.pushFileWritten(file_name);
             } else {
+                emitExportProgress(notice.message);
                 context.event_queue.pushProgress(notice.message);
             }
         },
-        else => context.event_queue.pushProgress(notice.message),
+        else => {
+            emitExportProgress(notice.message);
+            context.event_queue.pushProgress(notice.message);
+        },
     }
+}
+
+fn firstMissingExportFile(
+    io: std.Io,
+    output_dir: []const u8,
+    files: []const []const u8,
+    buffer: []u8,
+) ?[]const u8 {
+    for (files) |file| {
+        const path = formatExportPath(buffer, output_dir, file) catch file;
+        std.Io.Dir.cwd().access(io, path, .{}) catch return path;
+    }
+    return null;
+}
+
+fn formatExportPath(buffer: []u8, output_dir: []const u8, file: []const u8) ![]const u8 {
+    if (output_dir.len == 0 or std.mem.eql(u8, output_dir, ".")) {
+        return std.fmt.bufPrint(buffer, "{s}", .{file});
+    }
+    if (std.mem.endsWith(u8, output_dir, "/")) {
+        return std.fmt.bufPrint(buffer, "{s}{s}", .{ output_dir, file });
+    }
+    return std.fmt.bufPrint(buffer, "{s}/{s}", .{ output_dir, file });
+}
+
+fn emitExportStart(context: *const Context) void {
+    if (builtin.is_test) return;
+    processing_events.emitExportStart(.{
+        .frame_count = context.rects.len,
+        .output_dir = context.output_dir,
+    });
+    std.debug.print(
+        "[v600 process export] start input={s} output_dir={s} basename={s} frames={d} ir_neg={s} ir_inv={s} inv_only={s}\n",
+        .{
+            context.input_path,
+            context.output_dir,
+            context.basename,
+            context.rects.len,
+            boolText(context.outputs.ir_neg),
+            boolText(context.outputs.ir_inv),
+            boolText(context.outputs.inv_only),
+        },
+    );
+}
+
+fn emitExportProgress(message: []const u8) void {
+    if (builtin.is_test) return;
+    processing_events.emitExportProgress(.{ .message = message });
+}
+
+fn emitFileWritten(file_name: []const u8) void {
+    if (builtin.is_test) return;
+    processing_events.emitFileWritten(.{ .file = file_name });
+}
+
+fn emitExportComplete(output_dir: []const u8, file_count: usize) void {
+    if (builtin.is_test) return;
+    processing_events.emitExportComplete(.{
+        .file_count = file_count,
+        .output_dir = output_dir,
+    });
+}
+
+fn emitExportError(operation: []const u8, detail: []const u8) void {
+    if (builtin.is_test) return;
+    processing_events.emitProcessingError(.{
+        .operation = operation,
+        .detail = detail,
+    });
+}
+
+fn boolText(value: bool) []const u8 {
+    return if (value) "true" else "false";
 }
 
 fn currentProcessingImagePath(model: *const ui_state.State) ?[]const u8 {
@@ -459,6 +559,9 @@ fn fakeExportWaitForRelease(context: *Context) !void {
     } else {
         return error.ExportReleaseNotObserved;
     }
+    const output_path = try std.fs.path.join(context.allocator, &.{ context.output_dir, "roll_01_inv.tif" });
+    defer context.allocator.free(output_path);
+    try std.Io.Dir.cwd().writeFile(context.io, .{ .sub_path = output_path, .data = "" });
     context.event_queue.pushFileWritten("roll_01_inv.tif");
     const files = try context.allocator.alloc([]u8, 1);
     errdefer context.allocator.free(files);
@@ -488,6 +591,18 @@ fn fakeExportAssertCachedRgbPage(context: *Context) !void {
     context.result = .{
         .message = try context.allocator.dupe(u8, "cached RGB page observed"),
         .files = try context.allocator.alloc([]u8, 0),
+        .progress = .{ .events = try context.allocator.alloc(processing_export.ExportProgressEvent, 0) },
+    };
+}
+
+fn fakeExportReportsMissingFile(context: *Context) !void {
+    const files = try context.allocator.alloc([]u8, 1);
+    errdefer context.allocator.free(files);
+    files[0] = try context.allocator.dupe(u8, "missing_01_inv.tif");
+    errdefer context.allocator.free(files[0]);
+    context.result = .{
+        .message = try std.fmt.allocPrint(context.allocator, "Exported 1 file to {s}/ (0.0s)", .{context.output_dir}),
+        .files = files,
         .progress = .{ .events = try context.allocator.alloc(processing_export.ExportProgressEvent, 0) },
     };
 }
@@ -570,6 +685,53 @@ test "process export worker keeps UI state live and rejects duplicate starts" {
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, model.status);
     try std.testing.expectApproxEqAbs(0.2, model.processing.dmin.?[1], 0.0);
+    try std.testing.expectEqual(@as(usize, 1), model.gallery_files.files.len);
+    try std.testing.expectEqualStrings("roll_01_inv.tif", model.gallery_files.files[0]);
+    try std.testing.expectEqualStrings(expected, model.galleryInfo().status);
+}
+
+test "process export worker rejects successful result when reported file is absent" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/frames", .{tmp.sub_path[0..]});
+    defer allocator.free(output_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, output_dir);
+
+    var model = ui_state.State.init("scans", output_dir, 0);
+    defer model.deinit(allocator);
+    model.processing.output_dir = output_dir;
+    model.processing.preview_scale = 1.0;
+    model.processing.current_dpi = 800;
+    model.processing_images.paths = try allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
+    model.processing.image_count = 1;
+    model.processing.image_idx = 0;
+    model.process_selections[0] = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .rotation = 0 };
+    model.process_selection_count = 1;
+
+    var worker = Worker.initWithExecutor(allocator, std.testing.io, fakeExportReportsMissingFile);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startFromState(&model, .{
+        .basename = "roll",
+        .export_ir_inv = false,
+        .export_inv_only = true,
+    }));
+    for (0..1000) |_| {
+        if (worker.poll(&model)) break;
+        try std.Thread.yield();
+    } else return error.ExportWorkerDidNotFinish;
+
+    try std.testing.expect(!model.process_exporting);
+    try std.testing.expectEqual(@as(usize, 0), model.process_export_files_written);
+    const expected_status = try std.fmt.allocPrint(
+        allocator,
+        "Export failed: reported output missing on disk: {s}/missing_01_inv.tif",
+        .{output_dir},
+    );
+    defer allocator.free(expected_status);
+    try std.testing.expectEqualStrings(expected_status, model.status);
+    try std.testing.expectEqual(@as(usize, 0), model.gallery_files.files.len);
 }
 
 test "process export worker copies resident RGB page into workflow context" {

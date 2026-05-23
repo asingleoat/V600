@@ -4201,18 +4201,33 @@ human shell reload.
     keeps rendering. Duplicate starts are ignored while an export is active, and
     native Process image refresh/navigation/trash/delete controls are inert while
     the worker owns the current image.
-  - Validation 2026-05-16: direct `zig build test --summary all` passed
-    `343/343`, including the worker headless test that holds
-    `process_exporting` true across a poll frame, observes
-    `processExportStatus`, rejects duplicate starts, then verifies final file
-    count/message and Dmin handoff. Direct `zig build -Dui=true --summary all`
-    passed. Direct
-    `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build -Dui=true ui-smoke --summary all`
-    passed. Direct
-    `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build -Dui=true run-ui -- --process-export-smoke`
-    exited successfully. No Nix command was run.
+	  - Validation 2026-05-16: direct `zig build test --summary all` passed
+	    `343/343`, including the worker headless test that holds
+	    `process_exporting` true across a poll frame, observes
+	    `processExportStatus`, rejects duplicate starts, then verifies final file
+	    count/message and Dmin handoff. Direct `zig build -Dui=true --summary all`
+	    passed. Direct
+	    `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build -Dui=true ui-smoke --summary all`
+	    passed. Direct
+	    `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build -Dui=true run-ui -- --process-export-smoke`
+	    exited successfully. No Nix command was run.
+  - Corrective checkpoint 2026-05-23: native Process export no longer trusts a
+    successful worker result unless every reported output basename is visible on
+    disk under the shared Gallery output directory. Export completion now refreshes
+    the in-memory Gallery file list without clobbering the Process export footer
+    message, and the native worker emits structured `v600.processing.event.v1`
+    `export-start`, `export-progress`, `file-written`, `export-complete`, and
+    `processing-error` diagnostics so scanner probe logs cannot be mistaken for
+    export-write evidence. Headless tests now cover both the positive handoff
+    path and the false-success guard where a reported output is missing on disk.
+  - Validation 2026-05-23: direct `zig build test --summary all` passed
+    `451/451`; direct `zig build -Dui=true --summary all` passed; direct
+    `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build -Dui=true native-process-export-smoke --summary all`
+    passed and logged processing export events plus a real `file-written` event.
+    The smoke-generated `frames/ui-smoke_01_ir_004.tif` was removed after the
+    check. No Nix command was run.
 
-- [x] Add native Process preview zoom and pan parity.
+	- [x] Add native Process preview zoom and pan parity.
   - Review source: 2026-05-16 second browser-vs-native UI parity pass.
   - Python/browser oracle: `extract_ui.html` wheel zoom and middle-mouse pan over
     the processing canvas.
@@ -9830,7 +9845,30 @@ Autonomous performance iteration map:
       - line 115 `scaffolded/replay-tested`:
         `v600/core/backends/sane.py:479 SaneEpsonScanner._save_image`, same Linux
         save helper surface as line 104.
-    - This confirms there is no further honest local checklist completion without
-      either macOS host evidence or an explicit release-scope decision accepting
-      or deferring the remaining macOS/proprietary-interpreter and broad
-      CLI/save-surface gaps.
+	    - This confirms there is no further honest local checklist completion without
+	      either macOS host evidence or an explicit release-scope decision accepting
+	      or deferring the remaining macOS/proprietary-interpreter and broad
+	      CLI/save-surface gaps.
+  - Post-export-handoff audit refresh 2026-05-23:
+    - A live native Process export report showed scanner probe timing but no new
+      files under `frames/`, `scans/processed/`, the repo, or `/tmp`; this exposed
+      an export/Gallery diagnostic gap rather than a scanner issue.
+    - Corrective work is recorded in the asynchronous Process export checkpoint
+      above and in `docs/PARITY_MANIFEST.md`: export completion now validates
+      reported files on disk, refreshes Gallery state after successful export, and
+      emits structured `v600.processing.event.v1` diagnostics.
+    - Validation after the corrective work:
+      - `zig build test --summary all` passed `451/451`;
+      - `zig build -Dui=true --summary all` passed;
+      - `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build -Dui=true
+        native-process-export-smoke --summary all` passed and logged a real
+        processing `file-written` event.
+    - The smoke-generated `frames/ui-smoke_01_ir_004.tif` was removed after the
+      check. `find frames -maxdepth 1 ...` now shows only older checked-ignore
+      frame outputs, not a fresh generated TIFF.
+    - Current unchecked rows from `rg -n "^- \[ \]|- \[ \]" plan.md` remain only
+      the macOS direct build/test evidence item and this final audit item.
+    - `git status --short --untracked-files=all` currently shows only intended
+      tracked source/docs changes from this corrective checkpoint:
+      `docs/PARITY_MANIFEST.md`, `plan.md`, `src/ui/process_export_worker.zig`,
+      and `src/ui/state.zig`.
