@@ -59,6 +59,22 @@ pub const ProcessPreviewResponse = struct {
     }
 };
 
+pub fn stableScannerCapabilities(
+    capabilities: scanner_contracts.ScannerCapabilities,
+) scanner_contracts.ScannerCapabilities {
+    return .{
+        .device_name = "",
+        .model = "Epson Perfection V600 Photo",
+        .optical_dpi = capabilities.optical_dpi,
+        .max_resolution = capabilities.max_resolution,
+        .flatbed_width_in = capabilities.flatbed_width_in,
+        .flatbed_height_in = capabilities.flatbed_height_in,
+        .tpu_width_in = capabilities.tpu_width_in,
+        .tpu_height_in = capabilities.tpu_height_in,
+        .ir_supported = capabilities.ir_supported,
+    };
+}
+
 pub const ProcessSelection = struct {
     x: f64,
     y: f64,
@@ -370,6 +386,7 @@ pub const State = struct {
     preview_requested: bool = false,
     preview_ready: bool = false,
     preview_image: ?PreviewImageInfo = null,
+    scanner_capabilities: ?scanner_contracts.ScannerCapabilities = null,
     scanner_progress_percent: ?u8 = null,
     scanner_timing_stage: []const u8 = "",
     scanner_timing_elapsed_us: u64 = 0,
@@ -434,6 +451,7 @@ pub const State = struct {
 
     pub fn beginScannerConnect(self: *State) void {
         self.scanner.connection = .connecting;
+        self.scanner_capabilities = null;
         self.scanner.scanner_error = null;
         self.scanner.scan_status = "Connecting...";
         self.status = self.scanner.scan_status;
@@ -446,12 +464,25 @@ pub const State = struct {
         tpu_width_in: f64,
         tpu_height_in: f64,
     ) void {
+        self.scannerConnectedWithCapabilities(preview_width, preview_height, .{
+            .tpu_width_in = tpu_width_in,
+            .tpu_height_in = tpu_height_in,
+        });
+    }
+
+    pub fn scannerConnectedWithCapabilities(
+        self: *State,
+        preview_width: usize,
+        preview_height: usize,
+        capabilities: scanner_contracts.ScannerCapabilities,
+    ) void {
         self.scanner.connection = .connected;
         self.scanner.scanner_error = null;
         self.scanner.preview_width = preview_width;
         self.scanner.preview_height = preview_height;
-        self.scanner.tpu_width_in = tpu_width_in;
-        self.scanner.tpu_height_in = tpu_height_in;
+        self.scanner.tpu_width_in = capabilities.tpu_width_in;
+        self.scanner.tpu_height_in = capabilities.tpu_height_in;
+        self.scanner_capabilities = stableScannerCapabilities(capabilities);
         self.scanner.scan_status = "";
         self.applyPendingScannerConfigSelection();
     }
@@ -461,6 +492,7 @@ pub const State = struct {
         @memcpy(self.scan_status_buffer[0..stored_len], message[0..stored_len]);
         const stored = self.scan_status_buffer[0..stored_len];
         self.scanner.connection = .error_state;
+        self.scanner_capabilities = null;
         self.scanner.scanner_error = stored;
         self.scanner.scanning = false;
         self.scanner.scan_status = stored;
@@ -666,6 +698,7 @@ pub const State = struct {
         image: PreviewImageInfo,
     ) void {
         self.scanner.connection = .connected;
+        self.scanner_capabilities = stableScannerCapabilities(capabilities);
         self.scanner.tpu_width_in = capabilities.tpu_width_in;
         self.scanner.tpu_height_in = capabilities.tpu_height_in;
         self.scanner.preview_width = image.width;
@@ -2342,6 +2375,18 @@ test "native UI scanner transitions mirror browser workflow state headlessly" {
     try std.testing.expectEqual(@as(usize, 480), info.preview_height);
     try std.testing.expectApproxEqAbs(8.5, info.tpu_width_in, 0.0);
     try std.testing.expectApproxEqAbs(11.7, info.tpu_height_in, 0.0);
+    try std.testing.expect(state.scanner_capabilities != null);
+    try std.testing.expectApproxEqAbs(8.5, state.scanner_capabilities.?.tpu_width_in, 0.0);
+    try std.testing.expectApproxEqAbs(11.7, state.scanner_capabilities.?.tpu_height_in, 0.0);
+
+    state.scannerConnectedWithCapabilities(320, 240, .{
+        .max_resolution = 3200,
+        .tpu_width_in = 2.7,
+        .tpu_height_in = 9.54,
+    });
+    try std.testing.expectEqual(@as(u32, 3200), state.scanner_capabilities.?.max_resolution);
+    try std.testing.expectApproxEqAbs(2.7, state.scanner.tpu_width_in, 0.0);
+    try std.testing.expectApproxEqAbs(9.54, state.scanner.tpu_height_in, 0.0);
 
     state.beginScan("Scanning...");
     status = state.scannerStatus();
@@ -2373,6 +2418,7 @@ test "native Scan status display renders scanner state messages by priority" {
 
     state.scannerFailed("backend unavailable");
     try std.testing.expectEqualStrings("backend unavailable", state.scanStatusDisplay());
+    try std.testing.expect(state.scanner_capabilities == null);
 
     state.scannerConnected(160, 100, 2.7, 9.54);
     state.beginPreviewRequest();

@@ -122,7 +122,7 @@ pub const Worker = struct {
         if (self.context != null) return false;
         const command = model.takeCommand() orelse return false;
         switch (command) {
-            .preview_scan => |plan| try self.startPreview(plan),
+            .preview_scan => |plan| try self.startPreview(plan, model.scanner_capabilities),
             .scan_start => {
                 model.pending_command = command;
                 return false;
@@ -131,7 +131,11 @@ pub const Worker = struct {
         return true;
     }
 
-    pub fn startPreview(self: *Worker, plan: ui_state.PreviewScanPlan) !void {
+    pub fn startPreview(
+        self: *Worker,
+        plan: ui_state.PreviewScanPlan,
+        capabilities: ?scanner_contracts.ScannerCapabilities,
+    ) !void {
         if (self.context != null) return error.PreviewWorkerBusy;
 
         const start_ns = monotonicNowNs();
@@ -153,6 +157,7 @@ pub const Worker = struct {
             .environ_map = self.environ_map,
             .request = owned_plan,
             .output_path = output_path,
+            .capabilities = capabilities,
             .event_sink = self.event_sink,
             .done = &self.done,
             .failed = &self.failed,
@@ -276,10 +281,16 @@ fn runScannerPreview(context: *Context) !void {
         .event_sink = context.event_sink,
     };
     const probe_start = monotonicNowNs();
-    const probed = try runtime.probe(DiscardOutput{});
-    const caps = stableCapabilities(probed);
-    context.capabilities = caps;
-    context.pushTimingSince("native.preview.probe", probe_start, "ok");
+    const caps = if (context.capabilities) |cached| caps: {
+        context.pushTimingSince("native.preview.probe", probe_start, "cached");
+        break :caps cached;
+    } else caps: {
+        const probed = try runtime.probe(DiscardOutput{});
+        const stable = ui_state.stableScannerCapabilities(probed);
+        context.capabilities = stable;
+        context.pushTimingSince("native.preview.probe", probe_start, "ok");
+        break :caps stable;
+    };
     const request_start = monotonicNowNs();
     var request = context.request.request;
     request.area.width = caps.tpu_width_in;
@@ -328,6 +339,26 @@ fn fakePreviewSuccess(context: *Context) !void {
     );
 }
 
+fn fakePreviewRequiresCachedCapabilities(context: *Context) !void {
+    context.pushTiming(.{
+        .stage = "native.preview.fake_cached_capabilities",
+        .elapsed_us = 1,
+        .detail = "ok",
+    });
+    const caps = context.capabilities orelse return error.MissingCachedCapabilities;
+    if (caps.max_resolution != 3200) return error.BadCachedCapabilities;
+    if (caps.tpu_width_in != 3.0 or caps.tpu_height_in != 9.0) return error.BadCachedCapabilities;
+    context.preview_buffer = try previewBufferFromBytes(
+        context.allocator,
+        context.output_path,
+        1,
+        1,
+        3,
+        8,
+        &.{ 1, 2, 3 },
+    );
+}
+
 fn fakePreviewFailure(context: *Context) !void {
     context.pushTiming(.{
         .stage = "native.preview.fake_executor",
@@ -340,20 +371,6 @@ fn fakePreviewFailure(context: *Context) !void {
 const DiscardOutput = struct {
     pub fn print(_: DiscardOutput, comptime _: []const u8, _: anytype) !void {}
 };
-
-fn stableCapabilities(caps: scanner_contracts.ScannerCapabilities) scanner_contracts.ScannerCapabilities {
-    return .{
-        .device_name = "",
-        .model = "Epson Perfection V600 Photo",
-        .optical_dpi = caps.optical_dpi,
-        .max_resolution = caps.max_resolution,
-        .flatbed_width_in = caps.flatbed_width_in,
-        .flatbed_height_in = caps.flatbed_height_in,
-        .tpu_width_in = caps.tpu_width_in,
-        .tpu_height_in = caps.tpu_height_in,
-        .ir_supported = caps.ir_supported,
-    };
-}
 
 fn loadPreviewBuffer(allocator: std.mem.Allocator, output_path: []const u8) !PreviewBuffer {
     const image = try tiff.loadRgbPage(allocator, output_path);
@@ -676,6 +693,38 @@ test "preview worker consumes queued command without blocking UI state" {
     try std.testing.expect(model.scanner_timing_count >= 3);
     try std.testing.expectEqualStrings("native.preview.state_update", model.scanner_timing_stage);
     try std.testing.expectEqualStrings("ok", model.scanner_timing_detail.?);
+}
+
+test "preview worker reuses connected scanner capabilities" {
+    var env = try std.process.Environ.createMap(std.testing.environ, std.testing.allocator);
+    defer env.deinit();
+
+    var model = ui_state.State.init("scans", "frames", 0);
+    model.scannerConnectedWithCapabilities(0, 0, .{
+        .max_resolution = 3200,
+        .tpu_width_in = 3.0,
+        .tpu_height_in = 9.0,
+    });
+    try std.testing.expect(model.queuePreviewScan("/tmp/v600-native-preview-cached.tiff"));
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakePreviewRequiresCachedCapabilities);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startQueued(&model));
+
+    var completed = false;
+    for (0..test_worker_poll_attempts) |_| {
+        if (worker.poll(&model)) {
+            completed = true;
+            break;
+        }
+        try std.Thread.yield();
+    }
+    try std.testing.expect(completed);
+    try std.testing.expect(model.preview_ready);
+    try std.testing.expect(model.scanner_capabilities != null);
+    try std.testing.expectEqual(@as(u32, 3200), model.scanner_capabilities.?.max_resolution);
+    try std.testing.expectApproxEqAbs(3.0, model.scanner.tpu_width_in, 0.0);
+    try std.testing.expectApproxEqAbs(9.0, model.scanner.tpu_height_in, 0.0);
 }
 
 test "preview worker leaves scan-start command for scan worker" {

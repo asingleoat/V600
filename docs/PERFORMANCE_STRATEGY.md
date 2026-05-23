@@ -1431,6 +1431,23 @@ by reusing validated scanner capabilities for the active selected device and
 wrapper/config context, with transparent fallback to the current probe path on
 cache miss or invalidation.
 
+Capability reuse result from 2026-05-23: native app/session state now stores a
+stable copy of connected scanner capabilities, clears it on reconnect/failure,
+passes it into the preview worker, and passes it into the existing
+`Runtime.scan` capability override for scan-worker selected-area scans. CLI
+single-shot disk caching was intentionally left out because persistent cache
+invalidation needs a separate key design. Headless tests cover native state
+store/clear, preview worker cache use, and scan worker cache use; direct
+`zig build test --summary all` passed `450/450`, and direct
+`zig build -Dui=true --summary all` passed. Live native preview smoke improved
+from `native.preview.total=46437116 us` to `28221448 us`, with
+`native.preview.probe` changing from `18218779 us` to cached `0 us`; the output
+remained `1072x3814` 8-bit sRGB and cached preview remained `536x1907` 8-bit.
+Live native scan-worker smoke improved `native.scan.runtime_scan` from
+`25627817 us` to `13551496 us`, with `linux.scan_once.capability_lookup`
+changing from `12130892 us` to override `0 us`; output remained `200x201`
+16-bit sRGB with the same requested/effective DPI `800/800`.
+
 ## Required Evidence For Optimization Work
 
 - Capture before and after `bench-color` output in `plan.md`.

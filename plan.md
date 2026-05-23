@@ -8097,7 +8097,7 @@ Autonomous performance iteration map:
           on every selected-area scan. This is parity-preserving because the
           capability data is scanner/backend metadata, not image data or scan
           algorithm output.
-    - [ ] Implement Linux scanner capability-cache reuse for selected-area
+    - [x] Implement Linux scanner capability-cache reuse for selected-area
           scans.
       - Required behavior:
         - Cache `ScannerCapabilities` by selected device name and wrapper
@@ -8121,6 +8121,76 @@ Autonomous performance iteration map:
           scan-worker smokes, plus one CLI RGB selected-area scan if a CLI cache
           is implemented. Report capability lookup/probe time, child scan time,
           total time, selected device, output path, and TIFF/sidecar parity.
+      - Completed 2026-05-23:
+        - Implementation:
+          - Added `State.scanner_capabilities` and
+            `State.scannerConnectedWithCapabilities`. The stored capabilities are
+            a stable by-value copy without borrowed `scanimage --help` slices.
+          - The connect worker now stores probed capabilities in native state
+            instead of only copying TPU dimensions.
+          - The preview worker receives active connected capabilities from state.
+            On cache hit it emits `native.preview.probe` detail `cached` and
+            skips `Runtime.probe`; on cache miss it keeps the existing live probe
+            fallback.
+          - The scan worker passes active connected capabilities into the
+            existing `Runtime.scan` capability override, so selected-area scans
+            avoid the flatbed/TPU `scanimage --help` probe while preserving
+            command planning and metadata sidecar behavior.
+          - Capability cache invalidation is session-local and conservative:
+            `beginScannerConnect` and `scannerFailed` clear the cache. CLI
+            single-shot disk caching was intentionally not implemented in this
+            checkpoint because it needs persistent invalidation keys.
+        - Headless validation:
+          - Added native state tests for storing, replacing, and clearing scanner
+            capabilities.
+          - Added preview-worker cache-hit test proving queued preview commands
+            receive connected capabilities.
+          - Added scan-worker cache-hit test proving queued scan commands pass
+            connected capabilities into the runtime context.
+          - `zig build test --summary all` passed `450/450`.
+          - `zig build -Dui=true --summary all` passed.
+        - Live before/after timing evidence:
+          - Baseline native preview worker from the previous live pass:
+            `native.preview.probe=18218779 us`, `native.preview.scan=27331577 us`,
+            `native.preview.downsample=876753 us`, total
+            `native.preview.total=46437116 us`.
+          - Cached native preview command:
+            `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software
+            V600_HARDWARE_SMOKE=1 zig build -Dui=true run-ui --
+            --preview-worker-smoke --out
+            /tmp/v600-live-20260523-native-preview-worker-cached.tiff
+            --timing-report .zig-cache/tmp/v600-live-ui-capability-cache.jsonl`
+            emitted `native.preview.probe` detail `cached`,
+            `linux.scan_once.capability_lookup` detail `override`,
+            `native.preview.scan=27291923 us`,
+            `native.preview.downsample=919098 us`, and total
+            `native.preview.total=28221448 us`. Output remained
+            `1072x3814` 8-bit sRGB, and the worker cached a `536x1907` 8-bit
+            preview. Effective speedup: about `1.65x` wall-clock for the smoke,
+            saving the prior `~18.2 s` probe.
+          - Baseline native scan worker from the previous live pass:
+            `linux.scan_once.capability_lookup=12130892 us`,
+            `native.scan.runtime_scan=25627817 us`, output `200x201` 16-bit sRGB.
+          - Cached native scan command:
+            `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software
+            V600_HARDWARE_SMOKE=1 zig build -Dui=true run-ui --
+            --scan-worker-smoke --out
+            /tmp/v600-live-20260523-native-scan-worker-cached.tiff
+            --timing-report .zig-cache/tmp/v600-live-ui-capability-cache.jsonl`
+            emitted `linux.scan_once.capability_lookup` detail `override`,
+            `native.scan.runtime_scan=13551496 us`, progress
+            `15,31,47,63,79,95,100`, and output `200x201` 16-bit sRGB. Effective
+            speedup: about `1.89x` for runtime scan, saving the prior `~12.1 s`
+            capability probe.
+        - Output parity evidence:
+          - `identify -format '%f[%p] %m %wx%h %[depth]-bit %[colorspace]\n'
+            /tmp/v600-live-20260523-native-preview-worker-cached.tiff
+            /tmp/v600-live-20260523-native-scan-worker-cached.tiff` confirmed
+            preview `1072x3814` 8-bit sRGB and scan `200x201` 16-bit sRGB.
+          - `jq` sidecar inspection confirmed device `epkowa:interpreter:001:020`,
+            source `tpu`, preview requested/effective DPI `200/400`, scan
+            requested/effective DPI `800/800`, expected bit depth, and
+            `custom_luts_applied=false`.
 
 - [x] Implement direct-u16 inverted-positive export output.
   - Scope: same `invert_negative` plus `render_to_display` export result as the

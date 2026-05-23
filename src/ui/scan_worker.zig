@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const film_lut = @import("../scanner/film_lut.zig");
+const scanner_contracts = @import("../scanner/contracts.zig");
 const scanner_events = @import("../scanner/events.zig");
 const scanner_linux = @import("../scanner/linux.zig");
 const scanner_lut = @import("../scanner/lut.zig");
@@ -86,6 +87,7 @@ pub const Context = struct {
     cancel_file_path: ?[]u8,
     lut_file_path: ?[]u8 = null,
     metadata_path: ?[]u8 = null,
+    capabilities: ?scanner_contracts.ScannerCapabilities = null,
     error_detail: []const u8 = "",
     done: *std.atomic.Value(bool),
     failed: *std.atomic.Value(bool),
@@ -151,12 +153,17 @@ pub const Worker = struct {
                 model.pending_command = command;
                 return false;
             },
-            .scan_start => |plan| try self.startScan(plan, preview_buffer),
+            .scan_start => |plan| try self.startScan(plan, preview_buffer, model.scanner_capabilities),
         }
         return true;
     }
 
-    pub fn startScan(self: *Worker, plan: ui_state.ScanStartPlan, preview_buffer: ?preview_worker.PreviewBuffer) !void {
+    pub fn startScan(
+        self: *Worker,
+        plan: ui_state.ScanStartPlan,
+        preview_buffer: ?preview_worker.PreviewBuffer,
+        capabilities: ?scanner_contracts.ScannerCapabilities,
+    ) !void {
         if (self.context != null) return error.ScanWorkerBusy;
 
         const start_ns = monotonicNowNs();
@@ -201,6 +208,7 @@ pub const Worker = struct {
             .output_path = output_path,
             .cancel_file_path = cancel_file_path,
             .lut_file_path = lut_file_path,
+            .capabilities = capabilities,
             .done = &self.done,
             .failed = &self.failed,
             .cancelled = &self.cancelled,
@@ -389,6 +397,7 @@ fn runScannerScan(context: *Context) !void {
         .request = request,
         .output_path = context.output_path,
         .cancel_file = context.cancel_file_path,
+        .capabilities = context.capabilities,
     });
     context.event_queue.pushTimingSince("native.scan.runtime_scan", scan_start, "ok");
     const metadata_start = monotonicNowNs();
@@ -457,6 +466,18 @@ fn fakeScanSuccess(context: *Context) !void {
         if (context.request.request.lut_file_path == null) return error.MissingRequestLutPath;
         if (!std.mem.eql(u8, context.request.request.lut_file_path.?, path)) return error.BadRequestLutPath;
     }
+    context.metadata_path = try std.fmt.allocPrint(context.allocator, "{s}.json", .{context.output_path});
+}
+
+fn fakeScanRequiresCachedCapabilities(context: *Context) !void {
+    context.event_queue.pushTiming(.{
+        .stage = "native.scan.fake_cached_capabilities",
+        .elapsed_us = 1,
+        .detail = "ok",
+    });
+    const caps = context.capabilities orelse return error.MissingCachedCapabilities;
+    if (caps.max_resolution != 3200) return error.BadCachedCapabilities;
+    if (caps.tpu_width_in != 3.0 or caps.tpu_height_in != 9.0) return error.BadCachedCapabilities;
     context.metadata_path = try std.fmt.allocPrint(context.allocator, "{s}.json", .{context.output_path});
 }
 
@@ -569,6 +590,36 @@ test "scan worker consumes queued scan command without blocking UI state" {
     try std.testing.expect(model.scanner_timing_count >= 5);
     try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
     try std.testing.expectEqualStrings("ok", model.scanner_timing_detail.?);
+}
+
+test "scan worker passes connected scanner capabilities to runtime context" {
+    var env = try std.process.Environ.createMap(std.testing.environ, std.testing.allocator);
+    defer env.deinit();
+
+    var model = ui_state.State.init("scans", "frames", 0);
+    model.scannerConnectedWithCapabilities(1000, 500, .{
+        .max_resolution = 3200,
+        .tpu_width_in = 3.0,
+        .tpu_height_in = 9.0,
+    });
+    model.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
+    try std.testing.expect(model.queueScanStart(".zig-cache/v600-scan.cancel"));
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakeScanRequiresCachedCapabilities);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startQueued(&model, null));
+
+    var completed = false;
+    for (0..1000) |_| {
+        if (worker.poll(&model)) {
+            completed = true;
+            break;
+        }
+        try std.Thread.yield();
+    }
+    try std.testing.expect(completed);
+    try std.testing.expect(!model.scanner.scanning);
+    try std.testing.expectEqualStrings("Saved: scan_0001_rgbir_3200dpi.tiff", model.status);
 }
 
 test "scan worker writes temporary LUT file from preview pixels" {

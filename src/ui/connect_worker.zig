@@ -97,7 +97,7 @@ pub const Worker = struct {
         if (context.failed.load(.acquire)) {
             model.scannerFailed(context.error_detail orelse "Scanner connection failed");
         } else if (context.capabilities) |caps| {
-            model.scannerConnected(0, 0, caps.tpu_width_in, caps.tpu_height_in);
+            model.scannerConnectedWithCapabilities(0, 0, caps);
             model.setStatus("Scanner connected. Ready.");
         } else {
             model.scannerFailed("Scanner connection produced no capabilities");
@@ -133,7 +133,7 @@ fn runScannerProbe(context: *Context) !void {
         .io = context.io,
         .environ_map = context.environ_map,
     };
-    context.capabilities = stableCapabilities(try runtime.probe(DiscardOutput{}));
+    context.capabilities = ui_state.stableScannerCapabilities(try runtime.probe(DiscardOutput{}));
 }
 
 pub fn fakeConnectSuccess(context: *Context) !void {
@@ -156,20 +156,6 @@ pub fn fakeConnectFailure(context: *Context) !void {
 const DiscardOutput = struct {
     pub fn print(_: DiscardOutput, comptime _: []const u8, _: anytype) !void {}
 };
-
-fn stableCapabilities(caps: scanner_contracts.ScannerCapabilities) scanner_contracts.ScannerCapabilities {
-    return .{
-        .device_name = "",
-        .model = "Epson Perfection V600 Photo",
-        .optical_dpi = caps.optical_dpi,
-        .max_resolution = caps.max_resolution,
-        .flatbed_width_in = caps.flatbed_width_in,
-        .flatbed_height_in = caps.flatbed_height_in,
-        .tpu_width_in = caps.tpu_width_in,
-        .tpu_height_in = caps.tpu_height_in,
-        .ir_supported = caps.ir_supported,
-    };
-}
 
 fn waitForPoll(worker: *Worker, model: *ui_state.State) !void {
     var completed = false;
