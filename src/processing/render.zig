@@ -7,6 +7,7 @@ pub const exact_percentile_sample_limit: usize = 0;
 pub const default_percentile_sample_limit: usize = 16_384;
 pub const preview_display_lut_entries: usize = 256;
 pub const export_display_lut_entries: usize = 1024;
+const render_u8_f32_parallel_min_pixels: usize = 1_000_000;
 
 pub const SigmoidTonemapOptions = struct {
     mid_grey: f64 = 0.18,
@@ -109,7 +110,28 @@ pub fn renderToDisplayU8F32(
         }
         return;
     }
-    renderToDisplayU8LutF32(input, output, state);
+    try renderToDisplayU8LutF32(allocator, input, output, state);
+}
+
+pub fn renderToDisplayU16F32(
+    allocator: std.mem.Allocator,
+    input: []const f32,
+    output: []u16,
+    options: RenderToDisplayOptions,
+) !void {
+    try validateRgbInputF32(input);
+    if (input.len != output.len) return error.InvalidRenderBuffer;
+    try validatePercentile(options.percentile_lo);
+    try validatePercentile(options.percentile_hi);
+
+    const state = try displayRenderStateF32(allocator, input, options);
+    if (shouldUseExactDisplayCurveF32(input, options)) {
+        for (input, output, 0..) |value, *out, index| {
+            out.* = displayToU16(displayUnitValue(@floatCast(value), index, state));
+        }
+        return;
+    }
+    renderToDisplayU16LutF32(input, output, state);
 }
 
 const DisplayRenderState = struct {
@@ -228,23 +250,124 @@ fn renderToDisplayU8Lut(input: []const f64, output: []u8, state: DisplayRenderSt
     var table: [3][preview_display_lut_entries]u8 = undefined;
     fillDisplayLutU8(&table, state);
     const scale = @as(f64, @floatFromInt(preview_display_lut_entries - 1));
-    for (input, output, 0..) |value, *out, index| {
-        const normalized = normalizedDisplayValue(value, state);
-        const table_index: usize = @intFromFloat(@round(normalized * scale));
-        out.* = table[index % 3][@min(table_index, preview_display_lut_entries - 1)];
+    var index: usize = 0;
+    while (index < input.len) : (index += 3) {
+        output[index] = previewDisplayTableLookupF64(input[index], &table[0], state, scale);
+        output[index + 1] = previewDisplayTableLookupF64(input[index + 1], &table[1], state, scale);
+        output[index + 2] = previewDisplayTableLookupF64(input[index + 2], &table[2], state, scale);
     }
 }
 
-fn renderToDisplayU8LutF32(input: []const f32, output: []u8, state: DisplayRenderState) void {
+fn renderToDisplayU8LutF32(allocator: std.mem.Allocator, input: []const f32, output: []u8, state: DisplayRenderState) !void {
     var table: [3][preview_display_lut_entries]u8 = undefined;
     fillDisplayLutU8(&table, state);
-    const scale = @as(f64, @floatFromInt(preview_display_lut_entries - 1));
-    for (input, output, 0..) |value, *out, index| {
-        const normalized = normalizedDisplayValue(@floatCast(value), state);
-        const table_index: usize = @intFromFloat(@round(normalized * scale));
-        out.* = table[index % 3][@min(table_index, preview_display_lut_entries - 1)];
+    const lookup = PreviewDisplayF32LookupState{
+        .lo = @floatCast(state.range.lo),
+        .inv_denominator = @floatCast(1.0 / state.denominator),
+        .scale = @floatFromInt(preview_display_lut_entries - 1),
+    };
+    const pixel_count = input.len / 3;
+    const worker_count = workerCountForPixels(pixel_count, render_u8_f32_parallel_min_pixels);
+    if (worker_count > 1) {
+        try renderToDisplayU8LutF32Parallel(allocator, input, output, &table, lookup, worker_count);
+    } else {
+        renderToDisplayU8LutF32Range(input, output, &table, lookup, 0, pixel_count);
     }
 }
+
+const RenderU8F32RangeContext = struct {
+    input: []const f32,
+    output: []u8,
+    table: *const [3][preview_display_lut_entries]u8,
+    lookup: PreviewDisplayF32LookupState,
+    pixel_start: usize,
+    pixel_end: usize,
+};
+
+fn renderToDisplayU8LutF32Parallel(
+    allocator: std.mem.Allocator,
+    input: []const f32,
+    output: []u8,
+    table: *const [3][preview_display_lut_entries]u8,
+    lookup: PreviewDisplayF32LookupState,
+    worker_count: usize,
+) !void {
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+    const contexts = try allocator.alloc(RenderU8F32RangeContext, worker_count);
+    defer allocator.free(contexts);
+    const pixel_count = input.len / 3;
+    var started: usize = 0;
+    errdefer for (threads[0..started]) |thread| thread.join();
+    for (0..worker_count) |worker_index| {
+        contexts[worker_index] = .{
+            .input = input,
+            .output = output,
+            .table = table,
+            .lookup = lookup,
+            .pixel_start = pixel_count * worker_index / worker_count,
+            .pixel_end = pixel_count * (worker_index + 1) / worker_count,
+        };
+        threads[worker_index] = try std.Thread.spawn(.{}, renderToDisplayU8LutF32Worker, .{&contexts[worker_index]});
+        started += 1;
+    }
+    for (threads) |thread| thread.join();
+}
+
+fn renderToDisplayU8LutF32Worker(context: *const RenderU8F32RangeContext) void {
+    renderToDisplayU8LutF32Range(context.input, context.output, context.table, context.lookup, context.pixel_start, context.pixel_end);
+}
+
+fn renderToDisplayU8LutF32Range(
+    input: []const f32,
+    output: []u8,
+    table: *const [3][preview_display_lut_entries]u8,
+    lookup: PreviewDisplayF32LookupState,
+    pixel_start: usize,
+    pixel_end: usize,
+) void {
+    var pixel_index = pixel_start;
+    while (pixel_index < pixel_end) : (pixel_index += 1) {
+        const index = pixel_index * 3;
+        output[index] = previewDisplayTableLookupF32(input[index], &table[0], lookup);
+        output[index + 1] = previewDisplayTableLookupF32(input[index + 1], &table[1], lookup);
+        output[index + 2] = previewDisplayTableLookupF32(input[index + 2], &table[2], lookup);
+    }
+}
+
+fn workerCountForPixels(pixel_count: usize, min_pixels: usize) usize {
+    if (pixel_count < min_pixels) return 1;
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    if (cpu_count <= 1) return 1;
+    return @min(cpu_count - 1, pixel_count / min_pixels);
+}
+
+inline fn previewDisplayTableLookupF64(
+    value: f64,
+    table: *const [preview_display_lut_entries]u8,
+    state: DisplayRenderState,
+    scale: f64,
+) u8 {
+    const normalized = normalizedDisplayValue(value, state);
+    const table_index: usize = @intFromFloat(@round(normalized * scale));
+    return table.*[@min(table_index, preview_display_lut_entries - 1)];
+}
+
+inline fn previewDisplayTableLookupF32(
+    value: f32,
+    table: *const [preview_display_lut_entries]u8,
+    state: PreviewDisplayF32LookupState,
+) u8 {
+    const normalized = @min(@max((value - state.lo) * state.inv_denominator, 0.0), 1.0);
+    const table_index: usize = @intFromFloat(@round(normalized * state.scale));
+    return table.*[@min(table_index, preview_display_lut_entries - 1)];
+}
+
+const PreviewDisplayF32LookupState = struct {
+    lo: f32,
+    inv_denominator: f32,
+    scale: f32,
+};
 
 fn renderToDisplayU16Lut(input: []const f64, output: []u16, state: DisplayRenderState) void {
     var table: [3][export_display_lut_entries]f32 = undefined;
@@ -261,6 +384,43 @@ fn renderToDisplayU16Lut(input: []const f64, output: []u16, state: DisplayRender
         const hi: f64 = @floatCast(table[channel][upper]);
         out.* = displayToU16(lo * (1.0 - fraction) + hi * fraction);
     }
+}
+
+fn renderToDisplayU16LutF32(input: []const f32, output: []u16, state: DisplayRenderState) void {
+    var table: [3][export_display_lut_entries]f32 = undefined;
+    fillDisplayLutF32(&table, state);
+    const lookup = ExportDisplayF32LookupState{
+        .lo = @floatCast(state.range.lo),
+        .inv_denominator = @floatCast(1.0 / state.denominator),
+        .scale = @floatFromInt(export_display_lut_entries - 1),
+    };
+    var index: usize = 0;
+    while (index < input.len) : (index += 3) {
+        output[index] = exportDisplayTableLookupF32(input[index], &table[0], lookup);
+        output[index + 1] = exportDisplayTableLookupF32(input[index + 1], &table[1], lookup);
+        output[index + 2] = exportDisplayTableLookupF32(input[index + 2], &table[2], lookup);
+    }
+}
+
+const ExportDisplayF32LookupState = struct {
+    lo: f32,
+    inv_denominator: f32,
+    scale: f32,
+};
+
+inline fn exportDisplayTableLookupF32(
+    value: f32,
+    table: *const [export_display_lut_entries]f32,
+    state: ExportDisplayF32LookupState,
+) u16 {
+    const normalized = @min(@max((value - state.lo) * state.inv_denominator, 0.0), 1.0);
+    const position = normalized * state.scale;
+    const lower: usize = @intFromFloat(@floor(position));
+    const upper = @min(lower + 1, export_display_lut_entries - 1);
+    const fraction = position - @as(f32, @floatFromInt(lower));
+    const lo = table.*[lower];
+    const hi = table.*[upper];
+    return displayToU16(@floatCast(lo * (1.0 - fraction) + hi * fraction));
 }
 
 fn fillDisplayLutU8(table: *[3][preview_display_lut_entries]u8, state: DisplayRenderState) void {

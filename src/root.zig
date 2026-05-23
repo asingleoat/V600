@@ -10,6 +10,7 @@ pub const native_ui_scan_worker = @import("ui/scan_worker.zig");
 pub const native_ui_process_worker = @import("ui/process_worker.zig");
 pub const native_ui_process_export_worker = @import("ui/process_export_worker.zig");
 pub const native_ui_inverted_preview_worker = @import("ui/inverted_preview_worker.zig");
+pub const native_ui_process_cache = @import("ui/process_cache.zig");
 pub const native_ui_theme = @import("ui/theme.zig");
 pub const tiff = @import("tiff.zig");
 

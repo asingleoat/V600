@@ -4,7 +4,11 @@ This project is moving from a mature Python version one implementation to a
 function-by-function Zig rewrite. The Python code is now the frozen behavior
 oracle. The rewrite succeeds only when the Zig implementation reaches full
 behavior parity for scanner operation, processing, export, configuration, and
-UI workflows.
+UI workflows. For numeric image-processing performance work, parity means the
+same user-visible operation with documented final-output tolerances; it does not
+require byte-for-byte equality with the Python oracle or with intermediate
+floating-point buffers when a very small final `u8`/`u16`/mask/geometry error
+buys a large speed increase.
 
 The scanner path is the highest-risk and highest-priority work. Make scanner
 progress first, keep it testable without hardware where possible, and use real
@@ -49,23 +53,30 @@ measured reason.
     Any intentionally different algorithm is a separate post-parity experiment
     that needs explicit user approval and must not close a rewrite checklist
     item.
-12. Keep changes scoped. Avoid unrelated refactors, formatting churn, and broad
+12. Numeric performance work does not need byte-for-byte identity with Python
+    or with intermediate Zig buffers. It does need an explicit final-output
+    error budget and evidence at the surface that matters: final preview `u8`
+    pixels, final export `u16` pixels, binary masks, frame geometry, metadata,
+    or scanner replay fields. Very small errors are acceptable for large speed
+    gains; silent tolerance expansion, unmeasured visual-only acceptance, or
+    algorithm substitution is not.
+13. Keep changes scoped. Avoid unrelated refactors, formatting churn, and broad
    rewrites unless the current checklist item requires them.
-13. Prefer headless tests and replay fixtures first; run hardware and GUI tests
+14. Prefer headless tests and replay fixtures first; run hardware and GUI tests
    only when the environment actually supports them.
-14. Avoid redundant Nix evaluations. Assume the conversation is already running
+15. Avoid redundant Nix evaluations. Assume the conversation is already running
     inside the ambient project nix shell. For ordinary code/test checkpoints,
     build only with direct `zig ...` commands and Zig's local build graph. Do
     not wrap normal builds, tests, UI smokes, scanner commands, or formatting
     in `nix develop`, `nix-shell`, `nix build`, or `nix flake check` unless the
     current checklist item explicitly changes Nix/dependency/package wiring or
     the user explicitly asks for a Nix command.
-15. If a new dependency, changed dependency, missing native library, stale Zig
+16. If a new dependency, changed dependency, missing native library, stale Zig
     version, or other shell-environment problem means the ambient nix shell is
     no longer sufficient, stop and ask the human to update or re-open the nix
     shell. Do not run Nix commands to repair or refresh the environment
     yourself.
-16. Treat items marked `PENDING USER UPDATE` as parked external blockers, not
+17. Treat items marked `PENDING USER UPDATE` as parked external blockers, not
     as selectable unchecked work. Do not revisit macOS-only hardware, SDK, or
     live scanner validation while the conversation is on Linux. Resume those
     items only after the user explicitly says a macOS host or other required
@@ -97,6 +108,11 @@ change looks obvious.
    - For command construction and parsing, compare exact strings and fields.
    - For numeric image behavior, compare against Python-generated fixtures
      with documented tolerances.
+   - Do not require byte-for-byte equality for numeric intermediates when a
+     faster path is intentionally approximate. Push accuracy checks through to
+     the final quantized preview/export/mask/geometry result, record `max_abs`,
+     RMS/MSE, mismatch rate, and any metadata equality that applies, and accept
+     the tolerance only when the speedup is large enough to justify it.
    - For every function-shaped port, write down the Python symbol and the
      algorithm or named dependency being matched before treating the Zig result
      as parity. Headless tests should fail if a future change swaps in a
@@ -138,6 +154,14 @@ unchecked item that satisfies all of these conditions:
 - The item improves parity, testability, performance, or platform readiness in
   the order this plan lays out.
 - The item is not marked `PENDING USER UPDATE`.
+
+If the active user direction is performance measurement or optimization, treat
+that as a scoped mode of work: choose performance instrumentation, benchmarks,
+or same-behavior optimization items first. Do not drift into release QA, native
+UI screenshot capture, packaging, Nix validation, or macOS validation items just
+because they are unchecked later in the file. Those items are selected only when
+the user explicitly switches back to release, UI, packaging, or platform
+validation work.
 
 If two items are available, prefer in this order:
 
@@ -6083,13 +6107,1857 @@ Prompt-to-artifact checklist:
       down from `410896 us` before the density LUT checkpoint and `208072 us`
       with the conservative f64 density-LUT preview path.
 
-- [ ] Re-benchmark preview after f32 density LUT adoption and select the next
+- [x] Re-benchmark preview after f32 density LUT adoption and select the next
       hotspot.
-  - Current expectation: first-use inverted preview is now roughly split between
-    f32 density-LUT inversion (`74063 us` including LUT build) and display
-    rendering/range work (full preview `146687 us`).
-  - Before changing algorithms, add or run a benchmark that reports the current
-    f32 inversion, f32 render range/LUT, and output write costs in one command.
+  - Added `inverted_preview_f32_breakdown` to
+    `bench-processing-commands`. It reports production first-use preview time,
+    manual f32 stage timings, output parity against production, and comparison
+    against the exact f64 table-index output path.
+  - Implemented two display-output wins while preserving the same preview
+    algorithm:
+    - channel-specific per-pixel loops avoid the old per-sample `index % 3`
+      in preview display LUT writes;
+    - `renderToDisplayU8F32` now uses f32 range/index arithmetic for the
+      preview table lookup, leaving the exact f64-index comparison in the
+      benchmark harness.
+  - Validation on `scan_0004_rgbir_3200dpi.tiff`:
+    - Pre-change accepted f32-density full preview: `146687 us`, checksum
+      `3912224049`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview_f32_breakdown`
+      reported production `122313 us`, manual total `123680 us`,
+      `invert_us=68753`, `range_us=1310`, `output_write_us=52157`,
+      `max_abs=0` and matching checksum `3912224212` against the manual
+      f32-index mirror.
+    - Exact f64-index output comparison on the same scan reported
+      `exact_output_write_us=64246`, `exact_max_abs=2`,
+      `exact_mse=0.000004425`, and `exact_mismatches=153` out of
+      `42,713,088` channel samples.
+  - Multi-scan real-data spread for the exact f64-index comparison:
+    - `scan_0001_rgbir_3200dpi.tiff`: production `243030 us`,
+      `output_write_us=92289`, exact write `113211 us`, `max_abs=2`,
+      `mse=0.000001385`, `104` mismatches out of `85,917,696` channel
+      samples.
+    - `scan_0002_rgbir_3200dpi.tiff`: production `129442 us`,
+      `output_write_us=49808`, exact write `61893 us`, `max_abs=2`,
+      `mse=0.000007563`, `325` mismatches out of `46,148,094` channel
+      samples.
+    - `scan_0003_rgbir_3200dpi.tiff`: production `131599 us`,
+      `output_write_us=50181`, exact write `62477 us`, `max_abs=2`,
+      `mse=0.000002247`, `96` mismatches out of `46,718,976` channel samples.
+    - `scan_0004_rgbir_3200dpi.tiff`: production `122313 us`,
+      `output_write_us=52157`, exact write `64246 us`, `max_abs=2`,
+      `mse=0.000004425`, `153` mismatches out of `42,713,088` channel samples.
+  - Selected next hotspot: f32 density-LUT inversion is now dominant. On the
+    measured real scans it accounts for roughly 56-61 percent of manual preview
+    time, while output write is now roughly 37-42 percent and range estimation
+    is about 1 percent.
+
+- Parked note - Optimize current dominant preview hotspot: f32 density-LUT
+  inversion.
+  - Deferral note: on 2026-05-19, user explicitly asked to pass over this
+    because it was just optimized and is unlikely to be the lowest-friction
+    remaining win. Do not choose this as the next autonomous item until the
+    larger export/autodetect/scanner waits are reduced or the user asks to
+    return to it.
+  - Precision note: Dmin does not need f64 precision inside the accepted f32
+    preview path. The f32 density LUT now has an `initF32` constructor, and
+    `renderInvertedPreviewRgb8` routes provided-Dmin/default CPU preview
+    inversion through f32 Dmin for LUT construction. Config/UI/oracle surfaces
+    still keep f64 Dmin to avoid broad churn and preserve existing fixtures.
+  - Evidence on `scan_0004_rgbir_3200dpi.tiff`:
+    `invert_negative_preview_lut_tradeoff` measured f32-Dmin LUT construction
+    at `build_us=975`, `apply_us=65765`, total `66740 us`, final preview
+    `u8 max_abs=2`, `u8_mse=0.000010418`, export-shaped `u16 max_abs=1`, and
+    `u16_mse=0.002867622`.
+  - Current production preview evidence:
+    `inverted_preview_f32_breakdown` measured `production_us=130053`,
+    `lut_build_us=980`, `invert_us=75242`, `output_write_us=50321`,
+    exact manual mirror equality, and checksum `3912224310`.
+  - Scope: keep the same provided-Dmin `invert_negative` math and f32
+    density-LUT semantics. Do not replace the inversion algorithm.
+  - Start from `inversion.invertNegativeProvidedDminU16WithDensityLutF32OutputF32`
+    and its `workflow.renderInvertedPreviewRgb8` use.
+  - Candidate approaches to test in this order:
+    - remove remaining loop overhead in the f32 LUT output path without
+      changing results;
+    - benchmark row/chunk parallelism for preview scene generation, using the
+      existing dynamic CPU/memory parallelism policy as the export precedent and
+      leaving at least one core free;
+    - evaluate whether output-write parallelism should share the same worker
+      scheduler or remain single-threaded to reduce memory traffic;
+    - only after CPU parallelism is measured, revisit GPU execution for this
+      exact operation with CPU fallback and CPU-vs-GPU output downloads.
+  - Required evidence before checking off:
+    - `zig build test --summary all`;
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview_f32_breakdown`;
+    - before/after stage timing, checksum, and final `u8` diff metrics against
+      the accepted CPU path;
+    - update this plan and `docs/PERFORMANCE_STRATEGY.md`.
+
+- [x] Optimize secondary Process hotspots outside the f32 density-LUT loop.
+  - Motivation: after f32 density-LUT work, density inversion is still the
+    largest sub-stage inside inverted preview, but other Process operations had
+    larger user-visible latencies and more obvious redundant work.
+  - Secondary baseline on `scan_0004_rgbir_3200dpi.tiff`:
+    - `load_preview`: `2255972 us`, checksum `6666414344`;
+    - `auto_detect`: `769041 us`, frames `5`, checksum `38221731`;
+    - `rebate_dmin`: `2396746 us`, Dmin
+      `0.283915:0.422373:0.606312`;
+    - `inverted_preview_f32_breakdown`: production `122020 us`,
+      manual total `126633 us`;
+    - `export_detected_frames`: parallel `4273176 us`, serial `9594052 us`,
+      workers `5`.
+  - Quick preview improvements:
+    - `generateQuickPreview` now computes the expected preview geometry in Zig
+      and calls `v600_process_quick_preview` once on the normal path. The
+      previous implementation called the OpenCV resize/stretch/CLAHE/JPEG path
+      once to discover JPEG length and then repeated the same work to fill the
+      real output buffers.
+    - The fallback remains: if the initial JPEG capacity is too small, the code
+      resizes to the reported encoded length and reruns the OpenCV path.
+    - `loadQuickPreview` now reads only RGB pixels plus IR page metadata. It no
+      longer reads the full IR page just to set `has_ir` and IR bit-depth UI
+      state.
+    - Added TIFF page metadata APIs:
+      `readRgbIrPageInfo` and `readIrPageInfo`.
+  - Rebate Dmin improvements:
+    - `loadRgbImageAsF64` now loads only TIFF page 0 for RGB-only callers
+      instead of loading RGB+IR and discarding IR.
+    - `computeRebateDminFromTiff` now crops the small rotated rebate directly
+      from the TIFF RGB sample buffer and materializes f64 only for the rebate
+      crop, rather than converting the entire scan to f64 before cropping.
+    - Added a synthetic crop-parity test comparing the direct TIFF crop helper
+      against the existing full-f64 `export.cropFrame` path.
+  - Refreshed results on `scan_0004_rgbir_3200dpi.tiff`:
+    - `load_preview`: `1327413 us`, checksum `6666414344`
+      (`1.700x` faster than the `2255972 us` baseline).
+    - `rebate_dmin`: `448352 us`, same Dmin
+      `0.283915:0.422373:0.606312` (`5.346x` faster than the
+      `2396746 us` baseline).
+    - `auto_detect`: `765814 us`; now the largest remaining interactive
+      secondary Process command after image load.
+    - `inverted_preview_f32_breakdown`: production `125575 us`, manual total
+      `129836 us`, checksum `3912224212`.
+    - `export_detected_frames`: parallel `4138270 us`, serial `9668720 us`,
+      workers `5`.
+  - Validation:
+    - `zig build test --summary all` passed `403/403`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case load_preview`
+      reported `1327413 us`, checksum `6666414344`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case rebate`
+      reported `448352 us`, same Dmin as baseline.
+
+- [x] Break down and optimize the first `auto_detect` secondary hotspot pass.
+  - Current refreshed timing:
+    `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+    reported `765814 us`, frames `5`, aspect `24:36`, checksum `38221731`.
+  - Scope: preserve Python frame autodetect behavior. Do not change detector
+    semantics, defaults, frame fallback rules, or rebate computation to gain
+    speed.
+  - Progress 2026-05-19:
+    - Added the parity-checked `auto_detect_breakdown` benchmark. It runs the
+      production `workflow.autoDetectPreview` path and the staged
+      `frames.detectFramesFromImageBreakdown` path on the same preview, then
+      fails if frame count, aspect, frame geometry, rebate geometry, or frame
+      checksum differ.
+    - Validation command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+      reported exact parity: frames `5`, aspect `24:36`, checksum `38221731`,
+      `frame_max_abs=0`, `rebate_max_abs=0`, `mismatches=0`.
+    - Real 3200 DPI scan-set breakdown:
+      - `scan_0001_rgbir_3200dpi.tiff`: total `1334010 us`, film extent
+        `608503 us`, CLAHE `278455 us`, rotation `158150 us`, grayscale prep
+        `123649 us`, axis detection `122152 us`.
+      - `scan_0002_rgbir_3200dpi.tiff`: total `689004 us`, film extent
+        `307472 us`, CLAHE `155468 us`, rotation `78798 us`, grayscale prep
+        `61174 us`, axis detection `66636 us`.
+      - `scan_0003_rgbir_3200dpi.tiff`: total `731227 us`, film extent
+        `316458 us`, CLAHE `163559 us`, rotation `101859 us`, grayscale prep
+        `61898 us`, axis detection `64086 us`.
+      - `scan_0004_rgbir_3200dpi.tiff`: total `729511 us`, film extent
+        `282007 us`, CLAHE `162053 us`, rotation `138127 us`, grayscale prep
+        `58280 us`, axis detection `68378 us`.
+    - Average across those four real 3200 DPI scans: film extent is about
+      `43.5%` of `auto_detect`, CLAHE `21.8%`, rotation `13.7%`, grayscale
+      prep `8.8%`, and axis detection `9.2%`. Inside axis detection, profile
+      aggregation and angle fitting dominate; DTW, snap/repair, edge-to-frame
+      construction, rebate postprocess, and rotation-back transform are small.
+  - Next optimization target:
+    - Start with film extent and duplicated grayscale/CLAHE preparation waste.
+      The current route derives f64 grayscale, then film extent converts it to
+      thresholdable u8 data, and CLAHE converts the same f64 grayscale back to
+      inverted u8 before producing f64 again. A correct optimization should
+      share or fuse those exact intermediate values while preserving the same
+      Otsu threshold, binary close, largest-component, rotated-extent, CLAHE,
+      and final frame/rebate output.
+    - If film-extent conversion/fusion is not enough, add a deeper
+      `film_extent_breakdown` before changing contour/component logic.
+    - Only then consider rotation and CLAHE loop-level optimization.
+  - Required evidence before checking off:
+    - `zig build test --summary all`;
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`;
+    - before/after stage timing on at least `scan_0004_rgbir_3200dpi.tiff`;
+    - unchanged frame count/aspect/checksum, `frame_max_abs`, `rebate_max_abs`,
+      and mismatch count against the production `auto_detect` path;
+    - update this plan and `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Added deeper film-extent stage timing:
+      `film_otsu_us`, `film_mask_us`, `film_close_us`,
+      `film_component_us`, and `film_geometry_us`.
+    - Preserved the detector contract while reducing full-image passes and
+      strided memory access:
+      - `prepareDetectionGrayImage` retains the quantized u8 grayscale
+        alongside the f64 grayscale so film extent and non-rotated CLAHE do not
+        reconstruct it from f64.
+      - 16-bit RGB grayscale quantization now uses exact integer division
+        equivalent to Python's `(mean / 256).astype(uint8)`.
+      - Film extent can run directly from the u8 grayscale, with fixture checks
+        proving exact parity against the original f64 film-extent helper.
+      - Binary close now reuses scratch buffers and uses row-major sliding
+        vertical and horizontal windows instead of repeated prefix passes with
+        strided column scans.
+      - Largest-component detection now consumes its private mask in place
+        instead of allocating and streaming a second visited bitmap, and uses a
+        u32 queue when the preview fits.
+      - Otsu's u8 histogram now uses independent partial histograms.
+      - u8-to-f64 widening now uses a 256-entry table.
+      - Rotated-image affine sampling precomputes row terms without changing
+        the bilinear sampler semantics.
+      - Vertical cross-profile accumulation now runs row-major while preserving
+        per-column summation order.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown`:
+      total `608397 us` versus `729511 us` before this pass (`1.199x`);
+      film extent `193853 us` versus `282007 us`; Otsu `3603 us`, mask
+      `7255 us`, close `47110 us`, component `118397 us`, geometry
+      `15243 us`; CLAHE `153740 us`; rotation `147704 us`; axis total
+      `41190 us`; profiles `11549 us`; frames `5`, aspect `24:36`,
+      checksum `38221731`, `frame_max_abs=0`, `rebate_max_abs=0`,
+      `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `605658 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`1.265x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans,
+      average `auto_detect_breakdown` improved from `870938 us` to
+      `682404 us` (`1.276x`). Updated average stage shares are film extent
+      about `36.1%`, CLAHE `25.5%`, rotation `17.8%`, grayscale prep `9.3%`,
+      and axis detection `7.2%`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `605658 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization on the remaining stage buckets.
+  - Current 2026-05-19 target order from the optimized breakdown:
+    - CLAHE remains around `153740 us` on `scan_0004` and averages about
+      `25.5%` of the four-scan timing.
+    - Rotation remains around `147704 us` on `scan_0004` and averages about
+      `17.8%`.
+    - Film extent is still the largest combined bucket, but close and
+      connected component have already been improved; the next film-extent
+      work should focus on exact connected-component/geometry improvements or
+      OpenCV-parity evidence before replacing more logic.
+    - Smaller buckets still matter: mask generation, geometry, DTW, angle
+      fitting, and cross-strip refinement should remain eligible for measured
+      pass reductions.
+  - Keep the same required evidence style as the completed pass: ReleaseFast
+    before/after stage timings, exact frame/rebate parity, `zig build test
+    --summary all`, and notes in this file plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Optimized CLAHE without changing the OpenCV-shaped operation:
+      - precomputed reflected border index maps instead of calling
+        `reflect101Index` for every padded pixel;
+      - precomputed per-x/per-y tile interpolation indices and f64 weights
+        instead of recomputing `floor`, clamp, fraction, and inverse fraction
+        inside every output pixel;
+      - avoided materializing the padded `extended` image because it is only
+        used for tile histograms; histograms now read through the same
+        reflected index maps directly from the source image.
+    - Reduced rotation overhead by incrementing affine source coordinates along
+      each row after precomputing the row origin, while keeping the same
+      replicate-border bilinear sampler.
+    - Removed a redundant initial full-image `component_mask` clear in
+      connected-component detection.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown`:
+      total `541755 us`; film extent `179309 us`; Otsu `3613 us`, mask
+      `7278 us`, close `46727 us`, component `104529 us`, geometry
+      `15133 us`; rotation `127573 us`; CLAHE `117997 us`; axis total
+      `46501 us`; frames `5`, aspect `24:36`, checksum `38221731`,
+      `frame_max_abs=0`, `rebate_max_abs=0`, `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `557439 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`1.374x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans,
+      average `auto_detect_breakdown` improved from the initial `870938 us` to
+      `621128 us` (`1.402x`), and from the first optimized pass's `682404 us`
+      to `621128 us` (`1.099x`). Updated average stage shares are film extent
+      about `38.0%`, CLAHE `22.0%`, rotation `16.8%`, grayscale prep `10.2%`,
+      and axis detection `8.4%`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `557439 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization after the CLAHE pass.
+  - Starting target order from the previous four-scan evidence:
+    - Film extent remains the largest bucket. Connected-component labeling is
+      the largest film substage, averaging about `137109 us` across the four
+      3200 DPI scans; binary close averages about `62898 us`; geometry remains
+      smaller but still eligible.
+    - CLAHE still averages about `136840 us`; future CLAHE work should be
+      guided by a deeper breakdown into input quantization, histogram/LUT
+      construction, output interpolation, and u8-to-f64 widening.
+    - Rotation averages about `104280 us`; further work should measure whether
+      parallel rows, f32 intermediates, or a fixed-point interpolation path can
+      preserve final frame/rebate parity and fixture tolerance.
+    - Keep optimizing cheap stages too when the change removes a real pass,
+      branch, allocation, or strided memory access and has exact parity
+      evidence.
+  - Required evidence remains unchanged: ReleaseFast before/after stage
+    timings on real scans, exact frame/rebate parity, `zig build test --summary
+    all`, and updates to this plan plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Reworked connected-component flood fill to use explicit 8-neighbor checks
+      instead of nested 3x3 neighbor loops while preserving the same in-place
+      private mask consumption and best-component mask output.
+    - Added thresholded parallel row execution for the large real-scan rotation
+      and CLAHE output passes. Small fixtures remain serial below the named
+      `1_000_000` item/pixel thresholds, and real scans use available cores
+      while leaving one core for the system.
+    - Added thresholded parallel conversion passes around CLAHE:
+      `f64 -> inverted u8`, `u8 -> inverted u8`, and `u8 -> f64`. This keeps the
+      OpenCV-shaped CLAHE operation intact and only removes single-threaded
+      buffer walks on scan-sized previews.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown`:
+      total `277906 us`; film extent `129079 us`; Otsu `4953 us`, mask
+      `2779 us`, close `45001 us`, component `58494 us`, geometry `15253 us`;
+      rotation `12272 us`; CLAHE `31668 us`; axis total `37897 us`; frames `5`,
+      aspect `24:36`, checksum `38221731`, `frame_max_abs=0`,
+      `rebate_max_abs=0`, `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `305134 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`2.510x`) and the previous pass's
+      `557439 us` (`1.827x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans, average
+      `auto_detect_breakdown` improved from the initial `870938 us` to
+      `362798 us` (`2.401x`), and from the previous optimized pass's `621128 us`
+      to `362798 us` (`1.712x`). Updated average stage shares are film extent
+      about `48.0%`, grayscale prep `16.5%`, axis detection `14.1%`, CLAHE
+      `9.9%`, and rotation `3.4%`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - Four-scan real-data refresh ran `auto_detect_breakdown` on
+        `scan_0001_rgbir_3200dpi.tiff` through
+        `scan_0004_rgbir_3200dpi.tiff`, with `frame_max_abs=0`,
+        `rebate_max_abs=0`, and `mismatches=0` for every scan.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `305134 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization from the latest stage ranking.
+  - Starting target order from the previous four-scan evidence:
+    - Film extent is again the dominant bucket, averaging about `173986 us`.
+      Within it, connected-component labeling averages about `77197 us`, binary
+      close about `62164 us`, geometry about `21320 us`, Otsu about `5013 us`,
+      and mask generation about `4556 us`.
+    - Initial grayscale preparation averages about `59683 us`. The next pass
+      should check whether `prepareDetectionGrayImage` can be parallelized or
+      specialized for the common 16-bit RGB scanner-preview path without
+      changing the exact Python grayscale quantization.
+    - Axis detection averages about `51005 us`; substage evidence points at
+      profile construction, DTW, angle fitting, and cross-strip refinement as
+      the relevant work, not output assembly.
+    - CLAHE now averages about `35953 us` and rotation about `12418 us`; avoid
+      chasing those before the larger buckets unless the change is an obvious
+      pass removal with exact parity evidence.
+  - Required evidence remains unchanged: ReleaseFast before/after stage
+    timings on real scans, exact frame/rebate parity, `zig build test --summary
+    all`, and updates to this plan plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Parallelized `prepareDetectionGrayImage` for scan-sized previews while
+      keeping the exact Python grayscale quantization rules:
+      - 16-bit RGB still uses integer `(r + g + b) / (3 * 256)`;
+      - 8-bit RGB still uses the weighted rounded path;
+      - grayscale inputs still use the Python-compatible sample-to-u8 helper;
+      - both the retained u8 buffer and f64 buffer are filled from the same
+        prepared byte.
+    - The worker path uses the existing named conversion threshold so small
+      fixtures and tiny images remain serial.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown`:
+      total `253750 us`; prepare gray `8529 us`; film extent `129155 us`;
+      Otsu `3681 us`, mask `2871 us`, close `45522 us`, component `59270 us`,
+      geometry `15303 us`; rotation `11585 us`; CLAHE `33725 us`; axis total
+      `45596 us`; frames `5`, aspect `24:36`, checksum `38221731`,
+      `frame_max_abs=0`, `rebate_max_abs=0`, `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `275746 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`2.777x`) and the previous pass's
+      `305134 us` (`1.107x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans, average
+      `auto_detect_breakdown` improved from the initial `870938 us` to
+      `313237 us` (`2.780x`), and from the previous optimized pass's `362798 us`
+      to `313237 us` (`1.158x`). Updated average stage shares are film extent
+      about `55.5%`, axis detection `16.2%`, CLAHE `11.5%`, rotation `3.8%`,
+      and grayscale prep `3.5%`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - Four-scan real-data refresh ran `auto_detect_breakdown` on
+        `scan_0001_rgbir_3200dpi.tiff` through
+        `scan_0004_rgbir_3200dpi.tiff`, with `frame_max_abs=0`,
+        `rebate_max_abs=0`, and `mismatches=0` for every scan.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `275746 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization from the post-prep stage ranking.
+  - Starting target order from the previous four-scan evidence:
+    - Film extent is now clearly dominant, averaging about `173762 us`.
+      Within it, connected-component labeling averages about `75581 us`, binary
+      close about `62745 us`, geometry about `21290 us`, Otsu about `6123 us`,
+      and mask generation about `4540 us`.
+    - Axis detection averages about `50740 us`; substage evidence points at
+      profile construction, DTW, angle fitting, and cross-strip refinement as
+      the relevant work.
+    - CLAHE averages about `36081 us`; rotation averages about `11837 us`;
+      grayscale prep now averages only about `10938 us`.
+    - Next film-extent work should prefer exact algorithm-preserving changes:
+      parallel row windows for binary close, lower-allocation component
+      bookkeeping, or a parity-backed connected-component rewrite. Do not change
+      Otsu, close semantics, component connectivity, rotated extent geometry, or
+      failure thresholds without a Python-oracle fixture and explicit approval.
+  - Required evidence remains unchanged: ReleaseFast before/after stage
+    timings on real scans, exact frame/rebate parity, `zig build test --summary
+    all`, and updates to this plan plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Replaced scan-sized connected-component flood fill with a run-length
+      8-connected component pass:
+      - rows are encoded as true-runs;
+      - adjacent-row runs are unioned when their x ranges overlap or touch,
+        preserving the same 8-connectivity as the BFS path;
+      - component stats track area, bounds, and first row-major index so
+        largest-component tie behavior remains stable;
+      - the final largest component is materialized back into the same boolean
+        `component_mask` consumed by rotated-extent geometry;
+      - small masks below the named threshold still use the existing BFS path.
+    - Tested a parallel row/column binary-close split and rejected it. It
+      preserved parity but regressed the four-scan average, so it was removed.
+      Binary close remains the largest film-extent substage and needs a
+      different exact approach.
+    - Reduced angle-stage allocation churn by precomputing the profile and
+      gradient Gaussian kernels once, reusing scratch buffers, and storing the
+      20 angle gradients in one contiguous allocation. The reflect-101 Gaussian
+      convolution and gradient math remain unchanged.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown`:
+      total `201144 us`; prepare gray `8990 us`; film extent `74999 us`;
+      Otsu `3679 us`, mask `2931 us`, close `45532 us`, component `5345 us`,
+      geometry `15164 us`; rotation `11897 us`; CLAHE `33336 us`; axis total
+      `46171 us`; frames `5`, aspect `24:36`, checksum `38221731`,
+      `frame_max_abs=0`, `rebate_max_abs=0`, `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `225901 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`3.390x`) and the previous pass's
+      `275746 us` (`1.221x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans, average
+      `auto_detect_breakdown` improved from the initial `870938 us` to
+      `244486 us` (`3.562x`), and from the previous optimized pass's `313237 us`
+      to `244486 us` (`1.281x`). Updated average stage shares are film extent
+      about `42.6%`, axis detection `20.4%`, CLAHE `14.3%`, rotation `5.0%`,
+      and grayscale prep `4.5%`. Within film extent, binary close is now
+      dominant at about `62839 us`; run-length component labeling averages only
+      about `7167 us`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - Four-scan real-data refresh ran `auto_detect_breakdown` on
+        `scan_0001_rgbir_3200dpi.tiff` through
+        `scan_0004_rgbir_3200dpi.tiff`, with `frame_max_abs=0`,
+        `rebate_max_abs=0`, and `mismatches=0` for every scan.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `225901 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization after run-length component labeling.
+  - Starting target order from the previous four-scan evidence:
+    - Binary close is the largest remaining `auto_detect` substage, averaging
+      about `62839 us`. The rejected row/column threading attempt shows thread
+      overhead and memory traffic can erase gains; next attempts should focus on
+      exact pass reduction, better memory layout, or a benchmarked morphology
+      representation change with fixture parity.
+    - Axis detection averages about `49960 us`; angle fitting and profile
+      construction are still the largest substages, with DTW occasionally
+      visible depending on the scan.
+    - CLAHE averages about `35050 us`; rotation averages about `12313 us`;
+      grayscale prep averages about `11033 us`.
+    - Keep preserving Python-oracle behavior: do not change Otsu, close
+      semantics, component connectivity, rotated extent geometry, edge snapping,
+      angle estimation, or cross-strip refinement without a parity fixture and
+      explicit approval.
+  - Required evidence remains unchanged: ReleaseFast before/after stage
+    timings on real scans, exact frame/rebate parity, `zig build test --summary
+    all`, and updates to this plan plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Optimized the exact binary close without changing its square-kernel,
+      separable semantics:
+      - horizontal dilation now scans true-runs in each row and fills the
+        radius-expanded output ranges;
+      - horizontal erosion now scans true-runs and fills only positions whose
+        clipped horizontal window is fully contained in the run;
+      - vertical dilation/erosion remain the row-major rolling-count passes
+        because the earlier row/column-threaded attempt regressed.
+    - Optimized 1D Gaussian blur call sites used by profiles, angle estimation,
+      cross-strip refinement, and gradient smoothing:
+      - interior samples now use direct contiguous indexing;
+      - only edge samples call the reflect-101 index helper;
+      - kernel order and reflect-101 edge behavior are unchanged.
+    - Reduced profile setup for vertical strips with a segmented row pass:
+      cross-profile accumulation still proceeds left-to-right across each row,
+      while the three non-overlapping band sums are accumulated during the same
+      row walk. A branch-per-pixel membership version was tested and rejected
+      because it regressed profile time.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown`:
+      total `186829 us`; prepare gray `9005 us`; film extent `63997 us`;
+      Otsu `3709 us`, mask `2849 us`, close `33901 us`, component `5589 us`,
+      geometry `15107 us`; rotation `12163 us`; CLAHE `34456 us`; axis total
+      `37616 us`; profiles `8256 us`, gradients `362 us`, DTW `10172 us`,
+      angle `16418 us`, cross-strip `2365 us`; frames `5`, aspect `24:36`,
+      checksum `38221731`, `frame_max_abs=0`, `rebate_max_abs=0`,
+      `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `205658 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`3.724x`) and the previous pass's
+      `225901 us` (`1.098x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans, average
+      `auto_detect_breakdown` improved from the initial `870938 us` to
+      `221766 us` (`3.927x`), and from the previous optimized pass's `244486 us`
+      to `221766 us` (`1.102x`). Updated average stage shares are film extent
+      about `40.2%`, axis detection `18.7%`, CLAHE `16.2%`, rotation `5.6%`,
+      and grayscale prep `5.0%`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - Four-scan real-data refresh ran `auto_detect_breakdown` on
+        `scan_0001_rgbir_3200dpi.tiff` through
+        `scan_0004_rgbir_3200dpi.tiff`, with `frame_max_abs=0`,
+        `rebate_max_abs=0`, and `mismatches=0` for every scan.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `205658 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization after run-based close and profile
+      reductions.
+  - Starting target order from the previous four-scan evidence:
+    - Binary close remains the largest single substage, averaging about
+      `47895 us`. The accepted horizontal run pass helped; remaining work likely
+      needs exact vertical-pass reduction, a safe representation change, or a
+      different way to feed the run-length component stage.
+    - Axis detection averages about `41457 us`; angle fitting averages about
+      `19401 us`, profile setup about `9894 us`, and DTW about `8266 us`.
+    - CLAHE averages about `35934 us`; rotation averages about `12341 us`;
+      grayscale prep averages about `10986 us`.
+    - Keep preserving Python-oracle behavior: do not change Otsu, close
+      semantics, component connectivity, rotated extent geometry, edge snapping,
+      angle estimation, or cross-strip refinement without a parity fixture and
+      explicit approval.
+  - Required evidence remains unchanged: ReleaseFast before/after stage
+    timings on real scans, exact frame/rebate parity, `zig build test --summary
+    all`, and updates to this plan plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Tested exact vertical run morphology inside `closeBinaryMask` and rejected
+      it. It preserved exact frame/rebate parity but regressed close time because
+      the column scans and writes are strided; the rolling-count vertical passes
+      remain faster.
+    - Parallelized angle-gradient construction:
+      - the 20 angle-strip profile/gradient builds now run in disjoint worker
+        chunks for scan-sized work;
+      - each worker writes disjoint profile, scratch, gradient, and position
+        slots;
+      - Theil-Sen input order, Gaussian kernels, reflect-101 behavior, and
+        gradient math are unchanged.
+    - Parallelized CLAHE LUT construction:
+      - the 64 tile histograms/LUTs are built in disjoint tile ranges;
+      - per-tile histogram accumulation order and clipping/LUT math are
+        unchanged;
+      - CLAHE output interpolation remains the existing row-parallel path.
+    - Updated `scan_0004_rgbir_3200dpi.tiff` `auto_detect_breakdown` from the
+      four-scan refresh: total `179503 us`; prepare gray `9377 us`; film extent
+      `73693 us`; Otsu `3728 us`, mask `3031 us`, close `41423 us`, component
+      `7702 us`, geometry `15060 us`; rotation `12009 us`; CLAHE `26063 us`;
+      axis total `26697 us`; profiles `8406 us`, gradients `361 us`,
+      DTW `10460 us`, angle `5051 us`, cross-strip `2375 us`; frames `5`,
+      aspect `24:36`, checksum `38221731`, `frame_max_abs=0`,
+      `rebate_max_abs=0`, `mismatches=0`.
+    - Normal `auto_detect` on `scan_0004_rgbir_3200dpi.tiff` now reports
+      `176017 us`, frames `5`, aspect `24:36`, checksum `38221731`, versus the
+      refreshed `765814 us` baseline (`4.351x`) and the previous pass's
+      `205658 us` (`1.168x`).
+    - Across `scan_0001` through `scan_0004` real 3200 DPI RGBIR scans, average
+      `auto_detect_breakdown` improved from the initial `870938 us` to
+      `203021 us` (`4.290x`), and from the previous optimized pass's `221766 us`
+      to `203021 us` (`1.092x`). Updated average stage shares are film extent
+      about `45.0%`, axis detection `13.5%`, CLAHE `13.3%`, rotation `6.1%`,
+      and grayscale prep `5.4%`.
+    - Validation:
+      - `zig build test --summary all` passed `403/403`.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+        reported exact parity with `mismatches=0`.
+      - Four-scan real-data refresh ran `auto_detect_breakdown` on
+        `scan_0001_rgbir_3200dpi.tiff` through
+        `scan_0004_rgbir_3200dpi.tiff`, with `frame_max_abs=0`,
+        `rebate_max_abs=0`, and `mismatches=0` for every scan.
+      - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+        reported `176017 us`, checksum `38221731`.
+
+- [x] Continue `auto_detect` optimization after parallel angle and CLAHE LUT
+      construction.
+  - Completed 2026-05-19: tried portable Zig `@Vector` SIMD on the clean
+    independent loops and kept only measured wins:
+    - added an 8-lane RGB16 grayscale-prep vector path for the common
+      3-channel, 16-bit scanner preview input;
+    - added a 32-lane `u8` inversion path for non-rotated CLAHE prep;
+    - added a 4-lane `u8 -> f64` conversion path after CLAHE;
+    - added a 4-lane f64 dot-product path for the Gaussian blur interior;
+    - tested and rejected a vertical morphology count-loop SIMD path because it
+      preserved exact parity but regressed `scan_0004` `film_close_us` from the
+      mid-30 ms range to `52392 us`.
+  - Evidence:
+    - Baseline before this SIMD pass:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+      reported `166426 us`, with `prepare_gray_us=8662`,
+      `film_extent_us=64435`, `film_close_us=34444`, `clahe_us=26620`,
+      `axis_total_us=26199`, `gradients_us=364`, exact parity, and checksum
+      `38221731`.
+    - Accepted SIMD pass:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+      reported `166139 us` in the four-scan refresh row, with
+      `prepare_gray_us=9306`, `film_extent_us=73063`, `film_close_us=38239`,
+      `clahe_us=24361`, `axis_total_us=17675`, `gradients_us=163`, exact
+      parity, and checksum `38221731`.
+    - Normal production command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+      reported `173351 us`, frames `5`, aspect `24:36`, checksum `38221731`.
+    - Four-scan refresh over the currently present real scan files
+      `scan_0001_rgbir_3200dpi.tiff` through `scan_0004_rgbir_3200dpi.tiff`
+      reported exact frame/rebate parity on every row and average
+      `auto_detect_breakdown` `196084 us`, down from the prior documented
+      `203021 us`.
+    - `zig build test --summary all` passed `403/403`.
+
+Autonomous performance iteration map:
+
+- Always choose the first unchecked unblocked item below. If a stage is blocked
+  by hardware, platform, or missing live data, record the blocker and move to
+  the next unblocked item.
+- While the active user direction is performance iteration, this map takes
+  precedence over later release-QA and UI screenshot checklist items. Release
+  screenshots are useful for final native UI readiness, but they do not answer
+  performance questions and must not be selected during the performance loop
+  unless the user explicitly asks to switch back to UI QA.
+- Process image switching and quick preview load: completed by the
+  `load_preview` item below; return only if fresh UI timing shows it has become
+  dominant again.
+- Full-resolution detected-frame export: completed by the
+  `export_detected_frames` breakdown item below. Return only after a fresh
+  ranking shows it is again the best same-behavior target.
+- Frame autodetection and film strip selection: partially optimized and still
+  headless-testable; continue only after refreshing the ranking so the next
+  pass is driven by current data rather than stale checklist text.
+- Processing preview and inversion: keep the accepted f32 density-LUT path; do
+  not return to the just-optimized density loop until larger waits are reduced
+  or the user explicitly asks.
+- Scanner startup, scanner preview, and full-resolution scan: measure first and
+  keep hardware/live checks gated. On Linux, live scanner timing is blocked
+  until SANE enumerates the USB-visible V600. Avoid adding startup probes or
+  hot-path discovery while chasing performance.
+
+- [x] Break down and optimize `load_preview` / Process image switching.
+  - Why this was selected: current evidence put `load_preview` around
+    `1327413 us`
+    on `scan_0004_rgbir_3200dpi.tiff`, which is now larger than
+    `auto_detect` and first-use inverted preview. It is frequent, headless
+    testable from real scan files, and likely contains avoidable I/O or image
+    preparation duplication.
+  - Scope:
+    - Add a parity-checked `load_preview_breakdown` benchmark case if one does
+      not already exist.
+    - Break down at least: TIFF open/IFD parsing, RGB page read/decode, IR page
+      discovery/metadata work, preview geometry, resize/downsample, stretch or
+      normalization, CLAHE or preview enhancement, JPEG/preview byte encoding,
+      and any buffer copies into the workflow result.
+    - Compare the staged breakdown result against production `load_preview` for
+      preview dimensions, scale, RGB checksum, IR metadata availability, JPEG or
+      preview-buffer checksum, and any visible status fields.
+    - Optimize only same-behavior work: remove duplicate reads/copies, fuse
+      exact pass-compatible conversions, cache per-image metadata, avoid
+      re-decoding pages for metadata already discovered, and prefer row-major
+      contiguous loops.
+    - Do not change preview max-px semantics, preview color/stretch behavior,
+      CLAHE behavior, page selection, metadata handling, or config persistence
+      without explicit parity evidence and approval.
+  - Completed 2026-05-19:
+    - Added `loadRgbPageWithMetadata` and timed variants so Process image
+      switching opens the TIFF once, reads DPI, RGB page data, and IR page
+      metadata in one pass instead of doing separate metadata and page reads.
+    - Added `loadQuickPreviewBreakdown` /
+      `generateQuickPreviewBreakdown` and a parity-checked
+      `load_preview_breakdown` benchmark case. The breakdown compares staged
+      output against production `load_preview` for preview dimensions, source
+      dimensions, DPI, preview scale, RGB/IR metadata, `preview_raw`,
+      `preview_rgb8`, and JPEG bytes.
+    - Replaced the OpenCV helper's per-channel content-pixel vectors and
+      `std::sort` percentiles with exact 256-bin u8 histograms using the same
+      NumPy linear percentile rank/interpolation formula. Because the stretch
+      input is u8, this is exact rather than approximate.
+    - Applied stretch directly over the interleaved RGB preview rows, avoiding
+      split/merge work before CLAHE while leaving OpenCV CLAHE, JPEG quality,
+      preview max-px semantics, IR metadata handling, and output bytes
+      unchanged.
+  - Evidence:
+    - Fresh pre-change baseline:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case load_preview`
+      reported `1338976 us`, dimensions `1738x8192`, and checksum
+      `6666414344`.
+    - First breakdown before percentile optimization:
+      `load_preview_breakdown` on `scan_0004_rgbir_3200dpi.tiff` reported
+      total `1284464 us`, reference `1328864 us`, `rgb_read_us=321845`,
+      `quick_preview_us=937390`, `invert_stretch_us=723859`, checksum
+      `6666414344`, and exact staged-vs-production parity:
+      `raw_max_abs=0`, `rgb_max_abs=0`, `jpeg_max_abs=0`, `mismatches=0`.
+    - Final production command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case load_preview`
+      reported `647912 us`, checksum `6666414344`, a `2.066x` speedup over
+      the fresh same-scan baseline and a `3.482x` cumulative speedup over the
+      earlier `2255972 us` two-pass/full-IR baseline.
+    - Final `scan_0004_rgbir_3200dpi.tiff` breakdown reported total
+      `604474 us`, reference `648119 us`, `rgb_read_us=312098`,
+      `quick_preview_us=267162`, `invert_stretch_us=66142`,
+      `clahe_us=57794`, checksum `6666414344`, and exact raw/RGB/JPEG parity.
+    - Four-scan real-data refresh over `scan_0001_rgbir_3200dpi.tiff` through
+      `scan_0004_rgbir_3200dpi.tiff` reported exact parity for every row.
+      Breakdown average was `569861 us`; production `load_preview` average was
+      `629568 us`.
+    - `zig build test --summary all` passed `403/403`.
+
+- [x] Break down and optimize full-resolution detected-frame export.
+  - Why this is second: multi-frame export improved from `18125889 us` serial
+    to `5981208 us` parallel for five detected frames, and a later refresh
+    measured `4138270 us` after other processing wins, but it remains the
+    largest end-to-end wait after image loading.
+  - Scope:
+    - Add or extend an `export_detected_frames_breakdown` benchmark that uses
+      real automatic frame detection, scales detected preview rectangles to
+      full resolution, and exports those exact geometries.
+    - Break down at least: TIFF RGB/IR load, IR alignment, frame crop/rotation,
+      IR clean/mask/inpaint, inversion, display render, encoder/write, metadata
+      write, per-worker setup, and scheduler wait/merge time.
+    - Keep the Python-visible export contract: same output variants, paths,
+      metadata, Dmin/rebate behavior, film-stock math, IR-clean behavior,
+      completion-order result collection, and deterministic frame-worker seeds.
+    - Optimize CPU first. GPU export is not currently a win on large real scans;
+      revisit only after CPU-side staging/copy costs are reduced or render-stage
+      GPU residency changes the boundary cost.
+  - Required evidence before checking off:
+    - Baseline and after:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames`
+      plus the new breakdown case.
+    - Include selected worker count, CPU/memory limits, per-worker peak memory
+      estimate, total output count, metadata equality, checksums or max/RMS
+      parity for output buffers when available, and wall-clock speedup.
+    - `zig build test --summary all`.
+    - Update this plan and `docs/PERFORMANCE_STRATEGY.md` with accepted and
+      rejected attempts.
+  - Completed 2026-05-19:
+    - Added optional export timing surfaces without changing the production
+      request or output contract:
+      - `ExportWorkflowTimings` records output-dir setup, full-image load,
+        Dmin, IR alignment, path setup, parallelism planning, frame processing,
+        worker setup, scheduler wait, result merge, progress construction, and
+        final message construction.
+      - `ProcessFrameTimings` records RGB crop, IR crop, IR clean, IR-negative
+        preparation, inversion, display render, output rotation, metadata JSON,
+        and TIFF write time. IR stage fields are populated when the selected
+        output variants require IR; they are zero for the current inv-only
+        detected-frame benchmark.
+      - Added `export_detected_frames_breakdown`; it runs the same autodetected
+        full-resolution frame geometries as `export_detected_frames`, compares
+        an untimed reference export against the timed export by file set,
+        private metadata JSON, and TIFF pixels, and fails on any mismatch.
+    - Optimized `export.cropFrame` by sampling the interleaved RGB image
+      directly with the same rotated-rectangle, reflect-border, and bilinear
+      math. The old path materialized a full-size single-channel plane for
+      each channel and then cropped each plane separately.
+    - Routed RGB-only exports through TIFF page 0 instead of the RGB+IR page
+      loader when no selected output variant needs IR.
+    - Parallelized TIFF sample-to-f64 expansion for large images. This keeps
+      the same full-image f64 representation for the accepted path but reduces
+      wall time in the load bucket.
+  - Evidence:
+    - Initial breakdown before the crop/load work:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_breakdown`
+      reported timed `4309330 us`, reference `4326493 us`, `load_full_us=1382038`,
+      `frame_processing_us=2775287`, aggregate `rgb_crop_us=9537480`,
+      `inversion_us=1828898`, `display_render_us=680774`, `write_us=346634`,
+      and exact parity: `max_abs=0`, `mismatches=0`,
+      `metadata_equal=true`, `file_set_equal=true`.
+    - After direct interleaved crop:
+      `export_detected_frames_breakdown` on `scan_0004_rgbir_3200dpi.tiff`
+      reported timed `2496705 us`, reference `2547008 us`,
+      `load_full_us=1386866`, `frame_processing_us=942406`, and aggregate
+      `rgb_crop_us=910877`, with exact TIFF/metadata parity.
+    - Final after RGB-only load routing and parallel sample-to-f64 expansion:
+      `export_detected_frames_breakdown` on `scan_0004_rgbir_3200dpi.tiff`
+      reported timed `1758568 us`, reference `1819796 us`,
+      `load_full_us=614686`, `frame_processing_us=995968`,
+      `rgb_crop_us=959419`, `inversion_us=1730664`,
+      `display_render_us=684521`, `write_us=571604`, `workers=5`,
+      `cpu_limit=31`, `mem_limit=25`, adjusted peak
+      `2159506560` bytes/worker, and exact parity.
+    - Final production command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames`
+      reported parallel `1820484 us`, serial `4727361 us`, `workers=5`,
+      `cpu_limit=31`, `mem_limit=26`, adjusted peak
+      `2159506560` bytes/worker, and `speedup_x1000=2596`.
+      This is `2.274x` faster than the previous `4138270 us` refresh and
+      `3.286x` faster than the older `5981208 us` parallel baseline.
+    - Real-scan spread check:
+      `export_detected_frames_breakdown` on `scan_0003_rgbir_3200dpi.tiff`
+      reported timed `1644338 us`, reference `1742743 us`,
+      `load_full_us=521177`, `frame_processing_us=992584`, exact parity, and
+      the normal `export_detected_frames` command reported parallel
+      `1681612 us`, serial `4580094 us`, `workers=5`.
+    - `zig build test --summary all` passed `403/403`.
+
+- [x] Continue `auto_detect` optimization after the first portable SIMD pass.
+  - Current target order from the latest four-scan evidence:
+    - Film extent remains the largest bucket at about `93032 us` average. Binary
+      close is still the largest film substage at about `49379 us`; vertical
+      run morphology and direct count-loop SIMD were both rejected, so future
+      close work should look for exact pass reduction, a cache-friendly bitset
+      representation, or feeding the run-length component stage more directly.
+    - Axis detection averages about `23066 us`; profile setup averages about
+      `10018 us`, DTW about `4532 us`, angle about `5872 us`, and cross-strip
+      about `2398 us`.
+    - CLAHE averages about `25769 us`; further CLAHE work should break down LUT
+      construction, output interpolation, and conversion costs before changing
+      code.
+    - Keep preserving Python-oracle behavior: do not change Otsu, close
+      semantics, component connectivity, rotated extent geometry, edge snapping,
+      angle estimation, or cross-strip refinement without a parity fixture and
+      explicit approval.
+  - Required evidence remains unchanged: ReleaseFast before/after stage
+    timings on real scans, exact frame/rebate parity, `zig build test --summary
+    all`, and updates to this plan plus `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-19:
+    - Replaced the DTW inner-loop square from `std.math.pow(diff, 2.0)` to
+      `diff * diff`. This preserves the same DTW cost function while avoiding
+      the generic power helper in a hot loop.
+    - Preallocated film-extent boundary point storage from the component bounds
+      before collecting boundary pixels for convex hull/min-area rectangle
+      geometry. The collected points and geometry algorithm are unchanged.
+    - Baseline immediately before this pass:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect_breakdown`
+      reported `detect_us=158824`, `film_extent_us=62538`,
+      `film_close_us=32337`, `film_geometry_us=15136`,
+      `axis_total_us=24658`, `dtw_us=9804`, frames `5`, aspect `24:36`,
+      checksum `38221731`, and exact frame/rebate parity.
+    - After the accepted pass, the same command on
+      `scan_0004_rgbir_3200dpi.tiff` reported `detect_us=146591`,
+      `film_extent_us=63202`, `film_close_us=34028`,
+      `film_geometry_us=14917`, `axis_total_us=18017`, `dtw_us=1564`,
+      frames `5`, aspect `24:36`, checksum `38221731`,
+      `frame_max_abs=0`, `rebate_max_abs=0`, and `mismatches=0`.
+      The DTW substage is noisy, but the breakdown total moved from
+      `158824 us` to `146591 us` with exact output parity.
+    - `scan_0003_rgbir_3200dpi.tiff` spread check reported
+      `detect_us=174011`, `film_extent_us=73674`, `axis_total_us=24037`,
+      `dtw_us=9053`, frames `5`, checksum `38975998`, and exact
+      frame/rebate parity.
+    - Normal production command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case auto_detect`
+      reported `188485 us`, frames `5`, aspect `24:36`, checksum
+      `38221731`. This single-command wall time is noisy, so the accepted
+      evidence for this pass is the parity-checked staged breakdown.
+    - `zig build test --summary all` passed `403/403`.
+
+- [x] Revisit processing preview inversion only after load/export/autodetect
+      work or if UI latency data points back to it.
+  - Current evidence: `inverted_preview_f32_breakdown` measured about
+    `122313 us` on `scan_0004_rgbir_3200dpi.tiff`, with `invert_us=68753` and
+    `output_write_us=52157`. This is no longer the largest Process-tab cost,
+    but it is still a good target once larger waits are reduced.
+  - Scope:
+    - Keep the accepted f32 density-LUT path and final u8/u16 tolerance rules.
+    - Look for output-write fusion, scene-buffer lifetime reduction,
+      cache-friendly display LUT application, and safe SIMD/parallelism in
+      remaining per-pixel loops.
+    - Do not replace the `invert_negative` algorithm, film-stock profile math,
+      robust range estimator, display LUT semantics, or final quantization
+      tolerance without explicit approval.
+  - Required evidence before checking off:
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview_f32_breakdown`.
+    - Report wall time, stage split, final `u8` max/RMS/MSE, checksum, memory
+      changes, and any rejected SIMD/GPU attempts.
+    - `zig build test --summary all`.
+  - Completed 2026-05-19:
+    - Parallelized the f32 preview display-LUT write in
+      `renderToDisplayU8F32` for large preview buffers. The range estimate,
+      LUT contents, f32 table-index arithmetic, channel order, and final u8
+      quantization are unchanged; workers write disjoint pixel ranges.
+    - Memory behavior: no extra persistent image buffer is introduced. Large
+      previews allocate only short-lived thread/context arrays around the same
+      output buffer that production already returned.
+    - Baseline immediately before this pass:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case inverted_preview_f32_breakdown`
+      reported `production_us=126523`, `manual_total_us=119743`,
+      `invert_us=66599`, serial mirror `output_write_us=50408`,
+      `max_abs=0`, `mismatches=0`, checksum `3912224310`, exact-path
+      comparison `exact_max_abs=2`, `exact_mse=0.000002130`, and
+      `exact_mismatches=79`.
+    - After the accepted pass, the same command on
+      `scan_0004_rgbir_3200dpi.tiff` reported `production_us=85910` with the
+      serial manual mirror still byte-identical: `max_abs=0`, `rms=0`,
+      `mismatches=0`, checksum `3912224310`. The manual split remains useful
+      as a serial comparison surface and reported `invert_us=69018`,
+      `range_us=1273`, and serial `output_write_us=50123`.
+    - `scan_0003_rgbir_3200dpi.tiff` spread check reported
+      `production_us=84269`, `manual_total_us=132749`, `invert_us=80742`,
+      serial `output_write_us=49715`, exact production-vs-manual bytes, and
+      checksum `3387841946`.
+    - `zig build test --summary all` passed `403/403`.
+
+- [x] Refresh the Process performance ranking before selecting more non-scanner
+      optimization work.
+  - Why this is next: the last several checked items changed the relative cost
+    of preview load, detected-frame export, autodetect, rebate sampling, and
+    inverted preview. The old "next target" notes are stale enough that the
+    next optimization pass should be selected from a fresh ReleaseFast ranking
+    on real scan data, not from release-QA checklist order.
+  - Scope:
+    - Use the ambient nix shell and direct Zig commands only. Do not run
+      `nix develop`, `nix-shell`, `nix build`, `nix flake check`, or
+      `nix search`.
+    - Run current production timing on
+      `scans/scan_0004_rgbir_3200dpi.tiff` for at least:
+      `load_preview`, `auto_detect`, `rebate`, `inverted_preview_f32_breakdown`,
+      and `export_detected_frames`.
+    - Run the matching staged breakdown for the largest current production
+      bucket: `load_preview_breakdown`, `auto_detect_breakdown`, or
+      `export_detected_frames_breakdown` as indicated by the ranking.
+    - Run at least one spread check on `scans/scan_0003_rgbir_3200dpi.tiff` for
+      the selected largest bucket before starting code changes.
+    - Rank by user-visible wall time first, then by stage breakdown and
+      optimization risk. Include dimensions, frame count, worker count where
+      applicable, checksums, `max_abs`/RMS/mismatch metrics, and any metadata
+      equality evidence the benchmark reports.
+    - Select the first same-behavior optimization target from the fresh data.
+      Do not switch to UI screenshots, native UI release QA, packaging, Nix
+      validation, or parked macOS work while this checkpoint is active.
+  - Required evidence before checking off:
+    - Exact benchmark commands and outputs summarized in this plan and in
+      `docs/PERFORMANCE_STRATEGY.md`.
+    - A ranked next-target decision with the reason it is safe to pursue under
+      the Python-oracle/function-for-function parity rule.
+    - `zig build test --summary all` after any code changes. If this checkpoint
+      only records measurements and no source changes, record that no test rerun
+      was needed beyond benchmark parity checks.
+  - Completed 2026-05-19:
+    - Refreshed the Process ranking on `scan_0004_rgbir_3200dpi.tiff` using
+      direct ReleaseFast Zig commands:
+      - `load_preview`: `649140 us`, checksum `6666414344`;
+      - `auto_detect`: `164340 us`, frames `5`, aspect `24:36`, checksum
+        `38221731`;
+      - `rebate`: `435945 us`, Dmin
+        `0.283915:0.422373:0.606312`;
+      - `inverted_preview_f32_breakdown`: production `82646 us`, manual mirror
+        `139090 us`, `max_abs=0`, `mismatches=0`, checksum `3912224310`;
+      - `export_detected_frames`: before the no-op rotation fix, `1622925 us`,
+        frames `5`, files `5`, workers `5`, serial `4411959 us`, checksum
+        `19055`.
+    - Selected `export_detected_frames` as the continuing target because it was
+      still the largest user-visible wait by a wide margin. The matching
+      breakdown on `scan_0004` reported `1625129 us`, `load_full_us=510167`,
+      `frame_processing_us=958556`, aggregate `rgb_crop_us=929083`,
+      `inversion_us=1705012`, `display_render_us=680585`,
+      `output_rotation_us=193710`, `write_us=463837`, and exact
+      timed-vs-reference parity (`max_abs=0`, `mismatches=0`,
+      `metadata_equal=true`, `file_set_equal=true`). A `scan_0003` spread check
+      reported `1543391 us` with exact parity.
+    - Removed a same-behavior no-op rotation copy from
+      `prepareInvertedPositiveOutputU16WithTimings`: Python `apply_rotation`
+      returns the image unchanged for rotations other than `90`, `180`, and
+      `270`, so Zig now returns the rendered `u16` buffer directly for those
+      no-op rotations instead of allocating and copying a second full image.
+    - After that change, `export_detected_frames_breakdown` on `scan_0004`
+      reported `1569086 us`, `load_full_us=499770`,
+      `frame_processing_us=912631`, aggregate `output_rotation_us=0`, and exact
+      parity. The `scan_0003` spread check reported `1442871 us`, also with
+      exact parity. The normal production command on `scan_0004` reported
+      `1539625 us`, serial `4193699 us`, workers `5`, and checksum `18880`.
+    - Current ranked Process waits are therefore: export `1539625 us`,
+      `load_preview` `649140 us`, rebate `435945 us`, `auto_detect`
+      `164340 us`, and production inverted preview `82646 us`.
+    - `zig build test --summary all` passed `412/412`.
+
+- [x] Reduce no-IR/provided-Dmin full-resolution export staging.
+  - Why this is next: after no-op rotation removal, detected-frame export is
+    still the dominant Process wait. The current inv-only benchmark has no IR
+    work and receives Dmin up front, but the production workflow still loads
+    the whole RGB page, expands the full scan to f64, then crops each frame from
+    that f64 image before inversion. That is safe but wasteful for this common
+    export shape.
+  - Scope:
+    - Preserve the Python export contract: same crop geometry, OpenCV-shaped
+      reflect-border bilinear sampling, same Dmin/stock/render settings,
+      output filenames, metadata JSON, completion-order collection, and final
+      TIFF pixels within the accepted exact or explicit u16-LSB tolerance.
+    - Add a benchmark or staging path that compares the current full-image f64
+      route against a no-IR/provided-Dmin route that crops directly from the
+      raw TIFF RGB sample buffer and materializes only frame crops.
+    - Separately test whether the frame crop can enter the accepted f32
+      density-LUT inversion/render path for full-resolution export. Push the
+      accuracy comparison through final `u16` output, not just intermediate
+      floats. Do not switch production to the f32 route unless the output error
+      is within the approved final-output tolerance and the wall-clock win is
+      meaningful.
+    - Keep the old f64 path as fallback for IR exports, missing Dmin, custom
+      nonlinear stock coefficients, GPU requests, and any case where the fast
+      path cannot prove parity.
+  - Required evidence before checking off:
+    - Baseline and after
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_breakdown`.
+    - At least one spread check on `scan_0003_rgbir_3200dpi.tiff`.
+    - Stage timings for load, crop, inversion, render, write, worker count,
+      memory estimate, wall-clock speedup, and final TIFF/metadata parity.
+    - `zig build test --summary all`.
+  - Completed 2026-05-19:
+    - Added a guarded no-IR/provided-Dmin direct RGB crop route for inv-only
+      exports. When no selected variant needs IR, Dmin is already provided,
+      and only inverted output is requested, the workflow now loads the RGB
+      TIFF page plus metadata, crops each frame directly from the TIFF sample
+      buffer, and processes only the cropped frame. The existing full-image f64
+      path remains the fallback for IR exports, missing Dmin, non-inverted
+      variants, custom nonlinear coefficient rows, explicit GPU requests, and
+      unsupported fast-path conditions.
+    - Kept crop behavior tied to the existing Python-shaped export geometry:
+      the direct TIFF crop uses the same rotated rectangle, reflect-border
+      bilinear sampling, frame scaling, metadata, filenames, and worker result
+      collection as the reference path. The RGB sampler was then tightened to
+      compute the reflected sample coordinates once and load RGB together
+      instead of running three independent per-channel sample paths.
+    - Added a full-resolution f32 density-LUT export route for the safe
+      provided-Dmin/default-light/no-dark-light CPU case with built-in or
+      otherwise linear coefficients. Accuracy is measured through final `u16`
+      output, not intermediate floats; the f64 path remains available for
+      oracle comparison and unsupported export shapes.
+  - Evidence:
+    - Direct-crop staging before the RGB-together loop on
+      `scan_0004_rgbir_3200dpi.tiff`:
+      `export_detected_frames_breakdown` reported timed `1324307 us`,
+      no-direct-crop reference `1539523 us`, exact TIFF/metadata parity
+      (`max_abs=0`, `mismatches=0`, `metadata_equal=true`,
+      `file_set_equal=true`), and production `export_detected_frames`
+      reported `1333224 us`.
+    - After RGB-together direct sampling, the same breakdown on `scan_0004`
+      reported timed `1280965 us`, reference `1567751 us`,
+      `rgb_crop_us=1045899`, exact TIFF/metadata parity, and production
+      `export_detected_frames` reported `1279140 us`, serial `4048302 us`.
+      The `scan_0003_rgbir_3200dpi.tiff` spread check reported timed
+      `1213441 us`, reference `1438646 us`, also with exact parity.
+    - The standalone full-resolution f32 LUT tradeoff benchmark on `scan_0004`
+      reported f64 reference `484129 us`, f32 variant `227450 us`,
+      `lut_build_us=1214`, `invert_us=119361`, `render_us=106873`,
+      speedup `2.128x`, and final `u16 max_abs=1`, RMS `0.054239`,
+      MSE `0.002941895`. The `scan_0003` spread check reported reference
+      `456660 us`, variant `219494 us`, speedup `2.080x`, final
+      `u16 max_abs=1`, RMS `0.052345`, and MSE `0.002740004`.
+    - After production integration of the safe f32 LUT route,
+      `export_detected_frames_breakdown` on `scan_0004` reported timed
+      `997165 us`, no-direct-crop reference `1273769 us`, `workers=5`,
+      `cpu_limit=31`, `mem_limit=28`, adjusted peak
+      `2159506560` bytes/worker, `load_full_us=322084`,
+      `frame_processing_us=635082`, aggregate `rgb_crop_us=1055382`,
+      `inversion_us=628417`, `display_render_us=560723`, `write_us=419987`,
+      and exact fast-path-vs-reference TIFF/metadata parity.
+    - Final production command on `scan_0004`:
+      `export_detected_frames` reported `1009255 us`, serial `2843707 us`,
+      `workers=5`, `cpu_limit=31`, `mem_limit=28`, adjusted peak
+      `2159506560` bytes/worker, and `speedup_x1000=2817`.
+    - The `scan_0003` spread check after f32 integration reported
+      `export_detected_frames_breakdown` timed `926099 us`, reference
+      `1165373 us`, `load_full_us=276024`, `frame_processing_us=614576`,
+      aggregate `rgb_crop_us=1043241`, `inversion_us=626996`,
+      `display_render_us=556730`, `write_us=307985`, and exact
+      TIFF/metadata parity.
+    - `zig build test --summary all` passed `412/412`.
+
+- [x] Continue Process export optimization from the direct-crop/f32 stage split.
+  - Why this is next: live scanner timing remains blocked by SANE enumeration,
+    and the current Process ranking still has `export_detected_frames` as the
+    largest unblocked user-visible wait at about `1009255 us` on
+    `scan_0004_rgbir_3200dpi.tiff`. The latest aggregate stage split across
+    five frame workers is direct TIFF crop `1055382 us`, f32 density-LUT
+    inversion `628417 us`, f32 display render `560723 us`, and write
+    `419987 us`.
+  - Scope:
+    - Keep the same no-IR/provided-Dmin inv-only export contract and the same
+      f64 reference/final-u16 tolerance used by the accepted f32 export path.
+    - Start by reducing staging between direct TIFF crop and f32
+      density-LUT inversion. The current fast path still materializes a full
+      f64 crop before immediately interpolating density LUTs into a f32 scene.
+      Test a fused direct-TIFF-crop-to-f32-scene route for the same guarded
+      conditions, with the old f64 crop path retained as fallback and oracle.
+    - Preserve crop geometry, reflect-border bilinear sampling, Dmin handling,
+      stock coefficient gating, output metadata, filenames, worker scheduling,
+      and completion-order result collection.
+  - Required evidence before checking off:
+    - Baseline and after
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_breakdown`.
+    - At least one spread check on `scan_0003_rgbir_3200dpi.tiff`.
+    - Stage timings for crop/fused inversion, render, write, worker count,
+      memory estimate, wall-clock speedup, and final TIFF/metadata parity.
+    - `zig build test --summary all`.
+  - Completed 2026-05-19:
+    - Added a fused direct-TIFF-crop-to-f32-scene route for the same guarded
+      safe export shape already accepted for f32 density-LUT export. The path
+      builds the f32 density LUT, samples TIFF RGB through the existing
+      reflect-border bilinear sampler, immediately applies the linear
+      density-transform coefficients into the f32 scene buffer, then renders
+      and writes through the existing `u16` export path.
+    - The old direct-TIFF-to-f64-crop path remains fallback for unsupported
+      conditions. The f64 no-direct-crop route remains the benchmark reference,
+      and final TIFF/metadata comparison remains enforced.
+    - Timing note: the fused loop intentionally reports its combined
+      crop-plus-density work in `inversion_us`, so `rgb_crop_us=0` for this
+      fast path. Compare wall time and the combined old
+      `rgb_crop_us + inversion_us` aggregate when evaluating this pass.
+  - Evidence:
+    - `zig build test --summary all` passed `412/412`.
+    - `export_detected_frames_breakdown` on
+      `scan_0004_rgbir_3200dpi.tiff` reported timed `893305 us`, no-direct
+      reference `1278393 us`, `workers=5`, `cpu_limit=31`, `mem_limit=28`,
+      adjusted peak `2159506560` bytes/worker, `load_full_us=336646`,
+      `frame_processing_us=510911`, aggregate fused `inversion_us=1474796`,
+      `display_render_us=561146`, `write_us=285799`, `rgb_crop_us=0`, and
+      exact TIFF/metadata parity (`max_abs=0`, `mismatches=0`,
+      `metadata_equal=true`, `file_set_equal=true`).
+    - `export_detected_frames_breakdown` on
+      `scan_0003_rgbir_3200dpi.tiff` reported timed `826455 us`, no-direct
+      reference `1172728 us`, `load_full_us=275767`,
+      `frame_processing_us=514492`, aggregate fused `inversion_us=1468376`,
+      `display_render_us=561071`, `write_us=288599`, and exact
+      TIFF/metadata parity.
+    - Normal production command on `scan_0004`:
+      `export_detected_frames` reported `883583 us`, serial `2587911 us`,
+      `workers=5`, `cpu_limit=31`, `mem_limit=28`, adjusted peak
+      `2159506560` bytes/worker, and `speedup_x1000=2928`.
+
+- [x] Refresh the Process performance ranking after fused export staging.
+  - Why this is next: the latest export pass changed the largest known Process
+    bucket again. Before optimizing another stage, refresh the user-visible
+    ranking so the next target is chosen from current timings rather than the
+    old pre-fusion split.
+  - Scope:
+    - Use direct Zig commands only.
+    - Run `load_preview`, `rebate`, `auto_detect`,
+      `inverted_preview_f32_breakdown`, and `export_detected_frames` on
+      `scans/scan_0004_rgbir_3200dpi.tiff`.
+    - Select the next unblocked same-behavior target from current evidence,
+      skipping live scanner items until SANE enumerates the V600.
+  - Required evidence before checking off:
+    - Exact command outputs summarized here and in
+      `docs/PERFORMANCE_STRATEGY.md`.
+    - A ranked next-target decision and required validation checklist.
+    - If no source changes are made, no extra `zig build test` rerun is needed
+      beyond benchmark parity; if code changes are made, run
+      `zig build test --summary all`.
+  - Completed 2026-05-19:
+    - Refreshed the Process ranking on `scan_0004_rgbir_3200dpi.tiff`:
+      `load_preview` `639072 us`, checksum `6666414344`; `rebate_dmin`
+      `431103 us`, Dmin `0.283915:0.422373:0.606312`; `auto_detect`
+      `172900 us`, frames `5`, aspect `24:36`, checksum `38221731`;
+      `inverted_preview_f32_breakdown` production `76083 us`, manual mirror
+      `123357 us`, `max_abs=0`, checksum `3912224310`; and
+      pre-nested-parallel export `883583 us`.
+    - Selected the fused export frame-processing bucket as the same-behavior
+      follow-up because export was still largest and the fused
+      crop-plus-density work was single-threaded inside each of five frame
+      workers while the CPU budget allowed more cores.
+    - Added budgeted row-level parallelism inside the fused direct TIFF
+      crop-to-f32-scene loop. The nested worker count is derived from the
+      existing export CPU worker limit divided by the outer frame-worker count,
+      leaving the old serial path for small crops and fallback conditions.
+    - `zig build test --summary all` passed `412/412`.
+    - After the nested pass, `export_detected_frames_breakdown` on
+      `scan_0004` reported timed `665289 us`, no-direct reference
+      `1276807 us`, `workers=5`, `cpu_limit=31`, `mem_limit=28`, adjusted peak
+      `2159506560` bytes/worker, `load_full_us=325067`,
+      `frame_processing_us=297149`, aggregate fused `inversion_us=368390`,
+      `display_render_us=561994`, `write_us=293486`, `rgb_crop_us=0`, and
+      exact TIFF/metadata parity.
+    - The `scan_0003` spread check reported timed `608411 us`, reference
+      `1150193 us`, `load_full_us=275430`, `frame_processing_us=301205`,
+      aggregate fused `inversion_us=363790`, `display_render_us=565134`,
+      `write_us=270693`, and exact TIFF/metadata parity.
+    - Normal production `export_detected_frames` on `scan_0004` reported
+      `665669 us`, serial `2442106 us`, `workers=5`, `cpu_limit=31`,
+      `mem_limit=28`, adjusted peak `2159506560` bytes/worker, and
+      `speedup_x1000=3668`.
+    - Current ranked Process waits are now export `665669 us`, `load_preview`
+      `639072 us`, rebate `431103 us`, `auto_detect` `172900 us`, and
+      inverted preview production `76083 us`.
+
+- [x] Break down the new top-tier Process waits before the next optimization.
+  - Why this is next: after nested export parallelism, export and Process image
+    load are close enough that a fresh stage-level comparison should decide the
+    next target. Scanner live work remains blocked by SANE enumeration, so this
+    is the next unblocked performance loop item.
+  - Scope:
+    - Run `export_detected_frames_breakdown` and `load_preview_breakdown` on
+      `scan_0004_rgbir_3200dpi.tiff`.
+    - Compare wall time, stage split, exact parity metrics, and optimization
+      risk. Select a same-behavior target with a concrete validation checklist.
+    - Do not switch to release QA, UI screenshots, Nix package checks, or macOS
+      work while this performance checkpoint is active.
+  - Required evidence before checking off:
+    - Exact benchmark command summaries for both breakdowns.
+    - A ranked next-target decision and checklist.
+    - `zig build test --summary all` only if code changes are made.
+  - Completed 2026-05-19:
+    - `load_preview_breakdown` on `scan_0004_rgbir_3200dpi.tiff` before the
+      small preview pass reported total `586596 us`, reference `687977 us`,
+      `rgb_read_us=308681`, `quick_preview_us=253135`,
+      `invert_stretch_us=65809`, `clahe_us=40902`, `raw_copy_us=32704`,
+      `rgb_copy_us=14951`, `jpeg_encode_us=25662`, and exact
+      raw/RGB/JPEG parity.
+    - `export_detected_frames_breakdown` after nested fused export reported
+      total `665289 us`, `load_full_us=325067`,
+      `frame_processing_us=297149`, aggregate fused `inversion_us=368390`,
+      `display_render_us=561994`, and exact TIFF/metadata parity.
+    - Selected two targets from this evidence:
+      - a small immediate load-preview pass fusion, because
+        `stretch_content_percentiles` still walked the full preview separately
+        for each RGB channel even though the percentile and stretch math is
+        channel-independent;
+      - a larger follow-up repeated-TIFF-read/cache checkpoint, because the
+        top waits now share the same roughly `300 ms` RGB page read cost.
+    - Implemented the small preview pass fusion in `opencv_preview.cpp`: the
+      masked 256-bin histograms for RGB channels are now built in one image
+      walk and the active channel stretches are applied in one image walk.
+      Output semantics are unchanged.
+    - `zig build test --summary all` passed `412/412`.
+    - After the preview pass fusion, `load_preview_breakdown` reported total
+      `576577 us`, reference `711587 us`, `rgb_read_us=314019`,
+      `quick_preview_us=237544`, `invert_stretch_us=54955`,
+      `clahe_us=38662`, `raw_copy_us=32823`, `rgb_copy_us=15089`,
+      `jpeg_encode_us=26101`, and exact raw/RGB/JPEG parity. A normal
+      `load_preview` run reported `684465 us`, checksum `6666414344`; this
+      single-command wall time is noisy, so use the parity-checked breakdown
+      for the pass-level win.
+
+- [x] Prototype a Process RGB page cache to avoid repeated TIFF reads.
+  - Why this is next: after export and preview loop work, the largest shared
+    avoidable-looking cost is repeatedly reading the same full RGB TIFF page.
+    Current evidence shows `load_preview_breakdown` `rgb_read_us` around
+    `314019 us` and export `load_full_us` around `325067 us` on the same
+    loaded image. Python kept processing image state in memory, so a carefully
+    scoped cache may be more function-for-function than repeatedly reopening
+    the TIFF for rebate/export.
+  - Scope:
+    - First add a headless workflow benchmark or state-level replay that proves
+      the potential win without changing UI ownership unsafely. Compare
+      load-preview + rebate + export with and without reusing an already-loaded
+      RGB page.
+    - Preserve current fallback behavior for CLI/stateless commands, image
+      switches, stale worker generations, file changes, IR-needed exports,
+      missing Dmin, and memory-limited systems.
+    - Do not store the full RGB page in native UI state until ownership,
+      invalidation, and worker handoff are explicit and covered by tests.
+  - Required evidence before checking off:
+    - A benchmark on `scan_0004_rgbir_3200dpi.tiff` quantifying avoided TIFF
+      read time and any memory increase.
+    - Replay/state tests for cache invalidation on image switch and stale
+      worker result rejection if the UI cache is integrated.
+    - Exact output parity for rebate Dmin and export TIFF/metadata.
+    - `zig build test --summary all` after any code change.
+  - Completed 2026-05-19:
+    - Added the headless `process_rgb_page_cache_sequence` benchmark and the
+      cache-safe workflow entry points `quickPreviewFromLoadedRgbPage`,
+      `computeRebateDminFromTiffImage`, and
+      `processExportFromCachedRgbPage`. This checkpoint intentionally does not
+      store the full RGB page in native UI state, so image-switch and stale
+      worker cache-invalidation tests remain deferred until UI cache ownership
+      is explicitly integrated.
+    - The benchmark compares the current stateless sequence
+      `loadQuickPreview` -> `autoDetectPreview` -> `computeRebateDminFromTiff`
+      -> `processExportFromTiff` against one `loadRgbPageWithMetadataTimed`
+      reused for quick preview, rebate Dmin, and direct no-IR/provided-Dmin
+      export. CLI/stateless commands still keep their existing load behavior.
+    - `zig build test --summary all` passed `412/412`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case process_rgb_page_cache_sequence`
+      reported cached `1075616 us` versus baseline `2001858 us`
+      (`speedup_x1000=1861`), cached RGB resident bytes `741120000`,
+      cached load `325380 us`, cached RGB read `300145 us`, baseline
+      repeated-load-ish time `1477842 us`, avoided read time `1152462 us`,
+      baseline preview `677912 us` versus cached preview `229352 us`, baseline
+      rebate `450573 us` versus cached rebate `65867 us`, baseline export
+      `700209 us` versus cached export `300197 us`, baseline export load
+      `349356 us` versus cached export load `0 us`, and exact parity:
+      preview mismatches `0`, `dmin_max_abs=0.000000000000`,
+      `export_max_abs=0`, `export_mismatches=0`, `metadata_equal=true`, and
+      `file_set_equal=true`.
+
+- [x] Define the semantic native Process result-cache key contract.
+  - Why this is next: the headless RGB-page cache proved that repeated TIFF
+    reads are expensive, but a native UI cache must be broader and stricter
+    than a single resident buffer. It must support fast image switching,
+    repeated setting changes, and later undo/redo without coupling cache
+    behavior to undo history.
+  - Invariants:
+    - Cache lookup must be transparent: if the exact semantic key is absent,
+      the UI must run the normal computation path and then may populate the
+      cache.
+    - Undo/redo history is not part of the cache. Future undo/redo should be a
+      light record of selected file, config, selections, rebate/Dmin, and other
+      UI state snapshots; replaying a snapshot may hit the cache, but it must
+      not own cache entries or invalidation.
+    - A cache hit must be keyed by the selected image identity and every
+      relevant processing input for the operation. The image identity includes
+      the path plus file size and mtime when available. The processing state
+      includes the full loaded processing config, custom stock coefficients,
+      selected Dmin/rebate/frames/render settings/GPU request/output choices as
+      appropriate for the operation.
+    - A compact hash fingerprint is acceptable as the practical key because
+      the resident state set is small and a reasonable fingerprint collision is
+      effectively impossible in this UI. The implementation must still keep the
+      serialized key construction deterministic and testable so diagnostics can
+      explain why a hit or miss happened.
+    - Do not store large image buffers in native UI state until ownership,
+      memory budget, image-switch invalidation, and stale-worker handoff are
+      covered by tests.
+  - Scope:
+    - Add a standalone native Process cache-key module independent of
+      undo/redo and independent of SDL/Nuklear rendering.
+    - Serialize the full active `scratchndent_config.toml` state in a canonical
+      order, including every active config entry and every custom stock profile
+      coefficient.
+    - Define operation-state serializers for RGB-page, quick-preview,
+      auto-detect, rebate Dmin, inverted preview, and export-output cache
+      candidates.
+    - Add a small byte-result cache harness proving exact-key hit/miss
+      behavior without yet claiming a production resident image cache.
+  - Required evidence before checking off:
+    - Unit tests that a config-entry value change, custom stock coefficient
+      change, selected file path/mtime change, preview-size change, Dmin/render
+      option/GPU change, auto-detect option change, and export-output choice
+      change all change the key.
+    - A cache harness test proving miss fallback is visible as a null result
+      for non-identical semantic keys.
+    - `zig build test --summary all`.
+  - Completed 2026-05-20:
+    - Added `src/ui/process_cache.zig` and exported it through `src/root.zig`.
+      The module defines semantic operations, image identity, deterministic
+      config-state bytes, operation-state bytes, compact 128-bit semantic
+      fingerprints for lookup, and a small byte-result cache harness.
+    - The cache-key code is deliberately not tied to undo history. It can
+      support future undo/redo because a restored state snapshot can recreate
+      the same semantic key, but the cache remains a general processing-result
+      layer.
+    - `zig build test --summary all` passed `418/418`.
+
+- [x] Integrate native Process quick-preview caching on image load and image
+      switch.
+  - Why this is next: the key contract is now test-covered, and quick-preview
+    image switching is the smallest UI-facing cache integration that can use
+    it without taking ownership of a full-resolution RGB page yet.
+  - Scope:
+    - Add a bounded native Process result-cache owner outside undo/redo
+      history.
+    - Store derived quick-preview results under semantic keys built from image
+      path/size/mtime, full processing config state, and preview-size operation
+      state.
+    - On image load or image switch, attempt a cache lookup before spawning the
+      load worker. On miss, run the existing worker computation and populate
+      the cache only after the result passes stale-generation/path checks.
+    - Keep current stateless CLI behavior and direct workflow functions
+      unchanged.
+  - Required evidence before checking off:
+    - State/worker tests for cache hit on reloading an unchanged image and miss
+      on processing config change.
+    - Cache clone tests proving cached preview buffers are not aliased with UI
+      state.
+    - `zig build test --summary all`.
+  - Completed 2026-05-20:
+    - Added `ProcessResultCache` and `QuickPreviewCache` to
+      `src/ui/process_cache.zig`, with a bounded four-entry cache and cloned
+      preview ownership on both insert and hit.
+    - Added `processing_result_cache` to native `State`; deinit clears cached
+      preview entries independently from undo/redo and independently from the
+      current visible preview.
+    - `ProcessWorker.startLoadIndex` now checks the semantic quick-preview key
+      before spawning a worker. Cache hits install a cloned preview through the
+      same `finishProcessingImageLoadResult` path as worker results. Cache
+      misses run the existing load worker and populate the cache only after the
+      result is accepted for the current generation/path.
+    - Tests cover cloned cache hits, unchanged-image worker bypass, and config
+      mutation miss/fallback behavior.
+    - `zig build test --summary all` passed `421/421`.
+
+- [x] Integrate native Process resident RGB-page caching.
+  - Why this is next: quick-preview caching now covers fast image switching for
+    derived previews, but the previous benchmark showed that one resident RGB
+    page avoided about `1.15 s` of repeated reads in a preview + rebate + export
+    sequence on `scan_0004_rgbir_3200dpi.tiff`.
+  - Scope:
+    - Add a bounded resident RGB-page owner with an explicit memory budget and
+      LRU or simple recency eviction policy.
+    - Store full-resolution RGB page data under semantic keys built from image
+      path/size/mtime plus the relevant operation state.
+    - Use the resident page for quick-preview generation, rebate Dmin, and
+      no-IR/provided-Dmin export only where the existing cached workflow
+      helpers already proved exact parity.
+    - Preserve transparent fallback to existing TIFF-load computation when the
+      cache misses, memory budget is exceeded, IR data is required, Dmin is
+      missing, or worker ownership is stale.
+  - Required evidence before checking off:
+    - State/worker tests for image-switch hit, file metadata miss, memory-budget
+      eviction, and stale worker rejection.
+    - A direct benchmark showing cached UI sequence latency versus the current
+      `load_preview`/rebate/export path on a real scan from `scans/`.
+    - `zig build test --summary all`.
+  - Completed 2026-05-20:
+    - Added a bounded `RgbPageCache` to `src/ui/process_cache.zig` with a
+      default 1 GiB memory budget, two-entry capacity, explicit resident-byte
+      accounting, and least-recently-used eviction. Pages larger than the
+      budget are rejected and fall back to normal computation.
+    - Process image-load workers now preserve the loaded full-resolution RGB
+      page after the load result is accepted, move it into the resident cache,
+      and can generate quick previews from a resident page clone on later
+      image switches. Stale worker results do not populate the cache.
+    - Rebate and auto-detect Dmin follow-up workers receive a resident RGB page
+      clone when available and otherwise fall back to `processRebateFromTiff`.
+    - Process export workers receive a resident RGB page clone when available
+      and attempt `processExportFromCachedRgbPage`; unsupported export shapes
+      transparently fall back to `processExportFromTiff`.
+    - Tests cover cloned page ownership, file metadata key misses,
+      memory-budget eviction, over-budget rejection, accepted load population,
+      stale load rejection, rebate context handoff, and export context handoff.
+    - `zig build test --summary all` passed `428/428`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case process_rgb_page_cache_sequence`
+      reported cached `1120225 us` versus baseline `1932655 us`
+      (`speedup_x1000=1725`), cached RGB bytes `741120000`,
+      avoided read time `1056380 us`, baseline preview `639922 us` versus
+      cached preview `241429 us`, baseline rebate `443560 us` versus cached
+      rebate `65228 us`, baseline export `676540 us` versus cached export
+      `296899 us`, baseline export load `334072 us` versus cached export load
+      `0 us`, and exact parity: preview mismatches `0`,
+      `dmin_max_abs=0.000000000000`, `export_max_abs=0`, export mismatches
+      `0`, `metadata_equal=true`, and `file_set_equal=true`.
+
+- [x] Add derived native Process result caches for Dmin, auto-detect, and
+      inverted preview.
+  - Scope:
+    - Cache rebate Dmin by image identity, full config state, and full rebate
+      rectangle.
+    - Cache auto-detect by image identity, full config state, preview identity
+      or preview state, detection options, scale adjustment, and output
+      rotation.
+    - Replace or wrap the current pointer/generation inverted-preview guard
+      with a semantic key that includes image identity, preview dimensions,
+      full config state, active stock, Dmin, render options, and GPU request.
+    - Preserve transparent fallback to computation on every cache miss.
+  - Required evidence before checking off:
+    - Tests proving each relevant state mutation misses the cache.
+    - Tests proving repeated identical operations hit and produce the same UI
+      state without recomputation.
+    - Performance evidence for repeated settings toggles and image switching.
+  - Completed 2026-05-20 Dmin-cache slice:
+    - Added a bounded `DminCache` to `src/ui/process_cache.zig`, keyed by the
+      same compact semantic fingerprint contract as the quick-preview and
+      resident RGB-page caches.
+    - `ProcessWorker.startRebateFromState` now checks the cached Dmin before
+      spawning the rebate worker. Hits persist `dmin` to
+      `scratchndent_config.toml` through `saveRebateDmin` and apply the result
+      through the same accepted-generation/path state path as worker results.
+      Misses transparently run the existing rebate worker.
+    - Accepted explicit rebate workers and auto-detect suggested-rebate
+      follow-up workers populate the Dmin cache after their result is accepted
+      for the active image.
+    - Tests cover Dmin cache hit/update/LRU eviction, image metadata, full
+      config state, and rebate rectangle misses, and the worker-level hit path
+      that bypasses the worker while still saving config and updating native
+      state.
+    - `zig build test --summary all` passed `432/432`.
+  - Completed 2026-05-20 auto-detect-cache slice:
+    - Added a bounded `AutoDetectCache` that stores cloned detector frames,
+      aspect, suggested rebate, full-resolution rebate, and optional Dmin under
+      a semantic key built from image identity, full processing config state,
+      detection options, scale adjustment, output rotation, preview dimensions,
+      and preview scale.
+    - `ProcessWorker.startAutoDetectFromState` checks the auto-detect cache
+      before copying preview buffers or spawning the detector worker. Hits
+      replay through `applyProcessAutoDetectWorkerResult`, remember the aspect,
+      persist cached Dmin through `saveRebateDmin`, and avoid recomputation.
+      Misses run the existing worker path.
+    - Accepted auto-detect worker results populate both the auto-detect cache
+      and, when a suggested rebate Dmin exists, the separate Dmin cache after
+      generation/path checks pass.
+    - Tests cover auto-detect result clone isolation, full-config cache misses,
+      and the worker-level hit path that bypasses the worker while applying
+      selections, rebate, aspect, Dmin, and config persistence.
+    - `zig build test --summary all` passed `434/434`.
+  - Completed 2026-05-20 inverted-preview-cache slice:
+    - Added a bounded `InvertedPreviewCache` to `ProcessResultCache` for RGB8
+      inverted preview outputs under the same compact semantic fingerprint
+      contract.
+    - Added `invertedPreviewKey`, keyed by image identity, full processing
+      config state, active stock, Dmin, render options, GPU request, preview
+      dimensions, and preview scale.
+    - The SDL/Nuklear `ProcessPreviewTextureCache` now keeps its local
+      pointer/generation key only for current texture validity, checks the
+      semantic Process result cache before starting an inverted-preview worker,
+      uploads cached RGB8 results directly on hits, and caches accepted worker
+      results after the existing current-generation/options match succeeds.
+      Misses transparently run the existing worker path.
+    - Tests cover inverted-preview RGB8 clone isolation and misses for full
+      config, Dmin, and render-state mutations.
+    - `zig build test --summary all` passed `435/435`.
+    - Direct UI validation passed:
+      `zig build -Dui=true --summary all` and
+      `SDL_VIDEODRIVER=dummy zig build -Dui=true run-ui -- --process-render-smoke`.
+    - Added `process_result_cache_repeat` benchmark coverage. On
+      `scans/scan_0004_rgbir_3200dpi.tiff`,
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case process_result_cache_repeat`
+      reported baseline `701955 us`, cached `15230 us`
+      (`speedup_x1000=46090`), auto-detect `179246 us` versus hit `0 us`,
+      Dmin `447778 us` versus hit `0 us`, inverted preview `74930 us` versus
+      hit `15229 us`, and exact parity:
+      `auto_mismatches=0`, `dmin_max_abs=0.000000000000`,
+      `inverted_max_abs=0`, `inverted_mismatches=0`, and matching checksums.
+
+- [ ] PENDING USER UPDATE: Finish scanner preview, scanner startup, and
+      full-resolution scan live timing before attempting scanner-side
+      optimization.
+  - Why this is measurement-first: scanner startup is known slow and important,
+    but live scan time is partly hardware/I/O bound. Blind changes risk
+    breaking scanner parity or adding more blocking startup work.
+  - Autonomous loop instruction:
+    - Treat the nested checklist below as the active scanner-performance work
+      queue. Select the first unchecked unblocked scanner checkpoint, complete
+      its code, replay/headless tests, live evidence if required, and docs
+      updates, then check off only that checkpoint. Re-run the loop until the
+      parent item has a complete timing baseline and a ranked follow-up
+      optimization list.
+    - Use the conversation's ambient nix shell and direct `zig ...` commands
+      only. Do not run `nix develop`, `nix-shell`, `nix build`,
+      `nix flake check`, or `nix search` while iterating. If a dependency or
+      Zig version is missing, edit Nix files if needed, stop, and ask the human
+      to reload the shell.
+  - Scope:
+    - Add structured timing around device discovery, connect/open, capability
+      probing, option setting, LUT generation/application, preview scan, full
+      scan, IR pass planning, file write, metadata write, and worker progress
+      event emission.
+    - Keep startup non-blocking: do not add blocking discovery, repeated SANE
+      probes, or scanner connection attempts on UI startup or hot paths without
+      benchmark evidence.
+    - Prefer cached capabilities, lazy connection, replayable scanner tests,
+      and clear progress diagnostics.
+    - Linux live hardware checks remain gated behind `V600_HARDWARE_SMOKE=1`;
+      macOS live scanner work remains parked pending explicit user update.
+  - Required evidence before checking off:
+    - Headless/replay tests for timing event formatting and scanner-worker state.
+    - When hardware is available and visible to SANE, run gated RGB, IR, RGB+IR,
+      metadata, LUT, native preview-worker, native scan-worker, and
+      scanner-to-processing smoke commands.
+    - Record exact commands, device identity, output paths, TIFF geometry/page
+      summaries, and timing breakdowns.
+    - `zig build test --summary all`.
+  - Scanner instrumentation and optimization checklist:
+    - [x] Define the scanner timing event contract.
+      - Add a stable JSONL event shape in `src/scanner/events.zig` for timing
+        samples without breaking existing `startup`, `device_discovery`,
+        `probe`, `scan_start`, `progress`, `scan_complete`,
+        `scan_cancelled`, and `scan_error` consumers.
+      - Required fields should include at least schema/version, event name,
+        stage name, elapsed microseconds, and an optional detail string or
+        small structured context. Use monotonic timing; never wall-clock time
+        for elapsed durations.
+      - Add schema tests for event name spelling, field spelling, integer
+        formatting, detail escaping, and fanout through the existing event
+        sink. This checkpoint is complete only when `zig build test --summary
+        all` passes.
+      - Completed 2026-05-19:
+        - Added `TimingEvent` and the `timing` JSONL event name to
+          `src/scanner/events.zig`.
+        - Stable fields are `event`, `schema`, `stage`, `elapsed_us`, and
+          nullable `detail`. Runtime instrumentation will convert monotonic
+          durations to elapsed microseconds before emitting this event.
+        - Added `writeTiming` / `emitTiming`, `Event.timing`, and a sink
+          forwarding test so scanner runtimes and native workers can route the
+          timing event through the existing event bus without changing the
+          older scanner lifecycle events.
+      - Evidence:
+        - `zig build test --summary all` passed `405/405`.
+    - [x] Instrument Linux scanner startup and capability discovery.
+      - Time device cache lookup, `scanimage -L`, device-list parsing,
+        selected-device resolution, flatbed `scanimage --help`, TPU
+        `scanimage --help`, capability parsing, combined capability assembly,
+        and total `Runtime.probe`.
+      - Preserve the nonblocking native UI lifecycle: no new synchronous probe
+        on UI startup, no repeated discovery on hot paths, and no automatic
+        retry loop without explicit user action or benchmark evidence.
+      - Add fake-process or replay tests that prove timing events are emitted
+        in deterministic order around successful discovery/probe and that
+        scanner errors still emit the existing failure events.
+      - Completed 2026-05-19:
+        - `Runtime.discoverDevices` now emits timing for `scanimage -L`,
+          device-list parsing, V600 selection, and total discovery.
+        - `Runtime.probe` now emits timing for discovery, selected-device
+          resolution, cache-write attempt, flatbed and TPU capability help,
+          combined capability parsing, and total probe.
+        - `Runtime.resolveDeviceName` now emits timing for explicit selection,
+          cache lookup, and discover-and-cache fallback. Device cache writes
+          emit `linux.cache.write` timing while preserving their previous
+          best-effort/no-throw behavior.
+        - Added a `scanimage_command` runtime override for replay tests. Normal
+          runtime behavior still defaults to `scanimage`/wrapper discovery and
+          no additional scanner probes were added.
+      - Evidence:
+        - `zig build test --summary all` passed `408/408`.
+        - Added fake-process tests for successful probe timing order, cache-hit
+          resolution without discovery, and failed discovery preserving the
+          existing `device-discovery` event plus timing diagnostics.
+    - [x] Instrument single-pass scan execution.
+      - Time request normalization, capability lookup when required for an
+        explicit scan area, SANE command planning, environment/LUT wiring,
+        child process spawn, stderr progress parsing, progress event emission,
+        child wait, cancel-file handling, mirror step, TIFF metadata rewrite,
+        metadata sidecar write, and total `scanOnce`.
+      - Keep progress semantics stable: existing progress percentages and
+        failure classification must remain unchanged, and timing events must
+        not hide or reorder user-visible scan errors.
+      - Add headless tests using the fake child/cancel infrastructure so this
+        checkpoint does not require hardware.
+      - Completed 2026-05-19:
+        - `scanOnce` now emits timing for capability lookup, request
+          normalization, command planning, progress-flag insertion,
+          `runScanPlan`, mirror handling, TIFF metadata rewrite, metadata
+          sidecar write, and total single-pass scan time.
+        - `runScanPlan` now emits timing for environment/LUT setup, child
+          spawn, stderr/progress streaming, aggregate progress-event emission,
+          child wait, cancel-file observation, and total child execution.
+        - Added a fake `scanimage` single-pass test that writes a real TIFF via
+          ImageMagick and exercises scan-start, progress, metadata rewrite,
+          sidecar write, scan-complete, and timing event order without scanner
+          hardware.
+        - Extended the fake cancellation test to assert cancel timing and the
+          existing `scan-cancelled` event.
+      - Evidence:
+        - `zig build test --summary all` passed `409/409`.
+    - [x] Instrument RGB+IR orchestration and post-scan file work.
+      - Time RGB pass, IR pass, IR DPI/source planning, thumbnail generation,
+        multipage TIFF combine, metadata rewrite, sidecar write, temporary
+        file cleanup, and total `scanRgbIr`.
+      - Preserve page layout and metadata invariants: page 0 RGB, page 2 IR
+        when present, existing Make/Model/Software/DPI/custom-LUT tags, sidecar
+        fields, and completion event payloads.
+      - Add replay tests for RGB+IR timing event ordering using fake scan
+        executors or existing TIFF fixtures where possible.
+      - Completed 2026-05-19:
+        - `scanRgbIr` now emits orchestration timing for RGB pass planning,
+          RGB pass execution, IR pass planning, IR pass execution, thumbnail
+          generation, multipage TIFF combine, final metadata tag rewrite,
+          combined sidecar write, temp-file cleanup, and total RGB+IR time.
+        - Added a fake RGB+IR scan test that drives the public `Runtime.scan`
+          path with an explicit fake device, writes real temporary TIFFs,
+          creates the thumbnail, combines pages with `tiffcp`, writes final
+          metadata/sidecar files, and verifies temp cleanup without hardware.
+      - Evidence:
+        - `zig build test --summary all` passed `410/410`.
+    - [x] Instrument native preview-worker latency.
+      - Time preview worker queue acceptance, probe/capability refresh,
+        preview scan request construction, scanner runtime scan, TIFF load,
+        preview page conversion, Python-parity Lanczos downsample when needed,
+        `PreviewBuffer` allocation/copy, and state update.
+      - Preserve browser parity: UI remains usable while connecting, Preview
+        while connecting still reports the Python-shaped connecting message,
+        downsample semantics remain the accepted Pillow Lanczos oracle, and
+        preview selection state is not reset except where the browser did so.
+      - Add headless worker/state tests proving timing diagnostics are surfaced
+        without changing success, failure, or cancellation state transitions.
+      - Completed 2026-05-19:
+        - `PreviewWorker` now records timing events for preview-worker start,
+          runtime probe, preview request construction, runtime scan, TIFF load,
+          downsample, total preview execution, and final UI state update.
+        - `State.applyScannerBackendEvent` now accepts `timing` events and
+          stores the latest scanner timing stage/detail/elapsed value plus a
+          timing count. Timing events intentionally do not change scan status,
+          preview readiness, progress, or cancellation/error transitions.
+        - Preview worker success and failure tests now assert diagnostics are
+          surfaced through native state while preserving the existing
+          preview-ready and failure-status behavior.
+      - Evidence:
+        - `zig build test --summary all` passed `410/410`.
+    - [x] Instrument native full-scan worker latency.
+      - Time scan worker queue acceptance, temporary LUT generation from the
+        selected preview, LUT-file write, runtime setup, backend event drain,
+        scan command execution, cancellation request/cleanup, output path
+        propagation, and final UI state update.
+      - Preserve LUT policy: RGB scans may use the selected custom scanner LUT,
+        IR-only scans use identity/fallback policy, and custom LUT metadata
+        remains visible in TIFF tags/sidecars.
+      - Add headless worker/state tests for success, cancellation, failure, and
+        timing diagnostics.
+      - Completed 2026-05-19:
+        - `ScanWorker` now emits timing for scan start preparation, temporary
+          scanner LUT generation, LUT file write, aggregate LUT preparation,
+          pre-start cancel-file cleanup, cancel-file write, runtime setup,
+          runtime scan execution, metadata-path propagation, backend event
+          drains, final UI state update, and worker cleanup.
+        - Scanner runtime `timing` events are now passed through the scan
+          worker event queue instead of being dropped.
+        - Success, temporary-LUT, cancellation, live-event-drain, and failure
+          tests now assert timing diagnostics are surfaced through native state
+          while preserving scan status, progress, cancellation, and output
+          behavior.
+      - Evidence:
+        - `zig build test --summary all` passed `410/410`.
+    - [x] Add a scanner timing report path for live diagnostics.
+      - Provide a CLI/UI-accessible way to capture scanner timing JSONL during
+        `scanner probe`, `scanner scan`, native preview-worker smoke,
+        native scan-worker smoke, and `scanner processing-smoke`.
+      - The report must be useful when the UI pegs CPU or appears idle: include
+        current stage, elapsed timings, output path, device identity when
+        known, selected source/mode/depth/DPI, and final success/error status.
+      - Keep the format append-friendly so repeated live runs can be compared
+        without parsing human status text.
+      - Completed 2026-05-19:
+        - `src/scanner/events.zig` now provides an append-mode
+          `TimingReport` sink. It mirrors existing scanner lifecycle,
+          progress, error, and timing events to JSONL without changing normal
+          stderr/debug event emission.
+        - Added report-only `timing-context` and `timing-status` JSONL records
+          so live runs are delimited with command name, output path, selected
+          device when already known, source/kind/depth/DPI, and final
+          `ok`/`error`/`skipped` status.
+        - `v600-zig scanner` accepts `--timing-report PATH` for `devices`,
+          `probe`, `scan`, `smoke`, and `processing-smoke`. The report stream
+          captures runtime events for probe/scan paths and records skipped
+          status without touching hardware when `V600_HARDWARE_SMOKE=1` is not
+          set.
+        - `v600-ui` accepts `--timing-report PATH`; native preview-worker and
+          scan-worker smoke paths write context/status records and route
+          worker/runtime scanner events to the same appendable report sink.
+      - Evidence:
+        - `zig build test --summary all` passed `412/412`.
+        - `zig build scanner-smoke-skip scanner-processing-smoke-skip
+          --summary all` passed.
+        - `zig build -Dui=true native-preview-worker-smoke-skip
+          native-scan-worker-smoke-skip --summary all` passed.
+        - `zig build run -- scanner smoke --timing-report
+          .zig-cache/tmp/v600-scanner-report-smoke.jsonl` skipped and wrote
+          `scanner smoke` context/status JSONL.
+        - `zig build run -- scanner processing-smoke --timing-report
+          .zig-cache/tmp/v600-scanner-report-smoke.jsonl` appended
+          `scanner processing-smoke` context/status JSONL.
+        - `zig build -Dui=true run-ui -- --preview-worker-smoke
+          --timing-report .zig-cache/tmp/v600-ui-report-smoke.jsonl` skipped
+          and wrote native preview-worker context/status JSONL.
+        - `zig build -Dui=true run-ui -- --scan-worker-smoke
+          --timing-report .zig-cache/tmp/v600-ui-report-smoke.jsonl` appended
+          native scan-worker context/status JSONL.
+    - [x] Run headless validation for the completed instrumentation.
+      - Required command: `zig build test --summary all`.
+      - Also run the smallest direct Zig build/UI smoke commands touched by the
+        instrumentation, for example `zig build -Dui=true --summary all` or
+        the relevant smoke step, but only direct `zig ...` commands.
+      - Record exact command lines and pass/fail results under this checklist
+        and in `docs/PARITY_MANIFEST.md` if the event schema, worker behavior,
+        or scanner parity evidence changed.
+      - Completed 2026-05-19:
+        - `zig build test --summary all` passed `412/412`.
+        - `zig build scanner-smoke-skip scanner-processing-smoke-skip
+          --summary all` passed and printed the expected no-hardware skip
+          messages.
+        - `zig build -Dui=true native-preview-worker-smoke-skip
+          native-scan-worker-smoke-skip --summary all` passed and printed the
+          expected no-hardware skip messages.
+        - `zig build run -- scanner smoke --timing-report
+          .zig-cache/tmp/v600-scanner-report-smoke.jsonl` passed without
+          hardware and wrote skipped report records.
+        - `zig build run -- scanner processing-smoke --timing-report
+          .zig-cache/tmp/v600-scanner-report-smoke.jsonl` passed without
+          hardware and appended skipped report records.
+        - `zig build -Dui=true run-ui -- --preview-worker-smoke
+          --timing-report .zig-cache/tmp/v600-ui-report-smoke.jsonl` passed
+          without hardware and wrote skipped report records.
+        - `zig build -Dui=true run-ui -- --scan-worker-smoke --timing-report
+          .zig-cache/tmp/v600-ui-report-smoke.jsonl` passed without hardware
+          and appended skipped report records.
+        - `git diff --check -- src/scanner/events.zig src/ui/preview_worker.zig
+          src/ui/scan_worker.zig src/main.zig src/ui/main.zig plan.md
+          docs/PARITY_MANIFEST.md docs/PERFORMANCE_STRATEGY.md` passed.
+    - [ ] PENDING USER UPDATE: Run gated Linux live scanner timing smokes when
+          hardware is visible to SANE.
+      - Use `V600_HARDWARE_SMOKE=1` and small selected TPU areas for fast,
+        low-waste evidence. Do not run live hardware smokes without the gate.
+      - Cover RGB, IR, RGB+IR, metadata rewrite, custom LUT metadata,
+        native preview-worker, native scan-worker, and
+        scanner-to-processing smoke.
+      - Record exact commands, selected SANE device, output paths, TIFF page
+        geometry/dtypes, sidecar summaries, and timing-event summaries in this
+        plan and `docs/PARITY_MANIFEST.md`.
+      - Blocked 2026-05-19:
+        - `zig build run -- scanner devices --timing-report
+          .zig-cache/tmp/v600-live-scanner-timing.jsonl` completed and wrote a
+          timing report, but SANE reported `devices_found=0`. The recorded
+          `linux.discover.scanimage_list` stage took about 5.83 seconds.
+        - `zig build run -- scanner probe --timing-report
+          .zig-cache/tmp/v600-live-scanner-timing.jsonl` appended startup and
+          discovery timings, then failed with `NoV600Device`. The second
+          recorded `linux.discover.scanimage_list` stage took about
+          6.02 seconds.
+        - USB and permissions are not the obvious blocker: `lsusb` sees
+          `04b8:013a Seiko Epson Corp. GT-X820 [Perfection V600 Photo]` at
+          `001:018`, `/dev/bus/usb/001/018` is group-writable by `scanner`,
+          the current user is in the `scanner` group, and
+          `sane-find-scanner` reports a possible scanner at `libusb:001:018`.
+        - `scanimage -L`, `scanimage-v600 -L`, and `scanimage-v600-ir -L`
+          still return no scanner devices; explicit `epkowa`/`epson2` device
+          attempts fail with `Invalid argument`, `Error during device I/O`, or
+          `Device busy`.
+        - Rechecked later on 2026-05-19: `lsusb` still sees
+          `04b8:013a Seiko Epson Corp. GT-X820 [Perfection V600 Photo]` at
+          `001:018`, but direct `scanimage -L` still reports
+          `No scanners were identified`.
+        - Rechecked again through the Zig timing path:
+          `zig build run -- scanner devices --timing-report
+          .zig-cache/tmp/v600-live-scanner-timing-refresh.jsonl` emitted
+          `devices_found=0`; `linux.discover.scanimage_list` took
+          `5743827 us` and `linux.discover.total` took `5749153 us`.
+        - No live scan smoke was run and no output TIFF was produced. Required
+          next input is to make the scanner enumerate through SANE again
+          before running gated RGB, IR, RGB+IR, native worker, or
+          scanner-to-processing smoke commands.
+    - [ ] PENDING USER UPDATE: Analyze the scanner timing baseline and choose
+          the first optimization.
+      - Build a ranked table for startup, preview, single-pass full scan, and
+        RGB+IR scan. Separate unavoidable hardware motion/I/O time from
+        avoidable host-side time such as repeated discovery, repeated
+        capability probes, TIFF rewrites, duplicate file reads, unnecessary
+        conversions, excess UI polling, and progress-event overhead.
+      - Optimization candidates must preserve function-for-function parity.
+        Likely first candidates are cached capabilities, lazy connect/open,
+        removing repeated `scanimage --help`, reusing selected device/cache
+        state, avoiding duplicate TIFF post-processing, and improving progress
+        diagnostics. Do not change scanner algorithms or add speculative
+        probes.
+      - Add the selected optimization as the next unchecked checkpoint with
+        required before/after live timing evidence before implementing it.
 
 - [x] Implement direct-u16 inverted-positive export output.
   - Scope: same `invert_negative` plus `render_to_display` export result as the
@@ -6162,7 +8030,1227 @@ Prompt-to-artifact checklist:
       and reported serial `18125889 us`, parallel `5981208 us`, speedup
       `3.030x`.
 
-- [ ] Refresh Linux live scanner release smoke evidence.
+- [x] Add real-scan IR/RGB+IR detected-frame export breakdown coverage.
+  - Why this is next: the no-IR/provided-Dmin `inv_only` export path has had
+    repeated optimization passes, but the full RGB+IR path still lacks an
+    equivalent real-scan timing breakdown for IR alignment, IR crop,
+    IR-cleaned negative output, IR-cleaned inverted output, raw inverted output,
+    metadata, and write costs.
+  - Scope:
+    - Add a headless benchmark case that runs automatic frame detection on a real
+      RGBIR scan, scales detected frames to full resolution, exports all Python
+      output variants (`ir_neg`, `ir_inv`, `inv_only`) with IR alignment enabled,
+      and reports the existing workflow/frame timing fields.
+    - Preserve current export behavior. This checkpoint is measurement only; do
+      not replace Meijering, inpainting, IR alignment, interpolation, TIFF
+      writing, or output-selection algorithms while adding the benchmark.
+    - Keep the existing no-IR `export_detected_frames_breakdown` case unchanged
+      so future comparisons can distinguish the optimized no-IR path from the
+      full RGB+IR path.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - A ReleaseFast benchmark on a real scan from `scans/`, preferably a large
+      3200 DPI RGBIR scan when memory allows, recording exact command, image
+      dimensions, detected frame count, selected workers, wall time, and the
+      stage breakdown including `ir_align_us`, `ir_crop_us`, `ir_clean_us`,
+      `ir_neg_prepare_us`, `inversion_us`, `display_render_us`, `metadata_us`,
+      and `write_us`.
+    - Update `docs/PERFORMANCE_STRATEGY.md` and `docs/PARITY_MANIFEST.md` with
+      the measured baseline and the next ranked optimization target.
+  - Completed 2026-05-20:
+    - Added `export_detected_frames_ir_all_breakdown` to
+      `src/benchmarks/processing_commands.zig`. The case reuses automatic frame
+      detection on the selected real scan, scales detected frames to full
+      resolution, enables all three Python output variants (`ir_neg`, `ir_inv`,
+      `inv_only`), enables IR alignment, and prints the existing workflow/frame
+      timing fields without changing the export algorithm.
+    - `zig build test --summary all` passed `435/435`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      completed on the large RGBIR scan. It detected 5 frames, exported 15
+      files, selected 5 workers (`cpu_limit=31`, `mem_limit=12`, adjusted peak
+      `4592713860` bytes/worker), and reported wall time `190808106 us`.
+    - Stage timings: `load_full_us=599856`, `ir_align_us=1673798`,
+      `frame_processing_us=188211285`, aggregate `rgb_crop_us=905109`,
+      `ir_crop_us=437284`, `ir_clean_us=787208607`,
+      `ir_neg_prepare_us=718080`, `inversion_us=1246442`,
+      `display_render_us=1134027`, `metadata_us=555`, and
+      `write_us=1029704`. Aggregate frame timings are summed across parallel
+      workers and can exceed wall time.
+    - Ranked next target: add a deeper `ir_clean` timing breakdown before any
+      optimization. Split at least defect-mask construction, Meijering line
+      response, morphology/component filtering, mask resize/dilate, ROI
+      traversal, local grain estimation, biharmonic solve, grain synthesis, and
+      masked writeback. The current top-level evidence shows IR cleaning
+      dominates full RGB+IR export by orders of magnitude over alignment,
+      inversion, rendering, metadata, and TIFF writing.
+
+- [x] Add `ir_clean` substage timing before optimizing IR dust removal.
+  - Scope:
+    - Add optional timing instrumentation inside the current Zig IR-cleaning
+      implementation without changing the Python-parity algorithms.
+    - Split at least: defect-mask construction, adaptive dust detection,
+      line-defect detection, Meijering response, morphology/component filtering,
+      RGB mask resize/dilate, runtime noise generation, ROI traversal/extraction,
+      local grain estimation, biharmonic solve, grain synthesis, and masked
+      writeback.
+    - Surface those timings through the existing export frame/workflow timing
+      aggregation and through the `export_detected_frames_ir_all_breakdown`
+      benchmark row.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Re-run
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`.
+    - Update `docs/PERFORMANCE_STRATEGY.md` and `docs/PARITY_MANIFEST.md` with
+      the ranked `ir_clean` substage baseline and the next concrete optimization
+      candidate.
+  - Completed 2026-05-20:
+    - Added `IrCleanTimings` in `src/processing/ir.zig` and timed wrappers for
+      the existing IR-cleaning functions. Existing public untimed calls still
+      route through the same behavior with null timing.
+    - Surfaced the IR-clean substages through `ProcessFrameTimings` and
+      `export_detected_frames_ir_all_breakdown`.
+    - `zig build test --summary all` passed `435/435`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `190718657 us`, 5 detected frames, 15 files, and 5
+      workers.
+    - Aggregate IR-clean worker timing was `ir_clean_us=785563995`, dominated by
+      `ir_defect_mask_us=778452492`. Within defect-mask construction,
+      `ir_adaptive_dust_us=635418409`, `ir_close_us=85680031`,
+      `ir_dilate_us=40233518`, `ir_line_detection_us=16917340`, and
+      `ir_meijering_us=16403513`.
+    - Inpainting was not the primary hotspot in this run:
+      `ir_inpaint_total_us=6501771`, with `ir_biharmonic_us=2270265`,
+      `ir_grain_synthesis_us=1831843`, `ir_local_grain_us=1200286`, and
+      `ir_inpaint_noise_us=198929`.
+    - Ranked next target: optimize adaptive dust-mask construction first,
+      especially the repeated large Gaussian blur and full-frame pass structure.
+      The second target is mask morphology close/dilate. Meijering and
+      biharmonic inpainting should not be the first optimization target based on
+      this real-scan evidence.
+
+- [x] Optimize adaptive dust-mask Gaussian blur interior loops.
+  - Scope:
+    - Preserve the current Python-parity Gaussian kernel, reflect-101 boundary
+      behavior, pass order, and f64 arithmetic.
+    - Avoid per-sample reflect-index work for horizontal and vertical interior
+      pixels where the whole Gaussian kernel is in bounds.
+    - Do not change Meijering, morphology, inpainting, or output selection in
+      this checkpoint.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Re-run
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`.
+    - Record before/after wall time plus `ir_adaptive_dust_us`,
+      `ir_defect_mask_us`, `ir_clean_us`, and any other changed stage in
+      `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and this plan.
+  - Completed 2026-05-20:
+    - Updated `gaussianBlur` in `src/processing/ir.zig` to split both
+      separable passes into boundary and interior regions. Boundary pixels
+      still use `reflect101Index`; interior pixels now use direct contiguous
+      indexing with the same kernel weights, pass order, and f64 accumulation.
+    - No Meijering, morphology, inpainting, or output-selection behavior was
+      changed in this checkpoint.
+    - `zig build test --summary all` passed `435/435`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `159440683 us`, 5 detected frames, 15 files, and 5
+      workers.
+    - Against the immediately preceding IR-clean substage baseline, wall time
+      improved from `190718657 us` to `159440683 us` (`1.196x`), aggregate
+      `ir_clean_us` improved from `785563995` to `718263872` (`1.094x`),
+      `ir_defect_mask_us` improved from `778452492` to `711082383` (`1.095x`),
+      and `ir_adaptive_dust_us` improved from `635418409` to `557917334`
+      (`1.139x`).
+    - Remaining large buckets in this run include `ir_adaptive_dust_us`,
+      `ir_close_us=93476919`, `ir_dilate_us=42286263`, and
+      `ir_meijering_us=16677145`. The next performance pass should continue
+      with adaptive dust-mask pass structure and/or morphology before revisiting
+      Meijering or inpainting.
+
+- [x] Evaluate f32 intermediates for adaptive dust-mask construction.
+  - Scope:
+    - Keep an explicit f64 adaptive-dust path available as the reference/oracle
+      comparator.
+    - Add a f32 adaptive-dust intermediate path for the image-wide normalized
+      IR, Gaussian backgrounds, squared buffers, coarse replacement pass, and
+      final sigma calculation.
+    - Compare final binary masks and, if promoted into production, final export
+      pixels rather than requiring byte-for-byte equality of every intermediate
+      floating-point value. Very small final differences are acceptable when
+      the speedup is meaningful.
+    - Do not change Meijering, morphology, inpainting, scanner I/O, or output
+      selection in this checkpoint.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Run
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case ir_adaptive_dust_f32_tradeoff`
+      and record f64-vs-f32 mask timing on a representative detected
+      full-resolution crop, speedup, defect-pixel delta, mask max/RMS/MSE, and
+      mismatch rate.
+    - If f32 is enabled for the production IR-clean path, re-run
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      and record before/after wall time, `ir_adaptive_dust_us`,
+      `ir_defect_mask_us`, and `ir_clean_us`.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and
+      this plan with the accepted tolerance decision and benchmark evidence.
+  - Completed 2026-05-20:
+    - Added `AdaptiveDustPrecision`, a retained f64 reference path, and an
+      explicit f32 adaptive-dust path covering normalized IR, Gaussian
+      backgrounds, squared buffers, coarse replacement, and final sigma
+      calculation.
+    - Added `ir_adaptive_dust_f32_tradeoff` to
+      `bench-processing-commands`. The benchmark uses automatic frame detection
+      on the real scan, selects one representative detected full-resolution IR
+      crop, and compares final binary masks rather than requiring intermediate
+      float equality.
+    - `zig build test --summary all` passed `435/435`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case ir_adaptive_dust_f32_tradeoff`
+      reported a `3063x4600` crop (`14089800` pixels): f64 mask time
+      `136109894 us`, f32 mask time `112945584 us` (`1.205x`), f64 adaptive
+      substage `107138353 us`, f32 adaptive substage `83793576 us` (`1.279x`),
+      reference defects `170799`, f32 defects `182329`, defect delta `11530`,
+      mask mismatches `15054`, mismatch rate `0.107%`, mask RMS `8.335156`,
+      and mask MSE `69.474822`.
+    - Temporarily enabling f32 for the configured production IR-clean path did
+      not produce a wall-clock win in the full parallel RGB+IR export. Two f32
+      runs reported wall times `165267646 us` and `163784775 us`, while the
+      current f64 reference run reported `159448976 us`.
+    - The f32 full-export runs did reduce aggregate worker substages
+      (`ir_adaptive_dust_us` down to `540898167`/`539335673` from current f64
+      `557821104`, and `ir_clean_us` down to `697968369`/`696632356` from
+      current f64 `716107372`), but the slowest-worker wall time regressed.
+      Decision: keep production configuration on f64 for now, retain f32 as an
+      explicit benchmark/experimental path, and revisit after f32-specific loop
+      fusion, SIMD, or parallel scheduling work.
+
+- [x] Optimize IR mask morphology ellipse iteration without changing kernel
+      semantics.
+  - Scope:
+    - Preserve the existing ellipse kernel geometry, border clipping behavior,
+      close-then-area-filter-then-dilate order, and binary 0/255 output.
+    - Replace dense boolean kernel-cell iteration with precomputed active row
+      spans for the same ellipse so close/dilate skip inactive kernel cells.
+    - Do not change adaptive dust, Meijering, component filtering, inpainting,
+      scanner I/O, or output selection in this checkpoint.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Re-run
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`.
+    - Record before/after wall time plus `ir_close_us`, `ir_dilate_us`,
+      `ir_defect_mask_us`, `ir_clean_us`, and any visible regressions in
+      `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and this plan.
+  - Completed 2026-05-20:
+    - Replaced dense boolean ellipse-kernel iteration in `dilateMask` and
+      `erodeMask` with precomputed active row spans derived from the same
+      ellipse formula. Border clipping and binary output semantics are
+      unchanged.
+    - Added a geometry test proving row spans match dense ellipse kernels for
+      radii `0`, `1`, `2`, `4`, `16`, and `24`.
+    - `zig build test --summary all` passed `436/436`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `144076086 us`, 5 detected frames, 15 files, and 5
+      workers.
+    - Compared with the current f64 reference run before this checkpoint, wall
+      time improved from `159448976 us` to `144076086 us` (`1.107x`),
+      aggregate `ir_clean_us` improved from `716107372` to `636850277`
+      (`1.124x`), `ir_defect_mask_us` from `708843297` to `629591097`
+      (`1.126x`), `ir_close_us` from `91518424` to `36048515` (`2.539x`), and
+      `ir_dilate_us` from `42157517` to `18597569` (`2.267x`).
+    - Remaining dominant measured bucket is still adaptive dust construction:
+      `ir_adaptive_dust_us=557736885`. Meijering and inpainting remain much
+      smaller in this run.
+
+- [x] Fuse adaptive-dust coarse-mask writeback into cleaned IR staging.
+  - Scope:
+    - Preserve the current f64 production adaptive-dust arithmetic, thresholds,
+      Gaussian calls, and final mask/sigma outputs.
+    - Remove the temporary full-size `coarse_mask` allocation and the separate
+      `ir_f` duplicate/writeback pass by writing `ir_cleaned` directly during
+      the first coarse-threshold loop.
+    - Apply the same mechanical cleanup to the explicit f32 experimental path
+      so both implementations stay structurally aligned.
+    - Do not change morphology, Meijering, component filtering, inpainting,
+      scanner I/O, or output selection in this checkpoint.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Re-run
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`.
+    - Record before/after wall time plus `ir_adaptive_dust_us`,
+      `ir_defect_mask_us`, `ir_clean_us`, and any visible regressions in
+      `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and this plan.
+  - Completed 2026-05-20:
+    - Updated the f64 production and f32 experimental adaptive-dust paths to
+      write `ir_cleaned` during the first coarse-threshold pass, removing the
+      temporary full-size `coarse_mask` allocation and the separate duplicate
+      writeback pass.
+    - The threshold arithmetic, Gaussian calls, f64 production precision,
+      final sigma/mask formulas, morphology, Meijering, inpainting, scanner
+      I/O, and output selection are unchanged.
+    - `zig build test --summary all` passed `436/436`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `143598455 us`, 5 detected frames, 15 files, and 5
+      workers.
+    - Compared with the immediately preceding row-span benchmark, wall time
+      moved from `144076086 us` to `143598455 us` (`1.003x`). Aggregate worker
+      substage timings were effectively neutral: `ir_clean_us` moved from
+      `636850277` to `637732625`, `ir_defect_mask_us` from `629591097` to
+      `630417030`, and `ir_adaptive_dust_us` from `557736885` to `558328648`.
+      The change is retained as a memory-pressure and pass-count cleanup, not
+      as a material speed win.
+
+- [x] Evaluate tolerated final-output approximate/f32 IR fast paths only where
+      they produce a meaningful end-to-end win.
+  - Scope:
+    - Use the user's 2026-05-20 tolerance direction: byte-for-byte parity with
+      Python or intermediate Zig buffers is not required for numeric hot paths,
+      but final-output errors must be very small and explicitly measured.
+    - Start from the existing adaptive-dust f32 path and real-scan full-export
+      evidence; do not promote it unless full-export wall time improves, not
+      just aggregate worker substages.
+    - Consider f32-specific loop fusion, SIMD, smaller/streamed temporaries, or
+      final-mask/output-toleranced approximations. Do not switch detector,
+      morphology, Meijering, inpainting, or scanner algorithms under this item.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - A ReleaseFast benchmark on `scans/scan_0004_rgbir_3200dpi.tiff` that
+      reports full-export wall time and the same IR substages as
+      `export_detected_frames_ir_all_breakdown`.
+    - Final-output error metrics at the relevant surface: final mask
+      mismatches/RMS/MSE for mask-only changes, final export `u16` max/RMS/MSE
+      and metadata equality for export changes, and final preview `u8`
+      max/RMS/MSE for preview changes.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and
+      this plan with the chosen tolerance, speedup, and acceptance/rejection
+      decision.
+  - Completed 2026-05-20:
+    - Added `ExportWorkflowOptions.adaptive_dust_precision_override` so
+      benchmarks can force f64 or f32 adaptive-dust precision without changing
+      production defaults or config semantics.
+    - Added `export_detected_frames_ir_f32_tradeoff`, which runs the same
+      automatically detected full-resolution RGB+IR export once with f64
+      adaptive dust and once with f32 adaptive dust, then compares the final
+      TIFF outputs and metadata.
+    - `zig build test --summary all` passed `436/436`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_f32_tradeoff`
+      reported reference wall time `143882065 us` and f32 wall time
+      `148260825 us` (`0.970x`, slower).
+    - f32 did reduce aggregate worker substages:
+      `ir_clean_us=638415641 -> 617929999`, `ir_defect_mask_us=631029883 ->
+      610858126`, and `ir_adaptive_dust_us=558880229 -> 538774812`.
+    - Final export error was not acceptably small: `max_abs=27825`, RMS
+      `105.251609`, MSE `11077.901284`, `65843162` mismatched samples across
+      the 15-file export set, mismatch rate `10.407%`, with metadata and file
+      sets equal.
+    - Decision: do not promote the current f32 adaptive-dust path. The
+      toleranced policy is accepted, but this candidate fails both criteria:
+      full-export wall time is slower and final-output error is too large.
+
+- [x] Optimize remaining f64 adaptive-dust Gaussian/pass structure before
+      revisiting approximate IR output.
+  - Scope:
+    - Treat adaptive dust construction as the dominant current measured IR
+      hotspot: after the full-output f32 rejection, the f64 reference still
+      spends about `558880229 us` aggregate worker time in
+      `ir_adaptive_dust_us` on `scan_0004_rgbir_3200dpi.tiff`.
+    - Prefer exact or final-output-toleranced changes that reduce Gaussian
+      blur memory traffic and pass count: separable-row staging reuse,
+      allocation reuse, SIMDable row/column kernels, tiling/cache locality,
+      or parallelism within a frame when frame-level workers leave cores idle.
+    - Do not change morphology, Meijering, inpainting, scanner I/O, frame
+      geometry, or output selection in this checkpoint.
+    - If an approximate or f32 variant is tested, compare final masks and final
+      TIFF outputs, not only internal buffers.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - ReleaseFast benchmark on `scans/scan_0004_rgbir_3200dpi.tiff` using
+      `export_detected_frames_ir_all_breakdown` or a more focused adaptive-dust
+      benchmark that still reports final-output error.
+    - Before/after wall time, `ir_adaptive_dust_us`, `ir_defect_mask_us`,
+      `ir_clean_us`, memory/allocation changes where measurable, and final
+      output parity/tolerance metrics.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and
+      this plan with the accepted or rejected result.
+  - Completed 2026-05-20:
+    - First attempted exact Gaussian kernel/scratch reuse and second-pass
+      output-buffer reuse for the f64 adaptive-dust path. It preserved tests
+      but regressed the real-scan benchmark, so it was reverted. The non-inline
+      helper version reported wall `174015799 us` and
+      `ir_adaptive_dust_us=609626253`; the inline helper version improved to
+      wall `149925086 us` and `ir_adaptive_dust_us=565721791`, still worse
+      than the accepted pre-item baseline.
+    - Accepted the f64 Gaussian symmetry optimization instead: the separable
+      blur now uses paired left/right and top/bottom samples for odd kernels,
+      preserving the same reflect-101 boundary behavior and Gaussian weights
+      while reducing the per-pixel kernel work from 301 weighted samples to
+      one center sample plus 150 symmetric pairs for the default IR blur.
+    - No morphology, Meijering, inpainting, scanner I/O, frame geometry, or
+      output selection code changed in the accepted path.
+    - `zig build test --summary all` passed `436/436`, including exact Python
+      IR fixtures for adaptive thresholding, binary masks, and full IR clean
+      outputs.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `115466073 us`, 5 detected frames, 15 files, 5
+      workers, `estimated_worker_peak_bytes=3061809240`, and
+      `adjusted_worker_peak_bytes=4592713860`.
+    - Compared with the immediately preceding accepted coarse-mask writeback
+      baseline, wall time improved from `143598455 us` to `115466073 us`
+      (`1.244x`), aggregate `ir_clean_us` from `637732625` to `501935111`
+      (`1.271x`), `ir_defect_mask_us` from `630417030` to `494646364`
+      (`1.275x`), and `ir_adaptive_dust_us` from `558328648` to `414778748`
+      (`1.346x`).
+    - Final-output evidence: the existing Python-oracle IR tests still passed
+      with exact binary mask equality and fixture tolerances; no final-output
+      tolerance expansion was needed.
+
+- [x] Re-rank RGB+IR export hotspots after symmetric Gaussian optimization.
+  - Scope:
+    - Use the latest `export_detected_frames_ir_all_breakdown` result as the
+      new baseline.
+    - Decide the next smallest optimization target from the remaining measured
+      buckets rather than returning automatically to adaptive dust. Current
+      visible candidates include residual adaptive dust, morphology
+      close/dilate, Meijering line detection, inpainting substeps, write time,
+      and display/inversion work.
+    - Do not switch algorithms. Any approximation must use the final-output
+      tolerance policy and record final mask/export error.
+  - Required evidence before checking off:
+    - A short ranked analysis in this plan and `docs/PERFORMANCE_STRATEGY.md`.
+    - If a new optimization item is selected, add it as the next unchecked
+      checkpoint with exact scope and required evidence.
+  - Completed 2026-05-20:
+    - New baseline command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`.
+    - New wall time is `115466073 us`; `frame_processing_us=112809952`;
+      `workers=5`; `estimated_worker_peak_bytes=3061809240`;
+      `adjusted_worker_peak_bytes=4592713860`.
+    - Ranked aggregate buckets:
+      1. `ir_adaptive_dust_us=414778748`, still the dominant bucket.
+      2. Morphology: `ir_close_us=42261132` and `ir_dilate_us=20326471`,
+         now large enough to matter again after Gaussian pairing.
+      3. Line detection: `ir_line_detection_us=17074953`, almost entirely
+         `ir_meijering_us=16561774`.
+      4. Inpainting: `ir_inpaint_total_us=6689753`, with
+         `ir_biharmonic_us=2334478`, `ir_grain_synthesis_us=1835238`, and
+         `ir_local_grain_us=1218085`.
+      5. Non-IR processing buckets are much smaller in this RGB+IR profile:
+         `inversion_us=1266442`, `display_render_us=1164135`,
+         `write_us=1091038`, `rgb_crop_us=970976`, and
+         `ir_neg_prepare_us=704631`.
+    - Decision: continue with adaptive-dust Gaussian inner-loop work first,
+      because it is still about 6.6x larger than close+dilate combined.
+      Morphology and Meijering are the next secondary candidates if further
+      Gaussian work stops producing wins.
+
+- [x] Optimize f64 adaptive-dust symmetric Gaussian inner loops.
+  - Scope:
+    - Preserve the accepted f64 Gaussian operation: same odd kernel weights,
+      same reflect-101 boundary behavior, same separable horizontal-then-
+      vertical pass order, and same final adaptive-dust formulas.
+    - Target the remaining `ir_adaptive_dust_us=414778748` bucket by improving
+      the symmetric-pair inner loops, especially the interior rows/columns.
+      Try unrolling, SIMD-friendly pair accumulation, or cache-local loop
+      structure; reject changes that regress the full export benchmark.
+    - Do not change morphology, Meijering, inpainting, scanner I/O, frame
+      geometry, output selection, f32 production defaults, or the Gaussian
+      kernel itself.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - ReleaseFast benchmark on `scans/scan_0004_rgbir_3200dpi.tiff` using
+      `export_detected_frames_ir_all_breakdown`.
+    - Before/after wall time, `ir_adaptive_dust_us`, `ir_defect_mask_us`,
+      `ir_clean_us`, and final-output parity/tolerance evidence from the IR
+      Python fixtures or a more focused final-output comparison.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and
+      this plan with the accepted or rejected result.
+  - Completed 2026-05-20:
+    - Tried inline helper extraction plus four-step unrolling of the symmetric
+      pair accumulation. It passed tests but regressed the full benchmark to
+      wall `135528031 us` and `ir_adaptive_dust_us=462300729`, so the helper
+      extraction and unroll were reverted.
+    - Accepted a smaller inner-loop cleanup: hoist the Gaussian center weight
+      and the positive-side pair-weight slice out of the pixel loops so hot
+      loops use `pair_weights[d - 1]` instead of recomputing
+      `kernel[radius + d]`.
+    - `zig build test --summary all` passed `436/436`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `112640045 us`, 5 detected frames, 15 files, and 5
+      workers.
+    - Compared with the symmetric-Gaussian baseline, wall time improved from
+      `115466073 us` to `112640045 us` (`1.025x`), aggregate `ir_clean_us`
+      from `501935111` to `489493295` (`1.025x`),
+      `ir_defect_mask_us` from `494646364` to `482300081` (`1.026x`), and
+      `ir_adaptive_dust_us` from `414778748` to `410319185` (`1.011x`).
+    - Final-output evidence: Python-oracle IR tests still passed with exact
+      binary mask equality and fixture tolerances. No final-output tolerance
+      expansion was needed.
+
+- [x] Re-rank RGB+IR export hotspots after pair-weight Gaussian cleanup.
+  - Scope:
+    - Use the latest `export_detected_frames_ir_all_breakdown` result as the
+      new baseline.
+    - Decide whether the next smallest useful target is still adaptive dust or
+      whether morphology close/dilate, Meijering, or inpainting now offer a
+      better return.
+    - Add the next concrete optimization checkpoint with required evidence.
+  - Required evidence before checking off:
+    - A short ranked analysis in this plan and `docs/PERFORMANCE_STRATEGY.md`.
+    - If a new optimization item is selected, add it as the next unchecked
+      checkpoint with exact scope and required evidence.
+  - Completed 2026-05-20:
+    - New baseline command:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`.
+    - New wall time is `112640045 us`; `frame_processing_us=110027631`;
+      `workers=5`; `estimated_worker_peak_bytes=3061809240`;
+      `adjusted_worker_peak_bytes=4592713860`.
+    - Ranked aggregate buckets:
+      1. `ir_adaptive_dust_us=410319185`, still dominant.
+      2. Morphology close+dilate combined:
+         `ir_close_us=36017015 + ir_dilate_us=18620195 = 54637210`.
+      3. Line detection: `ir_line_detection_us=17137935`, mostly
+         `ir_meijering_us=16565769`.
+      4. Inpainting: `ir_inpaint_total_us=6586451`.
+      5. Non-IR/export overhead remains small: `inversion_us=1277419`,
+         `display_render_us=1148002`, `write_us=1080015`,
+         `rgb_crop_us=967748`, and `ir_neg_prepare_us=714051`.
+    - Decision: adaptive dust remains about `7.51x` larger than close+dilate
+      combined, so the next checkpoint should still target adaptive dust.
+      Scalar pair-loop cleanup is now producing smaller wins, so the next
+      candidate should be dynamic intra-frame parallelism for the large
+      Gaussian passes, with worker counts derived from available cores and the
+      outer export-worker count rather than hardcoded.
+
+- [x] Evaluate dynamic intra-frame parallelism for f64 adaptive-dust Gaussian
+      passes.
+  - Scope:
+    - Keep the accepted f64 adaptive-dust algorithm: same normalized IR input,
+      Gaussian kernels, reflect-101 boundaries, pass order, thresholds, final
+      mask, and `n_sigma2` output.
+    - Explore parallelizing large Gaussian horizontal/vertical passes inside a
+      frame only when it is expected to help. The worker count must be dynamic:
+      account for available CPU cores, leave at least one core free, and divide
+      by the active outer frame-export worker count where that context is
+      available. Do not hardcode fixed four-thread parallelism.
+    - Avoid per-row thread spawning. Use coarse row ranges or a reusable/simple
+      per-blur worker plan so thread overhead does not dominate smaller images.
+    - Default behavior must remain deterministic and must fall back to single
+      threaded execution for small images, single-core systems, tests, or any
+      missing worker context.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - ReleaseFast benchmark on `scans/scan_0004_rgbir_3200dpi.tiff` using
+      `export_detected_frames_ir_all_breakdown`.
+    - Before/after wall time, `ir_adaptive_dust_us`, `ir_defect_mask_us`,
+      `ir_clean_us`, selected outer workers, selected inner workers, and final
+      output tolerance evidence from the Python IR fixtures or a focused
+      comparison. Exact Python-output bytes are not required if the final error
+      is very small and the speedup is large, but the operation must remain the
+      same adaptive-dust Gaussian pipeline.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and
+      this plan with the accepted or rejected result.
+  - Completed 2026-05-20:
+    - Added dynamic inner adaptive-dust worker selection to the export
+      workflow. The selected count is derived from the existing outer export
+      planner: use the CPU worker limit that already leaves one core free,
+      divide by the active frame-export worker count, and fall back to one
+      worker when no useful worker context is available.
+    - Added `adaptive_worker_count`/`worker_count` options through IR-clean
+      and threshold options. Defaults remain single-threaded, so direct unit
+      tests and small standalone calls do not spawn worker threads unless a
+      caller passes scheduling context.
+    - Updated f64 `gaussianBlur` to process coarse row ranges in parallel for
+      large images. It still uses the same f64 kernel, reflect-101 boundaries,
+      symmetric pair accumulation, and horizontal-then-vertical pass order.
+      Threading is per blur pass and per coarse range, not per row.
+    - Added benchmark reporting for the selected inner worker count and added
+      a focused test proving the f64 Gaussian parallel row-range path is
+      exactly equal to the single-threaded path on a large synthetic image.
+    - `zig build test --summary all` passed `437/437`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `66473821 us`, 5 detected frames, 15 files, 5 outer
+      workers, CPU worker limit `31`, memory worker limit `12`,
+      `ir_inner_workers=6`, `estimated_worker_peak_bytes=3061809240`, and
+      `adjusted_worker_peak_bytes=4592713860`.
+    - Compared with the pair-weight baseline, wall time improved from
+      `112640045 us` to `66473821 us` (`1.695x`), aggregate `ir_clean_us`
+      from `489493295` to `290608197` (`1.684x`),
+      `ir_defect_mask_us` from `482300081` to `283388034` (`1.702x`), and
+      `ir_adaptive_dust_us` from `410319185` to `208921810` (`1.964x`).
+    - Final-output evidence: the new parallel Gaussian row-range test proves
+      exact f64 blur equality against the single-threaded implementation, and
+      the existing Python-oracle IR fixtures still pass. No final-output
+      tolerance expansion was needed for this exact scheduling change.
+    - Remaining ranked buckets from this run: `ir_adaptive_dust_us=208921810`,
+      morphology close+dilate `37097562 + 18686317 = 55783879`, line
+      detection `18467284`, and inpainting `6616422`.
+
+- [x] Break down residual adaptive-dust time after dynamic Gaussian
+      parallelism.
+  - Scope:
+    - Keep the accepted f64 adaptive-dust algorithm and dynamic worker
+      scheduling unchanged.
+    - Instrument or benchmark the remaining adaptive-dust substeps separately:
+      first Gaussian background, squared-input fill, second Gaussian, coarse
+      replacement loop, cleaned-square fill, third Gaussian background, fourth
+      Gaussian square, and final mask/sigma loop.
+    - The goal is to decide whether more adaptive-dust work remains the best
+      target, or whether the next optimization should move to morphology
+      close/dilate or Meijering.
+    - Do not change output behavior in this checkpoint unless the measurement
+      exposes an obvious same-behavior pass fusion.
+  - Required evidence before checking off:
+    - `zig build test --summary all` if code changes.
+    - A ReleaseFast benchmark on `scans/scan_0004_rgbir_3200dpi.tiff` that
+      reports adaptive-dust substage timings and the existing full RGB+IR
+      export breakdown.
+    - Record ranked substages, chosen next target, and any same-behavior
+      optimization result in `docs/PERFORMANCE_STRATEGY.md`,
+      `docs/PARITY_MANIFEST.md` if symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Added adaptive-dust substage timers for normalization, first background
+      Gaussian, first square fill, first square Gaussian, coarse replacement,
+      second background Gaussian, second square fill, second square Gaussian,
+      and final mask/sigma writeout.
+    - The instrumentation is read-only timing/reporting. It does not change
+      adaptive-dust arithmetic, Gaussian kernels, worker counts, thresholds,
+      masks, or export output.
+    - `zig build test --summary all` passed `437/437`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall time `64864199 us`, 5 outer workers, and
+      `ir_inner_workers=6`.
+    - Residual `ir_adaptive_dust_us=198285318` is still almost entirely the
+      four f64 Gaussian calls:
+      `ir_adaptive_background1_us=61186856`,
+      `ir_adaptive_blurred_square1_us=55810809`,
+      `ir_adaptive_background2_us=46629868`, and
+      `ir_adaptive_blurred_square2_us=32446593`, for `196074126 us` total.
+    - Non-Gaussian adaptive work is now small by comparison:
+      normalization `310776`, square1 `334140`, coarse replacement `587349`,
+      square2 `82847`, and final mask/sigma `575032`.
+    - Decision: do not switch to morphology yet. Morphology close+dilate is
+      `37265119 + 18792718 = 56057837`, while residual adaptive Gaussian work
+      is still about `3.50x` larger. The next target should be exact paired
+      Gaussian work: combine same-kernel background and squared-buffer blurs
+      into paired two-output passes where it preserves per-output accumulation
+      order.
+
+- [x] Evaluate exact paired Gaussian blur for adaptive-dust background and
+      squared-buffer passes.
+  - Scope:
+    - Keep the same adaptive-dust algorithm, f64 precision, reflect-101
+      boundaries, Gaussian kernels, symmetric pair accumulation, dynamic row
+      worker selection, thresholds, final mask, and `n_sigma2` output.
+    - Explore a two-input/two-output Gaussian helper for the two same-kernel
+      pairs: `ir_f` with `ir_f^2`, and `ir_cleaned` with `ir_cleaned^2`.
+      The helper must preserve each output's single-image accumulation order
+      so exact f64 equality remains possible.
+    - The goal is to reduce duplicated row/column traversal, thread setup,
+      cache misses, and allocation pressure without approximating or changing
+      the detector.
+    - Reject the change if it regresses the real-scan full-export benchmark.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - A focused test proving paired Gaussian output equals two separate
+      `gaussianBlur` calls on a large image.
+    - ReleaseFast `export_detected_frames_ir_all_breakdown` on
+      `scans/scan_0004_rgbir_3200dpi.tiff` with before/after wall,
+      `ir_adaptive_dust_us`, the four adaptive Gaussian substages,
+      `ir_defect_mask_us`, and `ir_clean_us`.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and
+      this plan with accepted or rejected evidence.
+  - Completed 2026-05-20:
+    - Implemented an exact paired f64 Gaussian prototype that computed
+      `ir_f`/`ir_f^2` and `ir_cleaned`/`ir_cleaned^2` through paired
+      two-output horizontal and vertical passes.
+    - Added a focused large-image test proving the paired helper produced
+      exactly the same f64 slices as two separate `gaussianBlur` calls for the
+      primary and squared-input outputs.
+    - `zig build test --summary all` passed `438/438` with the prototype.
+    - The real-scan benchmark regressed, so the prototype was rejected and
+      reverted. The paired run reported wall `73487216 us`,
+      `ir_clean_us=303816205`, `ir_defect_mask_us=296420226`,
+      `ir_adaptive_dust_us=222767894`, `ir_adaptive_pair1_us=137515218`, and
+      `ir_adaptive_pair2_us=83670512`.
+    - The accepted substage baseline before the prototype was wall
+      `64864199 us` and `ir_adaptive_dust_us=198285318`. After reverting,
+      `zig build test --summary all` passed `437/437`, and the same benchmark
+      reported wall `65905071 us`, `ir_clean_us=286744747`,
+      `ir_defect_mask_us=279629325`, and `ir_adaptive_dust_us=204580083`.
+    - Decision: keep the separate exact Gaussian path. The paired helper
+      reduced duplicated control structure but worsened cache/memory behavior
+      enough to lose end-to-end.
+
+- [x] Evaluate adaptive Gaussian inner-worker count and cache-locality
+      heuristic.
+  - Scope:
+    - Keep the accepted f64 adaptive-dust algorithm: same normalized IR input,
+      Gaussian kernels, reflect-101 boundaries, symmetric pair accumulation,
+      pass order, thresholds, final mask, and `n_sigma2` output.
+    - Measure whether `innerAdaptiveDustWorkerCount = cpu_worker_limit /
+      outer_worker_count` is the best heuristic for large RGB+IR exports, or
+      whether memory bandwidth and strided vertical passes prefer fewer inner
+      workers.
+    - Add only benchmark/test plumbing needed to compare inner worker counts;
+      production defaults must remain dynamic, deterministic, and single-
+      threaded when no export scheduling context exists.
+    - If a better heuristic is found, keep it explainable from available cores,
+      outer worker count, and measured memory/cache behavior. Do not hardcode a
+      fixed worker count.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - ReleaseFast comparisons on `scans/scan_0004_rgbir_3200dpi.tiff` for at
+      least the current heuristic, single inner worker, and one lower inner
+      worker count, reporting wall time, `ir_inner_workers`,
+      `ir_adaptive_dust_us`, the four Gaussian substages,
+      `ir_defect_mask_us`, and `ir_clean_us`.
+    - If production heuristic changes, record before/after wall time and exact
+      output/tolerance evidence from tests or focused comparisons.
+    - Update `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md` if
+      symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Added benchmark-only `adaptive_dust_worker_count_override` plumbing on
+      `ExportWorkflowOptions`, with production default behavior still using the
+      dynamic `cpu_worker_limit / outer_worker_count` heuristic.
+    - Added a focused unit test proving the default resolves to the dynamic
+      value and explicit overrides clamp to at least one worker.
+    - Added `export_detected_frames_ir_worker_tradeoff`, which runs the same
+      detected-frame full RGB+IR export with the dynamic worker count, forced
+      single inner worker, and a lower mid-count override, then compares
+      override outputs back to the dynamic export.
+    - `zig build test --summary all` passed `438/438`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_worker_tradeoff`
+      reported exact output matches for override runs:
+      `max_abs=0`, RMS `0.000000`, `mismatches=0`,
+      `metadata_equal=true`, and `file_set_equal=true`.
+    - Dynamic production heuristic: wall `65653063 us`,
+      `ir_inner_workers=6`, `ir_clean_us=286266156`,
+      `ir_defect_mask_us=279106694`, `ir_adaptive_dust_us=205512992`,
+      Gaussian substages `64624540`, `51519509`, `49557454`, and
+      `37804170`.
+    - Forced single inner worker: wall `113133809 us`, speedup vs dynamic
+      `0.580x`, `ir_adaptive_dust_us=411079599`, Gaussian substages
+      `104035068`, `102390746`, `102920935`, and `99749123`.
+    - Forced three inner workers: wall `71395103 us`, speedup vs dynamic
+      `0.919x`, `ir_adaptive_dust_us=217415105`, Gaussian substages
+      `63956937`, `51821693`, `56418289`, and `43291721`.
+    - Decision: retain the current dynamic six-inner-worker choice for this
+      workload. Lower worker counts preserve exact output but lose wall-clock
+      time, so no production heuristic change is justified from this pass.
+
+- [x] Evaluate SIMD vectorization for f64 adaptive Gaussian row interiors.
+  - Scope:
+    - Keep the accepted f64 adaptive-dust algorithm: same normalized IR input,
+      Gaussian kernels, reflect-101 boundaries, symmetric pair accumulation,
+      pass order, thresholds, final mask, and `n_sigma2` output.
+    - Add fixed-width SIMD only for contiguous row-interior work where each
+      lane preserves the scalar per-pixel accumulation order. Keep scalar
+      paths for boundaries, tails, small images, and unsupported shapes.
+    - Reject the change if Zig tests or real-scan benchmark evidence show
+      behavior drift or wall-clock regression.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - ReleaseFast `export_detected_frames_ir_all_breakdown` on
+      `scans/scan_0004_rgbir_3200dpi.tiff`, compared against the current
+      dynamic-worker baseline: wall time, `ir_adaptive_dust_us`, the four
+      Gaussian substages, `ir_defect_mask_us`, and `ir_clean_us`.
+    - Record the accepted/rejected result in `docs/PERFORMANCE_STRATEGY.md`,
+      `docs/PARITY_MANIFEST.md` if symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Added a fixed-width f64 SIMD path for contiguous Gaussian row-interior
+      work. Boundary columns/rows, row tails, small images, and scheduling
+      fallback paths remain scalar.
+    - The vector path keeps the same center plus symmetric-pair accumulation
+      structure per lane and reuses the existing reflect-101 scalar handling at
+      boundaries.
+    - `zig build test --summary all` passed `438/438`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall `61361504 us`, `ir_clean_us=275649326`,
+      `ir_defect_mask_us=268555723`, and `ir_adaptive_dust_us=194511415`.
+    - Compared with the accepted dynamic-worker baseline from the prior item,
+      wall improved from `65653063 us` to `61361504 us` (`1.070x`), and
+      adaptive dust improved from `205512992 us` to `194511415 us` (`1.057x`).
+    - Gaussian substages after SIMD were `ir_adaptive_background1_us=56498296`,
+      `ir_adaptive_blurred_square1_us=56819666`,
+      `ir_adaptive_background2_us=45540430`, and
+      `ir_adaptive_blurred_square2_us=33386281`.
+    - Decision: accept the SIMD row-interior path. It is a small but real
+      same-behavior win and keeps scalar fallbacks for non-vector tails.
+
+- [x] Re-rank RGB+IR export hotspots after f64 Gaussian SIMD and select the
+      next secondary optimization.
+  - Scope:
+    - Use the latest `export_detected_frames_ir_all_breakdown` result as the
+      source of truth.
+    - Candidate secondary buckets now include residual adaptive Gaussian,
+      morphology close/dilate, Meijering line detection, inpainting substeps,
+      write time, and crop/IR prep overhead.
+    - If a concrete optimization target is chosen, add it as the next
+      unchecked checkpoint with scope, tests, benchmark evidence, and parity
+      constraints before implementing.
+  - Required evidence before checking off:
+    - No code changes required unless the re-rank adds benchmark plumbing.
+    - Record the ranked buckets and selected next checkpoint in this plan and
+      `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-20:
+    - Used the accepted f64 Gaussian SIMD benchmark as the source of truth:
+      `export_detected_frames_ir_all_breakdown` on `scan_0004` reported wall
+      `61361504 us`, `ir_clean_us=275649326`, and
+      `ir_defect_mask_us=268555723`.
+    - Ranked remaining aggregate worker buckets:
+      adaptive dust `194511415`, morphology close+dilate
+      `36813481 + 18857556 = 55671037`, line detection `18165612`
+      including Meijering `17636531`, inpainting `6501227`, crop/IR negative
+      prep about `2123461`, inversion `1236476`, display render `1131678`,
+      and write `997421`.
+    - Decision: residual adaptive Gaussian is still the largest bucket, but
+      exact same-behavior local Gaussian changes are now showing smaller wins.
+      The next secondary optimization should target morphology close/dilate,
+      because it is the next largest non-Gaussian bucket and has no final-output
+      tolerance question if the ellipse geometry is preserved.
+
+- [x] Evaluate SIMD or bitset acceleration for IR morphology close/dilate.
+  - Scope:
+    - Preserve the existing ellipse row-span geometry, mask values, border
+      clipping, close-before-dilate order, component filtering inputs, and final
+      defect mask semantics.
+    - Start from `dilateMask`, `erodeMask`, and `ellipseKernelRowSpans` in
+      `src/processing/ir.zig`.
+    - Explore same-behavior acceleration only: SIMD byte scans, row-span early
+      exits, bitset row operations, or cache-local tiling are acceptable if
+      they produce identical masks on focused tests.
+    - Reject approximations or kernel-shape changes unless the user explicitly
+      approves a toleranced morphology variant.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Focused morphology tests proving exact output against the existing scalar
+      row-span behavior for edge clipping, full interior spans, and sparse
+      masks.
+    - ReleaseFast `export_detected_frames_ir_all_breakdown` on
+      `scans/scan_0004_rgbir_3200dpi.tiff`, reporting wall time,
+      `ir_close_us`, `ir_dilate_us`, `ir_defect_mask_us`, and
+      `ir_clean_us` before/after.
+    - Record accepted/rejected evidence in `docs/PERFORMANCE_STRATEGY.md`,
+      `docs/PARITY_MANIFEST.md` if symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Replaced per-output-pixel ellipse-span rescans with exact sliding
+      horizontal windows per valid ellipse span and source row.
+    - Preserved the existing ellipse row-span geometry, border clipping,
+      close-before-dilate order, binary 0/255 mask semantics, and scalar
+      reference behavior.
+    - Kept scalar reference `dilateMaskReference` and `erodeMaskReference` for
+      tests, and added a focused test comparing optimized dilation/erosion
+      against the reference for radii `0`, `1`, `2`, `4`, and `6` on an
+      edge-heavy sparse mask.
+    - `zig build test --summary all` passed `439/439`.
+    - `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall `56971107 us`, `ir_clean_us=252425331`,
+      `ir_defect_mask_us=245276844`, `ir_close_us=22107579`, and
+      `ir_dilate_us=7205414`.
+    - Compared with the post-SIMD baseline, wall improved from `61361504 us`
+      to `56971107 us` (`1.077x`), close+dilate improved from
+      `36813481 + 18857556 = 55671037` to
+      `22107579 + 7205414 = 29312993` (`1.899x`), and
+      `ir_defect_mask_us` improved from `268555723` to `245276844`
+      (`1.095x`).
+    - Decision: accept the exact sliding-window morphology path.
+
+- [x] Re-rank RGB+IR export hotspots after sliding-window morphology.
+  - Scope:
+    - Use the latest `export_detected_frames_ir_all_breakdown` result as the
+      source of truth.
+    - Candidate buckets now include residual adaptive Gaussian, line detection
+      and Meijering, inpainting, remaining morphology, write time, and crop/IR
+      prep overhead.
+    - If a concrete optimization target is chosen, add it as the next
+      unchecked checkpoint with scope, tests, benchmark evidence, and parity
+      constraints before implementing.
+  - Required evidence before checking off:
+    - No code changes required unless the re-rank adds benchmark plumbing.
+    - Record the ranked buckets and selected next checkpoint in this plan and
+      `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-20:
+    - Used the accepted sliding-window morphology benchmark as the source of
+      truth: wall `56971107 us`, `ir_clean_us=252425331`, and
+      `ir_defect_mask_us=245276844`.
+    - Ranked remaining aggregate worker buckets:
+      adaptive dust `198356313`, morphology close+dilate
+      `22107579 + 7205414 = 29312993`, line detection `17409612`
+      including Meijering `16883452`, inpainting `6577417`, crop/IR negative
+      prep about `2010986`, inversion `1244581`, display render `1137729`,
+      and write `1040920`.
+    - Decision: residual adaptive Gaussian remains the dominant bucket, but the
+      next unexamined f64-heavy secondary path is Meijering line response. Add
+      a focused precision/SIMD tradeoff checkpoint before considering more
+      invasive bitset morphology or approximate adaptive Gaussian changes.
+
+- [x] Evaluate Meijering line-response f32/SIMD tradeoffs.
+  - Scope:
+    - Preserve the Python-shaped line-defect pipeline: resized `n_sigma`, dark
+      line response, sigma range, thresholding, line-mask merge, and downstream
+      morphology inputs.
+    - Start from `detectLineDefectsTimed`, `meijeringLineResponse`,
+      `hessianGaussian`, `gaussianFilterOrder`, and `gaussianFilterAxis` in
+      `src/processing/ir.zig`.
+    - Add benchmark plumbing if needed to compare f64 reference against f32
+      and/or SIMD variants on real detected scan data.
+    - Do not promote a variant unless final line mask and full export
+      differences are measured at the relevant mask/TIFF surfaces and are
+      either exact or explicitly acceptable.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - A focused mask comparison reporting line-mask `max_abs`, RMS/MSE,
+      mismatches, and defect-count delta for f64 reference versus candidate.
+    - ReleaseFast `export_detected_frames_ir_all_breakdown` on
+      `scans/scan_0004_rgbir_3200dpi.tiff`, reporting wall time,
+      `ir_line_detection_us`, `ir_meijering_us`, `ir_defect_mask_us`, and
+      `ir_clean_us`.
+    - If promoted into production, final export comparison with `max_abs`,
+      RMS/MSE, mismatch count/rate, metadata equality, and file-set equality.
+    - Record accepted/rejected evidence in `docs/PERFORMANCE_STRATEGY.md`,
+      `docs/PARITY_MANIFEST.md` if symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Chose the exact f64 SIMD route before trying f32. The SciPy-shaped
+      Gaussian filter axis now vectorizes contiguous columns while keeping
+      scalar edge/tail handling and the same reflect-index boundary behavior.
+    - Added scalar reference paths for the Gaussian filter axis, Hessian
+      Gaussian, Meijering response, line-defect detection, and full defect-mask
+      construction so benchmarks/tests can compare production SIMD against the
+      accepted scalar operation.
+    - Added tests proving SIMD Gaussian filter axes match scalar reference
+      output for x/y axes, order `0`/`1`, and both truncate regimes, plus a
+      line-mask test proving production Meijering matches scalar reference.
+    - `zig build test --summary all` passed `441/441`.
+    - Focused real-scan benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case ir_meijering_simd_tradeoff`
+      reported exact mask equality against the scalar reference on a
+      `3063x4600` crop: `max_abs=0`, RMS `0.000000`, MSE `0.000000`,
+      `mismatches=0`, defect delta `0`, and `reference_defects=170799` /
+      `simd_defects=170799`.
+    - The same focused benchmark reported total mask time
+      `19550794 -> 17352766 us` (`1.126x`), line detection
+      `3152980 -> 1024918 us` (`3.076x`), and Meijering
+      `3046428 -> 916660 us` (`3.323x`).
+    - Full RGB+IR export benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall `55067434 us`, `ir_clean_us=247882926`,
+      `ir_defect_mask_us=240639668`, `ir_line_detection_us=6991369`, and
+      `ir_meijering_us=6406495`.
+    - Compared with the sliding-window morphology baseline, wall improved from
+      `56971107 us` to `55067434 us` (`1.034x`), line detection improved from
+      `17409612` to `6991369` (`2.490x`), and Meijering improved from
+      `16883452` to `6406495` (`2.636x`).
+    - Decision: accept exact f64 SIMD for the line-response Gaussian filter
+      axes. Do not pursue f32 Meijering unless later profiling shows this path
+      is again material.
+
+- [x] Re-rank RGB+IR export hotspots after Meijering SIMD.
+  - Scope:
+    - Use the latest `export_detected_frames_ir_all_breakdown` result as the
+      source of truth.
+    - Candidate buckets now include residual adaptive Gaussian, remaining
+      morphology, inpainting, write time, crop/IR prep overhead, and any
+      remaining line-detection overhead.
+    - If a concrete optimization target is chosen, add it as the next
+      unchecked checkpoint with scope, tests, benchmark evidence, and parity
+      constraints before implementing.
+  - Required evidence before checking off:
+    - No code changes required unless the re-rank adds benchmark plumbing.
+    - Record the ranked buckets and selected next checkpoint in this plan and
+      `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-20:
+    - Latest source-of-truth benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall `55067434 us`, aggregate `ir_clean_us=247882926`,
+      `ir_defect_mask_us=240639668`, `ir_adaptive_dust_us=203868883`,
+      `ir_close_us=22369387`, `ir_dilate_us=7170575`,
+      `ir_line_detection_us=6991369`, `ir_meijering_us=6406495`,
+      `ir_inpaint_total_us=6655521`, `rgb_crop_us=898340`,
+      `ir_crop_us=434626`, `ir_neg_prepare_us=685559`,
+      `inversion_us=1245229`, `display_render_us=1133825`, and
+      `write_us=1001051`.
+    - Ranked remaining buckets:
+      1. Adaptive dust Gaussian/statistics construction: `203868883 us`.
+      2. Morphology close+dilate: `22369387 + 7170575 = 29539962 us`.
+      3. Line detection: `6991369 us`, including Meijering `6406495 us`.
+      4. Inpainting: `6655521 us`.
+      5. Crop/IR negative prep: about `2018525 us`.
+      6. Inversion: `1245229 us`.
+      7. Display render: `1133825 us`.
+      8. TIFF write: `1001051 us`.
+    - Decision: line detection is no longer the next large target. Adaptive
+      dust is now about `6.90x` larger than close+dilate and about `29.16x`
+      larger than line detection, so the next checkpoint should return to the
+      adaptive-dust path.
+    - Selected next checkpoint: make the existing f32 adaptive-dust candidate a
+      fair performance comparison by giving its Gaussian path the same class of
+      parallel/SIMD treatment already accepted for f64, then judge promotion
+      only from full mask and final-export speed/accuracy evidence. The Python
+      oracle already uses `float32` for this path, and tiny final-surface
+      differences below practical output significance are acceptable for a
+      large speedup, but large local inpaint/output differences must be
+      reported rather than hidden.
+
+- [x] Optimize f32 adaptive-dust Gaussian candidate.
+  - Scope:
+    - Work only on the existing adaptive dust path in `src/processing/ir.zig`.
+      Preserve the two-pass Python-shaped computation: normalize IR, Gaussian
+      background, Gaussian squared signal, coarse replacement, second
+      Gaussian background, second Gaussian squared signal, final `n_sigma2`
+      and ratio test.
+    - Keep f64 production available as the reference until the full-export
+      tradeoff is measured. The candidate may use f32 intermediates because
+      the Python oracle does, but it must not alter threshold formulas, mask
+      combination, morphology, line detection, or inpainting.
+    - Give `gaussianBlurF32` the same practical optimization class as f64:
+      odd-kernel pair-weight loops, reflect-101 scalar boundaries, contiguous
+      SIMD interiors, and the adaptive worker count supplied through
+      `ThresholdOptions.worker_count`.
+    - Keep scalar/tail fallbacks so the implementation is correct on arbitrary
+      dimensions and platforms where vector width is only a compile-time Zig
+      vectorization hint.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Focused `ir_adaptive_dust_f32_tradeoff` on
+      `scans/scan_0004_rgbir_3200dpi.tiff`, reporting shared mask-area
+      metrics as the acceptance surface: intersection area, union area, IoU,
+      reference area retained, candidate area confirmed, and Dice. Direct
+      pixel mismatch counters may remain as diagnostics but are not the
+      primary detector-quality metric.
+    - Full `export_detected_frames_ir_f32_tradeoff` on the same scan,
+      reporting f64 reference wall, f32 wall, speedup, final TIFF `max_abs`,
+      RMS/MSE, mismatch count/rate, metadata equality, file-set equality, and
+      relevant IR substage times.
+    - If promoted to production defaults, refresh
+      `export_detected_frames_ir_all_breakdown` and record the new default
+      wall time and bucket ranking.
+    - Record accepted/rejected evidence in `docs/PERFORMANCE_STRATEGY.md`,
+      `docs/PARITY_MANIFEST.md` if symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Updated `gaussianBlurF32` to use the same optimization class as the f64
+      path: odd-kernel pair weights, reflect-101 scalar boundary handling,
+      contiguous SIMD interiors, scalar tails, and row-parallel horizontal and
+      vertical passes selected by `ThresholdOptions.worker_count`.
+    - Added mask-area overlap reporting to `ir_adaptive_dust_f32_tradeoff` so
+      detector acceptability is judged by shared region area rather than by
+      final TIFF sample deltas or a raw binary-pixel mismatch count.
+    - Promoted f32 adaptive dust to the production default while keeping the
+      f64 path available as the benchmark/reference override. This matches the
+      Python oracle's `float32` adaptive-dust calculation more closely than the
+      previous f64 default.
+    - `zig build test --summary all` passed `442/442`.
+    - Focused mask benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case ir_adaptive_dust_f32_tradeoff`
+      on a detected `3063x4600` crop reported `reference_us=41730250`,
+      `f32_us=26637777` (`1.566x`), `ref_adaptive_us=34786235`,
+      `f32_adaptive_us=19682661`, `reference_defects=170799`,
+      `f32_defects=185465`, intersection area `170433`, union area `185831`,
+      IoU `91.713%`, reference area retained `99.785%`, f32 area confirmed
+      `91.894%`, and Dice `95.677%`.
+    - Full f64-vs-f32 export tradeoff:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_f32_tradeoff`
+      reported f64 reference wall `53259036 us`, f32 wall `30311036 us`
+      (`1.757x`), `reference_ir_adaptive_dust_us=187612329`,
+      `f32_ir_adaptive_dust_us=81431700`, metadata equality `true`, file-set
+      equality `true`, final TIFF RMS `110.633142` on a 16-bit scale, and
+      `abs_gt_4096=85657` of roughly `632.7M` final samples. The final-image
+      differences are expected because small mask-area changes toggle
+      inpainting in local regions; the mask-area overlap metrics are the
+      primary acceptance evidence for this detector change.
+    - Production-default refresh:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall `30366888 us`, `ir_clean_us=127446236`,
+      `ir_defect_mask_us=119817222`, `ir_adaptive_dust_us=83048463`,
+      `ir_close_us=22715193`, `ir_dilate_us=7640539`,
+      `ir_line_detection_us=6192776`, `ir_meijering_us=5649074`,
+      `ir_inpaint_total_us=6992917`, `inversion_us=1263675`,
+      `display_render_us=1137713`, and `write_us=1067462`.
+    - Decision: accept the f32 default. Compared with the pre-checkpoint f64
+      default wall `55067434 us`, production RGB+IR export now improves to
+      `30366888 us` (`1.814x`) while preserving nearly all reference defect
+      area and keeping f64 available for direct comparisons.
+
+- [x] Re-rank RGB+IR export hotspots after f32 adaptive-dust promotion.
+  - Scope:
+    - Use the latest f32-default `export_detected_frames_ir_all_breakdown`
+      result as the source of truth.
+    - Candidate buckets now include residual adaptive Gaussian work,
+      morphology close+dilate, inpainting, line detection, crop/IR prep,
+      inversion, display render, and write time.
+    - If the next target changes the detector numerics, require mask-area
+      overlap metrics as the primary acceptance surface instead of direct
+      final-image pixel mismatch counts.
+  - Required evidence before checking off:
+    - No code changes required unless benchmark plumbing is missing.
+    - Record ranked buckets and selected next checkpoint in this plan and
+      `docs/PERFORMANCE_STRATEGY.md`.
+  - Completed 2026-05-20:
+    - Latest source-of-truth benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_all_breakdown`
+      reported wall `30366888 us`, `ir_clean_us=127446236`,
+      `ir_defect_mask_us=119817222`, `ir_adaptive_dust_us=83048463`,
+      `ir_close_us=22715193`, `ir_dilate_us=7640539`,
+      `ir_line_detection_us=6192776`, `ir_meijering_us=5649074`,
+      `ir_inpaint_total_us=6992917`, `rgb_crop_us=927089`,
+      `ir_crop_us=454459`, `ir_neg_prepare_us=720144`,
+      `inversion_us=1263675`, `display_render_us=1137713`, and
+      `write_us=1067462`.
+    - Ranked remaining buckets:
+      1. Adaptive dust Gaussian/statistics construction: `83048463 us`.
+      2. Morphology close+dilate: `22715193 + 7640539 = 30355732 us`.
+      3. Inpainting: `6992917 us`.
+      4. Line detection: `6192776 us`, including Meijering `5649074 us`.
+      5. Crop/IR negative prep: about `2101692 us`.
+      6. Inversion: `1263675 us`.
+      7. Display render: `1137713 us`.
+      8. TIFF write: `1067462 us`.
+    - Decision: adaptive dust remains the largest bucket, but it is now only
+      about `2.74x` larger than close+dilate after the f32 promotion. The next
+      checkpoint should examine remaining adaptive Gaussian pass count and
+      approximation opportunities, with mask-area overlap as the acceptance
+      gate for detector changes.
+
+- [x] Evaluate adaptive-dust Gaussian pass-count and approximation candidates.
+  - Scope:
+    - Stay within the Python-shaped adaptive dust detector unless a candidate is
+      explicitly recorded as a toleranced approximation. Do not change line
+      detection, morphology, inpainting, or downstream export semantics in this
+      checkpoint.
+    - First identify whether any of the four f32 Gaussian passes can be avoided,
+      fused, or reused without changing results. Exact wins remain preferred.
+    - If exact fusion is exhausted, evaluate approximation candidates only
+      behind benchmark-controlled paths: lower effective blur work, repeated
+      box/binomial approximations, reduced-resolution background estimation, or
+      other separable approximations that preserve the same threshold formulas.
+    - For any approximate candidate, use mask-area overlap as the primary
+      detector-quality surface: IoU, reference area retained, candidate area
+      confirmed, Dice, and defect-area delta. Final TIFF pixel deltas are
+      secondary diagnostics because mask changes can trigger local inpainting
+      differences.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Focused real-scan benchmark on
+      `scans/scan_0004_rgbir_3200dpi.tiff` reporting adaptive-dust time,
+      detector-area overlap metrics, and close/dilate/line timings.
+    - If a candidate is promoted, full
+      `export_detected_frames_ir_all_breakdown` wall time and bucket ranking.
+    - Record accepted/rejected candidates in `docs/PERFORMANCE_STRATEGY.md`,
+      `docs/PARITY_MANIFEST.md` if symbols/evidence changed, and this plan.
+  - Completed 2026-05-20:
+    - Exact pass-count review: the four Gaussian passes are not independently
+      droppable without changing the Python-shaped detector. The first
+      background and squared-signal passes define the coarse mask; the second
+      background and squared-signal passes operate on the coarse-cleaned IR and
+      define the final `n_sigma2` used by dust and line gating. Reusing a first
+      pass for a second pass or omitting either squared-signal pass changes the
+      local variance formula. Earlier exact paired-output Gaussian work also
+      preserved output but regressed this workload, so no exact pass-count
+      promotion is available from the current structure.
+    - Added benchmark-only `ir_adaptive_dust_blur_tradeoff` to evaluate lower
+      effective Gaussian blur sizes while preserving the same two-pass
+      threshold formulas, line detection, morphology, inpainting handoff, and
+      production defaults.
+    - `zig build test --summary all` passed `442/442`.
+    - Focused benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case ir_adaptive_dust_blur_tradeoff`
+      compared the current f32 detector blur size `1205` against reduced
+      candidates on the first detected `3063x4600` crop.
+    - Candidate `603` (`divisor=2`) reduced candidate adaptive time to
+      `1918499 us` versus reference `5119769 us`, but detector overlap was too
+      weak: IoU `74.949%`, reference area retained `89.199%`, candidate area
+      confirmed `82.430%`, Dice `85.681%`, and defect delta `15230`.
+    - Candidate `401` (`divisor=3`) reduced adaptive time to `1030390 us` but
+      fell to IoU `59.524%`, reference retained `84.104%`, candidate confirmed
+      `67.070%`, Dice `74.627%`, and defect delta `47102`.
+    - Candidate `301` (`divisor=4`) reduced adaptive time to `717764 us` but
+      fell to IoU `56.496%`, reference retained `73.107%`, candidate confirmed
+      `71.317%`, Dice `72.201%`, and defect delta `4653`.
+    - Candidate `201` (`divisor=6`) and `151` (`divisor=8`) were clearly
+      unacceptable with IoU `37.506%` and `18.142%` respectively.
+    - Decision: reject lower blur-size approximations for production. They are
+      faster, but even the mildest candidate changes the detector area too much
+      under the agreed mask-area acceptance surface. Keep the current f32
+      default blur size and leave more invasive approximations for an explicit
+      future experiment.
+
+- [x] Evaluate same-scale approximate Gaussian implementations for adaptive dust.
+  - Scope:
+    - This is an explicitly approved approximate-detector experiment. Keep the
+      current f32 Gaussian adaptive-dust path as the production default and as
+      the focused reference for this checkpoint.
+    - Preserve the Python-shaped detector structure: normalized IR, first
+      background and squared-signal blur, coarse replacement, second background
+      and squared-signal blur, final `n_sigma2`, then the existing line,
+      morphology, coverage, and inpainting handoff.
+    - Do not reduce the configured blur size in this checkpoint. Approximate
+      the same Gaussian scale with faster separable methods such as repeated
+      box filters or other bounded-error Gaussian approximations.
+    - Candidate modes must be explicit non-default precision/backend options
+      so benchmark code can select them without changing UI, CLI, export, or
+      config defaults.
+    - Use mask-area overlap as the primary quality surface: IoU, reference
+      area retained, candidate area confirmed, Dice, and defect-area delta.
+      Report focused adaptive-dust time and downstream line/close/dilate
+      timings so quality and performance are evaluated together.
+  - Required evidence before checking off:
+    - `zig build test --summary all`.
+    - Focused real-scan benchmark on
+      `scans/scan_0004_rgbir_3200dpi.tiff` comparing the default f32 Gaussian
+      path against approximate candidates on a detected full-resolution IR
+      crop.
+    - If a candidate is accepted for production, run a full
+      `export_detected_frames_ir_all_breakdown` refresh and record wall time,
+      aggregate bucket changes, and any final-output parity diagnostics.
+    - Record the accepted or rejected candidates in
+      `docs/PERFORMANCE_STRATEGY.md`, `docs/PARITY_MANIFEST.md`, and this
+      plan item before checking it off.
+  - Completed 2026-05-20:
+    - Added explicit non-default adaptive-dust candidate modes for repeated box
+      cascades (`f32_box3`, `f32_box4`, `f32_box6`, `f32_box8`), downsampled
+      exact Gaussian approximations (`f32_down2`, `f32_down3`, `f32_down4`,
+      `f32_down6`, `f32_down8`), and mixed plans that approximate only the
+      first/coarse pair or final pair (`f32_down4_coarse`, `f32_down4_final`).
+      The production/default `.f32` path remains the exact Gaussian path.
+    - Added benchmark-only
+      `ir_adaptive_dust_gaussian_approx_tradeoff` and
+      `export_detected_frames_ir_gaussian_approx_tradeoff` cases. Added unit
+      coverage for constant-image preservation and parallel consistency of the
+      approximation helpers.
+    - `zig build test --summary all` passed `445/445`.
+    - Focused benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case ir_adaptive_dust_gaussian_approx_tradeoff`
+      compared candidates on the first detected `3063x4600` IR crop.
+    - Rejected box cascades as a family for this detector: box counts 3, 4, 6,
+      and 8 all produced `candidate_defects=0`, `mask_iou_x1000=0`, and
+      `mask_ref_area_retained_x1000=0`, despite reducing adaptive time to about
+      `0.50-0.83s` versus the exact f32 reference around `4.96-5.17s`.
+    - Rejected applying downsampled Gaussian approximation to all four
+      adaptive blurs: the best full-plan candidate was `down4` with IoU
+      `92.158%`, reference retained `93.481%`, candidate confirmed `98.486%`,
+      Dice `95.919%`, and adaptive time around `0.69s`; it misses too much
+      reference mask area for a default detector.
+    - Diagnostic mixed plans showed the quality loss comes primarily from
+      approximating the final local-statistics pair. `down4_final` stayed near
+      the full-plan result with IoU `91.835%` and reference retained `93.505%`.
+      `down4_coarse` was much closer to the exact f32 mask: IoU `99.281%`,
+      reference retained `99.968%`, candidate confirmed `99.312%`, Dice
+      `99.639%`, defect delta `1224`, and mismatches `1342` of `14089800`
+      mask pixels while reducing focused adaptive time from `4964063 us` to
+      `2852742 us`.
+    - Full-export benchmark:
+      `zig build -Doptimize=ReleaseFast bench-processing-commands --summary all -- --scan scans/scan_0004_rgbir_3200dpi.tiff --case export_detected_frames_ir_gaussian_approx_tradeoff`
+      compared the production f32 path with `down4_coarse` across 5 detected
+      frames and 15 output files. Wall time improved from `28556578 us` to
+      `22316350 us` (`1.279x`); aggregate `ir_clean_us` improved
+      `116515098 -> 87628300`, `ir_defect_mask_us` improved
+      `108889709 -> 79947181`, and `ir_adaptive_dust_us` improved
+      `74083018 -> 45182508`. Metadata and file sets matched. Final TIFF
+      comparison reported RMS `83.164927`, MSE `6916.405047`, mismatches
+      `17265757`, mismatch rate `2.729%`, and `abs_gt_4096=46144`.
+    - Decision: keep all approximate Gaussian paths non-default for now.
+      `down4_coarse` is a strong candidate for an explicitly approved fast
+      detector mode or future default, but production should not switch in this
+      checkpoint without reviewing the final-output tolerance tradeoff. The
+      current default `.f32` exact Gaussian adaptive path remains active.
+
+- [ ] PENDING USER UPDATE: Refresh Linux live scanner release smoke evidence.
   - Covers release checklist item 9.
   - Required modes/evidence: RGB, IR, RGB+IR, metadata, LUT, native preview
     worker, native scan worker, and scanner-to-processing workflow.
@@ -6183,7 +9271,8 @@ Prompt-to-artifact checklist:
     RGB, IR, RGB+IR, metadata, LUT, native preview-worker, native scan-worker,
     and scanner-to-processing smoke commands.
 
-- [ ] Refresh Linux Nix package and no-hardware check gates.
+- [ ] PENDING USER UPDATE: Refresh Linux Nix package and no-hardware check
+      gates.
   - Covers release checklist items 7 and 8.
   - Required commands:
     - `nix build path:.#cli path:.#ui --no-link --print-build-logs`
@@ -6193,7 +9282,8 @@ Prompt-to-artifact checklist:
     run these release gates until the user explicitly authorizes release-time
     Nix validation or asks for a packaging refresh.
 
-- [ ] Record macOS direct build/test evidence on a macOS host.
+- [ ] PENDING USER UPDATE: Record macOS direct build/test evidence on a macOS
+      host.
   - Covers release checklist item 10.
   - Blocked 2026-05-18: current machine is Linux. This remains parked under the
     `PENDING USER UPDATE` macOS policy until the user says a macOS host is
@@ -6209,7 +9299,8 @@ Prompt-to-artifact checklist:
   - Completion decision: checked only as an explicit deferral, not as live
     macOS scanner support.
 
-- [ ] Record native UI real-display screenshot verification.
+- [ ] PENDING USER UPDATE: Record native UI real-display screenshot
+      verification.
   - Covers release checklist item 12.
   - Required workflows: scan, process, gallery, confirmation, and pan/zoom.
   - Use `docs/NATIVE_UI_VERIFICATION.md` as the checklist. Headless SDL dummy
@@ -6217,8 +9308,78 @@ Prompt-to-artifact checklist:
   - Required evidence before checking off: date, display environment, command,
     screenshot paths, viewport/window sizes, and visual defects or explicit
     "no defect observed" notes.
+  - Partial progress 2026-05-19:
+    - The shell itself is still a TTY (`DISPLAY=`, `WAYLAND_DISPLAY=`,
+      `XDG_SESSION_TYPE=tty`), but the machine has an accessible LightDM/Xorg
+      session at `DISPLAY=:0` with `XAUTHORITY=$HOME/.Xauthority`.
+      `xdotool getdisplaygeometry` reported `3840x4720`; screenshots were
+      captured with `scrot 1.11.1`.
+    - Added real-display verification helpers that preserve the existing smoke
+      behavior when unused:
+      - `--smoke-hold-ms` keeps seeded UI smoke windows open long enough for
+        real screenshots.
+      - `--gallery-trash-prompt-smoke` and
+        `--gallery-delete-prompt-smoke` seed Gallery confirmation prompts
+        without mutating files.
+      - `--process-worker-screenshot-smoke` keeps a fake Process load worker
+        active long enough to capture footer progress.
+      - The Process worker fake preview now supplies a valid RGB buffer for
+        its advertised dimensions, avoiding an SDL texture update crash when a
+        held smoke window renders the completed fake preview.
+      - `--smoke-resize-to` and `--window-size` were added for deterministic
+        viewport attempts, but the current X session still kept the window at
+        `1918x2158`.
+    - Real-display screenshot paths under
+      `.zig-cache/tmp/native-ui-real-display-2026-05-19/`:
+      - `scan-scale-1-default.png`, `scan-scale-1-45.png`, `scan-narrow.png`,
+        `scan-wide.png`;
+      - `process-default.png`, `process-short.png`,
+        `process-worker-active.png`;
+      - `gallery-default.png`, `gallery-trash-prompt.png`,
+        `gallery-delete-prompt.png`, `gallery-panzoom.png`;
+      - `contact-sheet.png`;
+      - matching `*.geometry.txt` sidecars were captured for each named
+        screenshot.
+    - Visual findings from the captured set:
+      - Scan, Process, and Gallery tabs render on the real X display with
+        readable navigation, control panels, image areas, and pinned footer
+        status bars.
+      - Gallery thumbnails show real fixture TIFF content, active thumbnail
+        state is distinguishable, and both Trash and Delete confirmation
+        prompts are visible with Confirm/Cancel controls.
+      - The Process active-worker screenshot shows footer text for the running
+        load worker. The Process render screenshot shows the expected seeded
+        fixture and an auto-detect failure status from the tiny test image.
+      - No obvious text overlap, footer overlap, blank texture, or broken
+        prompt layout was observed in the captured default-size images.
+    - Required validation passed after the helper changes:
+      - `zig build test --summary all` passed `412/412`.
+      - `zig build -Dui=true --summary all` passed.
+      - `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build
+        -Dui=true ui-smoke --summary all` passed.
+      - Direct dummy-SDL `run-ui` smokes passed for
+        `--preview-render-smoke --smoke-hold-ms 10`,
+        `--process-worker-screenshot-smoke --smoke-hold-ms 10`,
+        `--gallery-trash-prompt-smoke --smoke-hold-ms 10`, and
+        `--gallery-delete-prompt-smoke --smoke-hold-ms 10`.
+    - Still not complete:
+      - The required narrower/wider resized-window evidence is not satisfied.
+        `xdotool windowsize`, SDL `--smoke-resize-to`, and `--window-size`
+        attempts all still captured `1918x2158` windows in this X session.
+        A follow-up Xfce/X11 attempt also removed `MAXIMIZED_VERT`,
+        `MAXIMIZED_HORZ`, and `FULLSCREEN` window state with `xdotool
+        windowstate`, then requested `900x700`; geometry and screenshot output
+        still reported `1918x2158`.
+      - Manual pointer-feel checks for wheel ownership, middle-button pan,
+        double-click refit, keyboard wrapping, and cancel/no-mutation behavior
+        remain better performed from the live graphical session.
+    - Required next input: use the graphical desktop directly to resize the
+      window narrower/wider and complete the manual interaction checklist in
+      `docs/NATIVE_UI_VERIFICATION.md`, or provide a display environment that
+      permits window resizing from automation.
 
-- [ ] Final parity manifest and generated-output hygiene audit.
+- [ ] PENDING USER UPDATE: Final parity manifest and generated-output hygiene
+      audit.
   - Covers release checklist items 1, 2, and 15 after all other Phase 12 work.
   - Required checks:
     - every selectable `plan.md` item is checked or has a user-approved release
@@ -6230,3 +9391,24 @@ Prompt-to-artifact checklist:
       smoke files.
   - Completion decision: leave unchecked until all unblocked Phase 12 evidence
     has been refreshed.
+  - Audit attempt 2026-05-20:
+    - This item cannot honestly be checked off yet. Remaining unchecked rows
+      are parked as `PENDING USER UPDATE`, but the release checklist still needs
+      explicit human/environment input for Linux SANE visibility/live scanner
+      smokes, release-time Nix package/check validation, a macOS host, and a
+      graphical session that can complete the real-display UI resize/manual
+      interaction evidence.
+    - `rg -n "^- \[ \]" plan.md` now shows only the parked
+      `PENDING USER UPDATE` blockers plus this final audit row, so there is no
+      further unblocked implementation checkpoint to select in the current
+      Linux shell.
+    - The parity manifest is not in final release-accepted shape:
+      `rg -n "\| (not-started|scaffolded|replay-tested|oracle-tested|hardware-tested|deferred|blocked)(/| |\|)" docs/PARITY_MANIFEST.md | wc -l`
+      reported `181` rows/statuses that are not literally
+      `parity-accepted` and therefore need either final acceptance updates or
+      explicit release-approved deferral/blocker decisions before checklist
+      item 2 in `docs/CROSS_PLATFORM.md` can pass.
+    - Generated-output hygiene is currently acceptable but not a final release
+      audit: `git status --short --untracked-files=all` showed only tracked
+      source/docs modifications and no untracked scan/frame/config/TIFF/PNG/JPEG
+      smoke outputs.

@@ -77,25 +77,52 @@ fn handleScannerSane(
     stdout: anytype,
     subcommand: []const u8,
 ) !void {
+    var scanner_args = try parseScannerCommonOptions(allocator, args);
+    defer scanner_args.deinit();
+
+    var timing_report: ?v600.scanner.events.TimingReport = null;
+    defer if (timing_report) |*report| report.deinit();
+    if (scanner_args.timing_report_path) |path| {
+        timing_report = try v600.scanner.events.TimingReport.open(allocator, io, path);
+    }
+    const event_sink: ?v600.scanner.events.Sink = if (timing_report) |*report| report.sink() else null;
+
     const runtime = v600.scanner.linux.Runtime{
         .allocator = allocator,
         .io = io,
         .environ_map = environ_map,
+        .event_sink = event_sink,
     };
+    const remaining = scanner_args.remaining.items;
 
     if (std.mem.eql(u8, subcommand, "devices")) {
-        const devices = try runtime.discoverDevices();
+        try writeReportContext(&timing_report, .{ .command = "scanner devices" });
+        const devices = runtime.discoverDevices() catch |err| {
+            writeReportStatus(&timing_report, "scanner devices", "error", @errorName(err), null);
+            return err;
+        };
         defer v600.scanner.linux.freeDevices(allocator, devices);
         for (devices) |device| {
             try stdout.print("{s}\n", .{device.raw_line});
         }
+        writeReportStatus(&timing_report, "scanner devices", "ok", null, null);
     } else if (std.mem.eql(u8, subcommand, "probe")) {
-        _ = try runtime.probe(stdout);
+        try writeReportContext(&timing_report, .{ .command = "scanner probe" });
+        _ = runtime.probe(stdout) catch |err| {
+            writeReportStatus(&timing_report, "scanner probe", "error", @errorName(err), null);
+            return err;
+        };
+        writeReportStatus(&timing_report, "scanner probe", "ok", null, null);
     } else if (std.mem.eql(u8, subcommand, "scan")) {
-        const options = try parseScanOptions(args);
-        try runtime.scan(options);
+        const options = try parseScanOptions(remaining);
+        try writeScanReportContext(&timing_report, "scanner scan", options);
+        runtime.scan(options) catch |err| {
+            writeReportStatus(&timing_report, "scanner scan", "error", @errorName(err), reportOutput(options.output_path));
+            return err;
+        };
+        writeReportStatus(&timing_report, "scanner scan", "ok", null, reportOutput(options.output_path));
     } else if (std.mem.eql(u8, subcommand, "usb-reset")) {
-        const confirmed = try parseUsbResetOptions(args);
+        const confirmed = try parseUsbResetOptions(remaining);
         if (!confirmed) {
             try stdout.print("USB reset not run: pass --yes to reset the Epson V600 USB device\n", .{});
             return;
@@ -110,20 +137,29 @@ fn handleScannerSane(
         }
     } else if (std.mem.eql(u8, subcommand, "smoke")) {
         if (!hardwareSmokeEnabled(environ_map)) {
+            try writeReportContext(&timing_report, .{ .command = "scanner smoke" });
+            writeReportStatus(&timing_report, "scanner smoke", "skipped", "set V600_HARDWARE_SMOKE=1 to run", null);
             try stdout.print("hardware smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
             return;
         }
-        var options = try parseScanOptions(args);
+        var options = try parseScanOptions(remaining);
         if (options.output_path.len == 0) {
             options.output_path = "/tmp/v600-zig-smoke-rgb.tiff";
         }
-        try runtime.scan(options);
+        try writeScanReportContext(&timing_report, "scanner smoke", options);
+        runtime.scan(options) catch |err| {
+            writeReportStatus(&timing_report, "scanner smoke", "error", @errorName(err), reportOutput(options.output_path));
+            return err;
+        };
+        writeReportStatus(&timing_report, "scanner smoke", "ok", null, reportOutput(options.output_path));
     } else if (std.mem.eql(u8, subcommand, "processing-smoke")) {
         if (!hardwareSmokeEnabled(environ_map)) {
+            try writeReportContext(&timing_report, .{ .command = "scanner processing-smoke" });
+            writeReportStatus(&timing_report, "scanner processing-smoke", "skipped", "set V600_HARDWARE_SMOKE=1 to run", null);
             try stdout.print("scanner processing smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
             return;
         }
-        var options = try parseScanOptions(args);
+        var options = try parseScanOptions(remaining);
         if (options.output_path.len == 0) {
             options.output_path = "/tmp/v600-zig-processing-smoke.tiff";
         }
@@ -131,8 +167,16 @@ fn handleScannerSane(
             options.request.area.width = 0.25;
             options.request.area.height = 0.25;
         }
-        try runtime.scan(options);
-        try v600.processing.cli.runCommand(allocator, io, .{ .info = .{ .input = options.output_path } }, stdout, .{});
+        try writeScanReportContext(&timing_report, "scanner processing-smoke", options);
+        runtime.scan(options) catch |err| {
+            writeReportStatus(&timing_report, "scanner processing-smoke", "error", @errorName(err), reportOutput(options.output_path));
+            return err;
+        };
+        v600.processing.cli.runCommand(allocator, io, .{ .info = .{ .input = options.output_path } }, stdout, .{}) catch |err| {
+            writeReportStatus(&timing_report, "scanner processing-smoke", "error", @errorName(err), reportOutput(options.output_path));
+            return err;
+        };
+        writeReportStatus(&timing_report, "scanner processing-smoke", "ok", null, reportOutput(options.output_path));
     } else {
         try printScannerUsage();
         return error.UnknownScannerCommand;
@@ -188,7 +232,31 @@ fn handleProcessing(
     };
 }
 
-fn parseScanOptions(args: *std.process.Args.Iterator) !v600.scanner.linux.ScanOptions {
+const ScannerCommonArgs = struct {
+    timing_report_path: ?[]const u8 = null,
+    remaining: std.array_list.Managed([]const u8),
+
+    fn deinit(self: *ScannerCommonArgs) void {
+        self.remaining.deinit();
+    }
+};
+
+fn parseScannerCommonOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !ScannerCommonArgs {
+    var common = ScannerCommonArgs{
+        .remaining = std.array_list.Managed([]const u8).init(allocator),
+    };
+    errdefer common.deinit();
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--timing-report")) {
+            common.timing_report_path = args.next() orelse return error.MissingTimingReportPath;
+        } else {
+            try common.remaining.append(arg);
+        }
+    }
+    return common;
+}
+
+fn parseScanOptions(args: []const []const u8) !v600.scanner.linux.ScanOptions {
     var request = v600.scanner.contracts.ScanRequest{
         .dpi = 400,
         .source = .tpu,
@@ -200,33 +268,61 @@ fn parseScanOptions(args: *std.process.Args.Iterator) !v600.scanner.linux.ScanOp
     var device_name: ?[]const u8 = null;
     var cancel_file: ?[]const u8 = null;
 
-    while (args.next()) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (std.mem.eql(u8, arg, "--device")) {
-            device_name = args.next() orelse return error.MissingDeviceName;
+            index += 1;
+            if (index >= args.len) return error.MissingDeviceName;
+            device_name = args[index];
         } else if (std.mem.eql(u8, arg, "--source")) {
-            request.source = try parseSource(args.next() orelse return error.MissingSource);
+            index += 1;
+            if (index >= args.len) return error.MissingSource;
+            request.source = try parseSource(args[index]);
         } else if (std.mem.eql(u8, arg, "--kind")) {
-            request.kind = try parseKind(args.next() orelse return error.MissingKind);
+            index += 1;
+            if (index >= args.len) return error.MissingKind;
+            request.kind = try parseKind(args[index]);
         } else if (std.mem.eql(u8, arg, "--dpi")) {
-            request.dpi = try std.fmt.parseInt(u32, args.next() orelse return error.MissingDpi, 10);
+            index += 1;
+            if (index >= args.len) return error.MissingDpi;
+            request.dpi = try std.fmt.parseInt(u32, args[index], 10);
         } else if (std.mem.eql(u8, arg, "--depth")) {
-            request.depth = try parseDepth(args.next() orelse return error.MissingDepth);
+            index += 1;
+            if (index >= args.len) return error.MissingDepth;
+            request.depth = try parseDepth(args[index]);
         } else if (std.mem.eql(u8, arg, "--out")) {
-            output_path = args.next() orelse return error.MissingOutputPath;
+            index += 1;
+            if (index >= args.len) return error.MissingOutputPath;
+            output_path = args[index];
         } else if (std.mem.eql(u8, arg, "--metadata")) {
-            metadata_path = args.next() orelse return error.MissingMetadataPath;
+            index += 1;
+            if (index >= args.len) return error.MissingMetadataPath;
+            metadata_path = args[index];
         } else if (std.mem.eql(u8, arg, "--lut-file")) {
-            request.lut_file_path = args.next() orelse return error.MissingLutFilePath;
+            index += 1;
+            if (index >= args.len) return error.MissingLutFilePath;
+            request.lut_file_path = args[index];
         } else if (std.mem.eql(u8, arg, "--cancel-file")) {
-            cancel_file = args.next() orelse return error.MissingCancelFile;
+            index += 1;
+            if (index >= args.len) return error.MissingCancelFile;
+            cancel_file = args[index];
         } else if (std.mem.eql(u8, arg, "--x")) {
-            request.area.x = try std.fmt.parseFloat(f64, args.next() orelse return error.MissingAreaX);
+            index += 1;
+            if (index >= args.len) return error.MissingAreaX;
+            request.area.x = try std.fmt.parseFloat(f64, args[index]);
         } else if (std.mem.eql(u8, arg, "--y")) {
-            request.area.y = try std.fmt.parseFloat(f64, args.next() orelse return error.MissingAreaY);
+            index += 1;
+            if (index >= args.len) return error.MissingAreaY;
+            request.area.y = try std.fmt.parseFloat(f64, args[index]);
         } else if (std.mem.eql(u8, arg, "--width")) {
-            request.area.width = try std.fmt.parseFloat(f64, args.next() orelse return error.MissingAreaWidth);
+            index += 1;
+            if (index >= args.len) return error.MissingAreaWidth;
+            request.area.width = try std.fmt.parseFloat(f64, args[index]);
         } else if (std.mem.eql(u8, arg, "--height")) {
-            request.area.height = try std.fmt.parseFloat(f64, args.next() orelse return error.MissingAreaHeight);
+            index += 1;
+            if (index >= args.len) return error.MissingAreaHeight;
+            request.area.height = try std.fmt.parseFloat(f64, args[index]);
         } else {
             return error.UnknownScanOption;
         }
@@ -241,9 +337,9 @@ fn parseScanOptions(args: *std.process.Args.Iterator) !v600.scanner.linux.ScanOp
     };
 }
 
-fn parseUsbResetOptions(args: *std.process.Args.Iterator) !bool {
+fn parseUsbResetOptions(args: []const []const u8) !bool {
     var confirmed = false;
-    while (args.next()) |arg| {
+    for (args) |arg| {
         if (std.mem.eql(u8, arg, "--yes")) {
             confirmed = true;
         } else {
@@ -251,6 +347,50 @@ fn parseUsbResetOptions(args: *std.process.Args.Iterator) !bool {
         }
     }
     return confirmed;
+}
+
+fn writeScanReportContext(
+    report: *?v600.scanner.events.TimingReport,
+    command: []const u8,
+    options: v600.scanner.linux.ScanOptions,
+) !void {
+    try writeReportContext(report, .{
+        .command = command,
+        .output = reportOutput(options.output_path),
+        .device = options.device_name,
+        .source = options.request.source,
+        .kind = options.request.kind,
+        .depth = options.request.depth,
+        .dpi = options.request.dpi,
+    });
+}
+
+fn writeReportContext(
+    report: *?v600.scanner.events.TimingReport,
+    event: v600.scanner.events.TimingContextEvent,
+) !void {
+    if (report.*) |*item| try item.writeContext(event);
+}
+
+fn writeReportStatus(
+    report: *?v600.scanner.events.TimingReport,
+    command: []const u8,
+    status: []const u8,
+    detail: ?[]const u8,
+    output: ?[]const u8,
+) void {
+    if (report.*) |*item| {
+        item.writeStatus(.{
+            .command = command,
+            .status = status,
+            .detail = detail,
+            .output = output,
+        }) catch {};
+    }
+}
+
+fn reportOutput(output_path: []const u8) ?[]const u8 {
+    return if (output_path.len == 0) null else output_path;
 }
 
 fn parseSource(value: []const u8) !v600.scanner.contracts.Source {
@@ -310,6 +450,7 @@ fn printScannerUsage() !void {
         \\  --metadata PATH
         \\  --lut-file PATH
         \\  --cancel-file PATH
+        \\  --timing-report PATH
         \\
     , .{});
 }

@@ -36,6 +36,20 @@ They do not prove real-window readability, OS compositor behavior, actual
 pointer feel, monitor scaling, or whether controls visually overlap at common
 desktop sizes.
 
+## Recent cache verification
+
+2026-05-20 native Process result-cache work used the same direct UI gates:
+
+```sh
+zig build -Dui=true --summary all
+SDL_VIDEODRIVER=dummy zig build -Dui=true run-ui -- --process-render-smoke
+```
+
+The Process render smoke exercises the async inverted-preview path with
+`preview_inversion` enabled, so the semantic inverted-preview RGB8 cache is
+compiled through the SDL texture layer while the smoke still waits for an
+inverted texture before passing.
+
 ## Manual window pass
 
 Launch the real UI from the ambient shell:
@@ -99,7 +113,12 @@ visual defects in `plan.md` under the checkpoint that required the manual pass.
 
 ## Current status
 
-As of 2026-05-17, the native UI has headless SDL dummy verification for preview,
-Process, gallery, theme, scale, and footer status-bar paths. A real-display
-screenshot pass is still required before claiming visual/manual UI acceptance
-for a release.
+As of 2026-05-19, the native UI has headless SDL dummy verification for preview,
+Process, gallery, theme, scale, and footer status-bar paths. A partial
+real-display screenshot pass was captured through the local LightDM/Xorg
+session at `DISPLAY=:0`; see `plan.md` for the exact screenshot paths and
+findings. Release acceptance is still pending because the current automated X
+session kept the SDL window at `1918x2158` despite resize requests, so the
+required narrower/wider resized-window screenshots and manual pointer-feel
+checks still need to be completed from a graphical session that permits window
+resizing.

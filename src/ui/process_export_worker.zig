@@ -5,6 +5,8 @@ const processing_export = @import("../processing/export.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
 const processing_workflow = @import("../processing/workflow.zig");
+const process_cache = @import("process_cache.zig");
+const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
@@ -114,6 +116,7 @@ pub const Context = struct {
     config_overrides: []processing_config.Override,
     config_override_names: [][]u8,
     invert_request: processing_webgpu.Request,
+    rgb_page: ?tiff.RgbPageWithMetadata = null,
     total_seconds_override: ?f64 = null,
     result: ?processing_workflow.ExportWorkflowResult = null,
     error_detail: []const u8 = "",
@@ -229,7 +232,7 @@ pub const Worker = struct {
 
     fn createContext(
         self: *Worker,
-        model: *const ui_state.State,
+        model: *ui_state.State,
         input_path: []const u8,
         request: processing_export.ExportRequest,
     ) !*Context {
@@ -268,6 +271,10 @@ pub const Worker = struct {
             .h = rect.h,
             .angle = rect.angle,
         } else null;
+        var rgb_key = try process_cache.rgbPageKey(self.allocator, self.io, input_path);
+        defer rgb_key.deinit(self.allocator);
+        const cached_rgb_page = try model.processing_result_cache.rgb_pages.getClone(self.allocator, rgb_key);
+        errdefer if (cached_rgb_page) |page| page.deinit(self.allocator);
 
         context.* = .{
             .allocator = self.allocator,
@@ -285,6 +292,7 @@ pub const Worker = struct {
             .config_overrides = overrides,
             .config_override_names = override_names,
             .invert_request = model.processing_gpu_request,
+            .rgb_page = cached_rgb_page,
             .done = &self.done,
             .failed = &self.failed,
             .event_queue = &self.event_queue,
@@ -310,6 +318,7 @@ pub const Worker = struct {
         self.allocator.free(context.basename);
         self.allocator.free(context.rects);
         if (context.active_stock) |name| self.allocator.free(name);
+        if (context.rgb_page) |page| page.deinit(self.allocator);
         freeConfigOverrides(self.allocator, context.config_overrides, context.config_override_names);
         self.allocator.destroy(context);
     }
@@ -325,6 +334,31 @@ fn threadMain(context: *Context) void {
 
 fn runProcessingExport(context: *Context) !void {
     context.event_queue.pushProgress("Starting export...");
+    if (context.rgb_page) |page| {
+        context.result = processing_workflow.processExportFromCachedRgbPage(context.allocator, context.io, page, .{
+            .input_path = context.input_path,
+            .output_dir = context.output_dir,
+            .basename = context.basename,
+            .rects = context.rects,
+            .outputs = context.outputs,
+            .active_stock = context.active_stock,
+            .stock_coeffs = context.stock_coeffs,
+            .dmin = context.dmin,
+            .rebate_rect = context.rebate_rect,
+            .current_dpi = context.current_dpi,
+            .config_overrides = context.config_overrides,
+            .invert_request = context.invert_request,
+            .total_seconds_override = context.total_seconds_override,
+            .progress_sink = .{
+                .context = context,
+                .emit = enqueueWorkflowProgress,
+            },
+        }) catch |err| switch (err) {
+            error.UnsupportedCachedRgbExport => null,
+            else => return err,
+        };
+        if (context.result != null) return;
+    }
     context.result = try processing_workflow.processExportFromTiff(context.allocator, context.io, .{
         .input_path = context.input_path,
         .output_dir = context.output_dir,
@@ -448,6 +482,33 @@ fn fakeExportAssertGpuRequest(context: *Context) !void {
     };
 }
 
+fn fakeExportAssertCachedRgbPage(context: *Context) !void {
+    try std.testing.expect(context.rgb_page != null);
+    try std.testing.expectEqual(@as(usize, 12), context.rgb_page.?.rgb.data.len);
+    context.result = .{
+        .message = try context.allocator.dupe(u8, "cached RGB page observed"),
+        .files = try context.allocator.alloc([]u8, 0),
+        .progress = .{ .events = try context.allocator.alloc(processing_export.ExportProgressEvent, 0) },
+    };
+}
+
+fn fakeRgbPage(allocator: std.mem.Allocator, width: u32, height: u32) !tiff.RgbPageWithMetadata {
+    const len = @as(usize, width) * @as(usize, height) * 3;
+    const data = try allocator.alloc(u8, len);
+    for (data, 0..) |*sample, index| sample.* = @intCast(index % 256);
+    return .{
+        .rgb = .{
+            .width = width,
+            .height = height,
+            .samples_per_pixel = 3,
+            .bits_per_sample = 8,
+            .data = data,
+        },
+        .dpi = 800,
+        .ir = null,
+    };
+}
+
 test "process export worker keeps UI state live and rejects duplicate starts" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -509,6 +570,46 @@ test "process export worker keeps UI state live and rejects duplicate starts" {
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, model.status);
     try std.testing.expectApproxEqAbs(0.2, model.processing.dmin.?[1], 0.0);
+}
+
+test "process export worker copies resident RGB page into workflow context" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/frames", .{tmp.sub_path[0..]});
+    defer allocator.free(output_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, output_dir);
+
+    var model = ui_state.State.init("scans", output_dir, 0);
+    defer model.deinit(allocator);
+    model.processing.output_dir = output_dir;
+    model.processing.preview_scale = 1.0;
+    model.processing.current_dpi = 800;
+    model.processing.dmin = .{ 0.1, 0.2, 0.3 };
+    model.processing_images.paths = try allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try allocator.dupe(u8, "scans/scan_export_rgb_cache.tiff");
+    model.processing.image_count = 1;
+    model.processing.image_idx = 0;
+    model.process_selections[0] = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .rotation = 0 };
+    model.process_selection_count = 1;
+
+    var key = try process_cache.rgbPageKey(allocator, std.testing.io, model.processing_images.paths[0]);
+    defer key.deinit(allocator);
+    var page = try fakeRgbPage(allocator, 2, 2);
+    try std.testing.expect(try model.processing_result_cache.rgb_pages.putOwned(allocator, key, &page));
+
+    var worker = Worker.initWithExecutor(allocator, std.testing.io, fakeExportAssertCachedRgbPage);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startFromState(&model, .{
+        .basename = "roll",
+        .export_ir_inv = false,
+        .export_inv_only = true,
+    }));
+    for (0..1000) |_| {
+        if (worker.poll(&model)) break;
+        try std.Thread.yield();
+    } else return error.ExportWorkerDidNotFinish;
+    try std.testing.expectEqualStrings("cached RGB page observed", model.status);
 }
 
 test "process export worker copies native processing GPU request into workflow context" {

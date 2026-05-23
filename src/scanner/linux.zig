@@ -151,9 +151,11 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     environ_map: *std.process.Environ.Map,
+    scanimage_command: ?[]const u8 = null,
     event_sink: ?events.Sink = null,
 
     pub fn wrappers(self: Runtime) WrapperAvailability {
+        if (self.scanimage_command != null) return .{};
         return .{
             .scanimage_v600 = self.commandExists("scanimage-v600"),
             .scanimage_v600_ir = self.commandExists("scanimage-v600-ir"),
@@ -216,8 +218,31 @@ pub const Runtime = struct {
         if (self.event_sink) |sink| sink.send(.{ .scan_error = event });
     }
 
+    fn emitTiming(self: Runtime, event: events.TimingEvent) void {
+        events.emitTiming(event);
+        if (self.event_sink) |sink| sink.send(.{ .timing = event });
+    }
+
+    fn emitTimingSince(self: Runtime, stage: []const u8, start_ns: u64, detail: ?[]const u8) void {
+        const elapsed_ns = monotonicNowNs() - start_ns;
+        self.emitTiming(.{
+            .stage = stage,
+            .elapsed_us = elapsed_ns / std.time.ns_per_us,
+            .detail = detail,
+        });
+    }
+
     pub fn discoverDevices(self: Runtime) ![]Device {
-        const result = try runCapture(self.allocator, self.io, &.{ "scanimage", "-L" }, null);
+        const total_start = monotonicNowNs();
+        var total_detail: []const u8 = "error";
+        defer self.emitTimingSince("linux.discover.total", total_start, total_detail);
+
+        const list_start = monotonicNowNs();
+        const result = runCapture(self.allocator, self.io, &.{ self.scanimageCommand(), "-L" }, self.environ_map) catch |err| {
+            self.emitTimingSince("linux.discover.scanimage_list", list_start, "spawn-error");
+            return err;
+        };
+        self.emitTimingSince("linux.discover.scanimage_list", list_start, if (result.succeeded()) "ok" else "failed");
         defer result.deinit(self.allocator);
         if (!result.succeeded()) {
             self.emitDeviceDiscovery(.{
@@ -228,24 +253,42 @@ pub const Runtime = struct {
             });
             return error.ScanimageListFailed;
         }
-        const devices = try parseDeviceList(self.allocator, result.stdout);
+        const parse_start = monotonicNowNs();
+        const devices = parseDeviceList(self.allocator, result.stdout) catch |err| {
+            self.emitTimingSince("linux.discover.parse_device_list", parse_start, "error");
+            return err;
+        };
+        self.emitTimingSince("linux.discover.parse_device_list", parse_start, "ok");
+        const select_start = monotonicNowNs();
         const selected = selectDevice(devices);
+        self.emitTimingSince("linux.discover.select_device", select_start, if (selected != null) "selected" else "none");
         self.emitDeviceDiscovery(.{
             .discovery_attempted = true,
             .devices_found = devices.len,
             .selected_device = if (selected) |device| device.name else null,
             .selection_source = if (selected != null) .discovered else .none,
         });
+        total_detail = if (selected != null) "selected" else "no-v600";
         return devices;
     }
 
     pub fn probe(self: Runtime, out: anytype) !contracts.ScannerCapabilities {
+        const total_start = monotonicNowNs();
+        var total_detail: []const u8 = "error";
+        defer self.emitTimingSince("linux.probe.total", total_start, total_detail);
+
         self.emitStartup(.{ .platform = "linux", .backend = "sane" });
+        const discover_start = monotonicNowNs();
         const devices = try self.discoverDevices();
+        self.emitTimingSince("linux.probe.discover_devices", discover_start, "ok");
         defer freeDevices(self.allocator, devices);
 
+        const select_start = monotonicNowNs();
         const device = selectDevice(devices) orelse return error.NoV600Device;
+        self.emitTimingSince("linux.probe.select_device", select_start, "selected");
+        const cache_write_start = monotonicNowNs();
         self.writeCachedDeviceName(device.name);
+        self.emitTimingSince("linux.probe.cache_write", cache_write_start, "attempted");
         const wrappers_available = self.wrappers();
         const help_cmd = if (wrappers_available.scanimage_v600) "scanimage-v600" else "scanimage";
 
@@ -254,8 +297,10 @@ pub const Runtime = struct {
         const tpu_help = try self.helpFor(help_cmd, device.name, .tpu);
         defer self.allocator.free(tpu_help);
 
+        const parse_start = monotonicNowNs();
         var caps = sane.parseCombinedCapabilities(flatbed_help, tpu_help);
         if (caps.device_name.len == 0) caps.device_name = device.name;
+        self.emitTimingSince("linux.probe.parse_combined_capabilities", parse_start, "ok");
         self.emitProbe(.{
             .device = caps.device_name,
             .model = caps.model,
@@ -273,6 +318,7 @@ pub const Runtime = struct {
         try out.print("tpu: {d:.3}in x {d:.3}in\n", .{ caps.tpu_width_in, caps.tpu_height_in });
         try out.print("max_resolution: {d}\n", .{caps.max_resolution});
         try out.print("ir_supported: {any}\n", .{caps.ir_supported});
+        total_detail = "ok";
         return caps;
     }
 
@@ -317,6 +363,10 @@ pub const Runtime = struct {
     }
 
     fn scanRgbIr(self: Runtime, options: ScanOptions, device_name: []const u8) !void {
+        const total_start = monotonicNowNs();
+        var total_detail: []const u8 = "error";
+        defer self.emitTimingSince("linux.scan_rgb_ir.total", total_start, total_detail);
+
         const rgb_path = try std.fmt.allocPrint(self.allocator, "{s}.rgb.tmp.tiff", .{options.output_path});
         defer self.allocator.free(rgb_path);
         const ir_path = try std.fmt.allocPrint(self.allocator, "{s}.ir.tmp.tiff", .{options.output_path});
@@ -327,12 +377,17 @@ pub const Runtime = struct {
         defer self.allocator.free(rgb_sidecar_path);
         const ir_sidecar_path = try std.fmt.allocPrint(self.allocator, "{s}.json", .{ir_path});
         defer self.allocator.free(ir_sidecar_path);
-        defer deleteIfExists(self.io, rgb_path);
-        defer deleteIfExists(self.io, ir_path);
-        defer deleteIfExists(self.io, thumb_path);
-        defer deleteIfExists(self.io, rgb_sidecar_path);
-        defer deleteIfExists(self.io, ir_sidecar_path);
+        defer {
+            const cleanup_start = monotonicNowNs();
+            deleteIfExists(self.io, rgb_path);
+            deleteIfExists(self.io, ir_path);
+            deleteIfExists(self.io, thumb_path);
+            deleteIfExists(self.io, rgb_sidecar_path);
+            deleteIfExists(self.io, ir_sidecar_path);
+            self.emitTimingSince("linux.scan_rgb_ir.temp_cleanup", cleanup_start, "attempted");
+        }
 
+        const rgb_plan_start = monotonicNowNs();
         var rgb_request = options.request;
         rgb_request.kind = .rgb;
         rgb_request.depth = .sixteen;
@@ -342,8 +397,12 @@ pub const Runtime = struct {
         rgb_options.request = rgb_request;
         rgb_options.output_path = rgb_path;
         rgb_options.device_name = device_name;
+        self.emitTimingSince("linux.scan_rgb_ir.rgb_plan", rgb_plan_start, "ok");
+        const rgb_pass_start = monotonicNowNs();
         try self.scanPassOrEmit(rgb_options, device_name);
+        self.emitTimingSince("linux.scan_rgb_ir.rgb_pass", rgb_pass_start, "ok");
 
+        const ir_plan_start = monotonicNowNs();
         var ir_request = options.request;
         ir_request.kind = .ir;
         ir_request.depth = .eight;
@@ -355,22 +414,34 @@ pub const Runtime = struct {
         ir_options.request = ir_request;
         ir_options.output_path = ir_path;
         ir_options.device_name = device_name;
+        self.emitTimingSince("linux.scan_rgb_ir.ir_plan", ir_plan_start, "ok");
+        const ir_pass_start = monotonicNowNs();
         try self.scanPassOrEmit(ir_options, device_name);
+        self.emitTimingSince("linux.scan_rgb_ir.ir_pass", ir_pass_start, "ok");
 
+        const thumbnail_start = monotonicNowNs();
         try self.createThumbnail(rgb_path, thumb_path);
+        self.emitTimingSince("linux.scan_rgb_ir.thumbnail", thumbnail_start, "ok");
+        const combine_start = monotonicNowNs();
         try self.combineTiffPages(rgb_path, thumb_path, ir_path, options.output_path);
+        self.emitTimingSince("linux.scan_rgb_ir.combine_tiff_pages", combine_start, "ok");
+        const metadata_tags_start = monotonicNowNs();
         try self.applyTiffMetadataTags(options.output_path, .{
             .model = "Epson Perfection V600 Photo",
             .software = tiff_software,
             .dpi = options.request.dpi,
             .custom_luts_applied = customLutsApplied(options.request),
         });
+        self.emitTimingSince("linux.scan_rgb_ir.metadata_tags", metadata_tags_start, "ok");
+        const sidecar_start = monotonicNowNs();
         const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name);
+        self.emitTimingSince("linux.scan_rgb_ir.metadata_sidecar", sidecar_start, "ok");
         defer self.allocator.free(metadata_path);
         self.emitScanComplete(.{
             .output = options.output_path,
             .metadata = metadata_path,
         });
+        total_detail = "ok";
     }
 
     fn scanPassOrEmit(self: Runtime, options: ScanOptions, device_name: []const u8) !void {
@@ -413,7 +484,17 @@ pub const Runtime = struct {
     }
 
     fn scanOnce(self: Runtime, options: ScanOptions, device_name: []const u8) !?ScanFailure {
-        var caps = if (options.capabilities) |caps_override| caps_override else if (!options.request.area.isExplicit()) caps: {
+        const total_start = monotonicNowNs();
+        var total_detail: []const u8 = "error";
+        defer self.emitTimingSince("linux.scan_once.total", total_start, total_detail);
+
+        const caps_start = monotonicNowNs();
+        var caps_detail: []const u8 = "error";
+        var caps = if (options.capabilities) |caps_override| caps: {
+            caps_detail = "override";
+            break :caps caps_override;
+        } else if (!options.request.area.isExplicit()) caps: {
+            caps_detail = "default-no-area";
             break :caps contracts.ScannerCapabilities{ .device_name = device_name };
         } else caps: {
             const help_cmd = if (self.wrappers().scanimage_v600) "scanimage-v600" else "scanimage";
@@ -423,15 +504,24 @@ pub const Runtime = struct {
             defer self.allocator.free(tpu_help);
             var parsed = sane.parseCombinedCapabilities(flatbed_help, tpu_help);
             parsed.device_name = device_name;
+            caps_detail = "probe";
             break :caps parsed;
         };
         if (caps.device_name.len == 0) caps.device_name = device_name;
+        self.emitTimingSince("linux.scan_once.capability_lookup", caps_start, caps_detail);
 
+        const normalize_start = monotonicNowNs();
         var request = options.request;
         request.output_path = options.output_path;
+        self.emitTimingSince("linux.scan_once.request_normalize", normalize_start, "ok");
+        const plan_start = monotonicNowNs();
         var plan = try sane.planCommand(self.allocator, request, caps, self.wrappers());
         defer plan.deinit(self.allocator);
+        self.applyScanimageCommandOverride(&plan);
+        self.emitTimingSince("linux.scan_once.command_plan", plan_start, "ok");
+        const progress_flag_start = monotonicNowNs();
         try addProgressFlag(self.allocator, &plan);
+        self.emitTimingSince("linux.scan_once.progress_flag", progress_flag_start, "ok");
 
         self.emitScanStart(.{
             .device = caps.device_name,
@@ -441,24 +531,34 @@ pub const Runtime = struct {
             .requested_dpi = plan.original_dpi,
             .effective_dpi = plan.effective_dpi,
         });
+        const run_start = monotonicNowNs();
         const result = try self.runScanPlan(&plan, options.cancel_file);
+        self.emitTimingSince("linux.scan_once.run_scan_plan", run_start, if (result.succeeded()) "ok" else "failed");
         defer result.deinit(self.allocator);
         if (!result.succeeded()) {
+            total_detail = "scan-failed";
             return try self.makeFailure(classifyFailure(result.stderr), result.stderr);
         }
+        const mirror_start = monotonicNowNs();
         try self.mirrorTiffForSource(options.output_path, plan.source);
+        self.emitTimingSince("linux.scan_once.mirror", mirror_start, if (shouldMirrorTiff(plan.source)) "applied" else "skipped");
+        const metadata_tags_start = monotonicNowNs();
         try self.applyTiffMetadataTags(options.output_path, .{
             .model = if (caps.model.len == 0) "Epson Scanner" else caps.model,
             .software = tiff_software,
             .dpi = plan.effective_dpi,
             .custom_luts_applied = customLutsApplied(options.request),
         });
+        self.emitTimingSince("linux.scan_once.metadata_tags", metadata_tags_start, "ok");
+        const sidecar_start = monotonicNowNs();
         const metadata_path = try writeMetadataSidecar(self.allocator, self.io, options, caps, &plan);
+        self.emitTimingSince("linux.scan_once.metadata_sidecar", sidecar_start, "ok");
         defer self.allocator.free(metadata_path);
         self.emitScanComplete(.{
             .output = options.output_path,
             .metadata = metadata_path,
         });
+        total_detail = "ok";
         return null;
     }
 
@@ -510,14 +610,24 @@ pub const Runtime = struct {
             .flatbed => "Flatbed",
             .tpu => "Transparency Unit",
         };
-        const result = try runCapture(self.allocator, self.io, &.{
-            command,
+        const stage = switch (source) {
+            .flatbed => "linux.capabilities.help.flatbed",
+            .tpu => "linux.capabilities.help.tpu",
+        };
+        const executable = if (std.mem.eql(u8, command, "scanimage")) self.scanimageCommand() else command;
+        const start = monotonicNowNs();
+        const result = runCapture(self.allocator, self.io, &.{
+            executable,
             "--device-name",
             device_name,
             "--source",
             source_name,
             "--help",
-        }, null);
+        }, self.environ_map) catch |err| {
+            self.emitTimingSince(stage, start, "spawn-error");
+            return err;
+        };
+        self.emitTimingSince(stage, start, if (result.succeeded()) "ok" else "failed");
         defer {
             self.allocator.free(result.stderr);
         }
@@ -529,10 +639,17 @@ pub const Runtime = struct {
     }
 
     fn runScanPlan(self: Runtime, plan: *const sane.CommandPlan, cancel_file: ?[]const u8) !RunResult {
+        const total_start = monotonicNowNs();
+        var total_detail: []const u8 = "error";
+        defer self.emitTimingSince("linux.scan.run_plan.total", total_start, total_detail);
+
+        const env_start = monotonicNowNs();
         var env_map: ?std.process.Environ.Map = null;
         defer if (env_map) |*map| map.deinit();
         const child_env = try prepareEnvironment(self.allocator, self.environ_map, plan.env, &env_map);
+        self.emitTimingSince("linux.scan.environment", env_start, if (child_env == null) "inherit" else "custom");
 
+        const spawn_start = monotonicNowNs();
         var child = try std.process.spawn(self.io, .{
             .argv = plan.argv.items,
             .environ_map = child_env,
@@ -540,6 +657,7 @@ pub const Runtime = struct {
             .stdout = .ignore,
             .stderr = .pipe,
         });
+        self.emitTimingSince("linux.scan.child_spawn", spawn_start, "ok");
         errdefer child.kill(self.io);
 
         var stderr = std.array_list.Managed(u8).init(self.allocator);
@@ -547,11 +665,17 @@ pub const Runtime = struct {
 
         var stream_buffer: [128]u8 = undefined;
         var reader = child.stderr.?.readerStreaming(self.io, &.{});
+        const stream_start = monotonicNowNs();
+        var progress_emit_ns: u64 = 0;
+        var stream_detail: []const u8 = "ok";
         while (true) {
             if (cancel_file) |path| {
                 if (cancelState(cancel_file, cancelFileExists(self.io, path)) == .cancel_requested) {
+                    stream_detail = "cancelled";
+                    self.emitTimingSince("linux.scan.cancel_file", total_start, "observed");
                     child.kill(self.io);
                     self.emitScanCancelled(.{ .kind = .cancelled, .detail = "cancel file observed" });
+                    total_detail = "cancelled";
                     return error.ScanCancelled;
                 }
             }
@@ -559,10 +683,21 @@ pub const Runtime = struct {
             const n = reader.interface.readSliceShort(&stream_buffer) catch |err| return err;
             if (n == 0) break;
             try stderr.appendSlice(stream_buffer[0..n]);
+            const progress_start = monotonicNowNs();
             emitProgressFromChunk(self, stream_buffer[0..n]) catch {};
+            progress_emit_ns += monotonicNowNs() - progress_start;
         }
+        self.emitTimingSince("linux.scan.stderr_stream", stream_start, stream_detail);
+        self.emitTiming(.{
+            .stage = "linux.scan.progress_emit_total",
+            .elapsed_us = progress_emit_ns / std.time.ns_per_us,
+            .detail = "stderr-chunks",
+        });
 
+        const wait_start = monotonicNowNs();
         const term = try child.wait(self.io);
+        self.emitTimingSince("linux.scan.child_wait", wait_start, "ok");
+        total_detail = "ok";
         return .{
             .term = term,
             .stdout = &.{},
@@ -571,31 +706,57 @@ pub const Runtime = struct {
     }
 
     fn commandExists(self: Runtime, command: []const u8) bool {
-        const result = runCapture(self.allocator, self.io, &.{ "sh", "-c", commandExistsScript(command) }, null) catch return false;
+        const result = runCapture(self.allocator, self.io, &.{ "sh", "-c", commandExistsScript(command) }, self.environ_map) catch return false;
         defer result.deinit(self.allocator);
         return result.succeeded();
     }
 
+    fn scanimageCommand(self: Runtime) []const u8 {
+        return self.scanimage_command orelse "scanimage";
+    }
+
+    fn applyScanimageCommandOverride(self: Runtime, plan: *sane.CommandPlan) void {
+        const override = self.scanimage_command orelse return;
+        if (plan.argv.items.len == 0) return;
+        if (std.mem.eql(u8, plan.argv.items[0], "scanimage")) {
+            plan.argv.items[0] = override;
+        }
+    }
+
     fn resolveDeviceName(self: Runtime, explicit_device_name: ?[]const u8) !DeviceChoice {
         if (explicit_device_name) |name| {
+            const start = monotonicNowNs();
             self.emitDeviceDiscovery(.{
                 .discovery_attempted = false,
                 .devices_found = null,
                 .selected_device = name,
                 .selection_source = .explicit,
             });
+            self.emitTimingSince("linux.resolve.explicit", start, "selected");
             return .{ .name = try self.allocator.dupe(u8, name), .source = .explicit };
         }
-        if (try self.readCachedDeviceName()) |cached| {
+        const cache_start = monotonicNowNs();
+        const cached = self.readCachedDeviceName() catch |err| {
+            self.emitTimingSince("linux.resolve.cache_lookup", cache_start, "error");
+            return err;
+        };
+        self.emitTimingSince("linux.resolve.cache_lookup", cache_start, if (cached != null) "hit" else "miss");
+        if (cached) |cached_name| {
             self.emitDeviceDiscovery(.{
                 .discovery_attempted = false,
                 .devices_found = null,
-                .selected_device = cached,
+                .selected_device = cached_name,
                 .selection_source = .cache_hit,
             });
-            return .{ .name = cached, .source = .cache_hit };
+            return .{ .name = cached_name, .source = .cache_hit };
         }
-        return self.discoverAndCacheDeviceName();
+        const discover_start = monotonicNowNs();
+        const choice = self.discoverAndCacheDeviceName() catch |err| {
+            self.emitTimingSince("linux.resolve.discover_and_cache", discover_start, "error");
+            return err;
+        };
+        self.emitTimingSince("linux.resolve.discover_and_cache", discover_start, "selected");
+        return choice;
     }
 
     fn discoverAndCacheDeviceName(self: Runtime) !DeviceChoice {
@@ -617,8 +778,15 @@ pub const Runtime = struct {
     }
 
     fn writeCachedDeviceName(self: Runtime, device_name: []const u8) void {
+        const start = monotonicNowNs();
+        var detail: []const u8 = "error";
+        defer self.emitTimingSince("linux.cache.write", start, detail);
+
         const path = self.deviceCachePath() catch return;
-        const cache_path = path orelse return;
+        const cache_path = path orelse {
+            detail = "disabled";
+            return;
+        };
         defer self.allocator.free(cache_path);
 
         const data = serializeDeviceCache(self.allocator, device_name) catch return;
@@ -632,6 +800,7 @@ pub const Runtime = struct {
             .data = data,
             .flags = .{ .truncate = true },
         }) catch return;
+        detail = "ok";
     }
 
     fn deviceCachePath(self: Runtime) !?[]u8 {
@@ -754,6 +923,12 @@ fn runCapture(
         .stdout = result.stdout,
         .stderr = result.stderr,
     };
+}
+
+fn monotonicNowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 pub fn parseDeviceList(allocator: std.mem.Allocator, output: []const u8) ![]Device {
@@ -1226,6 +1401,242 @@ test "ignores stale cache and falls back to discovered V600 device" {
     try std.testing.expectEqualStrings("epkowa:interpreter:001:018", choice.name);
 }
 
+const NullWriter = struct {
+    pub fn print(_: *NullWriter, comptime fmt: []const u8, args: anytype) !void {
+        _ = fmt;
+        _ = args;
+    }
+};
+
+const RecordedScannerEvent = union(enum) {
+    name: events.EventName,
+    timing_stage: []const u8,
+};
+
+const ScannerEventRecorder = struct {
+    entries: [64]RecordedScannerEvent = undefined,
+    len: usize = 0,
+
+    fn record(self: *ScannerEventRecorder, entry: RecordedScannerEvent) void {
+        if (self.len < self.entries.len) {
+            self.entries[self.len] = entry;
+            self.len += 1;
+        }
+    }
+
+    fn indexOfTiming(self: ScannerEventRecorder, stage: []const u8) ?usize {
+        for (self.entries[0..self.len], 0..) |entry, index| {
+            switch (entry) {
+                .timing_stage => |value| if (std.mem.eql(u8, value, stage)) return index,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn indexOfName(self: ScannerEventRecorder, name: events.EventName) ?usize {
+        for (self.entries[0..self.len], 0..) |entry, index| {
+            switch (entry) {
+                .name => |value| if (value == name) return index,
+                else => {},
+            }
+        }
+        return null;
+    }
+};
+
+fn recordScannerEvent(raw_context: *anyopaque, event: events.Event) void {
+    const recorder: *ScannerEventRecorder = @ptrCast(@alignCast(raw_context));
+    switch (event) {
+        .startup => recorder.record(.{ .name = .startup }),
+        .device_discovery => recorder.record(.{ .name = .device_discovery }),
+        .probe => recorder.record(.{ .name = .probe }),
+        .scan_start => recorder.record(.{ .name = .scan_start }),
+        .progress => recorder.record(.{ .name = .progress }),
+        .scan_complete => recorder.record(.{ .name = .scan_complete }),
+        .scan_cancelled => recorder.record(.{ .name = .scan_cancelled }),
+        .scan_error => recorder.record(.{ .name = .scan_error }),
+        .timing => |timing| recorder.record(.{ .timing_stage = timing.stage }),
+    }
+}
+
+fn expectTimingBefore(recorder: ScannerEventRecorder, before: []const u8, after: []const u8) !void {
+    const before_index = recorder.indexOfTiming(before) orelse return error.MissingBeforeTiming;
+    const after_index = recorder.indexOfTiming(after) orelse return error.MissingAfterTiming;
+    try std.testing.expect(before_index < after_index);
+}
+
+fn expectEventBeforeTiming(recorder: ScannerEventRecorder, event_name: events.EventName, stage: []const u8) !void {
+    const event_index = recorder.indexOfName(event_name) orelse return error.MissingEvent;
+    const timing_index = recorder.indexOfTiming(stage) orelse return error.MissingTiming;
+    try std.testing.expect(event_index < timing_index);
+}
+
+fn expectTimingBeforeEvent(recorder: ScannerEventRecorder, stage: []const u8, event_name: events.EventName) !void {
+    const timing_index = recorder.indexOfTiming(stage) orelse return error.MissingTiming;
+    const event_index = recorder.indexOfName(event_name) orelse return error.MissingEvent;
+    try std.testing.expect(timing_index < event_index);
+}
+
+test "probe emits timing events around fake discovery and capabilities" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script =
+        \\#!/bin/sh
+        \\if [ "$1" = "-L" ]; then
+        \\cat <<'LIST'
+        \\device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner
+        \\LIST
+        \\exit 0
+        \\fi
+        \\case "$*" in
+        \\  *"Transparency Unit"*)
+        \\cat <<'TPU'
+        \\Options specific to device `epkowa:interpreter:001:017':
+        \\    --resolution 400|800|1600|3200dpi [400]
+        \\    -x 0..68.58mm [68.58]
+        \\    -y 0..242.316mm [242.316]
+        \\    --source Flatbed|Transparency Unit [Transparency Unit]
+        \\TPU
+        \\    ;;
+        \\  *)
+        \\cat <<'FLATBED'
+        \\Options specific to device `epkowa:interpreter:001:017':
+        \\    --resolution 400|800|1600|3200dpi [400]
+        \\    -x 0..215.9mm [215.9]
+        \\    -y 0..297.18mm [297.18]
+        \\    --source Flatbed|Transparency Unit [Flatbed]
+        \\FLATBED
+        \\    ;;
+        \\esac
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scanimage", .data = script });
+    try tmp.dir.setFilePermissions(std.testing.io, "scanimage", .executable_file, .{});
+
+    const fake_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(fake_dir);
+    const script_path = try std.fmt.allocPrint(allocator, "{s}/scanimage", .{fake_dir});
+    defer allocator.free(script_path);
+    const cache_path = try std.fmt.allocPrint(allocator, "{s}/device-cache.txt", .{fake_dir});
+    defer allocator.free(cache_path);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    try environ_map.put("V600_SCANNER_DEVICE_CACHE", cache_path);
+
+    var recorder = ScannerEventRecorder{};
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .scanimage_command = script_path,
+        .event_sink = .{
+            .context = &recorder,
+            .emit = recordScannerEvent,
+        },
+    };
+
+    var out = NullWriter{};
+    const caps = try runtime.probe(&out);
+    try std.testing.expectEqual(@as(u32, 3200), caps.max_resolution);
+
+    try expectEventBeforeTiming(recorder, .startup, "linux.discover.scanimage_list");
+    try expectTimingBefore(recorder, "linux.discover.scanimage_list", "linux.discover.parse_device_list");
+    try expectTimingBefore(recorder, "linux.discover.parse_device_list", "linux.discover.select_device");
+    try expectTimingBefore(recorder, "linux.discover.select_device", "linux.discover.total");
+    try expectTimingBefore(recorder, "linux.probe.discover_devices", "linux.probe.select_device");
+    try expectTimingBefore(recorder, "linux.probe.select_device", "linux.cache.write");
+    try expectTimingBefore(recorder, "linux.probe.cache_write", "linux.capabilities.help.flatbed");
+    try expectTimingBefore(recorder, "linux.capabilities.help.flatbed", "linux.capabilities.help.tpu");
+    try expectTimingBefore(recorder, "linux.capabilities.help.tpu", "linux.probe.parse_combined_capabilities");
+    try expectTimingBeforeEvent(recorder, "linux.probe.parse_combined_capabilities", .probe);
+    try expectEventBeforeTiming(recorder, .probe, "linux.probe.total");
+}
+
+test "resolve device emits cache-hit timing without discovery" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const cache_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/device-cache.txt", .{tmp.sub_path[0..]});
+    defer allocator.free(cache_path);
+    const cache_data = try serializeDeviceCache(allocator, "epkowa:interpreter:001:017");
+    defer allocator.free(cache_data);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "device-cache.txt", .data = cache_data });
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    try environ_map.put("V600_SCANNER_DEVICE_CACHE", cache_path);
+
+    var recorder = ScannerEventRecorder{};
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .event_sink = .{
+            .context = &recorder,
+            .emit = recordScannerEvent,
+        },
+    };
+
+    const choice = try runtime.resolveDeviceName(null);
+    defer choice.deinit(allocator);
+
+    try std.testing.expectEqual(DeviceChoiceSource.cache_hit, choice.source);
+    try std.testing.expectEqualStrings("epkowa:interpreter:001:017", choice.name);
+    try std.testing.expect(recorder.indexOfTiming("linux.resolve.cache_lookup") != null);
+    try std.testing.expect(recorder.indexOfName(.device_discovery) != null);
+    try std.testing.expect(recorder.indexOfTiming("linux.discover.total") == null);
+}
+
+test "failed fake discovery keeps device-discovery event and timing diagnostics" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script =
+        \\#!/bin/sh
+        \\printf 'No scanners were identified\n' >&2
+        \\exit 1
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scanimage", .data = script });
+    try tmp.dir.setFilePermissions(std.testing.io, "scanimage", .executable_file, .{});
+
+    const fake_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(fake_dir);
+    const script_path = try std.fmt.allocPrint(allocator, "{s}/scanimage", .{fake_dir});
+    defer allocator.free(script_path);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+
+    var recorder = ScannerEventRecorder{};
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .scanimage_command = script_path,
+        .event_sink = .{
+            .context = &recorder,
+            .emit = recordScannerEvent,
+        },
+    };
+
+    try std.testing.expectError(error.ScanimageListFailed, runtime.discoverDevices());
+    try std.testing.expect(recorder.indexOfName(.device_discovery) != null);
+    try std.testing.expect(recorder.indexOfTiming("linux.discover.scanimage_list") != null);
+    try std.testing.expect(recorder.indexOfTiming("linux.discover.total") != null);
+    try expectTimingBefore(recorder, "linux.discover.scanimage_list", "linux.discover.total");
+}
+
 test "parses scanimage progress chunks" {
     try std.testing.expectEqual(@as(u8, 37), parseProgress("Progress: 37.2%").?.percent);
     try std.testing.expectEqual(@as(u8, 100), parseProgress("\r100%").?.percent);
@@ -1360,18 +1771,195 @@ test "scanner cancellation kills fake long-running child" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
     defer environ_map.deinit();
 
+    var recorder = ScannerEventRecorder{};
     const runtime = Runtime{
         .allocator = allocator,
         .io = std.testing.io,
         .environ_map = &environ_map,
+        .event_sink = .{
+            .context = &recorder,
+            .emit = recordScannerEvent,
+        },
     };
 
     try std.testing.expectError(error.ScanCancelled, runtime.runScanPlan(&plan, cancel_path));
+    try std.testing.expect(recorder.indexOfTiming("linux.scan.environment") != null);
+    try std.testing.expect(recorder.indexOfTiming("linux.scan.child_spawn") != null);
+    try std.testing.expect(recorder.indexOfTiming("linux.scan.cancel_file") != null);
+    try std.testing.expect(recorder.indexOfTiming("linux.scan.run_plan.total") != null);
+    try std.testing.expect(recorder.indexOfName(.scan_cancelled) != null);
 
     const pid_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, pid_path, allocator, .limited(64));
     defer allocator.free(pid_bytes);
     const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_bytes, " \t\r\n"), 10);
     try std.testing.expect(!processExists(pid));
+}
+
+test "single-pass scan emits timing diagnostics with fake scanimage" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script =
+        \\#!/bin/sh
+        \\out=""
+        \\while [ "$#" -gt 0 ]; do
+        \\  if [ "$1" = "-o" ]; then
+        \\    shift
+        \\    out="$1"
+        \\  fi
+        \\  shift
+        \\done
+        \\printf 'Progress: 25%%\n' >&2
+        \\printf 'Progress: 100%%\n' >&2
+        \\if [ -z "$out" ]; then
+        \\  exit 2
+        \\fi
+        \\magick -size 2x1 xc:black -depth 16 "$out"
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scanimage", .data = script });
+    try tmp.dir.setFilePermissions(std.testing.io, "scanimage", .executable_file, .{});
+
+    const fake_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(fake_dir);
+    const script_path = try std.fmt.allocPrint(allocator, "{s}/scanimage", .{fake_dir});
+    defer allocator.free(script_path);
+    const output_path = try std.fmt.allocPrint(allocator, "{s}/single-pass.tiff", .{fake_dir});
+    defer allocator.free(output_path);
+    const metadata_path = try std.fmt.allocPrint(allocator, "{s}.json", .{output_path});
+    defer allocator.free(metadata_path);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+
+    var recorder = ScannerEventRecorder{};
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .scanimage_command = script_path,
+        .event_sink = .{
+            .context = &recorder,
+            .emit = recordScannerEvent,
+        },
+    };
+
+    const failure = try runtime.scanOnce(.{
+        .request = .{ .dpi = 400, .source = .flatbed, .kind = .rgb },
+        .output_path = output_path,
+        .capabilities = .{
+            .device_name = "fake:device",
+            .model = "Fake V600",
+            .max_resolution = 3200,
+            .flatbed_width_in = 8.5,
+            .flatbed_height_in = 11.7,
+        },
+    }, "fake:device");
+    try std.testing.expect(failure == null);
+    try std.testing.expect(cancelFileExists(std.testing.io, output_path));
+    try std.testing.expect(cancelFileExists(std.testing.io, metadata_path));
+
+    try std.testing.expect(recorder.indexOfName(.scan_start) != null);
+    try std.testing.expect(recorder.indexOfName(.progress) != null);
+    try std.testing.expect(recorder.indexOfName(.scan_complete) != null);
+    try expectTimingBefore(recorder, "linux.scan_once.capability_lookup", "linux.scan_once.request_normalize");
+    try expectTimingBefore(recorder, "linux.scan_once.request_normalize", "linux.scan_once.command_plan");
+    try expectTimingBefore(recorder, "linux.scan_once.command_plan", "linux.scan_once.progress_flag");
+    try expectTimingBeforeEvent(recorder, "linux.scan_once.progress_flag", .scan_start);
+    try expectEventBeforeTiming(recorder, .scan_start, "linux.scan.environment");
+    try expectTimingBefore(recorder, "linux.scan.environment", "linux.scan.child_spawn");
+    try expectTimingBefore(recorder, "linux.scan.child_spawn", "linux.scan.stderr_stream");
+    try expectTimingBefore(recorder, "linux.scan.stderr_stream", "linux.scan.progress_emit_total");
+    try expectTimingBefore(recorder, "linux.scan.progress_emit_total", "linux.scan.child_wait");
+    try expectTimingBefore(recorder, "linux.scan.child_wait", "linux.scan.run_plan.total");
+    try expectTimingBefore(recorder, "linux.scan_once.run_scan_plan", "linux.scan_once.mirror");
+    try expectTimingBefore(recorder, "linux.scan_once.mirror", "linux.scan_once.metadata_tags");
+    try expectTimingBefore(recorder, "linux.scan_once.metadata_tags", "linux.scan_once.metadata_sidecar");
+    try expectTimingBeforeEvent(recorder, "linux.scan_once.metadata_sidecar", .scan_complete);
+    try expectEventBeforeTiming(recorder, .scan_complete, "linux.scan_once.total");
+}
+
+test "RGB plus IR scan orchestration emits timing diagnostics with fake scanimage" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script =
+        \\#!/bin/sh
+        \\out=""
+        \\while [ "$#" -gt 0 ]; do
+        \\  if [ "$1" = "-o" ]; then
+        \\    shift
+        \\    out="$1"
+        \\  fi
+        \\  shift
+        \\done
+        \\printf 'Progress: 100%%\n' >&2
+        \\if [ -z "$out" ]; then
+        \\  exit 2
+        \\fi
+        \\magick -size 2x1 xc:black -depth 16 "$out"
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scanimage", .data = script });
+    try tmp.dir.setFilePermissions(std.testing.io, "scanimage", .executable_file, .{});
+
+    const fake_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(fake_dir);
+    const script_path = try std.fmt.allocPrint(allocator, "{s}/scanimage", .{fake_dir});
+    defer allocator.free(script_path);
+    const output_path = try std.fmt.allocPrint(allocator, "{s}/rgbir.tiff", .{fake_dir});
+    defer allocator.free(output_path);
+    const metadata_path = try std.fmt.allocPrint(allocator, "{s}.json", .{output_path});
+    defer allocator.free(metadata_path);
+    const rgb_tmp_path = try std.fmt.allocPrint(allocator, "{s}.rgb.tmp.tiff", .{output_path});
+    defer allocator.free(rgb_tmp_path);
+    const ir_tmp_path = try std.fmt.allocPrint(allocator, "{s}.ir.tmp.tiff", .{output_path});
+    defer allocator.free(ir_tmp_path);
+    const thumb_tmp_path = try std.fmt.allocPrint(allocator, "{s}.thumb.tmp.tiff", .{output_path});
+    defer allocator.free(thumb_tmp_path);
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+
+    var recorder = ScannerEventRecorder{};
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .scanimage_command = script_path,
+        .event_sink = .{
+            .context = &recorder,
+            .emit = recordScannerEvent,
+        },
+    };
+
+    try runtime.scan(.{
+        .request = .{ .dpi = 400, .source = .flatbed, .kind = .rgb_ir },
+        .output_path = output_path,
+        .device_name = "fake:device",
+    });
+
+    try std.testing.expect(cancelFileExists(std.testing.io, output_path));
+    try std.testing.expect(cancelFileExists(std.testing.io, metadata_path));
+    try std.testing.expect(!cancelFileExists(std.testing.io, rgb_tmp_path));
+    try std.testing.expect(!cancelFileExists(std.testing.io, ir_tmp_path));
+    try std.testing.expect(!cancelFileExists(std.testing.io, thumb_tmp_path));
+
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.rgb_plan", "linux.scan_rgb_ir.rgb_pass");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.rgb_pass", "linux.scan_rgb_ir.ir_plan");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.ir_plan", "linux.scan_rgb_ir.ir_pass");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.ir_pass", "linux.scan_rgb_ir.thumbnail");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.thumbnail", "linux.scan_rgb_ir.combine_tiff_pages");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.combine_tiff_pages", "linux.scan_rgb_ir.metadata_tags");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.metadata_tags", "linux.scan_rgb_ir.metadata_sidecar");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.metadata_sidecar", "linux.scan_rgb_ir.temp_cleanup");
+    try expectTimingBefore(recorder, "linux.scan_rgb_ir.temp_cleanup", "linux.scan_rgb_ir.total");
 }
 
 test "writes RGB plus IR sidecar with stable page layout" {

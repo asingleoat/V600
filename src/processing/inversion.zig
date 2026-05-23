@@ -63,13 +63,25 @@ pub const DensityLutF32 = struct {
         return .{ .values = values };
     }
 
+    pub fn initF32(allocator: std.mem.Allocator, dmin: [3]f32, default_light: f32) !DensityLutF32 {
+        try validateDefaultLightF32(default_light);
+        const values = try allocator.alloc(f32, density_lut_len);
+        errdefer allocator.free(values);
+        fillDensityLutF32(values, dmin, default_light);
+        return .{ .values = values };
+    }
+
     pub fn deinit(self: DensityLutF32, allocator: std.mem.Allocator) void {
         allocator.free(self.values);
     }
 
-    fn channel(self: DensityLutF32, index: usize) []const f32 {
+    pub fn channel(self: DensityLutF32, index: usize) []const f32 {
         const start = index * density_lut_entries;
         return self.values[start..][0..density_lut_entries];
+    }
+
+    pub fn lookupSampleF64(self: DensityLutF32, channel_index: usize, sample: f64) f32 {
+        return lookupF64SampleF32(self.channel(channel_index), sample);
     }
 };
 
@@ -629,6 +641,40 @@ pub fn invertNegativeProvidedDminU16WithDensityLutF32OutputF32(
     }
 }
 
+pub fn invertNegativeF64WithDensityLutF32OutputF32(
+    raw_rgb: []const f64,
+    output: []f32,
+    lut: DensityLutF32,
+    coeffs: film_stocks.Coefficients,
+) !void {
+    if (raw_rgb.len != output.len or raw_rgb.len == 0 or raw_rgb.len % 3 != 0) return error.InvalidInversionBuffer;
+    try validateDensityLutLen(lut.values.len);
+    if (!film_stocks.usesOnlyLinearTerms(coeffs)) return error.UnsupportedDensityLutOutput;
+
+    const r_lut = lut.channel(0);
+    const g_lut = lut.channel(1);
+    const b_lut = lut.channel(2);
+    const c00: f32 = @floatCast(coeffs[0][0]);
+    const c01: f32 = @floatCast(coeffs[0][1]);
+    const c02: f32 = @floatCast(coeffs[0][2]);
+    const c10: f32 = @floatCast(coeffs[1][0]);
+    const c11: f32 = @floatCast(coeffs[1][1]);
+    const c12: f32 = @floatCast(coeffs[1][2]);
+    const c20: f32 = @floatCast(coeffs[2][0]);
+    const c21: f32 = @floatCast(coeffs[2][1]);
+    const c22: f32 = @floatCast(coeffs[2][2]);
+
+    var index: usize = 0;
+    while (index < raw_rgb.len) : (index += 3) {
+        const dr = lookupF64SampleF32(r_lut, raw_rgb[index]);
+        const dg = lookupF64SampleF32(g_lut, raw_rgb[index + 1]);
+        const db = lookupF64SampleF32(b_lut, raw_rgb[index + 2]);
+        output[index] = @max(dr * c00 + dg * c10 + db * c20, 0.0);
+        output[index + 1] = @max(dr * c01 + dg * c11 + db * c21, 0.0);
+        output[index + 2] = @max(dr * c02 + dg * c12 + db * c22, 0.0);
+    }
+}
+
 fn invertNegativeProvidedDminLinearSimd(
     raw_rgb: []const f64,
     output: []f64,
@@ -938,6 +984,12 @@ fn validateDefaultLight(default_light: f64) !void {
     }
 }
 
+fn validateDefaultLightF32(default_light: f32) !void {
+    if (!std.math.isFinite(default_light) or default_light < @as(f32, @floatCast(measurement.eps))) {
+        return error.InvalidNormalizeReference;
+    }
+}
+
 fn validateU16InvertBuffers(raw_rgb: []const u16, output_len: usize) !void {
     if (raw_rgb.len != output_len or raw_rgb.len == 0 or raw_rgb.len % 3 != 0) {
         return error.InvalidInversionBuffer;
@@ -962,6 +1014,18 @@ fn fillDensityLut(comptime T: type, values: []T, dmin: [3]f64, default_light: f6
     }
 }
 
+fn fillDensityLutF32(values: []f32, dmin: [3]f32, default_light: f32) void {
+    const eps: f32 = @floatCast(measurement.eps);
+    const log2_to_log10: f32 = @floatCast(log2_to_log10_scalar);
+    for (0..density_lut_channels) |channel| {
+        const channel_values = values[channel * density_lut_entries ..][0..density_lut_entries];
+        for (channel_values, 0..) |*out, sample_index| {
+            const transmittance = @max(@as(f32, @floatFromInt(sample_index)) / default_light, eps);
+            out.* = @max(-@log2(transmittance) * log2_to_log10 - dmin[channel], 0.0);
+        }
+    }
+}
+
 fn netDensityForRawSample(sample: u16, dmin: f64, default_light: f64) f64 {
     const transmittance = @max(@as(f64, @floatFromInt(sample)) / default_light, measurement.eps);
     return @max(-std.math.log2(transmittance) * log2_to_log10_scalar - dmin, 0.0);
@@ -973,6 +1037,14 @@ inline fn lutIndex(sample: u16) usize {
 
 inline fn lookupF32AsF64(lut: []const f32, sample: u16) f64 {
     return @as(f64, @floatCast(lut[lutIndex(sample)]));
+}
+
+inline fn lookupF64SampleF32(lut: []const f32, sample: f64) f32 {
+    const clamped = @min(@max(sample, 0.0), @as(f64, @floatFromInt(density_lut_entries - 1)));
+    const lower: usize = @intFromFloat(@floor(clamped));
+    const upper = @min(lower + 1, density_lut_entries - 1);
+    const fraction: f32 = @floatCast(clamped - @as(f64, @floatFromInt(lower)));
+    return lut[lower] * (1.0 - fraction) + lut[upper] * fraction;
 }
 
 fn expectInversionFixture(path: []const u8, coeffs: film_stocks.Coefficients) !void {

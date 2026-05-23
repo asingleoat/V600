@@ -59,6 +59,11 @@ If you can't run code, say so. Don't claim success based on type-checking alone.
   to the frozen Python function. A different detector, renderer, interpolator,
   or image-processing algorithm is a post-parity experiment and needs explicit
   approval.
+- Numeric performance work does not need byte-for-byte identity with the
+  Python oracle or with intermediate Zig buffers. Very small final-output
+  errors are acceptable for large speed increases when the error budget is
+  documented at the user-visible/export surface, such as final `u8` preview
+  pixels, final `u16` export pixels, masks, frame geometry, or metadata.
 - Benchmark optimized Zig against the current Zig CPU path for speed. Use
   Python for behavioral parity, not as the performance baseline once the CPU
   port is accepted. If Zig is slower than Python for the same algorithm and

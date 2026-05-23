@@ -597,6 +597,7 @@ fn irCleanOptions(current_dpi: ?u32) ir_processing.IrCleanOptions {
             .close_radius = @intFromFloat(config.getParam("ir_close_radius", current_dpi, &.{}).?.asFloat()),
             .blur_size = @intFromFloat(config.getParam("ir_blur_size", current_dpi, &.{}).?.asFloat()),
             .max_coverage = config.getParam("ir_max_coverage", current_dpi, &.{}).?.asFloat(),
+            .adaptive_precision = .f32,
         },
         .inpaint = .{
             .padding = @intFromFloat(config.getParam("inpaint_padding", current_dpi, &.{}).?.asFloat()),

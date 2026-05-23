@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <time.h>
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
@@ -45,6 +46,32 @@ void __throw_length_error(const char*) {
 
 namespace {
 
+struct QuickPreviewTiming {
+    uint64_t geometry_ns = 0;
+    uint64_t resize_ns = 0;
+    uint64_t convert_ns = 0;
+    uint64_t content_mask_ns = 0;
+    uint64_t invert_stretch_ns = 0;
+    uint64_t clahe_ns = 0;
+    uint64_t raw_copy_ns = 0;
+    uint64_t rgb_copy_ns = 0;
+    uint64_t jpeg_encode_ns = 0;
+    uint64_t jpeg_copy_ns = 0;
+};
+
+uint64_t monotonic_now_ns() {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+uint64_t elapsed_ns(uint64_t start) {
+    const uint64_t now = monotonic_now_ns();
+    return now >= start ? now - start : 0;
+}
+
 int mat_type(int bits_per_sample, int channels) {
     if (bits_per_sample == 8 && channels == 1) {
         return CV_8UC1;
@@ -61,20 +88,32 @@ int mat_type(int bits_per_sample, int channels) {
     return -1;
 }
 
-double percentile_linear(std::vector<unsigned char>& values, double percent) {
-    if (values.empty()) {
+int histogram_select(const uint32_t hist[256], int target) {
+    int seen = 0;
+    for (int value = 0; value < 256; ++value) {
+        seen += static_cast<int>(hist[value]);
+        if (target < seen) {
+            return value;
+        }
+    }
+    return 255;
+}
+
+double percentile_linear_from_hist(const uint32_t hist[256], int count, double percent) {
+    if (count <= 0) {
         return 0.0;
     }
-    std::sort(values.begin(), values.end());
-    const double rank = (static_cast<double>(values.size() - 1) * percent) / 100.0;
+    const double rank = (static_cast<double>(count - 1) * percent) / 100.0;
     const int lower = static_cast<int>(std::floor(rank));
     const int upper = static_cast<int>(std::ceil(rank));
+    const int lower_value = histogram_select(hist, lower);
     if (lower == upper) {
-        return static_cast<double>(values[lower]);
+        return static_cast<double>(lower_value);
     }
+    const int upper_value = histogram_select(hist, upper);
     const double weight = rank - static_cast<double>(lower);
-    return static_cast<double>(values[lower]) * (1.0 - weight) +
-        static_cast<double>(values[upper]) * weight;
+    return static_cast<double>(lower_value) * (1.0 - weight) +
+        static_cast<double>(upper_value) * weight;
 }
 
 void convert_u16_to_u8_shift(const cv::Mat& input, cv::Mat& output) {
@@ -122,42 +161,58 @@ void stretch_content_percentiles(cv::Mat& preview8, const cv::Mat& content_mask)
         return;
     }
 
-    std::vector<cv::Mat> channels;
-    cv::split(preview8, channels);
-    for (int c = 0; c < 3; ++c) {
-        std::vector<unsigned char> values;
-        values.reserve(static_cast<size_t>(content_count));
-        for (int y = 0; y < preview8.rows; ++y) {
-            const unsigned char* mask_row = content_mask.data + static_cast<size_t>(y) * content_mask.step[0];
-            const unsigned char* ch_row = channels[c].data + static_cast<size_t>(y) * channels[c].step[0];
-            for (int x = 0; x < preview8.cols; ++x) {
-                if (mask_row[x] != 0) {
-                    values.push_back(ch_row[x]);
-                }
-            }
-        }
+    const int channels = preview8.channels();
+    if (channels != 3) {
+        return;
+    }
 
-        const double lo = percentile_linear(values, 1.0);
-        const double hi = percentile_linear(values, 99.0);
+    uint32_t hist[3][256] = {};
+    for (int y = 0; y < preview8.rows; ++y) {
+        const unsigned char* mask_row = content_mask.data + static_cast<size_t>(y) * content_mask.step[0];
+        const unsigned char* rgb_row = preview8.data + static_cast<size_t>(y) * preview8.step[0];
+        for (int x = 0; x < preview8.cols; ++x) {
+            if (mask_row[x] == 0) {
+                continue;
+            }
+            const unsigned char* sample = rgb_row + x * channels;
+            hist[0][sample[0]] += 1;
+            hist[1][sample[1]] += 1;
+            hist[2][sample[2]] += 1;
+        }
+    }
+
+    float lo_values[3] = {};
+    float scales[3] = {};
+    bool active[3] = {};
+    for (int c = 0; c < 3; ++c) {
+        const double lo = percentile_linear_from_hist(hist[c], content_count, 1.0);
+        const double hi = percentile_linear_from_hist(hist[c], content_count, 99.0);
         if (hi <= lo) {
             continue;
         }
-        const float lo_f = static_cast<float>(lo);
-        const float scale = 255.0f / static_cast<float>(hi - lo);
-        for (int y = 0; y < preview8.rows; ++y) {
-            unsigned char* ch_row = channels[c].data + static_cast<size_t>(y) * channels[c].step[0];
-            for (int x = 0; x < preview8.cols; ++x) {
-                float value = (static_cast<float>(ch_row[x]) - lo_f) * scale;
+        lo_values[c] = static_cast<float>(lo);
+        scales[c] = 255.0f / static_cast<float>(hi - lo);
+        active[c] = true;
+    }
+
+    for (int y = 0; y < preview8.rows; ++y) {
+        unsigned char* rgb_row = preview8.data + static_cast<size_t>(y) * preview8.step[0];
+        for (int x = 0; x < preview8.cols; ++x) {
+            unsigned char* sample = rgb_row + x * channels;
+            for (int c = 0; c < 3; ++c) {
+                if (!active[c]) {
+                    continue;
+                }
+                float value = (static_cast<float>(sample[c]) - lo_values[c]) * scales[c];
                 if (value < 0.0f) {
                     value = 0.0f;
                 } else if (value > 255.0f) {
                     value = 255.0f;
                 }
-                ch_row[x] = static_cast<unsigned char>(value);
+                sample[c] = static_cast<unsigned char>(value);
             }
         }
     }
-    cv::merge(channels, preview8);
 }
 
 int build_preview(
@@ -169,8 +224,10 @@ int build_preview(
     int preview_size,
     cv::Mat& small_rgb,
     cv::Mat& preview8,
-    double* preview_scale
+    double* preview_scale,
+    QuickPreviewTiming* timing
 ) {
+    uint64_t stage_start = monotonic_now_ns();
     const int type = mat_type(bits_per_sample, channels);
     if (input == nullptr || width <= 0 || height <= 0 || type < 0 || preview_scale == nullptr) {
         return -1;
@@ -184,7 +241,11 @@ int build_preview(
     } else {
         *preview_scale = 1.0;
     }
+    if (timing != nullptr) {
+        timing->geometry_ns += elapsed_ns(stage_start);
+    }
 
+    stage_start = monotonic_now_ns();
     if (*preview_scale < 1.0) {
         const int preview_width = static_cast<int>(static_cast<double>(width) * *preview_scale);
         const int preview_height = static_cast<int>(static_cast<double>(height) * *preview_scale);
@@ -195,7 +256,11 @@ int build_preview(
     } else {
         small_rgb = rgb;
     }
+    if (timing != nullptr) {
+        timing->resize_ns += elapsed_ns(stage_start);
+    }
 
+    stage_start = monotonic_now_ns();
     if (small_rgb.depth() == CV_16U) {
         convert_u16_to_u8_shift(small_rgb, preview8);
     } else {
@@ -206,13 +271,26 @@ int build_preview(
         cv::cvtColor(preview8, rgb8, cv::COLOR_GRAY2RGB);
         preview8 = rgb8;
     }
+    if (timing != nullptr) {
+        timing->convert_ns += elapsed_ns(stage_start);
+    }
 
+    stage_start = monotonic_now_ns();
     cv::Mat gray_raw;
     cv::cvtColor(preview8, gray_raw, cv::COLOR_RGB2GRAY);
     cv::Mat content_mask = gray_raw < 240;
+    if (timing != nullptr) {
+        timing->content_mask_ns += elapsed_ns(stage_start);
+    }
+
+    stage_start = monotonic_now_ns();
     preview8 = cv::Scalar::all(255) - preview8;
     stretch_content_percentiles(preview8, content_mask);
+    if (timing != nullptr) {
+        timing->invert_stretch_ns += elapsed_ns(stage_start);
+    }
 
+    stage_start = monotonic_now_ns();
     cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
     std::vector<cv::Mat> preview_channels;
     cv::split(preview8, preview_channels);
@@ -222,6 +300,100 @@ int build_preview(
         preview_channels[c] = enhanced;
     }
     cv::merge(preview_channels, preview8);
+    if (timing != nullptr) {
+        timing->clahe_ns += elapsed_ns(stage_start);
+    }
+    return 0;
+}
+
+int process_quick_preview_impl(
+    const unsigned char* input,
+    int width,
+    int height,
+    int channels,
+    int bits_per_sample,
+    int preview_size,
+    int* out_width,
+    int* out_height,
+    double* out_preview_scale,
+    uint16_t* preview_raw,
+    int preview_raw_len,
+    unsigned char* preview_rgb8,
+    int preview_rgb8_len,
+    unsigned char* jpeg_buffer,
+    int jpeg_capacity,
+    int* jpeg_len,
+    QuickPreviewTiming* timing
+) {
+    if (out_width == nullptr || out_height == nullptr ||
+        out_preview_scale == nullptr || jpeg_len == nullptr) {
+        return -1;
+    }
+
+    cv::Mat small_rgb;
+    cv::Mat preview8;
+    const int build_status = build_preview(
+        input,
+        width,
+        height,
+        channels,
+        bits_per_sample,
+        preview_size,
+        small_rgb,
+        preview8,
+        out_preview_scale,
+        timing);
+    if (build_status != 0) {
+        return build_status;
+    }
+
+    *out_width = preview8.cols;
+    *out_height = preview8.rows;
+    const int required_samples = preview8.cols * preview8.rows * 3;
+    if (preview_raw != nullptr) {
+        if (preview_raw_len < required_samples) {
+            return -3;
+        }
+        uint64_t stage_start = monotonic_now_ns();
+        write_preview_raw(small_rgb, preview_raw);
+        if (timing != nullptr) {
+            timing->raw_copy_ns += elapsed_ns(stage_start);
+        }
+    }
+    if (preview_rgb8 != nullptr) {
+        if (preview_rgb8_len < required_samples) {
+            return -4;
+        }
+        uint64_t stage_start = monotonic_now_ns();
+        for (int y = 0; y < preview8.rows; ++y) {
+            const unsigned char* row = preview8.data + static_cast<size_t>(y) * preview8.step[0];
+            std::memcpy(preview_rgb8 + static_cast<size_t>(y) * preview8.cols * 3, row, static_cast<size_t>(preview8.cols) * 3);
+        }
+        if (timing != nullptr) {
+            timing->rgb_copy_ns += elapsed_ns(stage_start);
+        }
+    }
+
+    uint64_t stage_start = monotonic_now_ns();
+    cv::Mat bgr;
+    cv::cvtColor(preview8, bgr, cv::COLOR_RGB2BGR);
+    std::vector<unsigned char> encoded;
+    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 90};
+    if (!cv::imencode(".jpg", bgr, encoded, params)) {
+        return -5;
+    }
+    if (timing != nullptr) {
+        timing->jpeg_encode_ns += elapsed_ns(stage_start);
+    }
+    *jpeg_len = static_cast<int>(encoded.size());
+    if (jpeg_buffer == nullptr || jpeg_capacity < *jpeg_len) {
+        return 1;
+    }
+    stage_start = monotonic_now_ns();
+    std::memcpy(jpeg_buffer, encoded.data(), encoded.size());
+    if (timing != nullptr) {
+        timing->jpeg_copy_ns += elapsed_ns(stage_start);
+    }
     return 0;
 }
 
@@ -245,59 +417,84 @@ extern "C" int v600_process_quick_preview(
     int jpeg_capacity,
     int* jpeg_len
 ) {
-    if (out_width == nullptr || out_height == nullptr ||
-        out_preview_scale == nullptr || jpeg_len == nullptr) {
-        return -1;
-    }
-
-    cv::Mat small_rgb;
-    cv::Mat preview8;
-    const int build_status = build_preview(
+    return process_quick_preview_impl(
         input,
         width,
         height,
         channels,
         bits_per_sample,
         preview_size,
-        small_rgb,
-        preview8,
-        out_preview_scale);
-    if (build_status != 0) {
-        return build_status;
-    }
+        out_width,
+        out_height,
+        out_preview_scale,
+        preview_raw,
+        preview_raw_len,
+        preview_rgb8,
+        preview_rgb8_len,
+        jpeg_buffer,
+        jpeg_capacity,
+        jpeg_len,
+        nullptr);
+}
 
-    *out_width = preview8.cols;
-    *out_height = preview8.rows;
-    const int required_samples = preview8.cols * preview8.rows * 3;
-    if (preview_raw != nullptr) {
-        if (preview_raw_len < required_samples) {
-            return -3;
-        }
-        write_preview_raw(small_rgb, preview_raw);
-    }
-    if (preview_rgb8 != nullptr) {
-        if (preview_rgb8_len < required_samples) {
-            return -4;
-        }
-        for (int y = 0; y < preview8.rows; ++y) {
-            const unsigned char* row = preview8.data + static_cast<size_t>(y) * preview8.step[0];
-            std::memcpy(preview_rgb8 + static_cast<size_t>(y) * preview8.cols * 3, row, static_cast<size_t>(preview8.cols) * 3);
-        }
-    }
-
-    cv::Mat bgr;
-    cv::cvtColor(preview8, bgr, cv::COLOR_RGB2BGR);
-    std::vector<unsigned char> encoded;
-    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 90};
-    if (!cv::imencode(".jpg", bgr, encoded, params)) {
-        return -5;
-    }
-    *jpeg_len = static_cast<int>(encoded.size());
-    if (jpeg_buffer == nullptr || jpeg_capacity < *jpeg_len) {
-        return 1;
-    }
-    std::memcpy(jpeg_buffer, encoded.data(), encoded.size());
-    return 0;
+extern "C" int v600_process_quick_preview_breakdown(
+    const unsigned char* input,
+    int width,
+    int height,
+    int channels,
+    int bits_per_sample,
+    int preview_size,
+    int* out_width,
+    int* out_height,
+    double* out_preview_scale,
+    uint16_t* preview_raw,
+    int preview_raw_len,
+    unsigned char* preview_rgb8,
+    int preview_rgb8_len,
+    unsigned char* jpeg_buffer,
+    int jpeg_capacity,
+    int* jpeg_len,
+    uint64_t* geometry_ns,
+    uint64_t* resize_ns,
+    uint64_t* convert_ns,
+    uint64_t* content_mask_ns,
+    uint64_t* invert_stretch_ns,
+    uint64_t* clahe_ns,
+    uint64_t* raw_copy_ns,
+    uint64_t* rgb_copy_ns,
+    uint64_t* jpeg_encode_ns,
+    uint64_t* jpeg_copy_ns
+) {
+    QuickPreviewTiming timing;
+    const int status = process_quick_preview_impl(
+        input,
+        width,
+        height,
+        channels,
+        bits_per_sample,
+        preview_size,
+        out_width,
+        out_height,
+        out_preview_scale,
+        preview_raw,
+        preview_raw_len,
+        preview_rgb8,
+        preview_rgb8_len,
+        jpeg_buffer,
+        jpeg_capacity,
+        jpeg_len,
+        &timing);
+    if (geometry_ns != nullptr) *geometry_ns = timing.geometry_ns;
+    if (resize_ns != nullptr) *resize_ns = timing.resize_ns;
+    if (convert_ns != nullptr) *convert_ns = timing.convert_ns;
+    if (content_mask_ns != nullptr) *content_mask_ns = timing.content_mask_ns;
+    if (invert_stretch_ns != nullptr) *invert_stretch_ns = timing.invert_stretch_ns;
+    if (clahe_ns != nullptr) *clahe_ns = timing.clahe_ns;
+    if (raw_copy_ns != nullptr) *raw_copy_ns = timing.raw_copy_ns;
+    if (rgb_copy_ns != nullptr) *rgb_copy_ns = timing.rgb_copy_ns;
+    if (jpeg_encode_ns != nullptr) *jpeg_encode_ns = timing.jpeg_encode_ns;
+    if (jpeg_copy_ns != nullptr) *jpeg_copy_ns = timing.jpeg_copy_ns;
+    return status;
 }
 
 extern "C" int v600_decode_jpeg_rgb(

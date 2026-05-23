@@ -30,6 +30,18 @@ pub const Image = struct {
     }
 };
 
+pub const PageInfo = struct {
+    width: u32,
+    height: u32,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+};
+
+pub const RgbIrPageInfo = struct {
+    rgb: PageInfo,
+    ir: ?PageInfo = null,
+};
+
 pub const ImageView = struct {
     width: u32,
     height: u32,
@@ -46,6 +58,22 @@ pub const RgbIrPages = struct {
         self.rgb.deinit(allocator);
         if (self.ir) |ir| ir.deinit(allocator);
     }
+};
+
+pub const RgbPageWithMetadata = struct {
+    rgb: Image,
+    dpi: ?u32 = null,
+    ir: ?PageInfo = null,
+
+    pub fn deinit(self: RgbPageWithMetadata, allocator: std.mem.Allocator) void {
+        self.rgb.deinit(allocator);
+    }
+};
+
+pub const RgbPageMetadataTimings = struct {
+    open_ifd_ns: u64 = 0,
+    rgb_read_ns: u64 = 0,
+    ir_info_ns: u64 = 0,
 };
 
 pub const ImageList = struct {
@@ -79,7 +107,10 @@ pub fn readDpi(allocator: std.mem.Allocator, path: []const u8) !?u32 {
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return null;
+    return readCurrentDpi(tiff);
+}
 
+fn readCurrentDpi(tiff: *c.TIFF) ?u32 {
     var x_resolution: f32 = 0;
     if (c.TIFFGetField(tiff, c.TIFFTAG_XRESOLUTION, &x_resolution) == 0) {
         return null;
@@ -154,6 +185,35 @@ pub fn loadRgbIrPages(allocator: std.mem.Allocator, path: []const u8) !RgbIrPage
     return .{ .rgb = rgb, .ir = ir };
 }
 
+pub fn readRgbIrPageInfo(allocator: std.mem.Allocator, path: []const u8) !RgbIrPageInfo {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+
+    if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
+    const rgb = try readCurrentPageInfo(tiff);
+
+    const ir = if (c.TIFFSetDirectory(tiff, 2) != 0)
+        try readCurrentPageInfo(tiff)
+    else
+        null;
+
+    return .{ .rgb = rgb, .ir = ir };
+}
+
+pub fn readIrPageInfo(allocator: std.mem.Allocator, path: []const u8) !?PageInfo {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+
+    if (c.TIFFSetDirectory(tiff, 2) == 0) return null;
+    return try readCurrentPageInfo(tiff);
+}
+
 pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
@@ -163,6 +223,42 @@ pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
     return readCurrentPage(allocator, tiff);
+}
+
+pub fn loadRgbPageWithMetadata(allocator: std.mem.Allocator, path: []const u8) !RgbPageWithMetadata {
+    return loadRgbPageWithMetadataTimed(allocator, path, null);
+}
+
+pub fn loadRgbPageWithMetadataTimed(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    timings: ?*RgbPageMetadataTimings,
+) !RgbPageWithMetadata {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const open_started = monotonicNowNs();
+    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+
+    if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
+    const dpi = readCurrentDpi(tiff);
+    const rgb_info = try readCurrentPageInfo(tiff);
+    if (timings) |target| target.open_ifd_ns = monotonicNowNs() - open_started;
+
+    const rgb_started = monotonicNowNs();
+    const rgb = try readCurrentPageWithInfo(allocator, tiff, rgb_info);
+    errdefer rgb.deinit(allocator);
+    if (timings) |target| target.rgb_read_ns = monotonicNowNs() - rgb_started;
+
+    const ir_started = monotonicNowNs();
+    const ir = if (c.TIFFSetDirectory(tiff, 2) != 0)
+        try readCurrentPageInfo(tiff)
+    else
+        null;
+    if (timings) |target| target.ir_info_ns = monotonicNowNs() - ir_started;
+
+    return .{ .rgb = rgb, .dpi = dpi, .ir = ir };
 }
 
 pub fn writeImage(
@@ -345,6 +441,39 @@ fn currentTiffDateTime(buffer: *[20]u8) ?[]const u8 {
 }
 
 fn readCurrentPage(allocator: std.mem.Allocator, tiff: *c.TIFF) !Image {
+    const info = try readCurrentPageInfo(tiff);
+    return readCurrentPageWithInfo(allocator, tiff, info);
+}
+
+fn readCurrentPageWithInfo(allocator: std.mem.Allocator, tiff: *c.TIFF, info: PageInfo) !Image {
+    const scanline_size_raw = c.TIFFScanlineSize(tiff);
+    if (scanline_size_raw <= 0) return error.UnsupportedTiff;
+    const scanline_size: usize = @intCast(scanline_size_raw);
+    const expected_scanline = try expectedScanlineSize(info.width, info.samples_per_pixel, info.bits_per_sample);
+    if (scanline_size != expected_scanline) return error.UnsupportedTiff;
+
+    const data_len = try std.math.mul(usize, scanline_size, info.height);
+    const data = try allocator.alloc(u8, data_len);
+    errdefer allocator.free(data);
+
+    var row: u32 = 0;
+    while (row < info.height) : (row += 1) {
+        const offset = @as(usize, row) * scanline_size;
+        if (c.TIFFReadScanline(tiff, data[offset .. offset + scanline_size].ptr, row, 0) < 0) {
+            return error.TiffReadFailed;
+        }
+    }
+
+    return .{
+        .width = info.width,
+        .height = info.height,
+        .samples_per_pixel = info.samples_per_pixel,
+        .bits_per_sample = info.bits_per_sample,
+        .data = data,
+    };
+}
+
+fn readCurrentPageInfo(tiff: *c.TIFF) !PageInfo {
     var width: u32 = 0;
     var height: u32 = 0;
     var samples_per_pixel: u16 = 1;
@@ -360,36 +489,23 @@ fn readCurrentPage(allocator: std.mem.Allocator, tiff: *c.TIFF) !Image {
     if (bits_per_sample != 8 and bits_per_sample != 16) return error.UnsupportedTiff;
     if (samples_per_pixel != 1 and samples_per_pixel != 3) return error.UnsupportedTiff;
 
-    const scanline_size_raw = c.TIFFScanlineSize(tiff);
-    if (scanline_size_raw <= 0) return error.UnsupportedTiff;
-    const scanline_size: usize = @intCast(scanline_size_raw);
-    const expected_scanline = try expectedScanlineSize(width, samples_per_pixel, bits_per_sample);
-    if (scanline_size != expected_scanline) return error.UnsupportedTiff;
-
-    const data_len = try std.math.mul(usize, scanline_size, height);
-    const data = try allocator.alloc(u8, data_len);
-    errdefer allocator.free(data);
-
-    var row: u32 = 0;
-    while (row < height) : (row += 1) {
-        const offset = @as(usize, row) * scanline_size;
-        if (c.TIFFReadScanline(tiff, data[offset .. offset + scanline_size].ptr, row, 0) < 0) {
-            return error.TiffReadFailed;
-        }
-    }
-
     return .{
         .width = width,
         .height = height,
         .samples_per_pixel = samples_per_pixel,
         .bits_per_sample = bits_per_sample,
-        .data = data,
     };
 }
 
 fn expectedScanlineSize(width: u32, samples_per_pixel: u16, bits_per_sample: u16) !usize {
     const bytes_per_sample = bits_per_sample / 8;
     return std.math.mul(usize, width, try std.math.mul(usize, samples_per_pixel, bytes_per_sample));
+}
+
+fn monotonicNowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 fn pathExists(io: std.Io, path: []const u8) bool {
@@ -508,6 +624,16 @@ test "loads committed Python tifffile RGB thumbnail IR fixture" {
     try std.testing.expectEqual(@as(u16, 1), pages.ir.?.samples_per_pixel);
     try std.testing.expectEqual(@as(u16, 8), pages.ir.?.bits_per_sample);
     try std.testing.expectEqualSlices(u8, &.{ 31, 32, 33, 34, 35, 36 }, pages.ir.?.data);
+
+    const rgb_with_metadata = try loadRgbPageWithMetadata(allocator, path);
+    defer rgb_with_metadata.deinit(allocator);
+    try std.testing.expectEqual(@as(?u32, 800), rgb_with_metadata.dpi);
+    try std.testing.expectEqual(@as(u32, 2), rgb_with_metadata.rgb.width);
+    try std.testing.expectEqual(@as(u16, 3), rgb_with_metadata.rgb.samples_per_pixel);
+    try std.testing.expectEqualSlices(u8, pages.rgb.data, rgb_with_metadata.rgb.data);
+    try std.testing.expect(rgb_with_metadata.ir != null);
+    try std.testing.expectEqual(@as(u32, 3), rgb_with_metadata.ir.?.width);
+    try std.testing.expectEqual(@as(u16, 1), rgb_with_metadata.ir.?.samples_per_pixel);
 }
 
 test "loads single-page TIFF without IR page" {

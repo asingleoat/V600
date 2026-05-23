@@ -5,6 +5,8 @@ const app_state = @import("../app_state.zig");
 const processing_config = @import("../processing/config.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_workflow = @import("../processing/workflow.zig");
+const process_cache = @import("process_cache.zig");
+const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
 
 pub const Operation = enum {
@@ -33,6 +35,8 @@ pub const Context = struct {
     generation: usize,
     preview_size: i64,
     preview: ?processing_workflow.QuickPreview = null,
+    rgb_page: ?tiff.RgbPageWithMetadata = null,
+    rgb_page_cache_hit: bool = false,
     options: processing_workflow.AutoDetectOptions = .{},
     scale_percent: f64 = 0.0,
     rotation: i32 = ui_state.default_process_output_rotation,
@@ -144,6 +148,22 @@ pub const Worker = struct {
             return error.InvalidProcessImageIndex;
         }
         const path = model.processing_images.paths[index];
+        var cache_key = try quickPreviewCacheKey(self.allocator, self.io, model, path, preview_size);
+        defer cache_key.deinit(self.allocator);
+        if (try model.processing_result_cache.quick_previews.getClone(self.allocator, cache_key)) |cached_preview| {
+            var owned_preview: ?processing_workflow.QuickPreview = cached_preview;
+            defer if (owned_preview) |preview| preview.deinit(self.allocator);
+            const generation = model.beginProcessingImageLoadRequest(path, index);
+            return model.finishProcessingImageLoadResult(
+                self.allocator,
+                generation,
+                index,
+                path,
+                &owned_preview,
+            );
+        }
+        var cached_rgb_page = try getCachedRgbPage(self.allocator, self.io, model, path);
+        errdefer if (cached_rgb_page) |page| page.deinit(self.allocator);
         const generation = model.beginProcessingImageLoadRequest(path, index);
         const context = try self.createContext(.{
             .operation = .load_image,
@@ -151,7 +171,10 @@ pub const Worker = struct {
             .index = index,
             .generation = generation,
             .preview_size = preview_size,
+            .rgb_page = cached_rgb_page,
+            .rgb_page_cache_hit = cached_rgb_page != null,
         });
+        cached_rgb_page = null;
         errdefer self.destroyContext(context);
         try self.spawn(context);
         return true;
@@ -174,19 +197,45 @@ pub const Worker = struct {
             model.setProcessingProgress("No image loaded");
             return error.NoProcessImageLoaded;
         };
+        var cache_key = try autoDetectCacheKey(self.allocator, self.io, model, path, preview, options, scale_percent, rotation);
+        defer cache_key.deinit(self.allocator);
+        if (try model.processing_result_cache.auto_detects.getClone(self.allocator, cache_key)) |cached_auto| {
+            var cached = cached_auto;
+            defer cached.deinit(self.allocator);
+            if (cached.dmin) |dmin| {
+                try processing_workflow.saveRebateDmin(self.allocator, self.io, config_path, dmin);
+            }
+            const applied = try model.applyProcessAutoDetectWorkerResult(
+                self.allocator,
+                model.processingGeneration(),
+                path,
+                &cached.result,
+                scale_percent,
+                rotation,
+                cached.full_rebate,
+                cached.dmin,
+            );
+            if (applied) self.rememberAutoAspect(cached.result.aspect);
+            return applied;
+        }
         var preview_copy: ?processing_workflow.QuickPreview = try copyPreviewForDetect(self.allocator, preview);
         errdefer if (preview_copy) |copy| copy.deinit(self.allocator);
+        var cached_rgb_page = try getCachedRgbPage(self.allocator, self.io, model, path);
+        errdefer if (cached_rgb_page) |page| page.deinit(self.allocator);
         const context = try self.createContext(.{
             .operation = .auto_detect,
             .path = path,
             .config_path = config_path,
             .generation = model.processingGeneration(),
             .preview = preview_copy.?,
+            .rgb_page = cached_rgb_page,
+            .rgb_page_cache_hit = cached_rgb_page != null,
             .options = options,
             .scale_percent = scale_percent,
             .rotation = rotation,
         });
         preview_copy = null;
+        cached_rgb_page = null;
         errdefer self.destroyContext(context);
         model.setProcessingProgress("Detecting frames...");
         try self.spawn(context);
@@ -207,13 +256,30 @@ pub const Worker = struct {
             model.setStatus("No rebate selection");
             return false;
         };
+        var dmin_key = try process_cache.rebateDminKey(self.allocator, self.io, path, &model.processing_config, rect);
+        defer dmin_key.deinit(self.allocator);
+        if (model.processing_result_cache.dmins.get(dmin_key)) |dmin| {
+            try processing_workflow.saveRebateDmin(self.allocator, self.io, config_path, dmin);
+            return try model.applyProcessRebateWorkerResult(
+                self.allocator,
+                model.processingGeneration(),
+                path,
+                rect,
+                dmin,
+            );
+        }
+        var cached_rgb_page = try getCachedRgbPage(self.allocator, self.io, model, path);
+        errdefer if (cached_rgb_page) |page| page.deinit(self.allocator);
         const context = try self.createContext(.{
             .operation = .rebate,
             .path = path,
             .config_path = config_path,
             .generation = model.processingGeneration(),
             .full_rebate = rect,
+            .rgb_page = cached_rgb_page,
+            .rgb_page_cache_hit = cached_rgb_page != null,
         });
+        cached_rgb_page = null;
         errdefer self.destroyContext(context);
         model.setProcessingProgress("Computing Dmin...");
         try self.spawn(context);
@@ -255,13 +321,22 @@ pub const Worker = struct {
     fn applyResult(self: *Worker, model: *ui_state.State, context: *Context) !bool {
         switch (context.operation) {
             .load_image => {
-                return model.finishProcessingImageLoadResult(
+                const applied = model.finishProcessingImageLoadResult(
                     self.allocator,
                     context.generation,
                     context.index,
                     context.path,
                     &context.preview,
                 );
+                if (applied) {
+                    if (model.processing_preview) |preview| {
+                        cacheQuickPreview(self.allocator, self.io, model, context.path, context.preview_size, preview) catch {};
+                    }
+                    if (!context.rgb_page_cache_hit) {
+                        cacheRgbPage(self.allocator, self.io, model, context.path, &context.rgb_page) catch {};
+                    }
+                }
+                return applied;
             },
             .auto_detect => {
                 const result = if (context.auto_result) |*auto_result| auto_result else return error.MissingAutoDetectResult;
@@ -276,16 +351,42 @@ pub const Worker = struct {
                     context.dmin,
                 );
                 if (applied) self.rememberAutoAspect(result.aspect);
+                if (applied) {
+                    if (context.preview) |preview| {
+                        cacheAutoDetect(
+                            self.allocator,
+                            self.io,
+                            model,
+                            context.path,
+                            preview,
+                            context.options,
+                            context.scale_percent,
+                            context.rotation,
+                            result.*,
+                            context.full_rebate,
+                            context.dmin,
+                        ) catch {};
+                    }
+                    if (context.full_rebate) |rect| {
+                        if (context.dmin) |dmin| {
+                            cacheDmin(self.allocator, self.io, model, context.path, rect, dmin) catch {};
+                        }
+                    }
+                }
                 return applied;
             },
             .rebate => {
-                return try model.applyProcessRebateWorkerResult(
+                const rect = context.full_rebate orelse return error.MissingRebateResult;
+                const dmin = context.dmin orelse return error.MissingRebateResult;
+                const applied = try model.applyProcessRebateWorkerResult(
                     self.allocator,
                     context.generation,
                     context.path,
-                    context.full_rebate orelse return error.MissingRebateResult,
-                    context.dmin orelse return error.MissingRebateResult,
+                    rect,
+                    dmin,
                 );
+                if (applied) cacheDmin(self.allocator, self.io, model, context.path, rect, dmin) catch {};
+                return applied;
             },
         }
     }
@@ -316,6 +417,8 @@ pub const Worker = struct {
             .generation = request.generation,
             .preview_size = request.preview_size,
             .preview = request.preview,
+            .rgb_page = request.rgb_page,
+            .rgb_page_cache_hit = request.rgb_page_cache_hit,
             .options = request.options,
             .scale_percent = request.scale_percent,
             .rotation = request.rotation,
@@ -340,6 +443,7 @@ pub const Worker = struct {
         self.allocator.free(context.path);
         self.allocator.free(context.config_path);
         if (context.preview) |preview| preview.deinit(self.allocator);
+        if (context.rgb_page) |page| page.deinit(self.allocator);
         if (context.auto_result) |*result| result.deinit(self.allocator);
         self.allocator.destroy(context);
     }
@@ -358,6 +462,8 @@ const StartRequest = struct {
     generation: usize,
     preview_size: i64 = 0,
     preview: ?processing_workflow.QuickPreview = null,
+    rgb_page: ?tiff.RgbPageWithMetadata = null,
+    rgb_page_cache_hit: bool = false,
     options: processing_workflow.AutoDetectOptions = .{},
     scale_percent: f64 = 0.0,
     rotation: i32 = ui_state.default_process_output_rotation,
@@ -381,11 +487,22 @@ fn threadMain(context: *Context) void {
 fn runProcessOperation(context: *Context) !void {
     switch (context.operation) {
         .load_image => {
-            context.preview = try processing_workflow.loadQuickPreview(
+            if (context.rgb_page) |page| {
+                context.preview = try processing_workflow.quickPreviewFromLoadedRgbPage(
+                    context.allocator,
+                    page,
+                    context.preview_size,
+                );
+                return;
+            }
+            var loaded = try tiff.loadRgbPageWithMetadata(context.allocator, context.path);
+            errdefer loaded.deinit(context.allocator);
+            context.preview = try processing_workflow.quickPreviewFromLoadedRgbPage(
                 context.allocator,
-                context.path,
+                loaded,
                 context.preview_size,
             );
+            context.rgb_page = loaded;
         },
         .auto_detect => {
             const preview = context.preview orelse return error.NoProcessImageLoaded;
@@ -409,31 +526,156 @@ fn runProcessOperation(context: *Context) !void {
                     .angle = full.angle,
                 };
                 logAutoDetectRebateStart(context);
-                const rebate_result = try processing_workflow.processRebateFromTiff(
-                    context.allocator,
-                    context.io,
-                    context.path,
-                    context.config_path,
-                    full,
-                    true,
-                );
-                context.dmin = rebate_result.dmin;
+                context.dmin = try computeRebateDmin(context, full);
             }
             context.auto_result = result;
         },
         .rebate => {
             const rect = context.full_rebate orelse return error.NoRebateSelection;
-            const result = try processing_workflow.processRebateFromTiff(
-                context.allocator,
-                context.io,
-                context.path,
-                context.config_path,
-                .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h, .angle = rect.angle },
-                true,
-            );
-            context.dmin = result.dmin;
+            context.dmin = try computeRebateDmin(context, .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h, .angle = rect.angle });
         },
     }
+}
+
+fn computeRebateDmin(
+    context: *Context,
+    rect: processing_frames.RebateOriginRect,
+) ![3]f64 {
+    if (context.rgb_page) |page| {
+        const dmin = try processing_workflow.computeRebateDminFromTiffImage(context.allocator, page.rgb, rect);
+        try processing_workflow.saveRebateDmin(context.allocator, context.io, context.config_path, dmin);
+        return dmin;
+    }
+    const result = try processing_workflow.processRebateFromTiff(
+        context.allocator,
+        context.io,
+        context.path,
+        context.config_path,
+        rect,
+        true,
+    );
+    return result.dmin;
+}
+
+fn quickPreviewCacheKey(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *const ui_state.State,
+    path: []const u8,
+    preview_size: i64,
+) !process_cache.Key {
+    const config_state = try process_cache.configStateBytes(allocator, &model.processing_config);
+    defer allocator.free(config_state);
+    const operation_state = try process_cache.quickPreviewStateBytes(allocator, preview_size);
+    defer allocator.free(operation_state);
+    return process_cache.Key.init(allocator, .{
+        .operation = .quick_preview,
+        .image = process_cache.imageIdentityFromFile(io, path),
+        .config_state = config_state,
+        .operation_state = operation_state,
+    });
+}
+
+fn autoDetectCacheKey(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *const ui_state.State,
+    path: []const u8,
+    preview: processing_workflow.QuickPreview,
+    options: processing_workflow.AutoDetectOptions,
+    scale_percent: f64,
+    rotation: i32,
+) !process_cache.Key {
+    return process_cache.autoDetectKey(allocator, io, path, &model.processing_config, .{
+        .options = options,
+        .scale_percent = scale_percent,
+        .output_rotation = rotation,
+        .preview_width = preview.preview_width,
+        .preview_height = preview.preview_height,
+        .preview_scale = preview.info.preview_scale,
+    });
+}
+
+fn rgbPageCacheKey(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) !process_cache.Key {
+    return process_cache.rgbPageKey(allocator, io, path);
+}
+
+fn getCachedRgbPage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *ui_state.State,
+    path: []const u8,
+) !?tiff.RgbPageWithMetadata {
+    var key = try rgbPageCacheKey(allocator, io, path);
+    defer key.deinit(allocator);
+    return model.processing_result_cache.rgb_pages.getClone(allocator, key);
+}
+
+fn cacheQuickPreview(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *ui_state.State,
+    path: []const u8,
+    preview_size: i64,
+    preview: processing_workflow.QuickPreview,
+) !void {
+    var key = try quickPreviewCacheKey(allocator, io, model, path, preview_size);
+    defer key.deinit(allocator);
+    try model.processing_result_cache.quick_previews.putClone(allocator, key, preview);
+}
+
+fn cacheRgbPage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *ui_state.State,
+    path: []const u8,
+    page: *?tiff.RgbPageWithMetadata,
+) !void {
+    var loaded = page.* orelse return;
+    var key = try rgbPageCacheKey(allocator, io, path);
+    defer key.deinit(allocator);
+    if (try model.processing_result_cache.rgb_pages.putOwned(allocator, key, &loaded)) {
+        page.* = null;
+    }
+}
+
+fn cacheAutoDetect(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *ui_state.State,
+    path: []const u8,
+    preview: processing_workflow.QuickPreview,
+    options: processing_workflow.AutoDetectOptions,
+    scale_percent: f64,
+    rotation: i32,
+    result: processing_workflow.AutoDetectResult,
+    full_rebate: ?app_state.RebateRect,
+    dmin: ?[3]f64,
+) !void {
+    var key = try autoDetectCacheKey(allocator, io, model, path, preview, options, scale_percent, rotation);
+    defer key.deinit(allocator);
+    try model.processing_result_cache.auto_detects.putClone(allocator, key, .{
+        .result = result,
+        .full_rebate = full_rebate,
+        .dmin = dmin,
+    });
+}
+
+fn cacheDmin(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *ui_state.State,
+    path: []const u8,
+    rect: app_state.RebateRect,
+    dmin: [3]f64,
+) !void {
+    var key = try process_cache.rebateDminKey(allocator, io, path, &model.processing_config, rect);
+    defer key.deinit(allocator);
+    try model.processing_result_cache.dmins.put(allocator, key, dmin);
 }
 
 fn elapsedMsSince(started_ms: i64) u64 {
@@ -552,9 +794,9 @@ fn copyPreviewForDetect(
 ) !processing_workflow.QuickPreview {
     const raw = try allocator.dupe(u16, preview.preview_raw);
     errdefer allocator.free(raw);
-    const rgb8 = try allocator.alloc(u8, 0);
+    const rgb8 = try allocator.dupe(u8, preview.preview_rgb8);
     errdefer allocator.free(rgb8);
-    const jpeg = try allocator.alloc(u8, 0);
+    const jpeg = try allocator.dupe(u8, preview.jpeg);
     return .{
         .info = preview.info,
         .preview_width = preview.preview_width,
@@ -581,9 +823,45 @@ fn fakeLoadSuccess(context: *Context) !void {
     context.preview = try fakePreview(context.allocator, 4, 3, 0.5);
 }
 
+fn fakeLoadWithRgbPageSuccess(context: *Context) !void {
+    context.preview = try fakePreview(context.allocator, 4, 3, 0.5);
+    context.rgb_page = try fakeRgbPage(context.allocator, 4, 3);
+}
+
 pub fn fakeLoadDelayedSuccess(context: *Context) !void {
     for (0..200_000) |_| std.Thread.yield() catch {};
     try fakeLoadSuccess(context);
+}
+
+fn failIfLoadWorkerRuns(context: *Context) !void {
+    _ = context;
+    return error.UnexpectedProcessCacheMiss;
+}
+
+fn failIfRebateWorkerRuns(context: *Context) !void {
+    _ = context;
+    return error.UnexpectedRebateCacheMiss;
+}
+
+fn failIfAutoDetectWorkerRuns(context: *Context) !void {
+    _ = context;
+    return error.UnexpectedAutoDetectCacheMiss;
+}
+
+pub fn fakeLoadScreenshotDelayedSuccess(context: *Context) !void {
+    sleepSeconds(5);
+    try fakeLoadSuccess(context);
+}
+
+fn sleepSeconds(seconds: i64) void {
+    var remaining = std.posix.timespec{ .sec = seconds, .nsec = 0 };
+    while (true) {
+        switch (std.posix.system.errno(std.posix.system.nanosleep(&remaining, &remaining))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => return,
+        }
+    }
 }
 
 fn fakeAutoDetectSuccess(context: *Context) !void {
@@ -598,16 +876,34 @@ fn fakeAutoDetectSuccess(context: *Context) !void {
     context.dmin = .{ 0.1, 0.2, 0.3 };
 }
 
+fn fakeAutoDetectResult(allocator: std.mem.Allocator) !processing_workflow.AutoDetectResult {
+    const frames = try allocator.alloc(processing_frames.FrameRect, 1);
+    frames[0] = .{ .cx = 8.0, .cy = 6.0, .w = 4.0, .h = 3.0, .angle = 0.0 };
+    return .{
+        .frames = frames,
+        .aspect = "35mm",
+        .rebate = .{ .cx = 2.0, .cy = 2.0, .w = 1.0, .h = 1.0, .angle = 0.0 },
+    };
+}
+
 pub fn fakeRebateSuccess(context: *Context) !void {
     context.dmin = .{ 0.4, 0.5, 0.6 };
+}
+
+fn fakeRebateRequiresCachedRgbPage(context: *Context) !void {
+    try std.testing.expect(context.rgb_page != null);
+    context.dmin = .{ 0.7, 0.8, 0.9 };
 }
 
 fn fakePreview(allocator: std.mem.Allocator, width: usize, height: usize, scale: f64) !processing_workflow.QuickPreview {
     const raw = try allocator.alloc(u16, width * height * 3);
     errdefer allocator.free(raw);
     for (raw, 0..) |*sample, index| sample.* = @intCast(index);
-    const rgb8 = try allocator.alloc(u8, 0);
+    const rgb8 = try allocator.alloc(u8, width * height * 3);
     errdefer allocator.free(rgb8);
+    for (rgb8, 0..) |*sample, index| {
+        sample.* = @intCast((index * 17) % 256);
+    }
     const jpeg = try allocator.alloc(u8, 0);
     return .{
         .info = .{
@@ -628,6 +924,23 @@ fn fakePreview(allocator: std.mem.Allocator, width: usize, height: usize, scale:
     };
 }
 
+fn fakeRgbPage(allocator: std.mem.Allocator, width: u32, height: u32) !tiff.RgbPageWithMetadata {
+    const len = @as(usize, width) * @as(usize, height) * 3;
+    const data = try allocator.alloc(u8, len);
+    for (data, 0..) |*sample, index| sample.* = @intCast(index % 256);
+    return .{
+        .rgb = .{
+            .width = width,
+            .height = height,
+            .samples_per_pixel = 3,
+            .bits_per_sample = 8,
+            .data = data,
+        },
+        .dpi = 800,
+        .ir = null,
+    };
+}
+
 test "process worker loads image preview off the UI state path" {
     var model = ui_state.State.init("scans", "frames", 0);
     defer model.deinit(std.testing.allocator);
@@ -643,6 +956,148 @@ test "process worker loads image preview off the UI state path" {
     try std.testing.expect(model.processing_preview != null);
     try std.testing.expect(!model.processing.loading);
     try std.testing.expect(model.takeProcessAutoDetectPending());
+}
+
+test "process worker reuses cached quick preview for unchanged image state" {
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(std.testing.allocator);
+    model.processing_images.paths = try std.testing.allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try std.testing.allocator.dupe(u8, "scans/scan_cached.tiff");
+    model.processing.image_count = 1;
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeLoadSuccess);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startLoadIndex(&model, 0, 8192));
+    try waitForPoll(&worker, &model);
+    const first_raw_ptr = model.processing_preview.?.preview_raw.ptr;
+
+    var cached_worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, failIfLoadWorkerRuns);
+    defer cached_worker.deinit();
+    try std.testing.expect(try cached_worker.startLoadIndex(&model, 0, 8192));
+    try std.testing.expect(!cached_worker.isRunning());
+    try std.testing.expect(model.processing_preview != null);
+    try std.testing.expect(first_raw_ptr != model.processing_preview.?.preview_raw.ptr);
+    try std.testing.expectEqual(@as(u16, 0), model.processing_preview.?.preview_raw[0]);
+    try std.testing.expect(model.takeProcessAutoDetectPending());
+}
+
+test "process worker quick preview cache misses when config state changes" {
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(std.testing.allocator);
+    model.processing_images.paths = try std.testing.allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try std.testing.allocator.dupe(u8, "scans/scan_config_miss.tiff");
+    model.processing.image_count = 1;
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeLoadSuccess);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startLoadIndex(&model, 0, 8192));
+    try waitForPoll(&worker, &model);
+
+    try model.processing_config.set("render_contrast", .{ .float = 1.5 });
+    var miss_worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeLoadSuccess);
+    defer miss_worker.deinit();
+    try std.testing.expect(try miss_worker.startLoadIndex(&model, 0, 8192));
+    try std.testing.expect(miss_worker.context != null);
+    try waitForPoll(&miss_worker, &model);
+}
+
+test "process worker stores accepted RGB page loads in resident cache" {
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(std.testing.allocator);
+    model.processing_images.paths = try std.testing.allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try std.testing.allocator.dupe(u8, "scans/scan_rgb_cache.tiff");
+    model.processing.image_count = 1;
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeLoadWithRgbPageSuccess);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startLoadIndex(&model, 0, 8192));
+    try waitForPoll(&worker, &model);
+
+    var key = try rgbPageCacheKey(std.testing.allocator, std.testing.io, model.processing_images.paths[0]);
+    defer key.deinit(std.testing.allocator);
+    var cached_page = (try model.processing_result_cache.rgb_pages.getClone(std.testing.allocator, key)).?;
+    defer cached_page.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 4 * 3 * 3), cached_page.rgb.data.len);
+}
+
+test "process worker does not store stale RGB page load results" {
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(std.testing.allocator);
+    model.processing_images.paths = try std.testing.allocator.alloc([]u8, 2);
+    model.processing_images.paths[0] = try std.testing.allocator.dupe(u8, "scans/scan_stale_rgb_a.tiff");
+    model.processing_images.paths[1] = try std.testing.allocator.dupe(u8, "scans/scan_stale_rgb_b.tiff");
+    model.processing.image_count = 2;
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeLoadWithRgbPageSuccess);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startLoadIndex(&model, 0, 8192));
+    _ = model.beginProcessingImageLoadRequest(model.processing_images.paths[1], 1);
+    try waitForPoll(&worker, &model);
+
+    var key = try rgbPageCacheKey(std.testing.allocator, std.testing.io, model.processing_images.paths[0]);
+    defer key.deinit(std.testing.allocator);
+    try std.testing.expect((try model.processing_result_cache.rgb_pages.getClone(std.testing.allocator, key)) == null);
+}
+
+test "process worker passes resident RGB page to rebate computation" {
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(std.testing.allocator);
+    model.processing_images.paths = try std.testing.allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try std.testing.allocator.dupe(u8, "scans/scan_rebate_rgb_cache.tiff");
+    model.processing.image_count = 1;
+    const generation = model.beginProcessingImageLoadRequest(model.processing_images.paths[0], 0);
+    var preview: ?processing_workflow.QuickPreview = try fakePreview(std.testing.allocator, 4, 3, 0.5);
+    try std.testing.expect(model.finishProcessingImageLoadResult(std.testing.allocator, generation, 0, model.processing_images.paths[0], &preview));
+    try std.testing.expect(try model.setProcessRebatePreviewRect(.{ .x = 1.0, .y = 1.0, .w = 6.0, .h = 6.0 }));
+
+    var key = try rgbPageCacheKey(std.testing.allocator, std.testing.io, model.processing_images.paths[0]);
+    defer key.deinit(std.testing.allocator);
+    var page = try fakeRgbPage(std.testing.allocator, 4, 3);
+    try std.testing.expect(try model.processing_result_cache.rgb_pages.putOwned(std.testing.allocator, key, &page));
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateRequiresCachedRgbPage);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startRebateFromState(&model, "scratchndent_config.toml"));
+    try waitForPoll(&worker, &model);
+    try std.testing.expectApproxEqAbs(0.8, model.processing.dmin.?[1], 0.0);
+}
+
+test "process worker reuses cached rebate Dmin and persists config without worker thread" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const config_path = try std.fmt.allocPrint(
+        allocator,
+        ".zig-cache/tmp/{s}/scratchndent_config.toml",
+        .{tmp.sub_path[0..]},
+    );
+    defer allocator.free(config_path);
+
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(allocator);
+    model.processing_images.paths = try allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try allocator.dupe(u8, "scans/scan_rebate_dmin_cache.tiff");
+    model.processing.image_count = 1;
+    const generation = model.beginProcessingImageLoadRequest(model.processing_images.paths[0], 0);
+    var preview: ?processing_workflow.QuickPreview = try fakePreview(allocator, 4, 3, 0.5);
+    try std.testing.expect(model.finishProcessingImageLoadResult(allocator, generation, 0, model.processing_images.paths[0], &preview));
+    try std.testing.expect(try model.setProcessRebatePreviewRect(.{ .x = 1.0, .y = 1.0, .w = 6.0, .h = 6.0 }));
+    const rect = (try model.processRebateRequest()).?;
+
+    var key = try process_cache.rebateDminKey(allocator, std.testing.io, model.processing_images.paths[0], &model.processing_config, rect);
+    defer key.deinit(allocator);
+    try model.processing_result_cache.dmins.put(allocator, key, .{ 0.11, 0.22, 0.33 });
+
+    var worker = Worker.initWithExecutor(allocator, std.testing.io, failIfRebateWorkerRuns);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startRebateFromState(&model, config_path));
+    try std.testing.expect(worker.context == null);
+    try std.testing.expect(!worker.isRunning());
+    try std.testing.expectApproxEqAbs(0.22, model.processing.dmin.?[1], 0.0);
+    try std.testing.expectEqualStrings("Dmin computed", model.processing.progress);
+
+    const saved = try processing_config.loadFile(allocator, std.testing.io, config_path);
+    try saved.value("dmin").?.expectEqual(.{ .list = try processing_config.FloatList.init(&.{ 0.11, 0.22, 0.33 }) });
 }
 
 test "process worker rejects stale image load results" {
@@ -729,6 +1184,65 @@ test "process worker runs pending auto-detect once and applies Dmin" {
     try std.testing.expect(model.process_rebate_rect != null);
     try std.testing.expect(model.processing.rebate_rect != null);
     try std.testing.expectApproxEqAbs(0.1, model.processing.dmin.?[0], 0.0);
+}
+
+test "process worker reuses cached auto-detect result and persists Dmin" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const config_path = try std.fmt.allocPrint(
+        allocator,
+        ".zig-cache/tmp/{s}/scratchndent_config.toml",
+        .{tmp.sub_path[0..]},
+    );
+    defer allocator.free(config_path);
+
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(allocator);
+    model.processing_images.paths = try allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try allocator.dupe(u8, "scans/scan_auto_cache.tiff");
+    model.processing.image_count = 1;
+    const generation = model.beginProcessingImageLoadRequest(model.processing_images.paths[0], 0);
+    var preview: ?processing_workflow.QuickPreview = try fakePreview(allocator, 4, 3, 0.5);
+    try std.testing.expect(model.finishProcessingImageLoadResult(allocator, generation, 0, model.processing_images.paths[0], &preview));
+    const options: processing_workflow.AutoDetectOptions = .{ .format = "35mm", .n_frames = 6 };
+    var key = try autoDetectCacheKey(
+        allocator,
+        std.testing.io,
+        &model,
+        model.processing_images.paths[0],
+        model.processing_preview.?,
+        options,
+        0.0,
+        ui_state.default_process_output_rotation,
+    );
+    defer key.deinit(allocator);
+    var result = try fakeAutoDetectResult(allocator);
+    defer result.deinit(allocator);
+    try model.processing_result_cache.auto_detects.putClone(allocator, key, .{
+        .result = result,
+        .full_rebate = .{ .x = 3.0, .y = 3.0, .w = 2.0, .h = 2.0, .angle = 0.0 },
+        .dmin = .{ 0.12, 0.23, 0.34 },
+    });
+
+    var worker = Worker.initWithExecutor(allocator, std.testing.io, failIfAutoDetectWorkerRuns);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startAutoDetectFromState(
+        &model,
+        config_path,
+        options,
+        0.0,
+        ui_state.default_process_output_rotation,
+    ));
+    try std.testing.expect(worker.context == null);
+    try std.testing.expectEqual(@as(usize, 1), model.process_selection_count);
+    try std.testing.expect(model.process_rebate_rect != null);
+    try std.testing.expect(model.processing.rebate_rect != null);
+    try std.testing.expectApproxEqAbs(0.23, model.processing.dmin.?[1], 0.0);
+    try std.testing.expectEqualStrings("35mm", worker.takeLastAutoAspect().?);
+
+    const saved = try processing_config.loadFile(allocator, std.testing.io, config_path);
+    try saved.value("dmin").?.expectEqual(.{ .list = try processing_config.FloatList.init(&.{ 0.12, 0.23, 0.34 }) });
 }
 
 test "process worker applies explicit rebate Dmin result to matching image" {

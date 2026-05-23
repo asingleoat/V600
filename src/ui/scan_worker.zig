@@ -29,6 +29,7 @@ const EventQueue = struct {
     lock_state: SpinLock = .{},
     events: [max_queued_events]ui_state.ScannerBackendEvent = undefined,
     len: usize = 0,
+    event_sink: ?scanner_events.Sink = null,
 
     fn clear(self: *EventQueue) void {
         self.lock_state.lock();
@@ -47,7 +48,21 @@ const EventQueue = struct {
         }
     }
 
-    fn drain(self: *EventQueue, model: *ui_state.State) void {
+    fn pushTiming(self: *EventQueue, event: scanner_events.TimingEvent) void {
+        scanner_events.emitTiming(event);
+        if (self.event_sink) |sink| sink.send(.{ .timing = event });
+        self.push(.{ .timing = event });
+    }
+
+    fn pushTimingSince(self: *EventQueue, stage: []const u8, start_ns: u64, detail: ?[]const u8) void {
+        self.pushTiming(.{
+            .stage = stage,
+            .elapsed_us = (monotonicNowNs() - start_ns) / std.time.ns_per_us,
+            .detail = detail,
+        });
+    }
+
+    fn drain(self: *EventQueue, model: *ui_state.State) usize {
         var local: [max_queued_events]ui_state.ScannerBackendEvent = undefined;
         self.lock_state.lock();
         const count = self.len;
@@ -58,6 +73,7 @@ const EventQueue = struct {
         for (local[0..count]) |event| {
             model.applyScannerBackendEvent(event);
         }
+        return count;
     }
 };
 
@@ -90,6 +106,7 @@ pub const Worker = struct {
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     event_queue: EventQueue = .{},
     cancel_file_written: bool = false,
+    event_sink: ?scanner_events.Sink = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -142,23 +159,31 @@ pub const Worker = struct {
     pub fn startScan(self: *Worker, plan: ui_state.ScanStartPlan, preview_buffer: ?preview_worker.PreviewBuffer) !void {
         if (self.context != null) return error.ScanWorkerBusy;
 
+        const start_ns = monotonicNowNs();
         self.done.store(false, .release);
         self.failed.store(false, .release);
         self.cancelled.store(false, .release);
         self.event_queue.clear();
+        self.event_queue.event_sink = self.event_sink;
         self.cancel_file_written = false;
 
         const output_path = try self.allocator.dupe(u8, plan.output_path);
         errdefer self.allocator.free(output_path);
         const cancel_file_path = if (plan.cancel_file_path) |path| try self.allocator.dupe(u8, path) else null;
         errdefer if (cancel_file_path) |path| self.allocator.free(path);
-        const lut_file_path = try self.prepareLutFile(plan, output_path, preview_buffer);
+        const lut_start = monotonicNowNs();
+        const lut_file_path = try self.prepareLutFile(plan, output_path, preview_buffer, &self.event_queue);
+        self.event_queue.pushTimingSince("native.scan.lut_prepare", lut_start, if (lut_file_path == null) "skipped" else "ok");
         errdefer if (lut_file_path) |path| {
             deleteIfExists(self.io, path);
             self.allocator.free(path);
         };
 
-        if (cancel_file_path) |path| deleteIfExists(self.io, path);
+        if (cancel_file_path) |path| {
+            const cancel_cleanup_start = monotonicNowNs();
+            deleteIfExists(self.io, path);
+            self.event_queue.pushTimingSince("native.scan.cancel_file_cleanup", cancel_cleanup_start, "pre-start");
+        }
 
         const context = try self.allocator.create(Context);
         errdefer self.allocator.destroy(context);
@@ -182,6 +207,7 @@ pub const Worker = struct {
             .event_queue = &self.event_queue,
             .execute = self.execute,
         };
+        self.event_queue.pushTimingSince("native.scan.start_scan", start_ns, "prepared");
 
         self.thread = try std.Thread.spawn(.{}, threadMain, .{context});
         self.context = context;
@@ -192,11 +218,13 @@ pub const Worker = struct {
         plan: ui_state.ScanStartPlan,
         output_path: []const u8,
         preview_buffer: ?preview_worker.PreviewBuffer,
+        event_queue: *EventQueue,
     ) !?[]u8 {
         if (plan.request.kind == .ir) return null;
         const preview = preview_buffer orelse return null;
         if (preview.samples_per_pixel < 3 or preview.bits_per_sample != 8) return null;
         const selection = plan.preview_selection orelse return null;
+        const generate_start = monotonicNowNs();
         const computed = try film_lut.computeFilmLuts(
             self.allocator,
             preview.data,
@@ -206,10 +234,12 @@ pub const Worker = struct {
             .{ .x = selection.x, .y = selection.y, .w = selection.w, .h = selection.h },
             .{ .mode = exposureMode(plan.exposure) },
         );
+        event_queue.pushTimingSince("native.scan.lut_generate", generate_start, "ok");
         if (computed.red == null and computed.green == null and computed.blue == null) return null;
 
         const path = try std.fmt.allocPrint(self.allocator, "{s}.lut.bin", .{output_path});
         errdefer self.allocator.free(path);
+        const write_start = monotonicNowNs();
         try scanner_lut.writeRgbFile(
             self.io,
             path,
@@ -217,6 +247,7 @@ pub const Worker = struct {
             if (computed.green) |*lut| lut else null,
             if (computed.blue) |*lut| lut else null,
         );
+        event_queue.pushTimingSince("native.scan.lut_write", write_start, "ok");
         return path;
     }
 
@@ -224,8 +255,10 @@ pub const Worker = struct {
         if (!model.scanner.cancel_requested or self.cancel_file_written) return;
         const context = self.context orelse return;
         const path = context.cancel_file_path orelse return;
+        const start_ns = monotonicNowNs();
         try writeCancelFile(self.io, path);
         self.cancel_file_written = true;
+        context.event_queue.pushTimingSince("native.scan.cancel_file_write", start_ns, "ok");
     }
 
     pub fn poll(self: *Worker, model: *ui_state.State) bool {
@@ -237,7 +270,15 @@ pub const Worker = struct {
             return false;
         };
 
-        self.event_queue.drain(model);
+        const drain_start = monotonicNowNs();
+        const drained = self.event_queue.drain(model);
+        if (drained != 0) {
+            self.applyTiming(model, .{
+                .stage = "native.scan.event_drain",
+                .elapsed_us = (monotonicNowNs() - drain_start) / std.time.ns_per_us,
+                .detail = "running",
+            });
+        }
         const context = self.context orelse return false;
         if (!context.done.load(.acquire)) return false;
 
@@ -245,8 +286,17 @@ pub const Worker = struct {
             thread.join();
             self.thread = null;
         }
-        self.event_queue.drain(model);
+        const final_drain_start = monotonicNowNs();
+        const final_drained = self.event_queue.drain(model);
+        if (final_drained != 0) {
+            self.applyTiming(model, .{
+                .stage = "native.scan.event_drain",
+                .elapsed_us = (monotonicNowNs() - final_drain_start) / std.time.ns_per_us,
+                .detail = "final",
+            });
+        }
 
+        const state_start = monotonicNowNs();
         if (context.cancelled.load(.acquire)) {
             model.applyScannerBackendEvent(.{ .scan_cancelled = .{
                 .kind = .cancelled,
@@ -263,9 +313,26 @@ pub const Worker = struct {
                 .metadata = context.metadata_path orelse context.output_path,
             } });
         }
+        self.applyTiming(model, .{
+            .stage = "native.scan.state_update",
+            .elapsed_us = (monotonicNowNs() - state_start) / std.time.ns_per_us,
+            .detail = if (context.cancelled.load(.acquire)) "cancelled" else if (context.failed.load(.acquire)) "failed" else "ok",
+        });
 
+        const cleanup_start = monotonicNowNs();
         self.cleanupContext();
+        self.applyTiming(model, .{
+            .stage = "native.scan.cleanup",
+            .elapsed_us = (monotonicNowNs() - cleanup_start) / std.time.ns_per_us,
+            .detail = "ok",
+        });
         return true;
+    }
+
+    fn applyTiming(self: *Worker, model: *ui_state.State, event: scanner_events.TimingEvent) void {
+        scanner_events.emitTiming(event);
+        if (self.event_sink) |sink| sink.send(.{ .timing = event });
+        model.applyScannerBackendEvent(.{ .timing = event });
     }
 
     fn cleanupContext(self: *Worker) void {
@@ -304,6 +371,7 @@ fn threadMain(context: *Context) void {
 }
 
 fn runScannerScan(context: *Context) !void {
+    const setup_start = monotonicNowNs();
     const runtime = scanner_linux.Runtime{
         .allocator = context.allocator,
         .io = context.io,
@@ -313,18 +381,24 @@ fn runScannerScan(context: *Context) !void {
             .emit = enqueueRuntimeEvent,
         },
     };
+    context.event_queue.pushTimingSince("native.scan.runtime_setup", setup_start, "ok");
     var request = context.request.request;
     request.output_path = context.output_path;
+    const scan_start = monotonicNowNs();
     try runtime.scan(.{
         .request = request,
         .output_path = context.output_path,
         .cancel_file = context.cancel_file_path,
     });
+    context.event_queue.pushTimingSince("native.scan.runtime_scan", scan_start, "ok");
+    const metadata_start = monotonicNowNs();
     context.metadata_path = try std.fmt.allocPrint(context.allocator, "{s}.json", .{context.output_path});
+    context.event_queue.pushTimingSince("native.scan.metadata_path", metadata_start, "ok");
 }
 
 fn enqueueRuntimeEvent(raw_context: *anyopaque, event: scanner_events.Event) void {
     const context: *Context = @ptrCast(@alignCast(raw_context));
+    if (context.event_queue.event_sink) |sink| sink.send(event);
     switch (event) {
         .scan_start => |scan_start| context.event_queue.push(.{ .scan_start = .{
             .device = "",
@@ -335,6 +409,7 @@ fn enqueueRuntimeEvent(raw_context: *anyopaque, event: scanner_events.Event) voi
             .effective_dpi = scan_start.effective_dpi,
         } }),
         .progress => |progress| context.event_queue.push(.{ .progress = progress }),
+        .timing => |timing| context.event_queue.push(.{ .timing = timing }),
         else => {},
     }
 }
@@ -363,7 +438,18 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+fn monotonicNowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
 fn fakeScanSuccess(context: *Context) !void {
+    context.event_queue.pushTiming(.{
+        .stage = "native.scan.fake_executor",
+        .elapsed_us = 1,
+        .detail = "ok",
+    });
     if (context.request.request.source != .tpu) return error.BadSource;
     if (context.request.request.output_path == null) return error.MissingOutputPath;
     if (!std.mem.eql(u8, context.request.request.output_path.?, context.output_path)) return error.BadOutputPath;
@@ -374,7 +460,12 @@ fn fakeScanSuccess(context: *Context) !void {
     context.metadata_path = try std.fmt.allocPrint(context.allocator, "{s}.json", .{context.output_path});
 }
 
-fn fakeScanFailure(_: *Context) !void {
+fn fakeScanFailure(context: *Context) !void {
+    context.event_queue.pushTiming(.{
+        .stage = "native.scan.fake_executor",
+        .elapsed_us = 1,
+        .detail = "failed",
+    });
     return error.FakeScanFailure;
 }
 
@@ -475,6 +566,9 @@ test "scan worker consumes queued scan command without blocking UI state" {
     try std.testing.expect(!model.scanner.scanning);
     try std.testing.expectEqual(@as(usize, 2), model.scanner.scan_counter);
     try std.testing.expectEqualStrings("Saved: scan_0001_rgbir_3200dpi.tiff", model.status);
+    try std.testing.expect(model.scanner_timing_count >= 5);
+    try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
+    try std.testing.expectEqualStrings("ok", model.scanner_timing_detail.?);
 }
 
 test "scan worker writes temporary LUT file from preview pixels" {
@@ -519,6 +613,8 @@ test "scan worker writes temporary LUT file from preview pixels" {
     }
     try std.testing.expect(completed);
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, lut_path, .{}));
+    try std.testing.expect(model.scanner_timing_count >= 7);
+    try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
 }
 
 test "scan worker keeps IR-only scans on identity LUT policy" {
@@ -598,6 +694,8 @@ test "scan worker writes cancel file and reports cancellation" {
     try std.testing.expect(!model.scanner.scanning);
     try std.testing.expectEqualStrings("cancel file observed", model.status);
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, cancel_path, .{}));
+    try std.testing.expect(model.scanner_timing_count >= 4);
+    try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
 }
 
 test "scan worker drains live backend scan events while running" {
@@ -647,6 +745,8 @@ test "scan worker drains live backend scan events while running" {
     try std.testing.expect(completed);
     try std.testing.expect(!model.scanner.scanning);
     try std.testing.expectEqualStrings("cancel file observed", model.status);
+    try std.testing.expect(model.scanner_timing_count >= 6);
+    try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
 }
 
 test "scan worker surfaces execution failure to UI state" {
@@ -673,4 +773,6 @@ test "scan worker surfaces execution failure to UI state" {
     try std.testing.expect(completed);
     try std.testing.expect(!model.scanner.scanning);
     try std.testing.expectEqualStrings("Error: FakeScanFailure", model.status);
+    try std.testing.expect(model.scanner_timing_count >= 5);
+    try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
 }

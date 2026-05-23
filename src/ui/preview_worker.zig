@@ -1,12 +1,14 @@
 const std = @import("std");
 
 const scanner_contracts = @import("../scanner/contracts.zig");
+const scanner_events = @import("../scanner/events.zig");
 const scanner_linux = @import("../scanner/linux.zig");
 const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
 const test_worker_poll_attempts = 100_000;
+const max_preview_timing_events = 32;
 
 pub const PreviewBuffer = struct {
     output_path: []u8,
@@ -41,9 +43,31 @@ pub const Context = struct {
     output_path: []u8,
     capabilities: ?scanner_contracts.ScannerCapabilities = null,
     preview_buffer: ?PreviewBuffer = null,
+    timing_events: [max_preview_timing_events]scanner_events.TimingEvent = undefined,
+    timing_len: usize = 0,
+    event_sink: ?scanner_events.Sink = null,
     done: *std.atomic.Value(bool),
     failed: *std.atomic.Value(bool),
     execute: ExecuteFn,
+
+    fn pushTiming(self: *Context, event: scanner_events.TimingEvent) void {
+        scanner_events.emitTiming(event);
+        if (self.event_sink) |sink| sink.send(.{ .timing = event });
+        if (self.timing_len < self.timing_events.len) {
+            self.timing_events[self.timing_len] = event;
+            self.timing_len += 1;
+        } else {
+            self.timing_events[self.timing_events.len - 1] = event;
+        }
+    }
+
+    fn pushTimingSince(self: *Context, stage: []const u8, start_ns: u64, detail: ?[]const u8) void {
+        self.pushTiming(.{
+            .stage = stage,
+            .elapsed_us = (monotonicNowNs() - start_ns) / std.time.ns_per_us,
+            .detail = detail,
+        });
+    }
 };
 
 pub const Worker = struct {
@@ -56,6 +80,7 @@ pub const Worker = struct {
     last_preview: ?PreviewBuffer = null,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    event_sink: ?scanner_events.Sink = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -109,6 +134,7 @@ pub const Worker = struct {
     pub fn startPreview(self: *Worker, plan: ui_state.PreviewScanPlan) !void {
         if (self.context != null) return error.PreviewWorkerBusy;
 
+        const start_ns = monotonicNowNs();
         self.done.store(false, .release);
         self.failed.store(false, .release);
 
@@ -127,10 +153,12 @@ pub const Worker = struct {
             .environ_map = self.environ_map,
             .request = owned_plan,
             .output_path = output_path,
+            .event_sink = self.event_sink,
             .done = &self.done,
             .failed = &self.failed,
             .execute = self.execute,
         };
+        context.pushTimingSince("native.preview.start_preview", start_ns, "prepared");
 
         self.thread = try std.Thread.spawn(.{}, threadMain, .{context});
         self.context = context;
@@ -144,13 +172,21 @@ pub const Worker = struct {
             thread.join();
             self.thread = null;
         }
+        self.applyTimingEvents(model, context);
 
         if (context.failed.load(.acquire)) {
+            const state_start = monotonicNowNs();
             model.applyScannerBackendEvent(.{ .scan_error = .{
                 .kind = .backend_failure,
                 .detail = "preview scan failed",
             } });
+            self.applyTiming(model, .{
+                .stage = "native.preview.state_update",
+                .elapsed_us = (monotonicNowNs() - state_start) / std.time.ns_per_us,
+                .detail = "failed",
+            });
         } else if (context.preview_buffer) |preview| {
+            const state_start = monotonicNowNs();
             self.clearLastPreview();
             self.last_preview = preview;
             context.preview_buffer = null;
@@ -167,14 +203,37 @@ pub const Worker = struct {
             ) catch {
                 model.previewAutoSelectFailed();
             };
+            self.applyTiming(model, .{
+                .stage = "native.preview.state_update",
+                .elapsed_us = (monotonicNowNs() - state_start) / std.time.ns_per_us,
+                .detail = "ok",
+            });
         } else {
+            const state_start = monotonicNowNs();
             model.applyScannerBackendEvent(.{ .scan_error = .{
                 .kind = .backend_failure,
                 .detail = "preview scan produced no image",
             } });
+            self.applyTiming(model, .{
+                .stage = "native.preview.state_update",
+                .elapsed_us = (monotonicNowNs() - state_start) / std.time.ns_per_us,
+                .detail = "missing-image",
+            });
         }
         self.cleanupContext();
         return true;
+    }
+
+    fn applyTimingEvents(_: *Worker, model: *ui_state.State, context: *const Context) void {
+        for (context.timing_events[0..context.timing_len]) |timing| {
+            model.applyScannerBackendEvent(.{ .timing = timing });
+        }
+    }
+
+    fn applyTiming(self: *Worker, model: *ui_state.State, event: scanner_events.TimingEvent) void {
+        scanner_events.emitTiming(event);
+        if (self.event_sink) |sink| sink.send(.{ .timing = event });
+        model.applyScannerBackendEvent(.{ .timing = event });
     }
 
     fn clearLastPreview(self: *Worker) void {
@@ -206,30 +265,52 @@ fn threadMain(context: *Context) void {
 }
 
 fn runScannerPreview(context: *Context) !void {
+    const total_start = monotonicNowNs();
+    var total_detail: []const u8 = "error";
+    defer context.pushTimingSince("native.preview.total", total_start, total_detail);
+
     const runtime = scanner_linux.Runtime{
         .allocator = context.allocator,
         .io = context.io,
         .environ_map = context.environ_map,
+        .event_sink = context.event_sink,
     };
+    const probe_start = monotonicNowNs();
     const probed = try runtime.probe(DiscardOutput{});
     const caps = stableCapabilities(probed);
     context.capabilities = caps;
+    context.pushTimingSince("native.preview.probe", probe_start, "ok");
+    const request_start = monotonicNowNs();
     var request = context.request.request;
     request.area.width = caps.tpu_width_in;
     request.area.height = caps.tpu_height_in;
     request.output_path = context.output_path;
+    context.pushTimingSince("native.preview.request_construct", request_start, "ok");
+    const scan_start = monotonicNowNs();
     try runtime.scan(.{
         .request = request,
         .output_path = context.output_path,
         .capabilities = caps,
     });
+    context.pushTimingSince("native.preview.scan", scan_start, "ok");
+    const load_start = monotonicNowNs();
     var preview = try loadPreviewBuffer(context.allocator, context.output_path);
     errdefer preview.deinit(context.allocator);
+    context.pushTimingSince("native.preview.tiff_load", load_start, "ok");
+    const downsample_start = monotonicNowNs();
+    const downsample_detail: []const u8 = if (request.dpi == effectiveTpuDpi(request.dpi)) "skipped" else "applied";
     preview = try downsamplePreviewIfNeeded(context.allocator, preview, request.dpi, effectiveTpuDpi(request.dpi));
+    context.pushTimingSince("native.preview.downsample", downsample_start, downsample_detail);
     context.preview_buffer = preview;
+    total_detail = "ok";
 }
 
 fn fakePreviewSuccess(context: *Context) !void {
+    context.pushTiming(.{
+        .stage = "native.preview.fake_executor",
+        .elapsed_us = 1,
+        .detail = "ok",
+    });
     if (context.request.request.dpi != 200) return error.BadDpi;
     if (context.request.request.kind != .rgb) return error.BadKind;
     context.capabilities = .{
@@ -247,7 +328,12 @@ fn fakePreviewSuccess(context: *Context) !void {
     );
 }
 
-fn fakePreviewFailure(_: *Context) !void {
+fn fakePreviewFailure(context: *Context) !void {
+    context.pushTiming(.{
+        .stage = "native.preview.fake_executor",
+        .elapsed_us = 1,
+        .detail = "failed",
+    });
     return error.FakePreviewFailure;
 }
 
@@ -485,6 +571,12 @@ fn absDiff(a: u32, b: u32) u32 {
     return if (a > b) a - b else b - a;
 }
 
+fn monotonicNowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
 fn previewBufferFromBytes(
     allocator: std.mem.Allocator,
     output_path: []const u8,
@@ -581,6 +673,9 @@ test "preview worker consumes queued command without blocking UI state" {
     try std.testing.expectApproxEqAbs(2.7, model.scanner.tpu_width_in, 0.0);
     try std.testing.expectApproxEqAbs(9.54, model.scanner.tpu_height_in, 0.0);
     try std.testing.expectEqual(@as(usize, 6), model.preview_image.?.data_len);
+    try std.testing.expect(model.scanner_timing_count >= 3);
+    try std.testing.expectEqualStrings("native.preview.state_update", model.scanner_timing_stage);
+    try std.testing.expectEqualStrings("ok", model.scanner_timing_detail.?);
 }
 
 test "preview worker leaves scan-start command for scan worker" {
@@ -629,6 +724,9 @@ test "preview worker surfaces execution failure to UI state" {
     try std.testing.expect(!model.preview_ready);
     try std.testing.expect(!model.scanner.scanning);
     try std.testing.expectEqualStrings("preview scan failed", model.scanner.scan_status);
+    try std.testing.expect(model.scanner_timing_count >= 3);
+    try std.testing.expectEqualStrings("native.preview.state_update", model.scanner_timing_stage);
+    try std.testing.expectEqualStrings("failed", model.scanner_timing_detail.?);
 }
 
 test "preview worker downsamples unsupported TPU preview dpi like Python SANE path" {

@@ -10,6 +10,7 @@ const processing_workflow = @import("../processing/workflow.zig");
 const scanner_config = @import("../scanner/config.zig");
 const scanner_contracts = @import("../scanner/contracts.zig");
 const scanner_events = @import("../scanner/events.zig");
+const process_cache = @import("process_cache.zig");
 const scan_workflow = @import("scan_workflow.zig");
 const tiff = @import("../tiff.zig");
 
@@ -323,6 +324,7 @@ pub const ScannerBackendEvent = union(enum) {
     scan_complete: scanner_events.ScanCompleteEvent,
     scan_cancelled: scanner_events.ScanFailureEvent,
     scan_error: scanner_events.ScanFailureEvent,
+    timing: scanner_events.TimingEvent,
 };
 
 pub const Command = union(enum) {
@@ -362,15 +364,22 @@ pub const State = struct {
     gallery_files: processing_export.GalleryFileList = .{ .files = &.{} },
     processing_preview: ?processing_workflow.QuickPreview = null,
     processing_inverted_cache: processing_workflow.InvertedPreviewCache = .{},
+    processing_result_cache: process_cache.ProcessResultCache = .{},
     status: []const u8 = "",
     quit_requested: bool = false,
     preview_requested: bool = false,
     preview_ready: bool = false,
     preview_image: ?PreviewImageInfo = null,
     scanner_progress_percent: ?u8 = null,
+    scanner_timing_stage: []const u8 = "",
+    scanner_timing_elapsed_us: u64 = 0,
+    scanner_timing_detail: ?[]const u8 = null,
+    scanner_timing_count: usize = 0,
     pending_command: ?Command = null,
     scan_output_path_buffer: [std.fs.max_path_bytes]u8 = undefined,
     scan_status_buffer: [256]u8 = undefined,
+    scanner_timing_stage_buffer: [96]u8 = undefined,
+    scanner_timing_detail_buffer: [128]u8 = undefined,
     active_scan_mode: ?ScanMode = null,
     active_scan_dpi: u32 = 0,
     pending_config_selection: ?ScanAreaInches = null,
@@ -401,6 +410,7 @@ pub const State = struct {
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
         self.clearProcessingPreview(allocator);
         self.processing_inverted_cache.deinit(allocator);
+        self.processing_result_cache.deinit(allocator);
         self.processing_images.deinit(allocator);
         self.processing_images = .{ .paths = &.{} };
         self.gallery_files.deinit(allocator);
@@ -629,6 +639,24 @@ pub const State = struct {
                     self.status = failure.detail;
                 }
             },
+            .timing => |timing| {
+                self.recordScannerTiming(timing);
+            },
+        }
+    }
+
+    fn recordScannerTiming(self: *State, timing: scanner_events.TimingEvent) void {
+        const stage_len = @min(timing.stage.len, self.scanner_timing_stage_buffer.len);
+        @memcpy(self.scanner_timing_stage_buffer[0..stage_len], timing.stage[0..stage_len]);
+        self.scanner_timing_stage = self.scanner_timing_stage_buffer[0..stage_len];
+        self.scanner_timing_elapsed_us = timing.elapsed_us;
+        self.scanner_timing_count += 1;
+        if (timing.detail) |detail| {
+            const detail_len = @min(detail.len, self.scanner_timing_detail_buffer.len);
+            @memcpy(self.scanner_timing_detail_buffer[0..detail_len], detail[0..detail_len]);
+            self.scanner_timing_detail = self.scanner_timing_detail_buffer[0..detail_len];
+        } else {
+            self.scanner_timing_detail = null;
         }
     }
 

@@ -115,6 +115,7 @@ pub const ProcessFrameOptions = struct {
     invert_request: webgpu.Request = .{},
     captured_noise: ?[]const f64 = null,
     random: ?std.Random = null,
+    timings: ?*ProcessFrameTimings = null,
 };
 
 pub const ProcessFrameResult = struct {
@@ -128,6 +129,92 @@ pub const ProcessFrameResult = struct {
     }
 };
 
+pub const InvertedPositiveOutputTimings = struct {
+    invert_ns: u64 = 0,
+    render_ns: u64 = 0,
+    rotation_ns: u64 = 0,
+};
+
+pub const ProcessFrameTimings = struct {
+    total_ns: u64 = 0,
+    rgb_crop_ns: u64 = 0,
+    ir_crop_ns: u64 = 0,
+    ir_clean_ns: u64 = 0,
+    ir_defect_mask_ns: u64 = 0,
+    ir_adaptive_dust_ns: u64 = 0,
+    ir_adaptive_norm_ns: u64 = 0,
+    ir_adaptive_background1_ns: u64 = 0,
+    ir_adaptive_square1_ns: u64 = 0,
+    ir_adaptive_blurred_square1_ns: u64 = 0,
+    ir_adaptive_coarse_ns: u64 = 0,
+    ir_adaptive_background2_ns: u64 = 0,
+    ir_adaptive_square2_ns: u64 = 0,
+    ir_adaptive_blurred_square2_ns: u64 = 0,
+    ir_adaptive_final_ns: u64 = 0,
+    ir_line_detection_ns: u64 = 0,
+    ir_line_resize_ns: u64 = 0,
+    ir_line_percentile_ns: u64 = 0,
+    ir_meijering_ns: u64 = 0,
+    ir_line_gate_ns: u64 = 0,
+    ir_close_ns: u64 = 0,
+    ir_component_filter_ns: u64 = 0,
+    ir_dilate_ns: u64 = 0,
+    ir_coverage_ns: u64 = 0,
+    ir_mask_resize_ns: u64 = 0,
+    ir_inpaint_total_ns: u64 = 0,
+    ir_inpaint_noise_ns: u64 = 0,
+    ir_inpaint_label_ns: u64 = 0,
+    ir_inpaint_roi_extract_ns: u64 = 0,
+    ir_local_grain_ns: u64 = 0,
+    ir_biharmonic_ns: u64 = 0,
+    ir_grain_synthesis_ns: u64 = 0,
+    ir_masked_writeback_ns: u64 = 0,
+    ir_neg_prepare_ns: u64 = 0,
+    inversion_ns: u64 = 0,
+    display_render_ns: u64 = 0,
+    output_rotation_ns: u64 = 0,
+    metadata_ns: u64 = 0,
+    write_ns: u64 = 0,
+
+    pub fn add(self: *ProcessFrameTimings, other: ProcessFrameTimings) void {
+        inline for (std.meta.fields(ProcessFrameTimings)) |field| {
+            @field(self, field.name) += @field(other, field.name);
+        }
+    }
+
+    pub fn addIrClean(self: *ProcessFrameTimings, other: ir_processing.IrCleanTimings) void {
+        self.ir_defect_mask_ns += other.defect_mask_ns;
+        self.ir_adaptive_dust_ns += other.adaptive_dust_ns;
+        self.ir_adaptive_norm_ns += other.adaptive_norm_ns;
+        self.ir_adaptive_background1_ns += other.adaptive_background1_ns;
+        self.ir_adaptive_square1_ns += other.adaptive_square1_ns;
+        self.ir_adaptive_blurred_square1_ns += other.adaptive_blurred_square1_ns;
+        self.ir_adaptive_coarse_ns += other.adaptive_coarse_ns;
+        self.ir_adaptive_background2_ns += other.adaptive_background2_ns;
+        self.ir_adaptive_square2_ns += other.adaptive_square2_ns;
+        self.ir_adaptive_blurred_square2_ns += other.adaptive_blurred_square2_ns;
+        self.ir_adaptive_final_ns += other.adaptive_final_ns;
+        self.ir_line_detection_ns += other.line_detection_ns;
+        self.ir_line_resize_ns += other.line_resize_ns;
+        self.ir_line_percentile_ns += other.line_percentile_ns;
+        self.ir_meijering_ns += other.meijering_ns;
+        self.ir_line_gate_ns += other.line_gate_ns;
+        self.ir_close_ns += other.close_ns;
+        self.ir_component_filter_ns += other.component_filter_ns;
+        self.ir_dilate_ns += other.dilate_ns;
+        self.ir_coverage_ns += other.coverage_ns;
+        self.ir_mask_resize_ns += other.mask_resize_ns;
+        self.ir_inpaint_total_ns += other.inpaint_total_ns;
+        self.ir_inpaint_noise_ns += other.inpaint_noise_ns;
+        self.ir_inpaint_label_ns += other.inpaint_label_ns;
+        self.ir_inpaint_roi_extract_ns += other.inpaint_roi_extract_ns;
+        self.ir_local_grain_ns += other.local_grain_ns;
+        self.ir_biharmonic_ns += other.biharmonic_ns;
+        self.ir_grain_synthesis_ns += other.grain_synthesis_ns;
+        self.ir_masked_writeback_ns += other.masked_writeback_ns;
+    }
+};
+
 pub const Image = struct {
     width: usize,
     height: usize,
@@ -135,6 +222,17 @@ pub const Image = struct {
     pixels: []f64,
 
     pub fn deinit(self: Image, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+    }
+};
+
+pub const ImageF32 = struct {
+    width: usize,
+    height: usize,
+    channels: usize,
+    pixels: []f32,
+
+    pub fn deinit(self: ImageF32, allocator: std.mem.Allocator) void {
         allocator.free(self.pixels);
     }
 };
@@ -217,26 +315,123 @@ pub fn cropFrame(
 
     const output = try allocator.alloc(f64, out_width * out_height * channels);
     errdefer allocator.free(output);
-    const plane = try allocator.alloc(f64, width * height);
-    defer allocator.free(plane);
 
-    for (0..channels) |channel| {
-        for (0..height) |y| {
-            for (0..width) |x| {
-                plane[y * width + x] = image[(y * width + x) * channels + channel];
-            }
-        }
-        var cropped = try frames.cropRotatedRect(allocator, plane, width, height, rect.cx, rect.cy, rect.w, rect.h, rect.angle);
-        defer cropped.deinit(allocator);
-        if (cropped.width != out_width or cropped.height != out_height) return error.InvalidExportImage;
-        for (0..out_height) |y| {
-            for (0..out_width) |x| {
-                output[(y * out_width + x) * channels + channel] = cropped.pixels[y * out_width + x];
-            }
+    const diag = @sqrt(rect.w * rect.w + rect.h * rect.h) / 2.0;
+    const margin: i64 = @as(i64, @intFromFloat(@ceil(diag))) + 4;
+    const cx_i: i64 = @intFromFloat(rect.cx);
+    const cy_i: i64 = @intFromFloat(rect.cy);
+    const x0_i = @max(cx_i - margin, 0);
+    const y0_i = @max(cy_i - margin, 0);
+    const x1_i = @min(cx_i + margin, @as(i64, @intCast(width)));
+    const y1_i = @min(cy_i + margin, @as(i64, @intCast(height)));
+    if (x1_i <= x0_i or y1_i <= y0_i) return error.InvalidExportImage;
+
+    const x0: usize = @intCast(x0_i);
+    const y0: usize = @intCast(y0_i);
+    const sub_w: usize = @intCast(x1_i - x0_i);
+    const sub_h: usize = @intCast(y1_i - y0_i);
+    const local_cx = rect.cx - @as(f64, @floatFromInt(x0));
+    const local_cy = rect.cy - @as(f64, @floatFromInt(y0));
+
+    const pad: usize = 2;
+    const padded_w: usize = @as(usize, @intFromFloat(@ceil(rect.w))) + pad * 2;
+    const padded_h: usize = @as(usize, @intFromFloat(@ceil(rect.h))) + pad * 2;
+
+    const radians = rect.angle * std.math.pi / 180.0;
+    const alpha = @cos(radians);
+    const beta = @sin(radians);
+    const m00 = alpha;
+    const m01 = beta;
+    var m02 = (1.0 - alpha) * local_cx - beta * local_cy;
+    const m10 = -beta;
+    const m11 = alpha;
+    var m12 = beta * local_cx + (1.0 - alpha) * local_cy;
+    m02 += @as(f64, @floatFromInt(padded_w)) / 2.0 - local_cx;
+    m12 += @as(f64, @floatFromInt(padded_h)) / 2.0 - local_cy;
+
+    const det = m00 * m11 - m01 * m10;
+    if (@abs(det) < 1e-12) return error.InvalidExportImage;
+    const inv00 = m11 / det;
+    const inv01 = -m01 / det;
+    const inv10 = -m10 / det;
+    const inv11 = m00 / det;
+
+    for (0..out_height) |out_y| {
+        for (0..out_width) |out_x| {
+            const dst_x = @as(f64, @floatFromInt(out_x + pad));
+            const dst_y = @as(f64, @floatFromInt(out_y + pad));
+            const tx = dst_x - m02;
+            const ty = dst_y - m12;
+            const src_x = inv00 * tx + inv01 * ty;
+            const src_y = inv10 * tx + inv11 * ty;
+            const out_offset = (out_y * out_width + out_x) * channels;
+            sampleReflectBilinearInterleaved(
+                image,
+                width,
+                channels,
+                x0,
+                y0,
+                sub_w,
+                sub_h,
+                src_x,
+                src_y,
+                output[out_offset..][0..channels],
+            );
         }
     }
 
     return .{ .width = out_width, .height = out_height, .channels = channels, .pixels = output };
+}
+
+fn sampleReflectBilinearInterleaved(
+    image: []const f64,
+    img_width: usize,
+    channels: usize,
+    x0: usize,
+    y0: usize,
+    sub_w: usize,
+    sub_h: usize,
+    x: f64,
+    y: f64,
+    out: []f64,
+) void {
+    const x_floor = @floor(x);
+    const y_floor = @floor(y);
+    const xi: i64 = @intFromFloat(x_floor);
+    const yi: i64 = @intFromFloat(y_floor);
+    const fx = x - x_floor;
+    const fy = y - y_floor;
+    const x_a = reflectIndex(xi, sub_w);
+    const x_b = reflectIndex(xi + 1, sub_w);
+    const y_a = reflectIndex(yi, sub_h);
+    const y_b = reflectIndex(yi + 1, sub_h);
+    const offset00 = ((y0 + y_a) * img_width + x0 + x_a) * channels;
+    const offset10 = ((y0 + y_a) * img_width + x0 + x_b) * channels;
+    const offset01 = ((y0 + y_b) * img_width + x0 + x_a) * channels;
+    const offset11 = ((y0 + y_b) * img_width + x0 + x_b) * channels;
+    for (0..channels) |channel| {
+        const p00 = image[offset00 + channel];
+        const p10 = image[offset10 + channel];
+        const p01 = image[offset01 + channel];
+        const p11 = image[offset11 + channel];
+        const top = p00 * (1.0 - fx) + p10 * fx;
+        const bottom = p01 * (1.0 - fx) + p11 * fx;
+        out[channel] = top * (1.0 - fy) + bottom * fy;
+    }
+}
+
+fn reflectIndex(index: i64, len: usize) usize {
+    if (len <= 1) return 0;
+    const n: i64 = @intCast(len);
+    var reflected = index;
+    while (reflected < 0 or reflected >= n) {
+        if (reflected < 0) {
+            reflected = -reflected - 1;
+        } else {
+            reflected = 2 * n - reflected - 1;
+        }
+    }
+    return @intCast(reflected);
 }
 
 pub fn applyRotation(
@@ -332,10 +527,21 @@ pub fn prepareIrCleanedRegionWithNoise(
     captured_noise: []const f64,
     options: ir_processing.IrCleanOptions,
 ) !Image {
+    return prepareIrCleanedRegionWithNoiseTimed(allocator, raw_crop, ir_crop, captured_noise, options, null);
+}
+
+pub fn prepareIrCleanedRegionWithNoiseTimed(
+    allocator: std.mem.Allocator,
+    raw_crop: Image,
+    ir_crop: Image,
+    captured_noise: []const f64,
+    options: ir_processing.IrCleanOptions,
+    timings: ?*ir_processing.IrCleanTimings,
+) !Image {
     if (raw_crop.channels != 3 or ir_crop.channels != 1) return error.InvalidExportImage;
     const output = try allocator.alloc(f64, raw_crop.pixels.len);
     errdefer allocator.free(output);
-    _ = try ir_processing.irCleanRegionWithNoise(
+    _ = try ir_processing.irCleanRegionWithNoiseTimed(
         allocator,
         raw_crop.pixels,
         raw_crop.width,
@@ -347,6 +553,7 @@ pub fn prepareIrCleanedRegionWithNoise(
         null,
         captured_noise,
         options,
+        timings,
     );
     return .{
         .width = raw_crop.width,
@@ -363,10 +570,21 @@ pub fn prepareIrCleanedRegion(
     ir_crop: Image,
     options: ir_processing.IrCleanOptions,
 ) !Image {
+    return prepareIrCleanedRegionTimed(allocator, random, raw_crop, ir_crop, options, null);
+}
+
+pub fn prepareIrCleanedRegionTimed(
+    allocator: std.mem.Allocator,
+    random: std.Random,
+    raw_crop: Image,
+    ir_crop: Image,
+    options: ir_processing.IrCleanOptions,
+    timings: ?*ir_processing.IrCleanTimings,
+) !Image {
     if (raw_crop.channels != 3 or ir_crop.channels != 1) return error.InvalidExportImage;
     const output = try allocator.alloc(f64, raw_crop.pixels.len);
     errdefer allocator.free(output);
-    _ = try ir_processing.irCleanRegion(
+    _ = try ir_processing.irCleanRegionTimed(
         allocator,
         random,
         raw_crop.pixels,
@@ -378,6 +596,7 @@ pub fn prepareIrCleanedRegion(
         output,
         null,
         options,
+        timings,
     );
     return .{
         .width = raw_crop.width,
@@ -420,17 +639,149 @@ pub fn prepareInvertedPositiveOutputU16(
     render_options: render.RenderToDisplayOptions,
     rotation: i32,
 ) !ImageU16 {
+    return prepareInvertedPositiveOutputU16WithTimings(allocator, crop, invert_options, render_options, rotation, null);
+}
+
+pub fn prepareInvertedPositiveOutputU16WithTimings(
+    allocator: std.mem.Allocator,
+    crop: Image,
+    invert_options: inversion.InvertOptions,
+    render_options: render.RenderToDisplayOptions,
+    rotation: i32,
+    timings: ?*InvertedPositiveOutputTimings,
+) !ImageU16 {
     if (crop.channels != 3) return error.InvalidExportImage;
+
+    if (f32DensityLutExportCoeffs(invert_options)) |coeffs| {
+        if (invert_options.dmin) |dmin| {
+            return prepareInvertedPositiveOutputU16F32DensityLutWithTimings(
+                allocator,
+                crop,
+                dmin,
+                coeffs,
+                invert_options.default_light,
+                render_options,
+                rotation,
+                timings,
+            );
+        }
+    }
 
     const scene_linear = try allocator.alloc(f64, crop.pixels.len);
     defer allocator.free(scene_linear);
+    const invert_started = monotonicNowNs();
     _ = try inversion.invertNegative(allocator, crop.pixels, scene_linear, invert_options);
+    if (timings) |out| out.invert_ns += monotonicNowNs() - invert_started;
 
     const rendered_u16 = try allocator.alloc(u16, crop.pixels.len);
-    defer allocator.free(rendered_u16);
+    errdefer allocator.free(rendered_u16);
+    const render_started = monotonicNowNs();
     try render.renderToDisplay(allocator, scene_linear, rendered_u16, render_options);
+    if (timings) |out| out.render_ns += monotonicNowNs() - render_started;
 
-    return applyRotationU16(allocator, rendered_u16, crop.width, crop.height, crop.channels, rotation);
+    if (rotation != 90 and rotation != 180 and rotation != 270) {
+        return .{
+            .width = crop.width,
+            .height = crop.height,
+            .channels = crop.channels,
+            .pixels = rendered_u16,
+        };
+    }
+
+    const rotation_started = monotonicNowNs();
+    const rotated = try applyRotationU16(allocator, rendered_u16, crop.width, crop.height, crop.channels, rotation);
+    allocator.free(rendered_u16);
+    if (timings) |out| out.rotation_ns += monotonicNowNs() - rotation_started;
+    return rotated;
+}
+
+fn prepareInvertedPositiveOutputU16F32DensityLutWithTimings(
+    allocator: std.mem.Allocator,
+    crop: Image,
+    dmin: [3]f64,
+    coeffs: film_stocks.Coefficients,
+    default_light: f64,
+    render_options: render.RenderToDisplayOptions,
+    rotation: i32,
+    timings: ?*InvertedPositiveOutputTimings,
+) !ImageU16 {
+    const scene_linear = try allocator.alloc(f32, crop.pixels.len);
+    defer allocator.free(scene_linear);
+
+    const invert_started = monotonicNowNs();
+    const density_lut = try inversion.DensityLutF32.initF32(allocator, dminToF32(dmin), @floatCast(default_light));
+    defer density_lut.deinit(allocator);
+    try inversion.invertNegativeF64WithDensityLutF32OutputF32(crop.pixels, scene_linear, density_lut, coeffs);
+    if (timings) |out| out.invert_ns += monotonicNowNs() - invert_started;
+
+    const rendered_u16 = try allocator.alloc(u16, crop.pixels.len);
+    errdefer allocator.free(rendered_u16);
+    const render_started = monotonicNowNs();
+    try render.renderToDisplayU16F32(allocator, scene_linear, rendered_u16, render_options);
+    if (timings) |out| out.render_ns += monotonicNowNs() - render_started;
+
+    if (rotation != 90 and rotation != 180 and rotation != 270) {
+        return .{
+            .width = crop.width,
+            .height = crop.height,
+            .channels = crop.channels,
+            .pixels = rendered_u16,
+        };
+    }
+
+    const rotation_started = monotonicNowNs();
+    const rotated = try applyRotationU16(allocator, rendered_u16, crop.width, crop.height, crop.channels, rotation);
+    allocator.free(rendered_u16);
+    if (timings) |out| out.rotation_ns += monotonicNowNs() - rotation_started;
+    return rotated;
+}
+
+fn prepareInvertedSceneF32OutputU16WithTimings(
+    allocator: std.mem.Allocator,
+    scene_linear: ImageF32,
+    render_options: render.RenderToDisplayOptions,
+    rotation: i32,
+    timings: ?*InvertedPositiveOutputTimings,
+) !ImageU16 {
+    if (scene_linear.channels != 3) return error.InvalidExportImage;
+
+    const rendered_u16 = try allocator.alloc(u16, scene_linear.pixels.len);
+    errdefer allocator.free(rendered_u16);
+    const render_started = monotonicNowNs();
+    try render.renderToDisplayU16F32(allocator, scene_linear.pixels, rendered_u16, render_options);
+    if (timings) |out| out.render_ns += monotonicNowNs() - render_started;
+
+    if (rotation != 90 and rotation != 180 and rotation != 270) {
+        return .{
+            .width = scene_linear.width,
+            .height = scene_linear.height,
+            .channels = scene_linear.channels,
+            .pixels = rendered_u16,
+        };
+    }
+
+    const rotation_started = monotonicNowNs();
+    const rotated = try applyRotationU16(allocator, rendered_u16, scene_linear.width, scene_linear.height, scene_linear.channels, rotation);
+    allocator.free(rendered_u16);
+    if (timings) |out| out.rotation_ns += monotonicNowNs() - rotation_started;
+    return rotated;
+}
+
+pub fn f32DensityLutExportCoeffs(options: inversion.InvertOptions) ?film_stocks.Coefficients {
+    if (options.request.backend != .cpu) return null;
+    if (options.dark_rgb != null or options.light_rgb != null or options.dmin == null) return null;
+    if (!std.math.isFinite(options.default_light) or options.default_light <= 0.0) return null;
+    const coeffs = options.coeffs orelse if (film_stocks.builtinStock(options.stock)) |stock| stock.coeffs else return null;
+    if (!film_stocks.usesOnlyLinearTerms(coeffs)) return null;
+    return coeffs;
+}
+
+fn dminToF32(dmin: [3]f64) [3]f32 {
+    return .{
+        @floatCast(dmin[0]),
+        @floatCast(dmin[1]),
+        @floatCast(dmin[2]),
+    };
 }
 
 pub fn processFrame(
@@ -449,13 +800,22 @@ pub fn processFrame(
         if (ir.channels != 1) return error.InvalidExportImage;
     }
 
+    const total_started = monotonicNowNs();
+    var local_timings = ProcessFrameTimings{};
+    defer if (options.timings) |timings| {
+        local_timings.total_ns = monotonicNowNs() - total_started;
+        timings.* = local_timings;
+    };
+
     var written = std.array_list.Managed([]u8).init(allocator);
     errdefer {
         for (written.items) |name| allocator.free(name);
         written.deinit();
     }
 
+    const raw_crop_started = monotonicNowNs();
     const raw_crop = try cropFrame(allocator, rgb_img.pixels, rgb_img.width, rgb_img.height, rgb_img.channels, rect);
+    local_timings.rgb_crop_ns += monotonicNowNs() - raw_crop_started;
     defer raw_crop.deinit(allocator);
 
     var cleaned_crop: ?Image = null;
@@ -471,55 +831,83 @@ pub fn processFrame(
                 .angle = rect.angle,
                 .rotation = rect.rotation,
             };
+            const ir_crop_started = monotonicNowNs();
             const ir_crop = try cropFrame(allocator, ir.pixels, ir.width, ir.height, ir.channels, ir_rect);
+            local_timings.ir_crop_ns += monotonicNowNs() - ir_crop_started;
             defer ir_crop.deinit(allocator);
+            const ir_clean_started = monotonicNowNs();
+            var ir_timings = ir_processing.IrCleanTimings{};
             cleaned_crop = if (options.captured_noise) |noise|
-                try prepareIrCleanedRegionWithNoise(allocator, raw_crop, ir_crop, noise, options.ir_clean_options)
+                try prepareIrCleanedRegionWithNoiseTimed(allocator, raw_crop, ir_crop, noise, options.ir_clean_options, &ir_timings)
             else if (options.random) |random|
-                try prepareIrCleanedRegion(allocator, random, raw_crop, ir_crop, options.ir_clean_options)
+                try prepareIrCleanedRegionTimed(allocator, random, raw_crop, ir_crop, options.ir_clean_options, &ir_timings)
             else
                 return error.MissingIrInpaintNoise;
+            local_timings.ir_clean_ns += monotonicNowNs() - ir_clean_started;
+            local_timings.addIrClean(ir_timings);
         }
     }
 
     if (options.outputs.ir_neg) {
+        const prepare_started = monotonicNowNs();
         const out = try prepareIrCleanedNegativeOutput(allocator, raw_crop, cleaned_crop, rect.rotation);
+        local_timings.ir_neg_prepare_ns += monotonicNowNs() - prepare_started;
         defer out.deinit(allocator);
+        const metadata_started = monotonicNowNs();
         const metadata = try exportMetadataJson(allocator, options.base_meta, .ir_neg, options.film_stock, options.render_options.contrast, options.dmin);
+        local_timings.metadata_ns += monotonicNowNs() - metadata_started;
         defer allocator.free(metadata);
         const path = try options.paths.path(.ir_neg);
+        const write_started = monotonicNowNs();
         try writeU16Tiff(allocator, path, out, metadata);
+        local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
 
     if (options.outputs.ir_inv and options.outputs.needIr()) {
         const source = cleaned_crop orelse raw_crop;
-        const out = try prepareInvertedPositiveOutputU16(allocator, source, .{
+        var inverted_timings = InvertedPositiveOutputTimings{};
+        const out = try prepareInvertedPositiveOutputU16WithTimings(allocator, source, .{
             .dmin = options.dmin,
             .coeffs = options.stock_coeffs,
             .stock = options.film_stock orelse "kodak_gold",
             .request = options.invert_request,
-        }, options.render_options, rect.rotation);
+        }, options.render_options, rect.rotation, &inverted_timings);
+        local_timings.inversion_ns += inverted_timings.invert_ns;
+        local_timings.display_render_ns += inverted_timings.render_ns;
+        local_timings.output_rotation_ns += inverted_timings.rotation_ns;
         defer out.deinit(allocator);
+        const metadata_started = monotonicNowNs();
         const metadata = try exportMetadataJson(allocator, options.base_meta, .ir_inv, options.film_stock, options.render_options.contrast, options.dmin);
+        local_timings.metadata_ns += monotonicNowNs() - metadata_started;
         defer allocator.free(metadata);
         const path = try options.paths.path(.ir_inv);
+        const write_started = monotonicNowNs();
         try writeU16TiffSamples(allocator, path, out, metadata);
+        local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
 
     if (options.outputs.inv_only) {
-        const out = try prepareInvertedPositiveOutputU16(allocator, raw_crop, .{
+        var inverted_timings = InvertedPositiveOutputTimings{};
+        const out = try prepareInvertedPositiveOutputU16WithTimings(allocator, raw_crop, .{
             .dmin = options.dmin,
             .coeffs = options.stock_coeffs,
             .stock = options.film_stock orelse "kodak_gold",
             .request = options.invert_request,
-        }, options.render_options, rect.rotation);
+        }, options.render_options, rect.rotation, &inverted_timings);
+        local_timings.inversion_ns += inverted_timings.invert_ns;
+        local_timings.display_render_ns += inverted_timings.render_ns;
+        local_timings.output_rotation_ns += inverted_timings.rotation_ns;
         defer out.deinit(allocator);
+        const metadata_started = monotonicNowNs();
         const metadata = try exportMetadataJson(allocator, options.base_meta, .inv_only, options.film_stock, options.render_options.contrast, options.dmin);
+        local_timings.metadata_ns += monotonicNowNs() - metadata_started;
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
+        const write_started = monotonicNowNs();
         try writeU16TiffSamples(allocator, path, out, metadata);
+        local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
 
@@ -528,6 +916,118 @@ pub fn processFrame(
         .shape_width = raw_crop.width,
         .shape_height = raw_crop.height,
     };
+}
+
+pub fn processCroppedFrame(
+    allocator: std.mem.Allocator,
+    frame_index: usize,
+    raw_crop: Image,
+    options: ProcessFrameOptions,
+) !ProcessFrameResult {
+    _ = frame_index;
+    if (raw_crop.channels != 3) return error.InvalidExportImage;
+    if (options.outputs.needIr()) return error.InvalidExportImage;
+
+    const total_started = monotonicNowNs();
+    var local_timings = ProcessFrameTimings{};
+    defer if (options.timings) |timings| {
+        local_timings.total_ns = monotonicNowNs() - total_started;
+        timings.* = local_timings;
+    };
+
+    var written = std.array_list.Managed([]u8).init(allocator);
+    errdefer {
+        for (written.items) |name| allocator.free(name);
+        written.deinit();
+    }
+
+    if (options.outputs.inv_only) {
+        var inverted_timings = InvertedPositiveOutputTimings{};
+        const out = try prepareInvertedPositiveOutputU16WithTimings(allocator, raw_crop, .{
+            .dmin = options.dmin,
+            .coeffs = options.stock_coeffs,
+            .stock = options.film_stock orelse "kodak_gold",
+            .request = options.invert_request,
+        }, options.render_options, options.base_meta.crop.rotation, &inverted_timings);
+        local_timings.inversion_ns += inverted_timings.invert_ns;
+        local_timings.display_render_ns += inverted_timings.render_ns;
+        local_timings.output_rotation_ns += inverted_timings.rotation_ns;
+        defer out.deinit(allocator);
+        const metadata_started = monotonicNowNs();
+        const metadata = try exportMetadataJson(allocator, options.base_meta, .inv_only, options.film_stock, options.render_options.contrast, options.dmin);
+        local_timings.metadata_ns += monotonicNowNs() - metadata_started;
+        defer allocator.free(metadata);
+        const path = try options.paths.path(.inv_only);
+        const write_started = monotonicNowNs();
+        try writeU16TiffSamples(allocator, path, out, metadata);
+        local_timings.write_ns += monotonicNowNs() - write_started;
+        try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
+    }
+
+    return .{
+        .written = try written.toOwnedSlice(),
+        .shape_width = raw_crop.width,
+        .shape_height = raw_crop.height,
+    };
+}
+
+pub fn processInvertedSceneF32Frame(
+    allocator: std.mem.Allocator,
+    frame_index: usize,
+    scene_linear: ImageF32,
+    options: ProcessFrameOptions,
+) !ProcessFrameResult {
+    _ = frame_index;
+    if (scene_linear.channels != 3) return error.InvalidExportImage;
+    if (options.outputs.needIr()) return error.InvalidExportImage;
+
+    const total_started = monotonicNowNs();
+    var local_timings = ProcessFrameTimings{};
+    defer if (options.timings) |timings| {
+        local_timings.total_ns = monotonicNowNs() - total_started;
+        timings.* = local_timings;
+    };
+
+    var written = std.array_list.Managed([]u8).init(allocator);
+    errdefer {
+        for (written.items) |name| allocator.free(name);
+        written.deinit();
+    }
+
+    if (options.outputs.inv_only) {
+        var inverted_timings = InvertedPositiveOutputTimings{};
+        const out = try prepareInvertedSceneF32OutputU16WithTimings(
+            allocator,
+            scene_linear,
+            options.render_options,
+            options.base_meta.crop.rotation,
+            &inverted_timings,
+        );
+        local_timings.display_render_ns += inverted_timings.render_ns;
+        local_timings.output_rotation_ns += inverted_timings.rotation_ns;
+        defer out.deinit(allocator);
+        const metadata_started = monotonicNowNs();
+        const metadata = try exportMetadataJson(allocator, options.base_meta, .inv_only, options.film_stock, options.render_options.contrast, options.dmin);
+        local_timings.metadata_ns += monotonicNowNs() - metadata_started;
+        defer allocator.free(metadata);
+        const path = try options.paths.path(.inv_only);
+        const write_started = monotonicNowNs();
+        try writeU16TiffSamples(allocator, path, out, metadata);
+        local_timings.write_ns += monotonicNowNs() - write_started;
+        try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
+    }
+
+    return .{
+        .written = try written.toOwnedSlice(),
+        .shape_width = scene_linear.width,
+        .shape_height = scene_linear.height,
+    };
+}
+
+fn monotonicNowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 fn writeU16Tiff(

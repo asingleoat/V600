@@ -11,6 +11,7 @@ const ProcessExportWorker = v600.native_ui_process_export_worker.Worker;
 const InvertedPreviewWorker = v600.native_ui_inverted_preview_worker.Worker;
 const InvertedPreviewKey = v600.native_ui_inverted_preview_worker.Key;
 const InvertedPreviewResult = v600.native_ui_inverted_preview_worker.Result;
+const ProcessCache = v600.native_ui_process_cache;
 
 const ProcessUiState = struct {
     preview_size: c_int = 8192,
@@ -56,6 +57,11 @@ const ProcessUiState = struct {
         const len: usize = @intCast(@max(self.export_basename_len, 0));
         return self.export_basename_buffer[0..@min(len, self.export_basename_buffer.len)];
     }
+};
+
+const SmokeWindowSize = struct {
+    width: c_int,
+    height: c_int,
 };
 
 const ProcessAspectOption = struct {
@@ -409,6 +415,7 @@ pub fn main(init: std.process.Init) !void {
     var process_render_smoke = false;
     var process_interaction_smoke = false;
     var process_worker_smoke = false;
+    var process_worker_screenshot_smoke = false;
     var process_dump_smoke = false;
     var process_selector_smoke = false;
     var process_confirm_smoke = false;
@@ -417,9 +424,15 @@ pub fn main(init: std.process.Init) !void {
     var gallery_interaction_smoke = false;
     var gallery_shortcut_smoke = false;
     var gallery_confirm_smoke = false;
+    var gallery_trash_prompt_smoke = false;
+    var gallery_delete_prompt_smoke = false;
     var scanner_connect_smoke = false;
     var preview_worker_output: []const u8 = "/tmp/v600-native-preview-worker-smoke.tiff";
     var scan_worker_output: []const u8 = "/tmp/v600-native-scan-worker-smoke.tiff";
+    var timing_report_path: ?[]const u8 = null;
+    var smoke_hold_ms: u64 = 0;
+    var smoke_resize_to: ?SmokeWindowSize = null;
+    var initial_window_size: ?SmokeWindowSize = null;
     var process_ui = ProcessUiState{};
     var model = v600.native_ui.State.init("scans", "frames", 0);
     defer model.deinit(std.heap.page_allocator);
@@ -435,6 +448,8 @@ pub fn main(init: std.process.Init) !void {
         try v600.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
     );
     syncProcessUiFromConfig(&process_ui, &model);
+    var timing_report: ?v600.scanner.events.TimingReport = null;
+    defer if (timing_report) |*report| report.deinit();
     var connect_worker = ConnectWorker.init(std.heap.page_allocator, init.io, init.environ_map);
     defer connect_worker.deinit();
     var preview_worker = PreviewWorker.init(std.heap.page_allocator, init.io, init.environ_map);
@@ -479,6 +494,10 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--process-worker-smoke")) {
             process_worker_smoke = true;
             smoke = true;
+        } else if (std.mem.eql(u8, arg, "--process-worker-screenshot-smoke")) {
+            process_worker_smoke = true;
+            process_worker_screenshot_smoke = true;
+            smoke = true;
         } else if (std.mem.eql(u8, arg, "--process-dump-smoke")) {
             process_dump_smoke = true;
         } else if (std.mem.eql(u8, arg, "--process-selector-smoke")) {
@@ -508,12 +527,31 @@ pub fn main(init: std.process.Init) !void {
             gallery_render_smoke = true;
             gallery_confirm_smoke = true;
             smoke = true;
+        } else if (std.mem.eql(u8, arg, "--gallery-trash-prompt-smoke")) {
+            gallery_render_smoke = true;
+            gallery_trash_prompt_smoke = true;
+            smoke = true;
+        } else if (std.mem.eql(u8, arg, "--gallery-delete-prompt-smoke")) {
+            gallery_render_smoke = true;
+            gallery_delete_prompt_smoke = true;
+            smoke = true;
         } else if (std.mem.eql(u8, arg, "--ui-theme")) {
             const value = args.next() orelse return error.MissingUiTheme;
             runtime_ui_config.theme = ui_theme.ThemeName.parse(value) orelse return error.InvalidUiTheme;
         } else if (std.mem.eql(u8, arg, "--ui-scale")) {
             const value = args.next() orelse return error.MissingUiScale;
             runtime_ui_config.scale = try ui_theme.parseScale(value);
+        } else if (std.mem.eql(u8, arg, "--timing-report")) {
+            timing_report_path = args.next() orelse return error.MissingTimingReportPath;
+        } else if (std.mem.eql(u8, arg, "--smoke-hold-ms")) {
+            const value = args.next() orelse return error.MissingSmokeHoldMs;
+            smoke_hold_ms = try std.fmt.parseUnsigned(u64, value, 10);
+        } else if (std.mem.eql(u8, arg, "--smoke-resize-to")) {
+            const value = args.next() orelse return error.MissingSmokeResizeTo;
+            smoke_resize_to = try parseSmokeWindowSize(value);
+        } else if (std.mem.eql(u8, arg, "--window-size")) {
+            const value = args.next() orelse return error.MissingWindowSize;
+            initial_window_size = try parseSmokeWindowSize(value);
         } else if (std.mem.eql(u8, arg, "--out")) {
             const output = args.next() orelse return error.MissingSmokeOutput;
             preview_worker_output = output;
@@ -521,15 +559,61 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     runtime_ui_config = runtime_ui_config.normalized();
+    if (timing_report_path) |path| {
+        timing_report = try v600.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
+        if (timing_report) |*report| {
+            const sink = report.sink();
+            preview_worker.event_sink = sink;
+            scan_worker.event_sink = sink;
+        }
+    }
 
     if (smoke) try assertScanBusyQueuePolicy();
 
     if (preview_worker_smoke) {
-        try runPreviewWorkerSmoke(init.environ_map, &model, &preview_worker, preview_worker_output);
+        try writeUiReportContext(&timing_report, .{
+            .command = "native preview-worker smoke",
+            .output = preview_worker_output,
+            .source = .tpu,
+            .kind = .rgb,
+            .depth = .eight,
+            .dpi = model.scanner.preview_dpi,
+        });
+        const skipped = !hardwareSmokeEnabled(init.environ_map);
+        runPreviewWorkerSmoke(init.environ_map, &model, &preview_worker, preview_worker_output) catch |err| {
+            writeUiReportStatus(&timing_report, "native preview-worker smoke", "error", @errorName(err), preview_worker_output);
+            return err;
+        };
+        writeUiReportStatus(
+            &timing_report,
+            "native preview-worker smoke",
+            if (skipped) "skipped" else "ok",
+            if (skipped) "set V600_HARDWARE_SMOKE=1 to run" else null,
+            preview_worker_output,
+        );
         return;
     }
     if (scan_worker_smoke) {
-        try runScanWorkerSmoke(&model, &scan_worker, scan_worker_output);
+        try writeUiReportContext(&timing_report, .{
+            .command = "native scan-worker smoke",
+            .output = scan_worker_output,
+            .source = .tpu,
+            .kind = .rgb,
+            .depth = .sixteen,
+            .dpi = 800,
+        });
+        const skipped = !hardwareSmokeEnabled(init.environ_map);
+        runScanWorkerSmoke(&model, &scan_worker, scan_worker_output) catch |err| {
+            writeUiReportStatus(&timing_report, "native scan-worker smoke", "error", @errorName(err), scan_worker_output);
+            return err;
+        };
+        writeUiReportStatus(
+            &timing_report,
+            "native scan-worker smoke",
+            if (skipped) "skipped" else "ok",
+            if (skipped) "set V600_HARDWARE_SMOKE=1 to run" else null,
+            scan_worker_output,
+        );
         return;
     }
     if (process_dump_smoke) {
@@ -565,7 +649,10 @@ pub fn main(init: std.process.Init) !void {
         try validateProcessExportBasenameUiParity(&process_ui, &model);
     }
     if (process_worker_smoke) {
-        process_worker.execute = v600.native_ui_process_worker.fakeLoadDelayedSuccess;
+        process_worker.execute = if (process_worker_screenshot_smoke)
+            v600.native_ui_process_worker.fakeLoadScreenshotDelayedSuccess
+        else
+            v600.native_ui_process_worker.fakeLoadDelayedSuccess;
         try seedProcessWorkerSmokeImages(&model, std.heap.page_allocator);
         model.show(.process);
         if (!(try process_worker.startLoadIndex(&model, 0, processingPreviewSize(&process_ui)))) {
@@ -580,16 +667,18 @@ pub fn main(init: std.process.Init) !void {
     defer c.SDL_Quit();
 
     const runtime_metrics = runtime_ui_config.metrics();
+    const initial_width = if (initial_window_size) |size| size.width else runtime_metrics.initialWindowWidth();
+    const initial_height = if (initial_window_size) |size| size.height else runtime_metrics.initialWindowHeight();
     const window = c.SDL_CreateWindow(
         "V600",
-        runtime_metrics.initialWindowWidth(),
-        runtime_metrics.initialWindowHeight(),
+        initial_width,
+        initial_height,
         c.SDL_WINDOW_RESIZABLE,
     ) orelse return error.SdlCreateWindowFailed;
     defer c.SDL_DestroyWindow(window);
     updateUiChromeRects(window, &model);
     if (smoke) try assertControlPanelPolicy();
-    if (smoke) try assertFooterStatusPolicy(&process_worker, &process_export_worker);
+    if (smoke and !process_worker_smoke) try assertFooterStatusPolicy(&process_worker, &process_export_worker);
 
     const renderer = c.SDL_CreateRenderer(window, null) orelse return error.SdlCreateRendererFailed;
     defer c.SDL_DestroyRenderer(renderer);
@@ -612,6 +701,12 @@ pub fn main(init: std.process.Init) !void {
     defer gallery_transform.deinit(std.heap.page_allocator);
     var gallery_confirmation = GalleryConfirmation{};
     defer gallery_confirmation.deinit(std.heap.page_allocator);
+    if (gallery_trash_prompt_smoke) {
+        try requestGalleryConfirmation(&model, &gallery_confirmation, std.heap.page_allocator, .trash);
+    }
+    if (gallery_delete_prompt_smoke) {
+        try requestGalleryConfirmation(&model, &gallery_confirmation, std.heap.page_allocator, .delete);
+    }
 
     var atlas: c.struct_nk_font_atlas = undefined;
     c.nk_font_atlas_init_default(&atlas);
@@ -642,6 +737,8 @@ pub fn main(init: std.process.Init) !void {
     var gallery_shortcuts_checked = false;
     var gallery_confirmation_checked = false;
     var last_gallery_refresh_ms: u64 = 0;
+    const smoke_started_ms = c.SDL_GetTicks();
+    var smoke_resize_applied = false;
     while (running) {
         _ = connect_worker.poll(&model);
         var event: c.SDL_Event = undefined;
@@ -771,7 +868,7 @@ pub fn main(init: std.process.Init) !void {
         if (inverted_preview_worker.poll()) |completed| {
             var result = completed;
             defer result.deinit(std.heap.page_allocator);
-            _ = process_texture.installInvertedResult(renderer, std.heap.page_allocator, &model, &result) catch |err| blk: {
+            _ = process_texture.installInvertedResult(renderer, std.heap.page_allocator, init.io, &model, &result) catch |err| blk: {
                 setProcessUiError(&model, err);
                 break :blk false;
             };
@@ -802,7 +899,7 @@ pub fn main(init: std.process.Init) !void {
         if (model.active_view == .gallery) {
             renderGalleryTexture(renderer, &gallery_texture, &gallery_transform, &model, std.heap.page_allocator);
         } else if (model.active_view == .process) {
-            renderProcessTexture(renderer, &process_texture, &inverted_preview_worker, &model, &process_selection_interaction, &process_transform);
+            renderProcessTexture(renderer, init.io, &process_texture, &inverted_preview_worker, &model, &process_selection_interaction, &process_transform);
         } else {
             renderPreviewTexture(renderer, &preview_texture, preview_worker.last_preview, &model);
         }
@@ -902,12 +999,21 @@ pub fn main(init: std.process.Init) !void {
         c.nk_clear(&ctx);
 
         frames += 1;
+        if (smoke_resize_to) |size| {
+            if (!smoke_resize_applied and frames == 1) {
+                if (!c.SDL_SetWindowSize(window, size.width, size.height)) return error.SdlSetWindowSizeFailed;
+                _ = c.SDL_SyncWindow(window);
+                updateUiChromeRects(window, &model);
+                smoke_resize_applied = true;
+            }
+        }
         const smoke_min_frames: usize = if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
         const smoke_max_frames: usize = if (process_render_smoke) 120 else smoke_min_frames;
-        if (smoke and frames >= smoke_min_frames and (!process_render_smoke or process_inverted_render_checked)) running = false;
+        const smoke_elapsed_ms = c.SDL_GetTicks() - smoke_started_ms;
+        if (smoke and frames >= smoke_min_frames and (!process_render_smoke or process_inverted_render_checked) and smoke_elapsed_ms >= smoke_hold_ms) running = false;
         if (smoke and frames >= smoke_max_frames) {
             if (process_render_smoke and !process_inverted_render_checked) return error.ProcessRenderSmokeFailed;
-            running = false;
+            if (smoke_elapsed_ms >= smoke_hold_ms) running = false;
         }
         c.SDL_Delay(16);
     }
@@ -1033,6 +1139,30 @@ fn runScanWorkerSmoke(
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
     const value = environ_map.get("V600_HARDWARE_SMOKE") orelse return false;
     return std.mem.eql(u8, value, "1");
+}
+
+fn writeUiReportContext(
+    report: *?v600.scanner.events.TimingReport,
+    event: v600.scanner.events.TimingContextEvent,
+) !void {
+    if (report.*) |*item| try item.writeContext(event);
+}
+
+fn writeUiReportStatus(
+    report: *?v600.scanner.events.TimingReport,
+    command: []const u8,
+    status: []const u8,
+    detail: ?[]const u8,
+    output: ?[]const u8,
+) void {
+    if (report.*) |*item| {
+        item.writeStatus(.{
+            .command = command,
+            .status = status,
+            .detail = detail,
+            .output = output,
+        }) catch {};
+    }
 }
 
 fn seedSyntheticPreview(preview_worker: *PreviewWorker, model: *v600.native_ui.State) !void {
@@ -4191,6 +4321,7 @@ const ProcessPreviewTextureCache = struct {
         self: *ProcessPreviewTextureCache,
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
+        io: std.Io,
         model: *v600.native_ui.State,
         inverted_preview_worker: *InvertedPreviewWorker,
     ) !*c.SDL_Texture {
@@ -4199,7 +4330,7 @@ const ProcessPreviewTextureCache = struct {
         const options = model.processingInvertedPreviewOptions();
         const generation = model.processingGeneration();
         if (requested_inverted) {
-            try self.maybeStartInvertedRender(allocator, preview, generation, options, inverted_preview_worker);
+            try self.maybeStartInvertedRender(renderer, allocator, io, model, preview, generation, options, inverted_preview_worker);
         } else {
             self.clearRequestKey(allocator);
         }
@@ -4231,6 +4362,7 @@ const ProcessPreviewTextureCache = struct {
         self: *ProcessPreviewTextureCache,
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
+        io: std.Io,
         model: *v600.native_ui.State,
         result: *InvertedPreviewResult,
     ) !bool {
@@ -4246,6 +4378,7 @@ const ProcessPreviewTextureCache = struct {
         if (rgb.len != expected_len) return error.InvalidPreviewBuffer;
 
         const texture = try createProcessRgbTexture(renderer, preview.preview_width, preview.preview_height, rgb);
+        cacheInvertedPreviewResult(allocator, io, model, preview, options, rgb) catch {};
         allocator.free(rgb);
         result.rgb8 = null;
         self.clearTexture(allocator);
@@ -4262,7 +4395,10 @@ const ProcessPreviewTextureCache = struct {
 
     fn maybeStartInvertedRender(
         self: *ProcessPreviewTextureCache,
+        renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
+        io: std.Io,
+        model: *v600.native_ui.State,
         preview: v600.processing.workflow.QuickPreview,
         generation: usize,
         options: v600.processing.workflow.InvertedPreviewOptions,
@@ -4277,6 +4413,7 @@ const ProcessPreviewTextureCache = struct {
         if (self.request_key) |key| {
             if (key.matches(preview, generation, options)) return;
         }
+        if (try self.installCachedInvertedResult(renderer, allocator, io, model, preview, generation, options)) return;
 
         var request_key = try InvertedPreviewKey.initCopy(allocator, preview, generation, options);
         errdefer request_key.deinit(allocator);
@@ -4285,6 +4422,37 @@ const ProcessPreviewTextureCache = struct {
         } else {
             request_key.deinit(allocator);
         }
+    }
+
+    fn installCachedInvertedResult(
+        self: *ProcessPreviewTextureCache,
+        renderer: *c.SDL_Renderer,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        model: *v600.native_ui.State,
+        preview: v600.processing.workflow.QuickPreview,
+        generation: usize,
+        options: v600.processing.workflow.InvertedPreviewOptions,
+    ) !bool {
+        var key = invertedPreviewCacheKey(allocator, io, model, preview, options) catch return false;
+        defer key.deinit(allocator);
+        const rgb = (try model.processing_result_cache.inverted_previews.getClone(allocator, key)) orelse return false;
+        defer allocator.free(rgb);
+        const expected_len = try std.math.mul(usize, try std.math.mul(usize, preview.preview_width, preview.preview_height), 3);
+        if (rgb.len != expected_len) return false;
+        var texture_key = try InvertedPreviewKey.initCopy(allocator, preview, generation, options);
+        errdefer texture_key.deinit(allocator);
+        const texture = try createProcessRgbTexture(renderer, preview.preview_width, preview.preview_height, rgb);
+        self.clearTexture(allocator);
+        self.clearRequestKey(allocator);
+        self.texture = texture;
+        self.data_ptr = null;
+        self.width = preview.preview_width;
+        self.height = preview.preview_height;
+        self.used_inverted = true;
+        self.texture_key = texture_key;
+        texture_key = InvertedPreviewKey.empty();
+        return true;
     }
 
     fn replaceRequestKey(
@@ -4319,6 +4487,38 @@ const ProcessPreviewTextureCache = struct {
         }
     }
 };
+
+fn invertedPreviewCacheKey(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *const v600.native_ui.State,
+    preview: v600.processing.workflow.QuickPreview,
+    options: v600.processing.workflow.InvertedPreviewOptions,
+) !ProcessCache.Key {
+    const path = model.currentProcessingImagePathForWorker() orelse return error.NoProcessImageLoaded;
+    return ProcessCache.invertedPreviewKey(allocator, io, path, &model.processing_config, .{
+        .stock = options.stock,
+        .dmin = options.dmin,
+        .render_options = options.render_options,
+        .invert_request = options.invert_request,
+        .preview_width = preview.preview_width,
+        .preview_height = preview.preview_height,
+        .preview_scale = preview.info.preview_scale,
+    });
+}
+
+fn cacheInvertedPreviewResult(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    model: *v600.native_ui.State,
+    preview: v600.processing.workflow.QuickPreview,
+    options: v600.processing.workflow.InvertedPreviewOptions,
+    rgb8: []const u8,
+) !void {
+    var key = try invertedPreviewCacheKey(allocator, io, model, preview, options);
+    defer key.deinit(allocator);
+    try model.processing_result_cache.inverted_previews.putClone(allocator, key, rgb8);
+}
 
 fn createProcessRgbTexture(
     renderer: *c.SDL_Renderer,
@@ -4877,6 +5077,7 @@ fn renderPreviewTexture(
 
 fn renderProcessTexture(
     renderer: *c.SDL_Renderer,
+    io: std.Io,
     cache: *ProcessPreviewTextureCache,
     inverted_preview_worker: *InvertedPreviewWorker,
     model: *v600.native_ui.State,
@@ -4885,7 +5086,7 @@ fn renderProcessTexture(
 ) void {
     if (model.processing.loading or model.processing_preview == null) return;
     const rect = processImageRect(renderer, model, transform) orelse return;
-    const texture = cache.textureFor(renderer, std.heap.page_allocator, model, inverted_preview_worker) catch return;
+    const texture = cache.textureFor(renderer, std.heap.page_allocator, io, model, inverted_preview_worker) catch return;
     const dst = c.SDL_FRect{
         .x = @floatCast(rect.x),
         .y = @floatCast(rect.y),
@@ -5206,6 +5407,14 @@ fn renderProcessSelectionHandles(
 
 fn nkBool(value: bool) c.nk_bool {
     return if (value) 1 else 0;
+}
+
+fn parseSmokeWindowSize(value: []const u8) !SmokeWindowSize {
+    const separator = std.mem.indexOfScalar(u8, value, 'x') orelse return error.InvalidSmokeWindowSize;
+    const width = try std.fmt.parseInt(c_int, value[0..separator], 10);
+    const height = try std.fmt.parseInt(c_int, value[separator + 1 ..], 10);
+    if (width < 320 or height < 240) return error.InvalidSmokeWindowSize;
+    return .{ .width = width, .height = height };
 }
 
 fn drawText(ctx: *c.struct_nk_context, text: []const u8) void {

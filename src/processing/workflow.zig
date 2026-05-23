@@ -15,6 +15,7 @@ const export_parallel_memory_budget_numerator: usize = 3;
 const export_parallel_memory_budget_denominator: usize = 4;
 const export_parallel_estimate_safety_numerator: usize = 3;
 const export_parallel_estimate_safety_denominator: usize = 2;
+const tiff_to_f64_parallel_min_samples: usize = 4_000_000;
 
 pub const ExportImageShape = struct {
     width: usize,
@@ -63,6 +64,35 @@ extern fn v600_process_quick_preview(
     jpeg_len: *c_int,
 ) c_int;
 
+extern fn v600_process_quick_preview_breakdown(
+    input: [*]const u8,
+    width: c_int,
+    height: c_int,
+    channels: c_int,
+    bits_per_sample: c_int,
+    preview_size: c_int,
+    out_width: *c_int,
+    out_height: *c_int,
+    out_preview_scale: *f64,
+    preview_raw: ?[*]u16,
+    preview_raw_len: c_int,
+    preview_rgb8: ?[*]u8,
+    preview_rgb8_len: c_int,
+    jpeg_buffer: ?[*]u8,
+    jpeg_capacity: c_int,
+    jpeg_len: *c_int,
+    geometry_ns: *u64,
+    resize_ns: *u64,
+    convert_ns: *u64,
+    content_mask_ns: *u64,
+    invert_stretch_ns: *u64,
+    clahe_ns: *u64,
+    raw_copy_ns: *u64,
+    rgb_copy_ns: *u64,
+    jpeg_encode_ns: *u64,
+    jpeg_copy_ns: *u64,
+) c_int;
+
 extern fn v600_decode_jpeg_rgb(
     jpeg: [*]const u8,
     jpeg_len: c_int,
@@ -107,6 +137,33 @@ pub const QuickPreview = struct {
         allocator.free(self.preview_raw);
         allocator.free(self.preview_rgb8);
         allocator.free(self.jpeg);
+    }
+};
+
+pub const QuickPreviewProcessingTimings = struct {
+    total_ns: u64 = 0,
+    geometry_ns: u64 = 0,
+    resize_ns: u64 = 0,
+    convert_ns: u64 = 0,
+    content_mask_ns: u64 = 0,
+    invert_stretch_ns: u64 = 0,
+    clahe_ns: u64 = 0,
+    raw_copy_ns: u64 = 0,
+    rgb_copy_ns: u64 = 0,
+    jpeg_encode_ns: u64 = 0,
+    jpeg_copy_ns: u64 = 0,
+};
+
+pub const QuickPreviewLoadBreakdown = struct {
+    preview: QuickPreview,
+    total_ns: u64 = 0,
+    tiff_open_ifd_ns: u64 = 0,
+    rgb_read_ns: u64 = 0,
+    ir_info_ns: u64 = 0,
+    quick_preview: QuickPreviewProcessingTimings = .{},
+
+    pub fn deinit(self: QuickPreviewLoadBreakdown, allocator: std.mem.Allocator) void {
+        self.preview.deinit(allocator);
     }
 };
 
@@ -159,6 +216,23 @@ pub const RebateWorkflowResult = struct {
     dmin: [3]f64,
 };
 
+pub const ExportWorkflowTimings = struct {
+    total_ns: u64 = 0,
+    create_output_dir_ns: u64 = 0,
+    load_full_image_ns: u64 = 0,
+    dmin_ns: u64 = 0,
+    ir_align_ns: u64 = 0,
+    path_setup_ns: u64 = 0,
+    plan_parallel_ns: u64 = 0,
+    frame_processing_ns: u64 = 0,
+    worker_setup_ns: u64 = 0,
+    scheduler_wait_ns: u64 = 0,
+    result_merge_ns: u64 = 0,
+    progress_build_ns: u64 = 0,
+    final_message_ns: u64 = 0,
+    frame_timings: export_pipeline.ProcessFrameTimings = .{},
+};
+
 pub const FullImage = struct {
     rgb: export_pipeline.Image,
     ir: ?export_pipeline.Image = null,
@@ -185,10 +259,14 @@ pub const ExportWorkflowOptions = struct {
     align_ir: bool = true,
     invert_request: webgpu.Request = .{},
     parallel_frames: bool = true,
+    allow_direct_rgb_crop: bool = true,
     parallel_cpu_count_override: ?usize = null,
     parallel_available_memory_override: ?usize = null,
+    adaptive_dust_precision_override: ?ir_processing.AdaptiveDustPrecision = null,
+    adaptive_dust_worker_count_override: ?usize = null,
     total_seconds_override: ?f64 = null,
     progress_sink: ?ExportProgressSink = null,
+    timings: ?*ExportWorkflowTimings = null,
 };
 
 pub const ExportProgressNotice = struct {
@@ -207,6 +285,7 @@ pub const ExportWorkflowResult = struct {
     files: [][]u8,
     dmin: ?[3]f64 = null,
     parallelism: ?ExportParallelismDecision = null,
+    ir_adaptive_worker_count: usize = 1,
     progress: export_pipeline.ExportProgressList,
 
     pub fn deinit(self: ExportWorkflowResult, allocator: std.mem.Allocator) void {
@@ -241,8 +320,7 @@ pub fn loadImageInfo(
     preview_size: i64,
 ) !ImageLoadInfo {
     const dpi = try tiff.readDpi(allocator, path);
-    const pages = try tiff.loadRgbIrPages(allocator, path);
-    defer pages.deinit(allocator);
+    const pages = try tiff.readRgbIrPageInfo(allocator, path);
 
     const has_ir = if (pages.ir) |ir| ir.samples_per_pixel == 1 else false;
     return .{
@@ -264,66 +342,103 @@ pub fn loadQuickPreview(
     path: []const u8,
     preview_size: i64,
 ) !QuickPreview {
-    const dpi = try tiff.readDpi(allocator, path);
-    const pages = try tiff.loadRgbIrPages(allocator, path);
-    defer pages.deinit(allocator);
-    var result = try generateQuickPreview(allocator, pages.rgb, preview_size);
-    result.info.dpi = dpi;
-    result.info.has_ir = if (pages.ir) |ir| ir.samples_per_pixel == 1 else false;
-    result.info.ir_samples_per_pixel = if (pages.ir) |ir| ir.samples_per_pixel else null;
-    result.info.ir_bits_per_sample = if (pages.ir) |ir| ir.bits_per_sample else null;
+    const loaded = try tiff.loadRgbPageWithMetadata(allocator, path);
+    defer loaded.deinit(allocator);
+    return quickPreviewFromLoadedRgbPage(allocator, loaded, preview_size);
+}
+
+pub fn quickPreviewFromLoadedRgbPage(
+    allocator: std.mem.Allocator,
+    loaded: tiff.RgbPageWithMetadata,
+    preview_size: i64,
+) !QuickPreview {
+    var result = try generateQuickPreview(allocator, loaded.rgb, preview_size);
+    result.info.dpi = loaded.dpi;
+    result.info.has_ir = if (loaded.ir) |ir| ir.samples_per_pixel == 1 else false;
+    result.info.ir_samples_per_pixel = if (loaded.ir) |ir| ir.samples_per_pixel else null;
+    result.info.ir_bits_per_sample = if (loaded.ir) |ir| ir.bits_per_sample else null;
     return result;
 }
+
+pub fn loadQuickPreviewBreakdown(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    preview_size: i64,
+) !QuickPreviewLoadBreakdown {
+    const total_started = monotonicNowNs();
+    var tiff_timings = tiff.RgbPageMetadataTimings{};
+    const loaded = try tiff.loadRgbPageWithMetadataTimed(allocator, path, &tiff_timings);
+    defer loaded.deinit(allocator);
+
+    var generated = try generateQuickPreviewBreakdown(allocator, loaded.rgb, preview_size);
+    errdefer generated.preview.deinit(allocator);
+    generated.preview.info.dpi = loaded.dpi;
+    generated.preview.info.has_ir = if (loaded.ir) |ir| ir.samples_per_pixel == 1 else false;
+    generated.preview.info.ir_samples_per_pixel = if (loaded.ir) |ir| ir.samples_per_pixel else null;
+    generated.preview.info.ir_bits_per_sample = if (loaded.ir) |ir| ir.bits_per_sample else null;
+
+    return .{
+        .preview = generated.preview,
+        .total_ns = monotonicNowNs() - total_started,
+        .tiff_open_ifd_ns = tiff_timings.open_ifd_ns,
+        .rgb_read_ns = tiff_timings.rgb_read_ns,
+        .ir_info_ns = tiff_timings.ir_info_ns,
+        .quick_preview = generated.timings,
+    };
+}
+
+const GeneratedQuickPreviewBreakdown = struct {
+    preview: QuickPreview,
+    timings: QuickPreviewProcessingTimings,
+};
 
 pub fn generateQuickPreview(
     allocator: std.mem.Allocator,
     image: tiff.Image,
     preview_size: i64,
 ) !QuickPreview {
+    return (try generateQuickPreviewInternal(allocator, image, preview_size, false)).preview;
+}
+
+pub fn generateQuickPreviewBreakdown(
+    allocator: std.mem.Allocator,
+    image: tiff.Image,
+    preview_size: i64,
+) !GeneratedQuickPreviewBreakdown {
+    return generateQuickPreviewInternal(allocator, image, preview_size, true);
+}
+
+fn generateQuickPreviewInternal(
+    allocator: std.mem.Allocator,
+    image: tiff.Image,
+    preview_size: i64,
+    collect_timings: bool,
+) !GeneratedQuickPreviewBreakdown {
+    const total_started = monotonicNowNs();
     const width = try toCInt(image.width);
     const height = try toCInt(image.height);
     const channels = try toCInt(image.samples_per_pixel);
     const bits = try toCInt(image.bits_per_sample);
     const preview_size_c = if (preview_size <= 0) 0 else try toCInt(preview_size);
+    const expected = quickPreviewGeometry(image.width, image.height, preview_size);
 
-    var out_width: c_int = 0;
-    var out_height: c_int = 0;
-    var out_scale: f64 = 1.0;
-    var jpeg_len: c_int = 0;
-    const first = v600_process_quick_preview(
-        image.data.ptr,
-        width,
-        height,
-        channels,
-        bits,
-        preview_size_c,
-        &out_width,
-        &out_height,
-        &out_scale,
-        null,
-        0,
-        null,
-        0,
-        null,
-        0,
-        &jpeg_len,
-    );
-    if (first < 0) return error.QuickPreviewFailed;
-    if (out_width <= 0 or out_height <= 0 or jpeg_len <= 0) return error.QuickPreviewFailed;
-
-    const preview_width: usize = @intCast(out_width);
-    const preview_height: usize = @intCast(out_height);
+    const preview_width = expected.width;
+    const preview_height = expected.height;
     const sample_count = try std.math.mul(usize, try std.math.mul(usize, preview_width, preview_height), 3);
     const preview_raw = try allocator.alloc(u16, sample_count);
     errdefer allocator.free(preview_raw);
     const preview_rgb8 = try allocator.alloc(u8, sample_count);
     errdefer allocator.free(preview_rgb8);
-    const jpeg = try allocator.alloc(u8, @intCast(jpeg_len));
+    var jpeg = try allocator.alloc(u8, sample_count);
     errdefer allocator.free(jpeg);
 
-    var second_jpeg_len: c_int = 0;
-    const second = v600_process_quick_preview(
-        image.data.ptr,
+    var out_width: c_int = 0;
+    var out_height: c_int = 0;
+    var out_scale: f64 = 1.0;
+    var jpeg_len: c_int = 0;
+    var timings = QuickPreviewProcessingTimings{};
+    var status = quickPreviewCall(
+        image,
         width,
         height,
         channels,
@@ -338,15 +453,51 @@ pub fn generateQuickPreview(
         try toCInt(preview_rgb8.len),
         jpeg.ptr,
         try toCInt(jpeg.len),
-        &second_jpeg_len,
+        &jpeg_len,
+        collect_timings,
+        &timings,
     );
-    if (second != 0 or second_jpeg_len <= 0 or @as(usize, @intCast(second_jpeg_len)) != jpeg.len or
+
+    if (status == 1 and jpeg_len > 0 and @as(usize, @intCast(jpeg_len)) > jpeg.len) {
+        jpeg = try allocator.realloc(jpeg, @intCast(jpeg_len));
+        jpeg_len = 0;
+        status = quickPreviewCall(
+            image,
+            width,
+            height,
+            channels,
+            bits,
+            preview_size_c,
+            &out_width,
+            &out_height,
+            &out_scale,
+            preview_raw.ptr,
+            try toCInt(sample_count),
+            preview_rgb8.ptr,
+            try toCInt(preview_rgb8.len),
+            jpeg.ptr,
+            try toCInt(jpeg.len),
+            &jpeg_len,
+            collect_timings,
+            &timings,
+        );
+    }
+
+    if (status != 0 or jpeg_len <= 0 or @as(usize, @intCast(jpeg_len)) > jpeg.len or
         out_width <= 0 or out_height <= 0)
     {
         return error.QuickPreviewFailed;
     }
 
-    return .{
+    if (out_width != try toCInt(preview_width) or out_height != try toCInt(preview_height)) {
+        return error.QuickPreviewFailed;
+    }
+    if (@as(usize, @intCast(jpeg_len)) != jpeg.len) {
+        jpeg = try allocator.realloc(jpeg, @intCast(jpeg_len));
+    }
+
+    timings.total_ns = monotonicNowNs() - total_started;
+    return .{ .preview = .{
         .info = .{
             .width = image.width,
             .height = image.height,
@@ -362,7 +513,77 @@ pub fn generateQuickPreview(
         .preview_raw = preview_raw,
         .preview_rgb8 = preview_rgb8,
         .jpeg = jpeg,
-    };
+    }, .timings = timings };
+}
+
+fn quickPreviewCall(
+    image: tiff.Image,
+    width: c_int,
+    height: c_int,
+    channels: c_int,
+    bits: c_int,
+    preview_size_c: c_int,
+    out_width: *c_int,
+    out_height: *c_int,
+    out_scale: *f64,
+    preview_raw: [*]u16,
+    preview_raw_len: c_int,
+    preview_rgb8: [*]u8,
+    preview_rgb8_len: c_int,
+    jpeg: [*]u8,
+    jpeg_len_capacity: c_int,
+    jpeg_len: *c_int,
+    collect_timings: bool,
+    timings: *QuickPreviewProcessingTimings,
+) c_int {
+    if (!collect_timings) {
+        return v600_process_quick_preview(
+            image.data.ptr,
+            width,
+            height,
+            channels,
+            bits,
+            preview_size_c,
+            out_width,
+            out_height,
+            out_scale,
+            preview_raw,
+            preview_raw_len,
+            preview_rgb8,
+            preview_rgb8_len,
+            jpeg,
+            jpeg_len_capacity,
+            jpeg_len,
+        );
+    }
+    return v600_process_quick_preview_breakdown(
+        image.data.ptr,
+        width,
+        height,
+        channels,
+        bits,
+        preview_size_c,
+        out_width,
+        out_height,
+        out_scale,
+        preview_raw,
+        preview_raw_len,
+        preview_rgb8,
+        preview_rgb8_len,
+        jpeg,
+        jpeg_len_capacity,
+        jpeg_len,
+        &timings.geometry_ns,
+        &timings.resize_ns,
+        &timings.convert_ns,
+        &timings.content_mask_ns,
+        &timings.invert_stretch_ns,
+        &timings.clahe_ns,
+        &timings.raw_copy_ns,
+        &timings.rgb_copy_ns,
+        &timings.jpeg_encode_ns,
+        &timings.jpeg_copy_ns,
+    );
 }
 
 pub fn decodeJpegRgb(
@@ -423,7 +644,7 @@ pub fn renderInvertedPreviewRgb8(
         if (use_cpu and options.dmin != null and film_stocks.usesOnlyLinearTerms(coeffs)) {
             const scene = try allocator.alloc(f32, preview.preview_raw.len);
             errdefer allocator.free(scene);
-            const density_lut = try inversion.DensityLutF32.init(allocator, options.dmin.?, 65535.0);
+            const density_lut = try inversion.DensityLutF32.initF32(allocator, dminToF32(options.dmin.?), 65535.0);
             defer density_lut.deinit(allocator);
             try inversion.invertNegativeProvidedDminU16WithDensityLutF32OutputF32(preview.preview_raw, scene, density_lut, coeffs);
             cache.scene_linear_f32 = scene;
@@ -463,6 +684,14 @@ pub fn renderInvertedPreviewRgb8(
         try render.renderToDisplayU8(allocator, cache.scene_linear.?, display8, options.render_options);
     }
     return display8;
+}
+
+fn dminToF32(dmin: [3]f64) [3]f32 {
+    return .{
+        @floatCast(dmin[0]),
+        @floatCast(dmin[1]),
+        @floatCast(dmin[2]),
+    };
 }
 
 fn previewRawToF64(allocator: std.mem.Allocator, preview_raw: []const u16) ![]f64 {
@@ -535,9 +764,9 @@ pub fn autoDetectDetectedFrames(
 }
 
 pub fn loadRgbImageAsF64(allocator: std.mem.Allocator, path: []const u8) !export_pipeline.Image {
-    const pages = try tiff.loadRgbIrPages(allocator, path);
-    defer pages.deinit(allocator);
-    return tiffImageToF64(allocator, pages.rgb);
+    const image = try tiff.loadRgbPage(allocator, path);
+    defer image.deinit(allocator);
+    return tiffImageToF64(allocator, image);
 }
 
 pub fn loadFullImageAsF64(
@@ -546,6 +775,13 @@ pub fn loadFullImageAsF64(
     include_ir: bool,
 ) !FullImage {
     const dpi = try tiff.readDpi(allocator, path);
+    if (!include_ir) {
+        const rgb_page = try tiff.loadRgbPage(allocator, path);
+        defer rgb_page.deinit(allocator);
+        const rgb = try tiffImageToF64(allocator, rgb_page);
+        return .{ .rgb = rgb, .ir = null, .dpi = dpi };
+    }
+
     const pages = try tiff.loadRgbIrPages(allocator, path);
     defer pages.deinit(allocator);
     const rgb = try tiffImageToF64(allocator, pages.rgb);
@@ -582,9 +818,25 @@ pub fn computeRebateDminFromTiff(
     path: []const u8,
     rect: frames.RebateOriginRect,
 ) ![3]f64 {
-    const image = try loadRgbImageAsF64(allocator, path);
+    const image = try tiff.loadRgbPage(allocator, path);
     defer image.deinit(allocator);
-    return computeRebateDminFromImage(allocator, image, rect);
+    return computeRebateDminFromTiffImage(allocator, image, rect);
+}
+
+pub fn computeRebateDminFromTiffImage(
+    allocator: std.mem.Allocator,
+    image: tiff.Image,
+    rect: frames.RebateOriginRect,
+) ![3]f64 {
+    const crop = try cropRgbFrameFromTiffImage(allocator, image, .{
+        .cx = rect.x + rect.w / 2.0,
+        .cy = rect.y + rect.h / 2.0,
+        .w = rect.w,
+        .h = rect.h,
+        .angle = rect.angle * 180.0 / std.math.pi,
+    });
+    defer crop.deinit(allocator);
+    return inversion.computeDmin(allocator, crop.pixels, null, .{});
 }
 
 pub fn saveRebateDmin(
@@ -617,12 +869,18 @@ pub fn processExportFromTiff(
     io: std.Io,
     options: ExportWorkflowOptions,
 ) !ExportWorkflowResult {
+    if (options.timings) |timings| timings.* = .{};
     if (!options.outputs.any()) {
         return noOutputExportResult(allocator);
     }
 
     const start = monotonicNowNs();
+    defer if (options.timings) |timings| {
+        timings.total_ns = monotonicNowNs() - start;
+    };
+    const create_dir_started = monotonicNowNs();
     try std.Io.Dir.cwd().createDirPath(io, options.output_dir);
+    if (options.timings) |timings| timings.create_output_dir_ns += monotonicNowNs() - create_dir_started;
     const need_ir = options.outputs.needIr();
     const need_invert = options.outputs.needInvert();
     try emitExportProgressFmt(
@@ -634,12 +892,19 @@ pub fn processExportFromTiff(
         null,
     );
 
+    if (canUseDirectRgbCropExport(options, need_ir, need_invert)) {
+        return processExportDirectRgbCropFromTiff(allocator, io, options, start, need_ir, need_invert);
+    }
+
+    const load_started = monotonicNowNs();
     var full = try loadFullImageAsF64(allocator, options.input_path, need_ir);
+    if (options.timings) |timings| timings.load_full_image_ns += monotonicNowNs() - load_started;
     defer full.deinit(allocator);
     const current_dpi = options.current_dpi orelse full.dpi;
 
     var dmin = options.dmin;
     if (options.active_stock != null and dmin == null) {
+        const dmin_started = monotonicNowNs();
         if (options.rebate_rect) |rebate| {
             if (frames.rebateInBounds(full.rgb.width, full.rgb.height, rebate)) {
                 dmin = try computeRebateDminFromImage(allocator, full.rgb, rebate);
@@ -648,6 +913,7 @@ pub fn processExportFromTiff(
         if (dmin == null) {
             dmin = try inversion.computeDmin(allocator, full.rgb.pixels, null, .{});
         }
+        if (options.timings) |timings| timings.dmin_ns += monotonicNowNs() - dmin_started;
     }
 
     var aligned_ir: ?export_pipeline.Image = null;
@@ -660,6 +926,7 @@ pub fn processExportFromTiff(
             });
             const aligned = try allocator.alloc(f64, ir.pixels.len);
             errdefer allocator.free(aligned);
+            const align_started = monotonicNowNs();
             _ = try ir_processing.alignIr(
                 allocator,
                 full.rgb.pixels,
@@ -671,6 +938,7 @@ pub fn processExportFromTiff(
                 aligned,
                 .{},
             );
+            if (options.timings) |timings| timings.ir_align_ns += monotonicNowNs() - align_started;
             aligned_ir = .{ .width = ir.width, .height = ir.height, .channels = 1, .pixels = aligned };
         }
     }
@@ -695,8 +963,12 @@ pub fn processExportFromTiff(
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(full.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(full.rgb.height)) else 1.0;
     const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
-    const ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides);
+    var ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides);
+    if (options.adaptive_dust_precision_override) |precision| {
+        ir_clean_options.defect_mask.adaptive_precision = precision;
+    }
 
+    const path_setup_started = monotonicNowNs();
     const jobs = try allocator.alloc(FrameExportJob, options.rects.len);
     var jobs_len: usize = 0;
     errdefer {
@@ -715,7 +987,9 @@ pub fn processExportFromTiff(
         };
         jobs_len += 1;
     }
+    if (options.timings) |timings| timings.path_setup_ns += monotonicNowNs() - path_setup_started;
 
+    const plan_started = monotonicNowNs();
     const parallel_decision: ExportParallelismDecision = if (jobs.len > 1 and options.parallel_frames)
         planExportParallelism(.{
             .rects = options.rects,
@@ -738,10 +1012,15 @@ pub fn processExportFromTiff(
             .adjusted_worker_peak_bytes = 0,
             .memory_limited = false,
         };
+    if (options.timings) |timings| timings.plan_parallel_ns += monotonicNowNs() - plan_started;
+    const ir_adaptive_worker_count = adaptiveDustWorkerCountForOptions(options, parallel_decision);
+    ir_clean_options.defect_mask.adaptive_worker_count = ir_adaptive_worker_count;
 
+    const frame_processing_started = monotonicNowNs();
     if (jobs.len <= 1 or !options.parallel_frames or parallel_decision.worker_count <= 1) {
         for (jobs) |job| {
             var prng = std.Random.DefaultPrng.init(frameExportSeed(job.frame_index));
+            var frame_timings = export_pipeline.ProcessFrameTimings{};
             const result = try export_pipeline.processFrame(
                 allocator,
                 job.frame_index,
@@ -765,8 +1044,10 @@ pub fn processExportFromTiff(
                     .ir_clean_options = ir_clean_options,
                     .invert_request = options.invert_request,
                     .random = prng.random(),
+                    .timings = &frame_timings,
                 },
             );
+            if (options.timings) |timings| timings.frame_timings.add(frame_timings);
             defer result.deinit(allocator);
             for (result.written) |name| {
                 try written.append(try allocator.dupe(u8, name));
@@ -796,8 +1077,9 @@ pub fn processExportFromTiff(
             .ir_clean_options = ir_clean_options,
             .invert_request = options.invert_request,
             .progress_sink = options.progress_sink,
-        });
+        }, options.timings);
     }
+    if (options.timings) |timings| timings.frame_processing_ns += monotonicNowNs() - frame_processing_started;
 
     const files = try written.toOwnedSlice();
     errdefer {
@@ -806,6 +1088,7 @@ pub fn processExportFromTiff(
     }
     const total_seconds = options.total_seconds_override orelse
         @as(f64, @floatFromInt(monotonicNowNs() - start)) / @as(f64, @floatFromInt(std.time.ns_per_s));
+    const progress_started = monotonicNowNs();
     var progress = try export_pipeline.buildBatchExportProgress(
         allocator,
         options.rects.len,
@@ -815,13 +1098,16 @@ pub fn processExportFromTiff(
         options.output_dir,
         total_seconds,
     );
+    if (options.timings) |timings| timings.progress_build_ns += monotonicNowNs() - progress_started;
     errdefer progress.deinit(allocator);
+    const message_started = monotonicNowNs();
     const message = try std.fmt.allocPrint(allocator, "Exported {d} file{s} to {s}/ ({d:.1}s)", .{
         files.len,
         if (files.len == 1) "" else "s",
         options.output_dir,
         total_seconds,
     });
+    if (options.timings) |timings| timings.final_message_ns += monotonicNowNs() - message_started;
     errdefer allocator.free(message);
     emitExportProgress(options.progress_sink, .{
         .kind = .complete,
@@ -833,6 +1119,237 @@ pub fn processExportFromTiff(
         .files = files,
         .dmin = dmin,
         .parallelism = parallel_decision,
+        .ir_adaptive_worker_count = ir_adaptive_worker_count,
+        .progress = progress,
+    };
+}
+
+pub fn processExportFromCachedRgbPage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    loaded: tiff.RgbPageWithMetadata,
+    options: ExportWorkflowOptions,
+) !ExportWorkflowResult {
+    if (options.timings) |timings| timings.* = .{};
+    if (!options.outputs.any()) {
+        return noOutputExportResult(allocator);
+    }
+
+    const start = monotonicNowNs();
+    defer if (options.timings) |timings| {
+        timings.total_ns = monotonicNowNs() - start;
+    };
+    const create_dir_started = monotonicNowNs();
+    try std.Io.Dir.cwd().createDirPath(io, options.output_dir);
+    if (options.timings) |timings| timings.create_output_dir_ns += monotonicNowNs() - create_dir_started;
+    const need_ir = options.outputs.needIr();
+    const need_invert = options.outputs.needInvert();
+    if (!canUseDirectRgbCropExport(options, need_ir, need_invert)) return error.UnsupportedCachedRgbExport;
+
+    try emitExportProgressFmt(
+        allocator,
+        options.progress_sink,
+        .preparing,
+        "Preparing export ({d} frame{s})...",
+        .{ options.rects.len, if (options.rects.len == 1) "" else "s" },
+        null,
+    );
+
+    return processExportDirectRgbCropFromLoadedPage(allocator, io, options, start, loaded, need_ir, need_invert);
+}
+
+fn canUseDirectRgbCropExport(options: ExportWorkflowOptions, need_ir: bool, need_invert: bool) bool {
+    return options.allow_direct_rgb_crop and
+        !need_ir and
+        need_invert and
+        options.dmin != null and
+        options.outputs.inv_only and
+        !options.outputs.ir_inv and
+        !options.outputs.ir_neg;
+}
+
+fn processExportDirectRgbCropFromTiff(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ExportWorkflowOptions,
+    workflow_start_ns: u64,
+    need_ir: bool,
+    need_invert: bool,
+) !ExportWorkflowResult {
+    std.debug.assert(!need_ir);
+    std.debug.assert(need_invert);
+
+    const load_started = monotonicNowNs();
+    const loaded = try tiff.loadRgbPageWithMetadata(allocator, options.input_path);
+    if (options.timings) |timings| timings.load_full_image_ns += monotonicNowNs() - load_started;
+    defer loaded.deinit(allocator);
+    return processExportDirectRgbCropFromLoadedPage(allocator, io, options, workflow_start_ns, loaded, need_ir, need_invert);
+}
+
+fn processExportDirectRgbCropFromLoadedPage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ExportWorkflowOptions,
+    workflow_start_ns: u64,
+    loaded: tiff.RgbPageWithMetadata,
+    need_ir: bool,
+    need_invert: bool,
+) !ExportWorkflowResult {
+    std.debug.assert(!need_ir);
+    std.debug.assert(need_invert);
+    const dmin = options.dmin.?;
+
+    const current_dpi = options.current_dpi orelse loaded.dpi;
+
+    const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input_path));
+    const film_stock = options.active_stock;
+    const stock_coeffs = options.stock_coeffs;
+    var written = std.array_list.Managed([]u8).init(allocator);
+    defer written.deinit();
+    errdefer {
+        for (written.items) |name| allocator.free(name);
+    }
+    try emitExportProgressFmt(
+        allocator,
+        options.progress_sink,
+        .processing,
+        "Processing {d} frame{s}...",
+        .{ options.rects.len, if (options.rects.len == 1) "" else "s" },
+        null,
+    );
+
+    const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
+    var ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides);
+    if (options.adaptive_dust_precision_override) |precision| {
+        ir_clean_options.defect_mask.adaptive_precision = precision;
+    }
+
+    const path_setup_started = monotonicNowNs();
+    const jobs = try allocator.alloc(FrameExportJob, options.rects.len);
+    var jobs_len: usize = 0;
+    errdefer {
+        for (jobs[0..jobs_len]) |*job| job.paths.deinit(allocator);
+        allocator.free(jobs);
+    }
+    defer {
+        for (jobs[0..jobs_len]) |*job| job.paths.deinit(allocator);
+        allocator.free(jobs);
+    }
+    for (options.rects, 0..) |rect, frame_index| {
+        jobs[jobs_len] = .{
+            .frame_index = frame_index,
+            .rect = rect,
+            .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs),
+        };
+        jobs_len += 1;
+    }
+    if (options.timings) |timings| timings.path_setup_ns += monotonicNowNs() - path_setup_started;
+
+    const plan_started = monotonicNowNs();
+    const parallel_decision: ExportParallelismDecision = if (jobs.len > 1 and options.parallel_frames)
+        planExportParallelism(.{
+            .rects = options.rects,
+            .outputs = options.outputs,
+            .rgb_shape = exportTiffImageShape(loaded.rgb),
+            .aligned_ir_shape = null,
+            .render_options = render_options,
+            .cpu_count = options.parallel_cpu_count_override orelse (std.Thread.getCpuCount() catch 1),
+            .available_memory_bytes = options.parallel_available_memory_override orelse availableSystemMemoryBytes(io),
+        })
+    else
+        .{
+            .worker_count = if (jobs.len == 0) 0 else 1,
+            .cpu_count = options.parallel_cpu_count_override orelse 1,
+            .cpu_worker_limit = 1,
+            .memory_worker_limit = null,
+            .available_memory_bytes = options.parallel_available_memory_override,
+            .memory_budget_bytes = null,
+            .estimated_worker_peak_bytes = 0,
+            .adjusted_worker_peak_bytes = 0,
+            .memory_limited = false,
+        };
+    if (options.timings) |timings| timings.plan_parallel_ns += monotonicNowNs() - plan_started;
+    const ir_adaptive_worker_count = adaptiveDustWorkerCountForOptions(options, parallel_decision);
+    ir_clean_options.defect_mask.adaptive_worker_count = ir_adaptive_worker_count;
+
+    const shared = DirectRgbFrameExportShared{
+        .rgb_page = loaded.rgb,
+        .source = std.fs.path.basename(options.input_path),
+        .rebate_rect = options.rebate_rect,
+        .outputs = options.outputs,
+        .film_stock = film_stock,
+        .stock_coeffs = stock_coeffs,
+        .dmin = dmin,
+        .render_options = render_options,
+        .ir_clean_options = ir_clean_options,
+        .invert_request = options.invert_request,
+        .inner_scene_worker_count = innerSceneWorkerCount(parallel_decision),
+        .progress_sink = options.progress_sink,
+    };
+
+    const frame_processing_started = monotonicNowNs();
+    if (jobs.len <= 1 or !options.parallel_frames or parallel_decision.worker_count <= 1) {
+        for (jobs) |job| {
+            var frame_timings = export_pipeline.ProcessFrameTimings{};
+            const result = try processDirectRgbFrameJob(allocator, job, shared, &frame_timings);
+            if (options.timings) |timings| timings.frame_timings.add(frame_timings);
+            defer result.deinit(allocator);
+            for (result.written) |name| {
+                try written.append(try allocator.dupe(u8, name));
+                try emitExportProgressFmt(
+                    allocator,
+                    options.progress_sink,
+                    .wrote_file,
+                    "Wrote {s}",
+                    .{name},
+                    name,
+                );
+            }
+        }
+    } else {
+        try processDirectRgbFramesParallel(allocator, &written, jobs, parallel_decision.worker_count, shared, options.timings);
+    }
+    if (options.timings) |timings| timings.frame_processing_ns += monotonicNowNs() - frame_processing_started;
+
+    const files = try written.toOwnedSlice();
+    errdefer {
+        for (files) |file| allocator.free(file);
+        allocator.free(files);
+    }
+    const total_seconds = options.total_seconds_override orelse
+        @as(f64, @floatFromInt(monotonicNowNs() - workflow_start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s));
+    const progress_started = monotonicNowNs();
+    var progress = try export_pipeline.buildBatchExportProgress(
+        allocator,
+        options.rects.len,
+        need_ir,
+        loaded.ir != null,
+        files,
+        options.output_dir,
+        total_seconds,
+    );
+    if (options.timings) |timings| timings.progress_build_ns += monotonicNowNs() - progress_started;
+    errdefer progress.deinit(allocator);
+    const message_started = monotonicNowNs();
+    const message = try std.fmt.allocPrint(allocator, "Exported {d} file{s} to {s}/ ({d:.1}s)", .{
+        files.len,
+        if (files.len == 1) "" else "s",
+        options.output_dir,
+        total_seconds,
+    });
+    if (options.timings) |timings| timings.final_message_ns += monotonicNowNs() - message_started;
+    errdefer allocator.free(message);
+    emitExportProgress(options.progress_sink, .{
+        .kind = .complete,
+        .message = message,
+    });
+
+    return .{
+        .message = message,
+        .files = files,
+        .dmin = dmin,
+        .parallelism = parallel_decision,
+        .ir_adaptive_worker_count = ir_adaptive_worker_count,
         .progress = progress,
     };
 }
@@ -970,6 +1487,14 @@ fn exportImageShape(image: export_pipeline.Image) ExportImageShape {
     return .{ .width = image.width, .height = image.height, .channels = image.channels };
 }
 
+fn exportTiffImageShape(image: tiff.Image) ExportImageShape {
+    return .{
+        .width = @intCast(image.width),
+        .height = @intCast(image.height),
+        .channels = @intCast(image.samples_per_pixel),
+    };
+}
+
 fn availableSystemMemoryBytes(io: std.Io) ?usize {
     if (linuxMemAvailableBytes(io)) |available| return available;
     const total = std.process.totalSystemMemory() catch return null;
@@ -1084,10 +1609,26 @@ const FrameExportShared = struct {
     progress_sink: ?ExportProgressSink,
 };
 
+const DirectRgbFrameExportShared = struct {
+    rgb_page: tiff.Image,
+    source: []const u8,
+    rebate_rect: ?frames.RebateOriginRect,
+    outputs: export_pipeline.OutputSelection,
+    film_stock: ?[]const u8,
+    stock_coeffs: ?film_stocks.Coefficients,
+    dmin: [3]f64,
+    render_options: render.RenderToDisplayOptions,
+    ir_clean_options: ir_processing.IrCleanOptions,
+    invert_request: webgpu.Request,
+    inner_scene_worker_count: usize,
+    progress_sink: ?ExportProgressSink,
+};
+
 const FrameExportOutcome = struct {
     backing_allocator: std.mem.Allocator = std.heap.smp_allocator,
     result: ?export_pipeline.ProcessFrameResult = null,
     err: ?anyerror = null,
+    timings: export_pipeline.ProcessFrameTimings = .{},
 
     fn allocator(self: *FrameExportOutcome) std.mem.Allocator {
         return self.backing_allocator;
@@ -1108,17 +1649,212 @@ const FrameExportQueue = struct {
     completion_order: []usize,
 };
 
+const DirectRgbFrameExportQueue = struct {
+    next_job: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    completed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    jobs: []const FrameExportJob,
+    shared: DirectRgbFrameExportShared,
+    outcomes: []FrameExportOutcome,
+    completion_order: []usize,
+};
+
+fn processDirectRgbFrameJob(
+    allocator: std.mem.Allocator,
+    job: FrameExportJob,
+    shared: DirectRgbFrameExportShared,
+    timings: ?*export_pipeline.ProcessFrameTimings,
+) !export_pipeline.ProcessFrameResult {
+    const total_started = monotonicNowNs();
+    var local_timings = export_pipeline.ProcessFrameTimings{};
+
+    const invert_options = inversion.InvertOptions{
+        .dmin = shared.dmin,
+        .coeffs = shared.stock_coeffs,
+        .stock = shared.film_stock orelse "kodak_gold",
+        .request = shared.invert_request,
+    };
+    if (export_pipeline.f32DensityLutExportCoeffs(invert_options)) |coeffs| {
+        const invert_started = monotonicNowNs();
+        const density_lut = try inversion.DensityLutF32.initF32(allocator, f64TripleToF32(shared.dmin), @floatCast(invert_options.default_light));
+        defer density_lut.deinit(allocator);
+        const scene_linear = try cropRgbFrameFromTiffImageInvertedSceneF32(
+            allocator,
+            shared.rgb_page,
+            job.rect,
+            density_lut,
+            coeffs,
+            shared.inner_scene_worker_count,
+        );
+        local_timings.inversion_ns += monotonicNowNs() - invert_started;
+        defer scene_linear.deinit(allocator);
+
+        var body_timings = export_pipeline.ProcessFrameTimings{};
+        const result = try export_pipeline.processInvertedSceneF32Frame(
+            allocator,
+            job.frame_index,
+            scene_linear,
+            .{
+                .outputs = shared.outputs,
+                .paths = job.paths.paths,
+                .base_meta = .{
+                    .source = shared.source,
+                    .rebate_rect = shared.rebate_rect,
+                    .crop = job.rect,
+                },
+                .film_stock = shared.film_stock,
+                .stock_coeffs = shared.stock_coeffs,
+                .dmin = shared.dmin,
+                .render_options = shared.render_options,
+                .ir_clean_options = shared.ir_clean_options,
+                .invert_request = shared.invert_request,
+                .timings = &body_timings,
+            },
+        );
+        local_timings.add(body_timings);
+        local_timings.total_ns = monotonicNowNs() - total_started;
+        if (timings) |out| out.* = local_timings;
+        return result;
+    }
+
+    const crop_started = monotonicNowNs();
+    const raw_crop = try cropRgbFrameFromTiffImage(allocator, shared.rgb_page, job.rect);
+    local_timings.rgb_crop_ns += monotonicNowNs() - crop_started;
+    defer raw_crop.deinit(allocator);
+
+    var body_timings = export_pipeline.ProcessFrameTimings{};
+    const result = try export_pipeline.processCroppedFrame(
+        allocator,
+        job.frame_index,
+        raw_crop,
+        .{
+            .outputs = shared.outputs,
+            .paths = job.paths.paths,
+            .base_meta = .{
+                .source = shared.source,
+                .rebate_rect = shared.rebate_rect,
+                .crop = job.rect,
+            },
+            .film_stock = shared.film_stock,
+            .stock_coeffs = shared.stock_coeffs,
+            .dmin = shared.dmin,
+            .render_options = shared.render_options,
+            .ir_clean_options = shared.ir_clean_options,
+            .invert_request = shared.invert_request,
+            .timings = &body_timings,
+        },
+    );
+    local_timings.add(body_timings);
+    local_timings.total_ns = monotonicNowNs() - total_started;
+    if (timings) |out| out.* = local_timings;
+    return result;
+}
+
+fn processDirectRgbFramesParallel(
+    allocator: std.mem.Allocator,
+    written: *std.array_list.Managed([]u8),
+    jobs: []const FrameExportJob,
+    worker_count: usize,
+    shared: DirectRgbFrameExportShared,
+    timings: ?*ExportWorkflowTimings,
+) !void {
+    std.debug.assert(jobs.len > 1);
+    std.debug.assert(worker_count > 1);
+    std.debug.assert(worker_count <= jobs.len);
+
+    const setup_started = monotonicNowNs();
+    const outcomes = try allocator.alloc(FrameExportOutcome, jobs.len);
+    defer allocator.free(outcomes);
+    for (outcomes) |*outcome| outcome.* = .{};
+    defer for (outcomes) |*outcome| outcome.deinit();
+
+    const completion_order = try allocator.alloc(usize, jobs.len);
+    defer allocator.free(completion_order);
+
+    var queue = DirectRgbFrameExportQueue{
+        .jobs = jobs,
+        .shared = shared,
+        .outcomes = outcomes,
+        .completion_order = completion_order,
+    };
+
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+    var thread_count: usize = 0;
+    errdefer for (threads[0..thread_count]) |thread| thread.join();
+    if (timings) |out| out.worker_setup_ns += monotonicNowNs() - setup_started;
+    const scheduler_started = monotonicNowNs();
+    while (thread_count < worker_count) : (thread_count += 1) {
+        threads[thread_count] = try std.Thread.spawn(.{}, directRgbFrameExportWorker, .{&queue});
+    }
+    for (threads[0..thread_count]) |thread| thread.join();
+    if (timings) |out| out.scheduler_wait_ns += monotonicNowNs() - scheduler_started;
+
+    const completed = queue.completed.load(.seq_cst);
+    if (completed != jobs.len) return error.ExportFrameWorkerIncomplete;
+
+    const merge_started = monotonicNowNs();
+    for (completion_order[0..completed]) |job_index| {
+        const outcome = &outcomes[job_index];
+        if (outcome.err) |err| return err;
+        const result = outcome.result orelse return error.ExportFrameWorkerIncomplete;
+        if (timings) |out| out.frame_timings.add(outcome.timings);
+        for (result.written) |name| {
+            try written.append(try allocator.dupe(u8, name));
+        }
+    }
+    if (timings) |out| out.result_merge_ns += monotonicNowNs() - merge_started;
+}
+
+fn directRgbFrameExportWorker(queue: *DirectRgbFrameExportQueue) void {
+    while (true) {
+        const job_index = queue.next_job.fetchAdd(1, .seq_cst);
+        if (job_index >= queue.jobs.len) return;
+
+        const job = queue.jobs[job_index];
+        const outcome = &queue.outcomes[job_index];
+        const local_allocator = outcome.allocator();
+        outcome.result = processDirectRgbFrameJob(
+            local_allocator,
+            job,
+            queue.shared,
+            &outcome.timings,
+        ) catch |err| {
+            outcome.err = err;
+            const slot = queue.completed.fetchAdd(1, .seq_cst);
+            queue.completion_order[slot] = job_index;
+            return;
+        };
+
+        if (outcome.result) |result| {
+            for (result.written) |name| {
+                emitExportProgressFmt(
+                    local_allocator,
+                    queue.shared.progress_sink,
+                    .wrote_file,
+                    "Wrote {s}",
+                    .{name},
+                    name,
+                ) catch {};
+            }
+        }
+        const slot = queue.completed.fetchAdd(1, .seq_cst);
+        queue.completion_order[slot] = job_index;
+    }
+}
+
 fn processExportFramesParallel(
     allocator: std.mem.Allocator,
     written: *std.array_list.Managed([]u8),
     jobs: []const FrameExportJob,
     worker_count: usize,
     shared: FrameExportShared,
+    timings: ?*ExportWorkflowTimings,
 ) !void {
     std.debug.assert(jobs.len > 1);
     std.debug.assert(worker_count > 1);
     std.debug.assert(worker_count <= jobs.len);
 
+    const setup_started = monotonicNowNs();
     const outcomes = try allocator.alloc(FrameExportOutcome, jobs.len);
     defer allocator.free(outcomes);
     for (outcomes) |*outcome| outcome.* = .{};
@@ -1138,22 +1874,28 @@ fn processExportFramesParallel(
     defer allocator.free(threads);
     var thread_count: usize = 0;
     errdefer for (threads[0..thread_count]) |thread| thread.join();
+    if (timings) |out| out.worker_setup_ns += monotonicNowNs() - setup_started;
+    const scheduler_started = monotonicNowNs();
     while (thread_count < worker_count) : (thread_count += 1) {
         threads[thread_count] = try std.Thread.spawn(.{}, frameExportWorker, .{&queue});
     }
     for (threads[0..thread_count]) |thread| thread.join();
+    if (timings) |out| out.scheduler_wait_ns += monotonicNowNs() - scheduler_started;
 
     const completed = queue.completed.load(.seq_cst);
     if (completed != jobs.len) return error.ExportFrameWorkerIncomplete;
 
+    const merge_started = monotonicNowNs();
     for (completion_order[0..completed]) |job_index| {
         const outcome = &outcomes[job_index];
         if (outcome.err) |err| return err;
         const result = outcome.result orelse return error.ExportFrameWorkerIncomplete;
+        if (timings) |out| out.frame_timings.add(outcome.timings);
         for (result.written) |name| {
             try written.append(try allocator.dupe(u8, name));
         }
     }
+    if (timings) |out| out.result_merge_ns += monotonicNowNs() - merge_started;
 }
 
 fn frameExportWorker(queue: *FrameExportQueue) void {
@@ -1188,6 +1930,7 @@ fn frameExportWorker(queue: *FrameExportQueue) void {
                 .ir_clean_options = queue.shared.ir_clean_options,
                 .invert_request = queue.shared.invert_request,
                 .random = prng.random(),
+                .timings = &outcome.timings,
             },
         ) catch |err| {
             outcome.err = err;
@@ -1285,6 +2028,24 @@ pub fn previewScale(width: usize, height: usize, preview_size: i64) f64 {
     return @min(scale, 1.0);
 }
 
+const QuickPreviewGeometry = struct {
+    width: usize,
+    height: usize,
+    scale: f64,
+};
+
+fn quickPreviewGeometry(width: usize, height: usize, preview_size: i64) QuickPreviewGeometry {
+    const scale = previewScale(width, height, preview_size);
+    if (scale >= 1.0) {
+        return .{ .width = width, .height = height, .scale = 1.0 };
+    }
+    return .{
+        .width = @intFromFloat(@as(f64, @floatFromInt(width)) * scale),
+        .height = @intFromFloat(@as(f64, @floatFromInt(height)) * scale),
+        .scale = scale,
+    };
+}
+
 pub fn dpiScale(dpi: ?u32) f64 {
     const value = dpi orelse return 1.0;
     const scale = @as(f64, @floatFromInt(value)) / @as(f64, @floatFromInt(config.reference_dpi));
@@ -1312,17 +2073,481 @@ fn tiffImageToF64(allocator: std.mem.Allocator, image: tiff.Image) !export_pipel
     switch (image.bits_per_sample) {
         8 => {
             if (image.data.len != sample_count) return error.UnsupportedProcessingImage;
-            for (image.data, pixels) |sample, *out| out.* = @floatFromInt(sample);
+            try fillTiffF64Samples(allocator, image.data, pixels, 8);
         },
         16 => {
             if (image.data.len != sample_count * 2) return error.UnsupportedProcessingImage;
-            for (pixels, 0..) |*out, index| {
-                out.* = @floatFromInt(std.mem.readInt(u16, image.data[index * 2 ..][0..2], .little));
-            }
+            try fillTiffF64Samples(allocator, image.data, pixels, 16);
         },
         else => return error.UnsupportedProcessingImage,
     }
     return .{ .width = width, .height = height, .channels = channels, .pixels = pixels };
+}
+
+const TiffF64RangeContext = struct {
+    data: []const u8,
+    pixels: []f64,
+    bits_per_sample: u16,
+    start: usize,
+    end: usize,
+};
+
+fn fillTiffF64Samples(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    pixels: []f64,
+    bits_per_sample: u16,
+) !void {
+    const worker_count = workerCountForItems(pixels.len, tiff_to_f64_parallel_min_samples);
+    if (worker_count <= 1) {
+        fillTiffF64SamplesRange(data, pixels, bits_per_sample, 0, pixels.len);
+        return;
+    }
+
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+    const contexts = try allocator.alloc(TiffF64RangeContext, worker_count);
+    defer allocator.free(contexts);
+    var started: usize = 0;
+    errdefer for (threads[0..started]) |thread| thread.join();
+    for (0..worker_count) |worker_index| {
+        const start = pixels.len * worker_index / worker_count;
+        const end = pixels.len * (worker_index + 1) / worker_count;
+        contexts[worker_index] = .{
+            .data = data,
+            .pixels = pixels,
+            .bits_per_sample = bits_per_sample,
+            .start = start,
+            .end = end,
+        };
+        threads[worker_index] = try std.Thread.spawn(.{}, fillTiffF64SamplesWorker, .{&contexts[worker_index]});
+        started += 1;
+    }
+    for (threads) |thread| thread.join();
+}
+
+fn fillTiffF64SamplesWorker(context: *const TiffF64RangeContext) void {
+    fillTiffF64SamplesRange(context.data, context.pixels, context.bits_per_sample, context.start, context.end);
+}
+
+fn fillTiffF64SamplesRange(
+    data: []const u8,
+    pixels: []f64,
+    bits_per_sample: u16,
+    start: usize,
+    end: usize,
+) void {
+    switch (bits_per_sample) {
+        8 => {
+            for (start..end) |index| pixels[index] = @floatFromInt(data[index]);
+        },
+        16 => {
+            for (start..end) |index| {
+                pixels[index] = @floatFromInt(std.mem.readInt(u16, data[index * 2 ..][0..2], .little));
+            }
+        },
+        else => unreachable,
+    }
+}
+
+fn workerCountForItems(item_count: usize, min_items: usize) usize {
+    if (item_count < min_items) return 1;
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    if (cpu_count <= 1) return 1;
+    return @min(cpu_count - 1, item_count / min_items);
+}
+
+fn innerSceneWorkerCount(decision: ExportParallelismDecision) usize {
+    if (decision.worker_count == 0 or decision.cpu_worker_limit <= decision.worker_count) return 1;
+    return @max(@as(usize, 1), decision.cpu_worker_limit / decision.worker_count);
+}
+
+fn innerAdaptiveDustWorkerCount(decision: ExportParallelismDecision) usize {
+    return innerSceneWorkerCount(decision);
+}
+
+fn adaptiveDustWorkerCountForOptions(options: ExportWorkflowOptions, decision: ExportParallelismDecision) usize {
+    if (options.adaptive_dust_worker_count_override) |worker_count| return @max(@as(usize, 1), worker_count);
+    return innerAdaptiveDustWorkerCount(decision);
+}
+
+fn cropRgbFrameFromTiffImage(
+    allocator: std.mem.Allocator,
+    image: tiff.Image,
+    rect: export_pipeline.FrameRect,
+) !export_pipeline.Image {
+    const width: usize = image.width;
+    const height: usize = image.height;
+    if (width == 0 or height == 0 or image.samples_per_pixel != 3) return error.UnsupportedProcessingImage;
+    if (image.bits_per_sample != 8 and image.bits_per_sample != 16) return error.UnsupportedProcessingImage;
+    const bytes_per_sample: usize = image.bits_per_sample / 8;
+    const sample_count = try std.math.mul(usize, try std.math.mul(usize, width, height), 3);
+    if (image.data.len != try std.math.mul(usize, sample_count, bytes_per_sample)) return error.UnsupportedProcessingImage;
+    if (!std.math.isFinite(rect.cx) or !std.math.isFinite(rect.cy) or !std.math.isFinite(rect.w) or !std.math.isFinite(rect.h) or !std.math.isFinite(rect.angle)) {
+        return error.InvalidRotatedCropInput;
+    }
+    if (rect.w <= 0.0 or rect.h <= 0.0) return error.InvalidRotatedCropInput;
+
+    const final_w: usize = @intFromFloat(rect.w);
+    const final_h: usize = @intFromFloat(rect.h);
+    if (final_w == 0 or final_h == 0) return error.InvalidRotatedCropInput;
+
+    const diag = @sqrt(rect.w * rect.w + rect.h * rect.h) / 2.0;
+    const margin: i64 = @as(i64, @intFromFloat(@ceil(diag))) + 4;
+    const cx_i: i64 = @intFromFloat(rect.cx);
+    const cy_i: i64 = @intFromFloat(rect.cy);
+    const x0_i = @max(cx_i - margin, 0);
+    const y0_i = @max(cy_i - margin, 0);
+    const x1_i = @min(cx_i + margin, @as(i64, @intCast(width)));
+    const y1_i = @min(cy_i + margin, @as(i64, @intCast(height)));
+    if (x1_i <= x0_i or y1_i <= y0_i) return error.InvalidRotatedCropInput;
+
+    const x0: usize = @intCast(x0_i);
+    const y0: usize = @intCast(y0_i);
+    const sub_w: usize = @intCast(x1_i - x0_i);
+    const sub_h: usize = @intCast(y1_i - y0_i);
+    const local_cx = rect.cx - @as(f64, @floatFromInt(x0));
+    const local_cy = rect.cy - @as(f64, @floatFromInt(y0));
+
+    const pad: usize = 2;
+    const out_w: usize = @as(usize, @intFromFloat(@ceil(rect.w))) + pad * 2;
+    const out_h: usize = @as(usize, @intFromFloat(@ceil(rect.h))) + pad * 2;
+    const radians = rect.angle * std.math.pi / 180.0;
+    const alpha = @cos(radians);
+    const beta = @sin(radians);
+    const m00 = alpha;
+    const m01 = beta;
+    var m02 = (1.0 - alpha) * local_cx - beta * local_cy;
+    const m10 = -beta;
+    const m11 = alpha;
+    var m12 = beta * local_cx + (1.0 - alpha) * local_cy;
+    m02 += @as(f64, @floatFromInt(out_w)) / 2.0 - local_cx;
+    m12 += @as(f64, @floatFromInt(out_h)) / 2.0 - local_cy;
+
+    const det = m00 * m11 - m01 * m10;
+    if (@abs(det) < 1e-12) return error.InvalidRotatedCropInput;
+    const inv00 = m11 / det;
+    const inv01 = -m01 / det;
+    const inv10 = -m10 / det;
+    const inv11 = m00 / det;
+
+    const output = try allocator.alloc(f64, final_w * final_h * 3);
+    errdefer allocator.free(output);
+    for (0..final_h) |out_y| {
+        for (0..final_w) |out_x| {
+            const dst_x = @as(f64, @floatFromInt(out_x + pad));
+            const dst_y = @as(f64, @floatFromInt(out_y + pad));
+            const tx = dst_x - m02;
+            const ty = dst_y - m12;
+            const src_x = inv00 * tx + inv01 * ty;
+            const src_y = inv10 * tx + inv11 * ty;
+            const out_base = (out_y * final_w + out_x) * 3;
+            sampleTiffReflectBilinearRgb(
+                image,
+                x0,
+                y0,
+                sub_w,
+                sub_h,
+                src_x,
+                src_y,
+                output[out_base..][0..3],
+            );
+        }
+    }
+
+    return .{ .width = final_w, .height = final_h, .channels = 3, .pixels = output };
+}
+
+fn cropRgbFrameFromTiffImageInvertedSceneF32(
+    allocator: std.mem.Allocator,
+    image: tiff.Image,
+    rect: export_pipeline.FrameRect,
+    density_lut: inversion.DensityLutF32,
+    coeffs: film_stocks.Coefficients,
+    max_workers: usize,
+) !export_pipeline.ImageF32 {
+    const width: usize = image.width;
+    const height: usize = image.height;
+    if (width == 0 or height == 0 or image.samples_per_pixel != 3) return error.UnsupportedProcessingImage;
+    if (image.bits_per_sample != 8 and image.bits_per_sample != 16) return error.UnsupportedProcessingImage;
+    const bytes_per_sample: usize = image.bits_per_sample / 8;
+    const sample_count = try std.math.mul(usize, try std.math.mul(usize, width, height), 3);
+    if (image.data.len != try std.math.mul(usize, sample_count, bytes_per_sample)) return error.UnsupportedProcessingImage;
+    if (!std.math.isFinite(rect.cx) or !std.math.isFinite(rect.cy) or !std.math.isFinite(rect.w) or !std.math.isFinite(rect.h) or !std.math.isFinite(rect.angle)) {
+        return error.InvalidRotatedCropInput;
+    }
+    if (rect.w <= 0.0 or rect.h <= 0.0) return error.InvalidRotatedCropInput;
+
+    const final_w: usize = @intFromFloat(rect.w);
+    const final_h: usize = @intFromFloat(rect.h);
+    if (final_w == 0 or final_h == 0) return error.InvalidRotatedCropInput;
+
+    const diag = @sqrt(rect.w * rect.w + rect.h * rect.h) / 2.0;
+    const margin: i64 = @as(i64, @intFromFloat(@ceil(diag))) + 4;
+    const cx_i: i64 = @intFromFloat(rect.cx);
+    const cy_i: i64 = @intFromFloat(rect.cy);
+    const x0_i = @max(cx_i - margin, 0);
+    const y0_i = @max(cy_i - margin, 0);
+    const x1_i = @min(cx_i + margin, @as(i64, @intCast(width)));
+    const y1_i = @min(cy_i + margin, @as(i64, @intCast(height)));
+    if (x1_i <= x0_i or y1_i <= y0_i) return error.InvalidRotatedCropInput;
+
+    const x0: usize = @intCast(x0_i);
+    const y0: usize = @intCast(y0_i);
+    const sub_w: usize = @intCast(x1_i - x0_i);
+    const sub_h: usize = @intCast(y1_i - y0_i);
+    const local_cx = rect.cx - @as(f64, @floatFromInt(x0));
+    const local_cy = rect.cy - @as(f64, @floatFromInt(y0));
+
+    const pad: usize = 2;
+    const out_w: usize = @as(usize, @intFromFloat(@ceil(rect.w))) + pad * 2;
+    const out_h: usize = @as(usize, @intFromFloat(@ceil(rect.h))) + pad * 2;
+    const radians = rect.angle * std.math.pi / 180.0;
+    const alpha = @cos(radians);
+    const beta = @sin(radians);
+    const m00 = alpha;
+    const m01 = beta;
+    var m02 = (1.0 - alpha) * local_cx - beta * local_cy;
+    const m10 = -beta;
+    const m11 = alpha;
+    var m12 = beta * local_cx + (1.0 - alpha) * local_cy;
+    m02 += @as(f64, @floatFromInt(out_w)) / 2.0 - local_cx;
+    m12 += @as(f64, @floatFromInt(out_h)) / 2.0 - local_cy;
+
+    const det = m00 * m11 - m01 * m10;
+    if (@abs(det) < 1e-12) return error.InvalidRotatedCropInput;
+    const inv00 = m11 / det;
+    const inv01 = -m01 / det;
+    const inv10 = -m10 / det;
+    const inv11 = m00 / det;
+
+    const output = try allocator.alloc(f32, final_w * final_h * 3);
+    errdefer allocator.free(output);
+    const linear_coeffs = linearF32Coeffs(coeffs);
+    const worker_count = @min(max_workers, final_h);
+    if (worker_count <= 1 or final_h < 64) {
+        var context = FusedCropSceneWorkerContext{
+            .image = image,
+            .x0 = x0,
+            .y0 = y0,
+            .sub_w = sub_w,
+            .sub_h = sub_h,
+            .final_w = final_w,
+            .row_start = 0,
+            .row_end = final_h,
+            .pad = pad,
+            .m02 = m02,
+            .m12 = m12,
+            .inv00 = inv00,
+            .inv01 = inv01,
+            .inv10 = inv10,
+            .inv11 = inv11,
+            .density_lut = density_lut,
+            .coeffs = linear_coeffs,
+            .output = output,
+        };
+        fusedCropSceneWorker(&context);
+    } else {
+        const contexts = try allocator.alloc(FusedCropSceneWorkerContext, worker_count);
+        defer allocator.free(contexts);
+        const threads = try allocator.alloc(std.Thread, worker_count - 1);
+        defer allocator.free(threads);
+        var spawned_len: usize = 0;
+        errdefer {
+            for (threads[0..spawned_len]) |thread| thread.join();
+        }
+
+        for (0..worker_count) |index| {
+            const row_start = index * final_h / worker_count;
+            const row_end = (index + 1) * final_h / worker_count;
+            contexts[index] = .{
+                .image = image,
+                .x0 = x0,
+                .y0 = y0,
+                .sub_w = sub_w,
+                .sub_h = sub_h,
+                .final_w = final_w,
+                .row_start = row_start,
+                .row_end = row_end,
+                .pad = pad,
+                .m02 = m02,
+                .m12 = m12,
+                .inv00 = inv00,
+                .inv01 = inv01,
+                .inv10 = inv10,
+                .inv11 = inv11,
+                .density_lut = density_lut,
+                .coeffs = linear_coeffs,
+                .output = output,
+            };
+        }
+
+        for (1..worker_count) |index| {
+            threads[spawned_len] = try std.Thread.spawn(.{}, fusedCropSceneWorker, .{&contexts[index]});
+            spawned_len += 1;
+        }
+        fusedCropSceneWorker(&contexts[0]);
+        for (threads[0..spawned_len]) |thread| thread.join();
+    }
+
+    return .{ .width = final_w, .height = final_h, .channels = 3, .pixels = output };
+}
+
+fn sampleTiffReflectBilinearRgb(
+    image: tiff.Image,
+    x0: usize,
+    y0: usize,
+    sub_w: usize,
+    sub_h: usize,
+    x: f64,
+    y: f64,
+    out: []f64,
+) void {
+    const x_floor = @floor(x);
+    const y_floor = @floor(y);
+    const xi: i64 = @intFromFloat(x_floor);
+    const yi: i64 = @intFromFloat(y_floor);
+    const fx = x - x_floor;
+    const fy = y - y_floor;
+    const x_a = reflectIndex(xi, sub_w);
+    const x_b = reflectIndex(xi + 1, sub_w);
+    const y_a = reflectIndex(yi, sub_h);
+    const y_b = reflectIndex(yi + 1, sub_h);
+    const img_width: usize = @intCast(image.width);
+    const offset00 = ((y0 + y_a) * img_width + x0 + x_a) * 3;
+    const offset10 = ((y0 + y_a) * img_width + x0 + x_b) * 3;
+    const offset01 = ((y0 + y_b) * img_width + x0 + x_a) * 3;
+    const offset11 = ((y0 + y_b) * img_width + x0 + x_b) * 3;
+    for (0..3) |channel| {
+        const p00 = tiffSampleIndexAsF64(image, offset00 + channel);
+        const p10 = tiffSampleIndexAsF64(image, offset10 + channel);
+        const p01 = tiffSampleIndexAsF64(image, offset01 + channel);
+        const p11 = tiffSampleIndexAsF64(image, offset11 + channel);
+        const top = p00 * (1.0 - fx) + p10 * fx;
+        const bottom = p01 * (1.0 - fx) + p11 * fx;
+        out[channel] = top * (1.0 - fy) + bottom * fy;
+    }
+}
+
+const LinearF32Coeffs = struct {
+    c00: f32,
+    c01: f32,
+    c02: f32,
+    c10: f32,
+    c11: f32,
+    c12: f32,
+    c20: f32,
+    c21: f32,
+    c22: f32,
+};
+
+const FusedCropSceneWorkerContext = struct {
+    image: tiff.Image,
+    x0: usize,
+    y0: usize,
+    sub_w: usize,
+    sub_h: usize,
+    final_w: usize,
+    row_start: usize,
+    row_end: usize,
+    pad: usize,
+    m02: f64,
+    m12: f64,
+    inv00: f64,
+    inv01: f64,
+    inv10: f64,
+    inv11: f64,
+    density_lut: inversion.DensityLutF32,
+    coeffs: LinearF32Coeffs,
+    output: []f32,
+};
+
+fn linearF32Coeffs(coeffs: film_stocks.Coefficients) LinearF32Coeffs {
+    return .{
+        .c00 = @floatCast(coeffs[0][0]),
+        .c01 = @floatCast(coeffs[0][1]),
+        .c02 = @floatCast(coeffs[0][2]),
+        .c10 = @floatCast(coeffs[1][0]),
+        .c11 = @floatCast(coeffs[1][1]),
+        .c12 = @floatCast(coeffs[1][2]),
+        .c20 = @floatCast(coeffs[2][0]),
+        .c21 = @floatCast(coeffs[2][1]),
+        .c22 = @floatCast(coeffs[2][2]),
+    };
+}
+
+fn fusedCropSceneWorker(context: *const FusedCropSceneWorkerContext) void {
+    for (context.row_start..context.row_end) |out_y| {
+        for (0..context.final_w) |out_x| {
+            const dst_x = @as(f64, @floatFromInt(out_x + context.pad));
+            const dst_y = @as(f64, @floatFromInt(out_y + context.pad));
+            const tx = dst_x - context.m02;
+            const ty = dst_y - context.m12;
+            const src_x = context.inv00 * tx + context.inv01 * ty;
+            const src_y = context.inv10 * tx + context.inv11 * ty;
+            const out_base = (out_y * context.final_w + out_x) * 3;
+            sampleTiffReflectBilinearRgbInvertedSceneF32(
+                context.image,
+                context.x0,
+                context.y0,
+                context.sub_w,
+                context.sub_h,
+                src_x,
+                src_y,
+                context.density_lut,
+                context.coeffs,
+                context.output[out_base..][0..3],
+            );
+        }
+    }
+}
+
+fn sampleTiffReflectBilinearRgbInvertedSceneF32(
+    image: tiff.Image,
+    x0: usize,
+    y0: usize,
+    sub_w: usize,
+    sub_h: usize,
+    x: f64,
+    y: f64,
+    density_lut: inversion.DensityLutF32,
+    coeffs: LinearF32Coeffs,
+    out: []f32,
+) void {
+    var raw: [3]f64 = undefined;
+    sampleTiffReflectBilinearRgb(image, x0, y0, sub_w, sub_h, x, y, raw[0..]);
+    const dr = density_lut.lookupSampleF64(0, raw[0]);
+    const dg = density_lut.lookupSampleF64(1, raw[1]);
+    const db = density_lut.lookupSampleF64(2, raw[2]);
+    out[0] = @max(dr * coeffs.c00 + dg * coeffs.c10 + db * coeffs.c20, 0.0);
+    out[1] = @max(dr * coeffs.c01 + dg * coeffs.c11 + db * coeffs.c21, 0.0);
+    out[2] = @max(dr * coeffs.c02 + dg * coeffs.c12 + db * coeffs.c22, 0.0);
+}
+
+fn tiffSampleIndexAsF64(image: tiff.Image, sample_index: usize) f64 {
+    return switch (image.bits_per_sample) {
+        8 => @floatFromInt(image.data[sample_index]),
+        16 => @floatFromInt(std.mem.readInt(u16, image.data[sample_index * 2 ..][0..2], .little)),
+        else => unreachable,
+    };
+}
+
+fn f64TripleToF32(values: [3]f64) [3]f32 {
+    return .{ @floatCast(values[0]), @floatCast(values[1]), @floatCast(values[2]) };
+}
+
+fn reflectIndex(index: i64, len: usize) usize {
+    if (len <= 1) return 0;
+    const n: i64 = @intCast(len);
+    var reflected = index;
+    while (reflected < 0 or reflected >= n) {
+        if (reflected < 0) {
+            reflected = -reflected - 1;
+        } else {
+            reflected = 2 * n - reflected - 1;
+        }
+    }
+    return @intCast(reflected);
 }
 
 const OwnedOutputPaths = struct {
@@ -1381,6 +2606,7 @@ fn irCleanOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override
             .close_radius = @intFromFloat(config.getParam("ir_close_radius", current_dpi, overrides).?.asFloat()),
             .blur_size = @intFromFloat(config.getParam("ir_blur_size", current_dpi, overrides).?.asFloat()),
             .max_coverage = config.getParam("ir_max_coverage", current_dpi, overrides).?.asFloat(),
+            .adaptive_precision = .f32,
         },
         .inpaint = .{
             .padding = @intFromFloat(config.getParam("inpaint_padding", current_dpi, overrides).?.asFloat()),
@@ -1559,6 +2785,42 @@ test "process rebate Dmin workflow mirrors route crop and save" {
     try saved.value("dmin").?.expectEqual(.{ .list = try config.FloatList.init(&route_result.dmin) });
 }
 
+test "rebate TIFF crop avoids full f64 image materialization with crop parity" {
+    const allocator = std.testing.allocator;
+    var bytes: [6 * 5 * 3 * 2]u8 = undefined;
+    for (0..6 * 5 * 3) |index| {
+        const value: u16 = @intCast((index * 379 + 1000) % 65535);
+        std.mem.writeInt(u16, bytes[index * 2 ..][0..2], value, .little);
+    }
+    const tiff_image = tiff.Image{
+        .width = 6,
+        .height = 5,
+        .samples_per_pixel = 3,
+        .bits_per_sample = 16,
+        .data = &bytes,
+    };
+    const full = try tiffImageToF64(allocator, tiff_image);
+    defer full.deinit(allocator);
+    const rect: export_pipeline.FrameRect = .{
+        .cx = 3.1,
+        .cy = 2.4,
+        .w = 3.0,
+        .h = 2.0,
+        .angle = 7.0,
+    };
+    const expected = try export_pipeline.cropFrame(allocator, full.pixels, full.width, full.height, full.channels, rect);
+    defer expected.deinit(allocator);
+    const actual = try cropRgbFrameFromTiffImage(allocator, tiff_image, rect);
+    defer actual.deinit(allocator);
+
+    try std.testing.expectEqual(expected.width, actual.width);
+    try std.testing.expectEqual(expected.height, actual.height);
+    try std.testing.expectEqual(expected.channels, actual.channels);
+    for (expected.pixels, actual.pixels) |left, right| {
+        try std.testing.expectApproxEqAbs(left, right, 0.0);
+    }
+}
+
 test "process export workflow mirrors handle_export no-output short circuit" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -1685,6 +2947,33 @@ test "export parallelism planner leaves one cpu free" {
     try std.testing.expectEqual(@as(usize, 3), decision.cpu_worker_limit);
     try std.testing.expectEqual(@as(usize, 3), decision.worker_count);
     try std.testing.expect(!decision.memory_limited);
+}
+
+test "adaptive dust worker override preserves dynamic default and clamps to one" {
+    const rects = [_]export_pipeline.FrameRect{};
+    const decision = ExportParallelismDecision{
+        .worker_count = 5,
+        .cpu_count = 32,
+        .cpu_worker_limit = 31,
+        .memory_worker_limit = null,
+        .available_memory_bytes = null,
+        .memory_budget_bytes = null,
+        .estimated_worker_peak_bytes = 0,
+        .adjusted_worker_peak_bytes = 0,
+        .memory_limited = false,
+    };
+    const base_options = ExportWorkflowOptions{
+        .input_path = "input.tiff",
+        .output_dir = "frames",
+        .rects = &rects,
+    };
+
+    try std.testing.expectEqual(@as(usize, 6), adaptiveDustWorkerCountForOptions(base_options, decision));
+    var override_options = base_options;
+    override_options.adaptive_dust_worker_count_override = 3;
+    try std.testing.expectEqual(@as(usize, 3), adaptiveDustWorkerCountForOptions(override_options, decision));
+    override_options.adaptive_dust_worker_count_override = 0;
+    try std.testing.expectEqual(@as(usize, 1), adaptiveDustWorkerCountForOptions(override_options, decision));
 }
 
 test "export parallelism planner limits workers by predicted memory" {
