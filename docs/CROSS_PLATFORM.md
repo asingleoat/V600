@@ -19,8 +19,18 @@ live-tested.
 - The native UI target is SDL3 plus Nuklear. Future GPU acceleration targets
   WebGPU through nixpkgs `wgpu-native` first, with CPU fallback preserved and a
   backend boundary that can support Google Dawn later if needed.
+- Browser distribution is planned as a processing webapp first: a narrow
+  Zig/Wasm processing core plus a browser-native UI shell and Web Worker
+  runtime. Direct browser scanner control is not a version-one web target, and
+  SDL3/Nuklear through Emscripten is a research spike rather than the first
+  shipping path. See `docs/WEBAPP_PORT_PLAN.md`.
 
 ## macOS Build Plan And SDK Constraints
+
+macOS work is officially paused as of 2026-05-23 by user direction. Keep this
+section as the reopening checklist for a future macOS hardware session, but do
+not select macOS-only build, SDK, bundle, USB, or scanner validation work in the
+autonomous loop until the user explicitly reopens it.
 
 Supported flake systems are `aarch64-darwin` and `x86_64-darwin`. Validate them
 on real macOS hosts; do not treat Linux cross-compilation as macOS proof because
@@ -139,13 +149,37 @@ Windows validation commands, once available:
 - `zig build -Doptimize=ReleaseFast bench-gpu-readiness --summary all`
 - Native UI smoke on a Windows display host
 
+## Browser/Wasm Distribution Plan
+
+The browser target is a future processing distribution target, not a scanner
+target. The accepted first product shape is:
+
+- a Wasm-safe Zig processing core with no filesystem, scanner, native-thread,
+  SDL, OpenCV, SuperLU, libtiff, libjpeg, or `wgpu-native` dependency in the
+  first checkpoint;
+- a browser-native UI shell that owns file pickers, canvas presentation,
+  downloads, Web Worker lifecycle, cache keys, cancellation, and browser
+  persistence;
+- optional browser WebGPU through `navigator.gpu`, with CPU Wasm fallback and
+  downloaded output comparisons before UI/export integration;
+- native scanner control kept in the desktop app, or later exposed through a
+  small local native companion if browser scanner workflows become a product
+  requirement.
+
+`docs/WEBAPP_PORT_PLAN.md` is the canonical roadmap. It records current native
+portability blockers, product modes, build strategy, WebGPU adapter boundaries,
+testing surfaces, and the first implementation checkpoint. Do not add
+Emscripten, Node, Playwright, or browser package tooling without updating Nix
+files and asking the human to reload the shell.
+
 ## Platform Support Matrix
 
 | Platform | Scanner | Processing CLI | Native UI | Packaging | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Linux | Supported through SANE, live-tested on V600 | Supported | Supported through SDL3/Nuklear | `packages.cli`, `packages.ui` | Hardware smokes require `V600_HARDWARE_SMOKE=1`. |
-| macOS | Planned through Epson Interpreter, replay-tested only | Planned | Planned through SDL3/Nuklear | Flake systems listed, live build pending | Requires host Epson bundle and runtime USB binding work. |
+| macOS | Paused until user reopens on macOS hardware; replay-tested only | Planned | Planned through SDL3/Nuklear | Flake systems listed, live build paused | Requires host Epson bundle and runtime USB binding work. |
 | Windows | Not planned for version one | Planned | Planned through SDL3/Nuklear | Not wired | Scanner commands must stay unsupported until a backend exists. |
+| Browser/Wasm | Not planned for version one; local native companion may be designed later | Planned processing webapp | Browser-native shell first; SDL3/Nuklear/Emscripten spike only | Not wired | Wasm core and browser WebGPU plan are documented in `docs/WEBAPP_PORT_PLAN.md`. |
 
 ## Release Checklist
 
@@ -163,7 +197,9 @@ Before declaring the Zig rewrite version-one replacement complete:
    passes without scanner hardware.
 9. Linux live scanner smoke evidence is refreshed for RGB, IR, RGB+IR, metadata,
    LUT, preview worker, scan worker, and scanner-to-processing workflow.
-10. macOS direct build/test evidence is recorded on a macOS host.
+10. macOS direct build/test evidence is recorded on a macOS host, or macOS is
+    explicitly paused outside the current release claim until the user reopens
+    the work on macOS hardware.
 11. macOS live scanner evidence is recorded if macOS scanner support is included
     in the release claim; otherwise macOS scanner support remains explicitly
     deferred.

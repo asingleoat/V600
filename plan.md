@@ -5788,6 +5788,37 @@ improves real user workflows before adding more shaders or fusing kernels.
   - Validation 2026-05-15: docs-only checkpoint. `git diff --check` passed for
     the touched docs and plan files.
 
+### Phase 11A: Browser/Wasm Distribution Planning
+
+- [x] Record the Browser/Wasm webapp distribution strategy.
+  - Scope:
+    - Plan only; do not add Emscripten, Node, Playwright, browser package
+      tooling, new build targets, or Nix dependency changes in this checkpoint.
+    - Ground the plan in the current native Zig app shape rather than assuming
+      the SDL3/Nuklear application can be cross-compiled unchanged.
+    - Keep scanner control out of the first web product. The first browser
+      deliverable is a processing/export webapp for already-scanned files; a
+      local native scanner companion is a later design option; full WebUSB
+      scanner control is a research track.
+    - Preserve the existing parity hierarchy: Python remains the behavior
+      oracle, accepted native Zig CPU remains the implementation/performance
+      baseline, Wasm CPU must match final native Zig surfaces, and browser
+      WebGPU must keep CPU fallback plus downloaded comparison evidence.
+  - Completed 2026-05-23:
+    - Added `docs/WEBAPP_PORT_PLAN.md` with product modes, current native
+      portability blockers, target Wasm/browser architecture, build strategy,
+      dependency risks, Web Worker/cache-key requirements, browser WebGPU
+      adapter rules, headless parity/performance metrics, and a staged
+      implementation checklist.
+    - Updated `docs/CROSS_PLATFORM.md` with browser distribution invariants,
+      a Browser/Wasm plan section, a Browser/Wasm support-matrix row, and the
+      explicit rule that browser scanner control is not a version-one web
+      target.
+    - Updated `docs/PARITY_MANIFEST.md` so Phase 11 cross-platform planning
+      points at the Browser/Wasm plan alongside the native platform docs.
+    - Validation: docs-only checkpoint. No Zig build, Nix evaluation, or new
+      dependency was needed because no source code or build graph changed.
+
 ### Phase 12: Release Acceptance Audit
 
 This phase maps the active `/goal` and `docs/CROSS_PLATFORM.md` release
@@ -9594,12 +9625,18 @@ Autonomous performance iteration map:
       scanner processing smoke, Linux scanner smoke, native scan worker smoke,
       and native preview worker smoke.
 
-- [ ] PENDING USER UPDATE: Record macOS direct build/test evidence on a macOS
-      host.
-  - Covers release checklist item 10.
-  - Blocked 2026-05-18: current machine is Linux. This remains parked under the
-    `PENDING USER UPDATE` macOS policy until the user says a macOS host is
-    available.
+- [x] Officially pause macOS direct build/test evidence until the user reopens
+      the work on macOS hardware.
+  - Covers release checklist item 10 under the current Linux-scoped release
+    claim.
+  - Blocked 2026-05-18: current machine is Linux. This remained parked under
+    the `PENDING USER UPDATE` macOS policy until a macOS host was available.
+  - Paused 2026-05-23 by explicit user direction: macOS build/test/scanner work
+    is officially paused until the user reminds the project of that work and
+    reopens it on macOS hardware. Do not select macOS-only SDK, build, bundle,
+    USB, or scanner validation work in the autonomous loop until then.
+  - Completion decision: checked only as a release-scope deferral. This is not
+    macOS build/test evidence and must not be presented as macOS support.
 
 - [x] Keep macOS live scanner support explicitly deferred from the release claim.
   - Covers release checklist item 11 for the current Linux-hosted audit.
@@ -9755,8 +9792,7 @@ Autonomous performance iteration map:
         boundary. The real-display screenshots cover compositor/window
         readability and the xmonad-controlled tile geometry.
 
-- [ ] PENDING USER UPDATE: Final parity manifest and generated-output hygiene
-      audit.
+- [x] Final parity manifest and generated-output hygiene audit.
   - Covers release checklist items 1, 2, and 15 after all other Phase 12 work.
   - Required checks:
     - every selectable `plan.md` item is checked or has a user-approved release
@@ -9766,8 +9802,8 @@ Autonomous performance iteration map:
     - `git status --short` contains only intended source/docs/fixture changes,
       not generated scans, frames, configs, TIFF/PNG/JPEG outputs, or temporary
       smoke files.
-  - Completion decision: leave unchecked until all unblocked Phase 12 evidence
-    has been refreshed.
+  - Completion decision: checked only after the 2026-05-23 release-scope
+    acceptance and final hygiene audit below.
   - Audit attempt 2026-05-20:
     - This item cannot honestly be checked off yet. Remaining unchecked rows
       are parked as `PENDING USER UPDATE`, but the release checklist still needs
@@ -9900,3 +9936,36 @@ Autonomous performance iteration map:
     - The smoke-generated `frames/ui-smoke_01_ir_004.tif` was removed after the
       check. `git status --short --untracked-files=all` now shows only intended
       tracked source/docs changes for this checkpoint.
+  - Browser/Wasm and macOS-pause audit refresh 2026-05-23:
+    - Added `docs/WEBAPP_PORT_PLAN.md` and updated
+      `docs/CROSS_PLATFORM.md`, `docs/PARITY_MANIFEST.md`, and this plan with a
+      browser processing-webapp roadmap. This is docs-only future platform work;
+      it does not alter native build behavior or the current release claim.
+    - The user explicitly paused macOS build/test/scanner work until the work
+      is reopened on macOS hardware. The macOS evidence row above is checked as
+      a release-scope deferral, not as macOS support, and
+      `docs/CROSS_PLATFORM.md` now says not to select macOS-only work in the
+      autonomous loop until the user reopens it.
+    - The user explicitly accepted that the project has met and exceeded Python
+      parity for the current native-app release. Based on that release-scope
+      decision, the remaining legacy scanner `_save_image` PNG-writer and
+      exact `scanner.py` argparse-compatibility rows in
+      `docs/PARITY_MANIFEST.md` are recorded as deferred/replay-tested
+      non-blockers rather than hidden parity gaps. The current replacement
+      surface is the native app plus rewritten scanner/processing subcommands.
+    - Current checkbox audit:
+      `rg -n "^- \[ \]|^\s+- \[ \]" plan.md` showed only this final audit row
+      before it was checked.
+    - Manifest status audit:
+      a header-aware parse for actual `Status` columns found no remaining
+      `not-started`, `scaffolded`, or `blocked` status cells after the macOS
+      and legacy CLI/save-surface deferrals were recorded. Deferred rows now
+      have explicit release-scope reasons.
+    - Generated-output hygiene:
+      `git status --short --untracked-files=all` currently shows only intended
+      docs changes plus the new intended source document
+      `docs/WEBAPP_PORT_PLAN.md`; no generated scans, frames, configs, TIFF,
+      PNG, JPEG, or smoke outputs are present in git status.
+    - Formatting hygiene:
+      `git diff --check -- plan.md docs/CROSS_PLATFORM.md
+      docs/PARITY_MANIFEST.md docs/WEBAPP_PORT_PLAN.md` passed.
