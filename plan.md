@@ -9759,3 +9759,20 @@ Autonomous performance iteration map:
       item 2 still needs an explicit acceptance/deferral pass.
     - Generated-output hygiene is clean for the current checkout:
       `git status --short --untracked-files=all` produced no output.
+  - Post-Nix-gate audit refresh 2026-05-23:
+    - The release-time Linux Nix package/check gate is no longer a blocker.
+      After explicit user authorization, both required Nix build commands
+      passed and the evidence is recorded above.
+    - Current unchecked rows from `rg -n "^- \[ \]|^\s+- \[ \]" plan.md` are
+      only:
+      - macOS direct build/test evidence, blocked until a macOS host is
+        available or until the release scope explicitly defers macOS build/test
+        evidence;
+      - this final parity/hygiene audit, blocked until the macOS item is
+        resolved or explicitly release-deferred and the manifest acceptance pass
+        is complete.
+    - Current manifest acceptance count is unchanged:
+      `rg -n "\| (not-started|scaffolded|replay-tested|oracle-tested|hardware-tested|deferred|blocked)(/| |\|)" docs/PARITY_MANIFEST.md | wc -l`
+      reports `182`.
+    - Generated-output hygiene remains clean:
+      `git status --short --untracked-files=all` produced no output.
