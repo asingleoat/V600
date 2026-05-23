@@ -9872,3 +9872,31 @@ Autonomous performance iteration map:
       tracked source/docs changes from this corrective checkpoint:
       `docs/PARITY_MANIFEST.md`, `plan.md`, `src/ui/process_export_worker.zig`,
       and `src/ui/state.zig`.
+  - Post-selected-stock export audit refresh 2026-05-23:
+    - A native Process export with a selected film stock could fail before
+      spawning the export worker with `UnknownFilmStock`, even though the
+      selected `kodak_gold`/`kodak_portra` profile affected the preview.
+    - Root cause: the async export worker's active-stock helper returned a slice
+      into a temporary copied config `Value`; the stock name was then stale by the
+      time export coefficient lookup ran.
+    - Corrective work:
+      - added `LoadedConfig.entry` for stable borrowed access to stored config
+        entries while retaining value-copy access for numeric/simple callers;
+      - changed async export stock lookup to borrow the active stock string from
+        the stored config entry;
+      - changed the Process aspect string helper to use the same stable entry
+        access and avoid the same temporary-slice class;
+      - made built-in stock names with incomplete config-defined shadows fall
+        back to compiled built-in coefficients, while complete custom profiles
+        still override.
+    - Validation:
+      - `zig build test --summary all` passed `453/453`;
+      - `zig build -Dui=true --summary all` passed;
+      - `SDL_VIDEODRIVER=dummy zig build -Dui=true
+        native-process-export-smoke --summary all` passed.
+    - Added regression coverage for an async inverted export with selected
+      `kodak_gold` and an incomplete `[stocks.kodak_gold]` shadow; this failed
+      with `UnknownFilmStock` before the stable-entry fix.
+    - The smoke-generated `frames/ui-smoke_01_ir_004.tif` was removed after the
+      check. `git status --short --untracked-files=all` now shows only intended
+      tracked source/docs changes for this checkpoint.

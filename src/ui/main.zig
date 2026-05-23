@@ -4071,8 +4071,8 @@ fn processSettingBool(model: *const v600.native_ui.State, name: []const u8, fall
 }
 
 fn processSettingString(model: *const v600.native_ui.State, name: []const u8) ?[]const u8 {
-    const value = model.processing_config.value(name) orelse return null;
-    return switch (value) {
+    const entry = model.processing_config.entry(name) orelse return null;
+    return switch (entry.value) {
         .string => |string| string.slice(),
         else => null,
     };

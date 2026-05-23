@@ -500,9 +500,9 @@ fn currentProcessingImagePath(model: *const ui_state.State) ?[]const u8 {
 }
 
 fn processingConfigActiveStock(loaded: *const processing_config.LoadedConfig) ?[]const u8 {
-    const value = loaded.value("stock") orelse return null;
-    if (std.meta.activeTag(value) != .string) return null;
-    const stock = value.string.slice();
+    const entry = loaded.entry("stock") orelse return null;
+    if (std.meta.activeTag(entry.value) != .string) return null;
+    const stock = entry.value.string.slice();
     return if (stock.len == 0) null else stock;
 }
 
@@ -580,6 +580,18 @@ fn fakeExportAssertGpuRequest(context: *Context) !void {
     try std.testing.expectEqual(processing_webgpu.FallbackPolicy.allow_cpu, context.invert_request.fallback);
     context.result = .{
         .message = try context.allocator.dupe(u8, "GPU request observed"),
+        .files = try context.allocator.alloc([]u8, 0),
+        .progress = .{ .events = try context.allocator.alloc(processing_export.ExportProgressEvent, 0) },
+    };
+}
+
+fn fakeExportAssertBuiltinStockCoeffs(context: *Context) !void {
+    try std.testing.expectEqualStrings("kodak_gold", context.active_stock.?);
+    try std.testing.expect(context.stock_coeffs != null);
+    try std.testing.expectEqual(@as(f64, 1.20), context.stock_coeffs.?[0][0]);
+    try std.testing.expectEqual(@as(f64, -0.06), context.stock_coeffs.?[1][2]);
+    context.result = .{
+        .message = try context.allocator.dupe(u8, "builtin stock coeffs observed"),
         .files = try context.allocator.alloc([]u8, 0),
         .progress = .{ .events = try context.allocator.alloc(processing_export.ExportProgressEvent, 0) },
     };
@@ -816,4 +828,49 @@ test "process export worker copies native processing GPU request into workflow c
     }
     try std.testing.expect(completed);
     try std.testing.expectEqualStrings("GPU request observed", model.status);
+}
+
+test "process export worker resolves selected builtin stock despite incomplete config shadow" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/frames", .{tmp.sub_path[0..]});
+    defer allocator.free(output_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, output_dir);
+
+    var model = ui_state.State.init("scans", output_dir, 0);
+    defer model.deinit(allocator);
+    model.processing.output_dir = output_dir;
+    model.processing.preview_scale = 1.0;
+    model.processing.current_dpi = 800;
+    model.processing_images.paths = try allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
+    model.processing.image_count = 1;
+    model.processing.image_idx = 0;
+    model.process_selections[0] = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .rotation = 0 };
+    model.process_selection_count = 1;
+
+    var loaded = processing_config.LoadedConfig{};
+    try loaded.set("stock", .{ .string = processing_config.FixedString.init("kodak_gold") });
+    _ = try loaded.ensureStock("kodak_gold");
+    model.applyProcessingConfig(loaded);
+
+    var worker = Worker.initWithExecutor(allocator, std.testing.io, fakeExportAssertBuiltinStockCoeffs);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startFromState(&model, .{
+        .basename = "roll",
+        .export_ir_inv = false,
+        .export_inv_only = true,
+    }));
+
+    var completed = false;
+    for (0..1000) |_| {
+        if (worker.poll(&model)) {
+            completed = true;
+            break;
+        }
+        try std.Thread.yield();
+    }
+    try std.testing.expect(completed);
+    try std.testing.expectEqualStrings("builtin stock coeffs observed", model.status);
 }

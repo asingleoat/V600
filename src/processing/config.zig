@@ -155,9 +155,9 @@ pub const LoadedConfig = struct {
     }
 
     pub fn set(self: *LoadedConfig, name: []const u8, new_value: Value) !void {
-        for (self.entries[0..self.len]) |*entry| {
-            if (std.mem.eql(u8, entry.name.slice(), name)) {
-                entry.value = new_value;
+        for (self.entries[0..self.len]) |*item| {
+            if (std.mem.eql(u8, item.name.slice(), name)) {
+                item.value = new_value;
                 return;
             }
         }
@@ -166,11 +166,16 @@ pub const LoadedConfig = struct {
         self.len += 1;
     }
 
-    pub fn value(self: *const LoadedConfig, name: []const u8) ?Value {
-        for (self.entries[0..self.len]) |entry| {
-            if (std.mem.eql(u8, entry.name.slice(), name)) return entry.value;
+    pub fn entry(self: *const LoadedConfig, name: []const u8) ?*const Entry {
+        for (self.entries[0..self.len]) |*item| {
+            if (std.mem.eql(u8, item.name.slice(), name)) return item;
         }
         return null;
+    }
+
+    pub fn value(self: *const LoadedConfig, name: []const u8) ?Value {
+        const found = self.entry(name) orelse return null;
+        return found.value;
     }
 
     pub fn active(self: *const LoadedConfig, name: []const u8) bool {
@@ -195,7 +200,22 @@ pub const LoadedConfig = struct {
     }
 
     pub fn availableStock(self: *const LoadedConfig, name: []const u8) ?StockProfile {
-        if (self.customStock(name)) |stock| return stock;
+        if (self.customStock(name)) |stock| {
+            if (stock.has_coeffs) return stock;
+            if (film_stocks.builtinStock(name)) |builtin| {
+                return .{
+                    .name = FixedString.from(builtin.name) catch return null,
+                    .description = if (stock.has_description)
+                        stock.description
+                    else
+                        FixedString.from(builtin.description) catch return null,
+                    .has_description = true,
+                    .coeffs = builtin.coeffs,
+                    .has_coeffs = true,
+                };
+            }
+            return stock;
+        }
         if (film_stocks.builtinStock(name)) |stock| {
             return .{
                 .name = FixedString.from(stock.name) catch return null,
@@ -561,7 +581,11 @@ fn appendStocks(out: *std.array_list.Managed(u8), loaded: LoadedConfig) !void {
     for (builtin_stocks) |stock| {
         if (wrote_stock) try out.append('\n');
         if (loaded.customStock(stock.name)) |custom| {
-            try appendCustomStock(out, custom);
+            if (custom.has_coeffs) {
+                try appendCustomStock(out, custom);
+            } else {
+                try appendBuiltinStock(out, stock);
+            }
         } else {
             try appendBuiltinStock(out, stock);
         }
@@ -785,6 +809,25 @@ test "parses and preserves config-defined film stock profiles" {
     const actual = try serialize(allocator, loaded);
     defer allocator.free(actual);
     try std.testing.expectEqualStrings(expected, actual);
+}
+
+test "incomplete built-in stock profiles fall back to compiled coefficients" {
+    const allocator = std.testing.allocator;
+    var loaded = LoadedConfig{};
+    const stock_index = try loaded.ensureStock("kodak_gold");
+    try loaded.stocks[stock_index].description.set("Runtime profile without coefficients");
+    loaded.stocks[stock_index].has_description = true;
+
+    const gold = loaded.availableStock("kodak_gold").?;
+    try std.testing.expect(gold.has_coeffs);
+    try std.testing.expectEqualStrings("Runtime profile without coefficients", gold.descriptionSlice().?);
+    try std.testing.expectEqual(@as(f64, 1.20), gold.coeffs[0][0]);
+    try std.testing.expectEqual(@as(f64, -0.06), gold.coeffs[1][2]);
+
+    const actual = try serialize(allocator, loaded);
+    defer allocator.free(actual);
+    try std.testing.expect(std.mem.indexOf(u8, actual, "Runtime profile without coefficients") == null);
+    try std.testing.expect(std.mem.indexOf(u8, actual, "[  1.2000,  -0.0400,   0.0000],  # R") != null);
 }
 
 test "processing config file save persists Python-style merge" {
