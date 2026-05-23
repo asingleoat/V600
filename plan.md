@@ -7905,8 +7905,8 @@ Autonomous performance iteration map:
         - `git diff --check -- src/scanner/events.zig src/ui/preview_worker.zig
           src/ui/scan_worker.zig src/main.zig src/ui/main.zig plan.md
           docs/PARITY_MANIFEST.md docs/PERFORMANCE_STRATEGY.md` passed.
-    - [ ] PENDING USER UPDATE: Run gated Linux live scanner timing smokes when
-          hardware is visible to SANE.
+    - [x] Run gated Linux live scanner timing smokes when hardware is visible
+          to SANE.
       - Use `V600_HARDWARE_SMOKE=1` and small selected TPU areas for fast,
         low-waste evidence. Do not run live hardware smokes without the gate.
       - Cover RGB, IR, RGB+IR, metadata rewrite, custom LUT metadata,
@@ -7982,8 +7982,88 @@ Autonomous performance iteration map:
           use `/etc/sane-config`. A system rebuild/reload is required before
           plain wrapper commands can be expected to pass without the manual
           `LD_LIBRARY_PATH` repair.
-    - [ ] PENDING USER UPDATE: Analyze the scanner timing baseline and choose
-          the first optimization.
+      - Completed 2026-05-23 after NixOS rebuild:
+        - Rebuilt wrappers now include the epkowa backend path and
+          `/etc/sane-config`. `scanimage-v600 -L` and `scanimage-v600-ir -L`
+          both enumerated `epkowa:interpreter:001:020` without the manual
+          `LD_LIBRARY_PATH` repair.
+        - Direct discovery/probe commands:
+          - `zig build run -- scanner devices --timing-report
+            .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` selected
+            `epkowa:interpreter:001:020`; `linux.discover.scanimage_list`
+            took `6040061 us`, total discovery `6046567 us`.
+          - `zig build run -- scanner probe --timing-report
+            .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` succeeded
+            with wrappers `true/true`, flatbed `8.500 x 11.700 in`, TPU
+            `2.700 x 9.540 in`, max resolution `3200`, and
+            `ir_supported=true`; discovery took `6064935 us`, flatbed help
+            `6048726 us`, TPU help `6069691 us`, total probe `18209430 us`.
+        - Direct CLI smoke commands:
+          - `env V600_HARDWARE_SMOKE=1 zig build run -- scanner smoke --out
+            /tmp/v600-live-20260523-rgb.tiff --source tpu --dpi 400 --kind rgb
+            --depth 16 --x 0.1 --y 0.1 --width 0.25 --height 0.25
+            --timing-report .zig-cache/tmp/v600-live-scanner-feature-support.jsonl`
+            wrote `96x100` 16-bit sRGB RGB TIFF and sidecar with
+            requested/effective DPI `400/400`; total `scanOnce` took
+            `25388919 us`.
+          - `env V600_HARDWARE_SMOKE=1 zig build run -- scanner smoke --out
+            /tmp/v600-live-20260523-ir.tiff --source tpu --dpi 800 --kind ir
+            --depth 8 --x 0.1 --y 0.1 --width 0.25 --height 0.25
+            --timing-report .zig-cache/tmp/v600-live-scanner-feature-support.jsonl`
+            wrote `200x201` 8-bit Gray IR TIFF and sidecar with
+            requested/effective DPI `800/800`; total `scanOnce` took
+            `41331150 us`.
+          - `env V600_HARDWARE_SMOKE=1 zig build run -- scanner smoke --out
+            /tmp/v600-live-20260523-rgbir.tiff --source tpu --dpi 400 --kind
+            rgb+ir --depth 16 --x 0.1 --y 0.1 --width 0.25 --height 0.25
+            --timing-report .zig-cache/tmp/v600-live-scanner-feature-support.jsonl`
+            wrote page 0 RGB `96x100` 16-bit sRGB, page 1 thumbnail `96x100`
+            8-bit sRGB, and page 2 IR `200x201` 8-bit Gray. The final sidecar
+            recorded requested DPI `400`, RGB effective DPI `400`, and IR
+            effective DPI `800`; total `scanRgbIr` took `68154355 us`.
+          - Temporary identity LUT generated with `perl -e 'print pack("C*",
+            ((0..255), (0..255), (0..255)))' >
+            /tmp/v600-live-20260523-identity.lut`, verified at 768 bytes.
+            `env V600_HARDWARE_SMOKE=1 zig build run -- scanner smoke --out
+            /tmp/v600-live-20260523-lut-rgb.tiff --source tpu --dpi 400 --kind
+            rgb --depth 16 --x 0.1 --y 0.1 --width 0.25 --height 0.25
+            --lut-file /tmp/v600-live-20260523-identity.lut --timing-report
+            .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` wrote
+            `96x100` 16-bit sRGB. The sidecar recorded
+            `custom_luts_applied=true`, runtime timing recorded
+            `linux.scan.environment` detail `custom`, and `tiffinfo` showed
+            tag `50000: Custom film LUTs applied`.
+          - `env V600_HARDWARE_SMOKE=1 zig build run -- scanner
+            processing-smoke --out /tmp/v600-live-20260523-processing-smoke.tiff
+            --source tpu --dpi 400 --kind rgb --depth 16 --x 0.1 --y 0.1
+            --width 0.25 --height 0.25 --timing-report
+            .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` scanned
+            `96x100` 16-bit sRGB and loaded it through processing info:
+            `{"full_width":96,"full_height":100,"has_ir":false,"dpi":400}`.
+        - Direct native UI smoke commands:
+          - `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software
+            V600_HARDWARE_SMOKE=1 zig build -Dui=true run-ui --
+            --preview-worker-smoke --out
+            /tmp/v600-live-20260523-native-preview-worker-smoke.tiff
+            --timing-report .zig-cache/tmp/v600-live-ui-feature-support.jsonl`
+            wrote `1072x3814` 8-bit sRGB hardware preview, loaded it, applied
+            Lanczos downsample in `876753 us`, cached a `536x1907` 8-bit
+            preview, and completed native preview total in `46437116 us`.
+          - `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software
+            V600_HARDWARE_SMOKE=1 zig build -Dui=true run-ui --
+            --scan-worker-smoke --out
+            /tmp/v600-live-20260523-native-scan-worker-smoke.tiff
+            --timing-report .zig-cache/tmp/v600-live-ui-feature-support.jsonl`
+            wrote `200x201` 16-bit sRGB, drained progress
+            `15,31,47,63,79,95,100`, and reported
+            `Saved: v600-live-20260523-native-scan-worker-smoke.tiff`.
+        - Output inspection:
+          - `identify -format '%f[%p] %m %wx%h %[depth]-bit %[colorspace]\n'
+            ...` confirmed all geometry and bit-depth values above.
+          - `jq` sidecar inspection confirmed device
+            `epkowa:interpreter:001:020`, source/kind/depth/DPI fields, RGB+IR
+            page metadata, and LUT metadata.
+    - [x] Analyze the scanner timing baseline and choose the first optimization.
       - Build a ranked table for startup, preview, single-pass full scan, and
         RGB+IR scan. Separate unavoidable hardware motion/I/O time from
         avoidable host-side time such as repeated discovery, repeated
@@ -7997,6 +8077,50 @@ Autonomous performance iteration map:
         probes.
       - Add the selected optimization as the next unchecked checkpoint with
         required before/after live timing evidence before implementing it.
+      - Completed 2026-05-23:
+        - Ranked avoidable host-side timings from live evidence:
+          - Probe/startup: discovery `~6.05 s` plus flatbed help `~6.05 s` plus
+            TPU help `~6.07 s`, total `~18.21 s`.
+          - Tiny selected RGB scan: capability help/probe `~12.08 s` before a
+            `~13.25 s` child scan, total `~25.39 s`.
+          - Tiny selected IR scan: capability help/probe `~12.11 s` before a
+            `~29.17 s` child scan, total `~41.33 s`.
+          - Tiny selected RGB+IR scan: two capability probes consumed
+            `~25.52 s` before/around `~42.45 s` of scan pass time, total
+            `~68.15 s`.
+          - Native preview worker: probe `~18.22 s`, scan `~27.33 s`, downsample
+            `~0.88 s`, total `~46.44 s`.
+          - Native scan worker: capability probe `~12.13 s`, runtime scan
+            `~25.63 s`, metadata/state cleanup negligible.
+        - First optimization selected: reuse cached scanner capabilities for a
+          selected device instead of running flatbed and TPU `scanimage --help`
+          on every selected-area scan. This is parity-preserving because the
+          capability data is scanner/backend metadata, not image data or scan
+          algorithm output.
+    - [ ] Implement Linux scanner capability-cache reuse for selected-area
+          scans.
+      - Required behavior:
+        - Cache `ScannerCapabilities` by selected device name and wrapper
+          capability context in the runtime or app state, and reuse them for
+          subsequent selected-area scans where the same device/wrapper context is
+          still active.
+        - Native UI workers should prefer already-known connected scanner
+          capabilities instead of reprobe-only execution when the state has a
+          current connected scanner capability record.
+        - CLI single-shot behavior may use an on-disk cache only if it is keyed
+          by device name plus wrapper/config context and invalidates cleanly; an
+          in-process runtime cache is acceptable for UI/session reuse.
+        - Preserve correctness: if cached capabilities are missing or fail
+          validation, fall back transparently to the current probe path.
+      - Required evidence before checking off:
+        - Replay/headless tests proving cache hit, cache miss, stale device
+          fallback, and no behavior change in command planning.
+        - Direct `zig build test --summary all`.
+        - Direct `zig build -Dui=true --summary all`.
+        - Before/after live timing for at least native preview-worker and native
+          scan-worker smokes, plus one CLI RGB selected-area scan if a CLI cache
+          is implemented. Report capability lookup/probe time, child scan time,
+          total time, selected device, output path, and TIFF/sidecar parity.
 
 - [x] Implement direct-u16 inverted-positive export output.
   - Scope: same `invert_negative` plus `render_to_display` export result as the

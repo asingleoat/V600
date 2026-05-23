@@ -1383,6 +1383,54 @@ max resolution `3200`, `ir_supported=true`, and about 25.77 seconds total probe
 time. Treat the checked-in wrapper fix as packaging state that still needs a
 human system rebuild/reload before plain wrapper timings are representative.
 
+Successful rebuilt-wrapper live pass from 2026-05-23: after NixOS rebuild,
+`scanimage-v600 -L` and `scanimage-v600-ir -L` both enumerated
+`epkowa:interpreter:001:020` without manual environment repair. Direct
+`zig build run -- scanner devices --timing-report
+.zig-cache/tmp/v600-live-scanner-feature-support.jsonl` selected the device with
+`linux.discover.scanimage_list=6040061 us` and total discovery `6046567 us`.
+Direct `zig build run -- scanner probe --timing-report
+.zig-cache/tmp/v600-live-scanner-feature-support.jsonl` reported wrappers
+`true/true`, TPU `2.700 x 9.540 in`, max resolution `3200`, and
+`ir_supported=true`; discovery was `6064935 us`, flatbed help `6048726 us`, TPU
+help `6069691 us`, total probe `18209430 us`.
+
+The same pass refreshed gated hardware timings and output evidence:
+- Tiny RGB selected scan wrote `/tmp/v600-live-20260523-rgb.tiff` as `96x100`
+  16-bit sRGB; total `scanOnce=25388919 us`, with capability lookup/probe
+  `12084453 us` and child scan `13248438 us`.
+- Tiny IR selected scan wrote `/tmp/v600-live-20260523-ir.tiff` as `200x201`
+  8-bit Gray; total `scanOnce=41331150 us`, with capability lookup/probe
+  `12105318 us` and child scan `29169547 us`.
+- Tiny RGB+IR selected scan wrote `/tmp/v600-live-20260523-rgbir.tiff` with page
+  0 RGB `96x100` 16-bit sRGB, page 1 thumbnail `96x100` 8-bit sRGB, and page 2
+  IR `200x201` 8-bit Gray; final sidecar recorded requested DPI `400`, RGB
+  effective DPI `400`, and IR effective DPI `800`. Total `scanRgbIr=68154355 us`.
+- Custom identity-LUT RGB scan wrote `/tmp/v600-live-20260523-lut-rgb.tiff` as
+  `96x100` 16-bit sRGB; sidecar recorded `custom_luts_applied=true`,
+  `linux.scan.environment` detail was `custom`, and `tiffinfo` showed TIFF tag
+  `50000: Custom film LUTs applied`.
+- Scanner-to-processing smoke wrote `/tmp/v600-live-20260523-processing-smoke.tiff`
+  and `processing info` reported `full_width=96`, `full_height=100`,
+  `has_ir=false`, and `dpi=400`.
+- Native preview-worker smoke under dummy SDL wrote
+  `/tmp/v600-live-20260523-native-preview-worker-smoke.tiff` as `1072x3814`
+  8-bit sRGB, downsampled in `876753 us`, cached a `536x1907` 8-bit preview, and
+  took `46437116 us` total.
+- Native scan-worker smoke under dummy SDL wrote
+  `/tmp/v600-live-20260523-native-scan-worker-smoke.tiff` as `200x201` 16-bit
+  sRGB and reported saved-output status after progress `15,31,47,63,79,95,100`.
+
+First scanner optimization target: capability reuse. The largest avoidable
+host-side cost is repeated `scanimage --help` capability probing: about
+`12.1 s` before every selected-area single-pass scan, about `25.5 s` across the
+two passes of RGB+IR, and about `18.2 s` for native preview probe before the
+actual preview scan. Command planning, metadata tags, sidecars, TIFF combine,
+and state updates are microsecond-to-millisecond scale by comparison. Optimize
+by reusing validated scanner capabilities for the active selected device and
+wrapper/config context, with transparent fallback to the current probe path on
+cache miss or invalidation.
+
 ## Required Evidence For Optimization Work
 
 - Capture before and after `bench-color` output in `plan.md`.
