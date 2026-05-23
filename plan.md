@@ -9523,8 +9523,7 @@ Autonomous performance iteration map:
       release smoke outputs, sidecar fields, timing report paths, and the
       follow-up capability-cache optimization result.
 
-- [ ] PENDING USER UPDATE: Refresh Linux Nix package and no-hardware check
-      gates.
+- [x] Refresh Linux Nix package and no-hardware check gates.
   - Covers release checklist items 7 and 8.
   - Required commands:
     - `nix build path:.#cli path:.#ui --no-link --print-build-logs`
@@ -9533,6 +9532,20 @@ Autonomous performance iteration map:
     Nix evaluations and to rely on the ambient shell for ordinary work. Do not
     run these release gates until the user explicitly authorizes release-time
     Nix validation or asks for a packaging refresh.
+  - Completed 2026-05-23 after explicit user authorization to run the release
+    Nix gates:
+    - `nix build path:.#cli path:.#ui --no-link --print-build-logs` completed
+      with exit code 0. Nix built:
+      - `/nix/store/0bfn1dywh9hbxpfh3z7lblqzds7mdvma-v600-zig-cli-0.1.0`
+      - `/nix/store/l6k8xi1vz3wd196my7jb3m1cls93dl9i-v600-zig-ui-0.1.0`
+      The CLI build phase completed in `48 seconds`; the UI build phase
+      completed in `54 seconds`.
+    - `nix build path:.#checks.x86_64-linux.zig-tests --no-link
+      --print-build-logs` completed with exit code 0. The check derivation
+      built `/nix/store/p5r5crfc3z8yh6hm8nqi1b4q07a1ij5x-v600-zig-tests.drv`
+      and printed the expected no-hardware skips for macOS scanner smoke,
+      scanner processing smoke, Linux scanner smoke, native scan worker smoke,
+      and native preview worker smoke.
 
 - [ ] PENDING USER UPDATE: Record macOS direct build/test evidence on a macOS
       host.
@@ -9735,9 +9748,6 @@ Autonomous performance iteration map:
       capability-cache optimization are checked above and committed.
     - Current unchecked rows from `rg -n "^- \[ \]|^\s+- \[ \]" plan.md` are
       only:
-      - release-time Linux Nix package/check gates, still blocked by the
-        explicit no-redundant-Nix-evaluation policy unless the user authorizes
-        release validation;
       - macOS direct build/test evidence, blocked until a macOS host is
         available;
       - this final parity/hygiene audit, blocked until the parked release
