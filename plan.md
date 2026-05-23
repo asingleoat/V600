@@ -9551,8 +9551,7 @@ Autonomous performance iteration map:
   - Completion decision: checked only as an explicit deferral, not as live
     macOS scanner support.
 
-- [ ] PENDING USER UPDATE: Record native UI real-display screenshot
-      verification.
+- [x] Record native UI real-display screenshot verification.
   - Covers release checklist item 12.
   - Required workflows: scan, process, gallery, confirmation, and pan/zoom.
   - Use `docs/NATIVE_UI_VERIFICATION.md` as the checklist. Headless SDL dummy
@@ -9629,6 +9628,72 @@ Autonomous performance iteration map:
       window narrower/wider and complete the manual interaction checklist in
       `docs/NATIVE_UI_VERIFICATION.md`, or provide a display environment that
       permits window resizing from automation.
+  - Completed 2026-05-23:
+    - Display environment:
+      - The ambient shell still reports only `XDG_SESSION_TYPE=tty`, but the
+        local X session is reachable through
+        `DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority`.
+      - `xrandr --current` reported a `3840x4720` X screen with `DP-0`
+        connected at `3840x2560+0+2160`.
+      - The window manager is xmonad. Requested `--window-size` values are
+        intentionally tiled by xmonad; the user confirmed this is acceptable
+        and not a UI defect. Geometry sidecars for all refreshed screenshots
+        record `Position: 0,2160` and `Geometry: 3838x2522`.
+    - Screenshot capture method:
+      - Real windows were launched with direct Zig commands using
+        `DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority SDL_RENDER_DRIVER=software
+        zig build -Dui=true run-ui -- ... --smoke-hold-ms ...`.
+      - Window captures used the existing desktop screenshot tool:
+        `scrot -w <window-id>`, with `xdotool getwindowgeometry` sidecars.
+      - Gallery pan/zoom screenshot used `xdotool` to send two wheel-up events
+        and a middle-button drag inside the real Gallery window before capture.
+    - Screenshot paths under
+      `.zig-cache/tmp/native-ui-real-display-2026-05-23/`:
+      - Scan: `scan-default.png`, `scan-scale-1.png`, `scan-scale-145.png`,
+        `scan-requested-narrow.png`, `scan-requested-wide.png`.
+      - Process: `process-default.png`, `process-requested-short.png`,
+        `process-worker-active.png`.
+      - Gallery: `gallery-default.png`, `gallery-trash-prompt.png`,
+        `gallery-delete-prompt.png`, `gallery-panzoom.png`.
+      - Supporting outputs: matching `*.geometry.txt`, per-run `*.log`,
+        `identify.txt`, and `contact-sheet.png`.
+    - Image/geometry evidence:
+      - `identify -format '%f %wx%h %[depth]-bit %[colorspace]\n'
+        .zig-cache/tmp/native-ui-real-display-2026-05-23/*.png` confirmed the
+        refreshed screenshots are 8-bit sRGB PNGs. All xmonad-tiled captures
+        are `3838x2522`; an older first probe `scan-default-1280x900.png` is
+        also present at `3838x2158` but is not needed for release evidence.
+      - Scan screenshots show readable top navigation, preview controls,
+        scale `1.0` and `1.45` sizing, preview image, selection box, and pinned
+        Scan footer.
+      - Process screenshots show the image selector, preview controls, render
+        controls, color pad, dust controls, the seeded preview image, and a
+        footer status line. `process-worker-active.png` shows the fake Process
+        load worker status in the footer while work is active.
+      - Gallery screenshots show two seeded TIFF exports, active thumbnail
+        highlighting, Trash and Delete confirmation prompts with Confirm/Cancel
+        controls, and Gallery footer text. The seeded TIFF fixture is very dark,
+        so the large selected export area appears dark, but the thumbnails and
+        file labels confirm real fixture-backed gallery content rather than a
+        blank placeholder.
+      - Visual inspection found no obvious text overlap, footer overlap, broken
+        prompt layout, blank control panels, or unreadable scale-1.45 controls
+        in the refreshed xmonad captures.
+    - Supporting direct UI validation:
+      - `zig build -Dui=true --summary all` passed.
+      - `env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software zig build
+        -Dui=true ui-smoke --summary all` passed.
+      - Direct dummy-SDL interaction/render smokes passed:
+        `run-ui -- --scan-interaction-smoke`,
+        `run-ui -- --process-render-smoke`,
+        `run-ui -- --gallery-interaction-smoke`,
+        `run-ui -- --gallery-shortcut-smoke`, and
+        `run-ui -- --gallery-confirm-smoke`.
+      - These smokes cover wheel-routing, selection editing, Gallery
+        zoom/pan/fit events, shortcut wrapping, Delete/Backspace confirmation
+        requests, and no-mutation-before-confirm behavior at the event/state
+        boundary. The real-display screenshots cover compositor/window
+        readability and the xmonad-controlled tile geometry.
 
 - [ ] PENDING USER UPDATE: Final parity manifest and generated-output hygiene
       audit.
@@ -9675,10 +9740,6 @@ Autonomous performance iteration map:
         release validation;
       - macOS direct build/test evidence, blocked until a macOS host is
         available;
-      - native UI real-display screenshot verification, blocked in this shell
-        because `env | rg
-        '^(DISPLAY|WAYLAND_DISPLAY|XDG_SESSION_TYPE|XAUTHORITY|SDL_VIDEODRIVER|SDL_RENDER_DRIVER)='`
-        reports only `XDG_SESSION_TYPE=tty`;
       - this final parity/hygiene audit, blocked until the parked release
         inputs above are resolved or explicitly release-deferred.
     - The parity manifest is still not in final release-accepted shape:

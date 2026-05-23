@@ -113,12 +113,18 @@ visual defects in `plan.md` under the checkpoint that required the manual pass.
 
 ## Current status
 
-As of 2026-05-19, the native UI has headless SDL dummy verification for preview,
-Process, gallery, theme, scale, and footer status-bar paths. A partial
-real-display screenshot pass was captured through the local LightDM/Xorg
-session at `DISPLAY=:0`; see `plan.md` for the exact screenshot paths and
-findings. Release acceptance is still pending because the current automated X
-session kept the SDL window at `1918x2158` despite resize requests, so the
-required narrower/wider resized-window screenshots and manual pointer-feel
-checks still need to be completed from a graphical session that permits window
-resizing.
+As of 2026-05-23, the native UI has headless SDL dummy verification for preview,
+Process, gallery, theme, scale, footer status-bar paths, and the Gallery/Scan
+interaction smokes. A real-display screenshot pass was captured through the
+local X session at `DISPLAY=:0` with `XAUTHORITY=$HOME/.Xauthority`; see
+`plan.md` for exact commands, screenshot paths, geometry sidecars, and visual
+findings.
+
+The display is managed by xmonad, so requested `--window-size` values are tiled
+to the active monitor geometry instead of producing freely resized windows. That
+is accepted for release verification in this environment. The refreshed captures
+record the actual xmonad geometry (`3838x2522`) and include Scan, Process,
+Gallery, Trash/Delete confirmations, Process active-worker footer status,
+scale `1.0` and `1.45`, requested narrow/wide/short variants, and a Gallery
+wheel/middle-drag pan/zoom attempt. No obvious text overlap, footer overlap,
+blank control panel, or prompt layout defect was observed in those captures.
