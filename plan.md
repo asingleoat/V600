@@ -9808,3 +9808,29 @@ Autonomous performance iteration map:
       reports `182`.
     - Generated-output hygiene remains clean:
       `git status --short --untracked-files=all` produced no output.
+  - Post-scanner-patching audit refresh 2026-05-23:
+    - Scanner patching hardening is committed as
+      `ee4b0da Harden V600 scanner patching`.
+    - `git status --short --untracked-files=all` produced no output after that
+      commit.
+    - Current unchecked rows from `rg -n "^- \[ \]" plan.md` are only the macOS
+      direct build/test evidence item and this final audit item.
+    - A header-aware parse of `docs/PARITY_MANIFEST.md` found 142 rows with an
+      actual `Status` column. The strict unresolved status cells are:
+      - line 69 `blocked`: `scanner.py:70 ensure_interpreter`, blocked on the
+        explicit proprietary Epson ICA download/extract/vendor policy decision
+        and macOS host validation;
+      - line 76 `scaffolded/replay-tested`: `scanner.py:370 close`, replayed for
+        interpreter close but still not live macOS-tested;
+      - line 104 `scaffolded/replay-tested`: `scanner.py:1190 _save_image`,
+        partially represented by Linux TIFF save/metadata/mirror helpers;
+      - line 105 `scaffolded/replay-tested`: `scanner.py:1221 main`, broad
+        Python CLI parity remains intentionally represented by rewritten
+        scanner/processing subcommands rather than every original CLI path;
+      - line 115 `scaffolded/replay-tested`:
+        `v600/core/backends/sane.py:479 SaneEpsonScanner._save_image`, same Linux
+        save helper surface as line 104.
+    - This confirms there is no further honest local checklist completion without
+      either macOS host evidence or an explicit release-scope decision accepting
+      or deferring the remaining macOS/proprietary-interpreter and broad
+      CLI/save-surface gaps.
