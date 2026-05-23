@@ -9664,3 +9664,27 @@ Autonomous performance iteration map:
       audit: `git status --short --untracked-files=all` showed only tracked
       source/docs modifications and no untracked scan/frame/config/TIFF/PNG/JPEG
       smoke outputs.
+  - Audit refresh 2026-05-23:
+    - The Linux SANE/live-scanner blocker from the 2026-05-20 audit is no
+      longer current. The rebuilt wrapper live-smoke pass and scanner
+      capability-cache optimization are checked above and committed.
+    - Current unchecked rows from `rg -n "^- \[ \]|^\s+- \[ \]" plan.md` are
+      only:
+      - release-time Linux Nix package/check gates, still blocked by the
+        explicit no-redundant-Nix-evaluation policy unless the user authorizes
+        release validation;
+      - macOS direct build/test evidence, blocked until a macOS host is
+        available;
+      - native UI real-display screenshot verification, blocked in this shell
+        because `env | rg
+        '^(DISPLAY|WAYLAND_DISPLAY|XDG_SESSION_TYPE|XAUTHORITY|SDL_VIDEODRIVER|SDL_RENDER_DRIVER)='`
+        reports only `XDG_SESSION_TYPE=tty`;
+      - this final parity/hygiene audit, blocked until the parked release
+        inputs above are resolved or explicitly release-deferred.
+    - The parity manifest is still not in final release-accepted shape:
+      `rg -n "\| (not-started|scaffolded|replay-tested|oracle-tested|hardware-tested|deferred|blocked)(/| |\|)" docs/PARITY_MANIFEST.md | wc -l`
+      reported `182` rows/statuses that are not literally `parity-accepted`.
+      This is not necessarily a code defect, but it means release checklist
+      item 2 still needs an explicit acceptance/deferral pass.
+    - Generated-output hygiene is clean for the current checkout:
+      `git status --short --untracked-files=all` produced no output.
