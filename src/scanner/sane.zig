@@ -58,19 +58,13 @@ pub fn planCommand(
     };
     errdefer plan.deinit(allocator);
 
-    if (plan.source == .tpu) {
-        plan.effective_dpi = nearest(request.dpi, &tpu_resolutions);
-    }
-    if (request.kind == .ir) {
-        plan.effective_dpi = nearest(plan.effective_dpi, &ir_resolutions);
-    }
+    plan.effective_dpi = effectiveDpiForRequest(request);
 
     if (request.kind == .ir) {
         if (wrappers.scanimage_v600_ir) {
             try plan.pushLiteral(allocator, "scanimage-v600-ir");
         } else {
-            try plan.pushLiteral(allocator, "scanimage");
-            plan.env.scan_ir_mode = true;
+            return error.IrWrapperRequired;
         }
     } else if (wrappers.scanimage_v600) {
         try plan.pushLiteral(allocator, "scanimage-v600");
@@ -108,6 +102,18 @@ pub fn planCommand(
     }
 
     return plan;
+}
+
+pub fn effectiveDpiForRequest(request: contracts.ScanRequest) u32 {
+    var effective_dpi = request.dpi;
+    const source = if (request.kind == .ir) .tpu else request.source;
+    if (source == .tpu) {
+        effective_dpi = nearest(request.dpi, &tpu_resolutions);
+    }
+    if (request.kind == .ir) {
+        effective_dpi = nearest(effective_dpi, &ir_resolutions);
+    }
+    return effective_dpi;
 }
 
 fn appendArea(
@@ -356,7 +362,7 @@ test "clamps oversized selected-area RGB TPU scan to scanner bounds" {
     });
 }
 
-test "plans IR scan with env fallback and snaps unsupported dpi" {
+test "rejects IR scan without the verified V600 IR wrapper" {
     const allocator = std.testing.allocator;
     const caps = contracts.ScannerCapabilities{ .device_name = "epkowa:interpreter:001:017" };
     const request = contracts.ScanRequest{
@@ -366,17 +372,7 @@ test "plans IR scan with env fallback and snaps unsupported dpi" {
         .depth = .eight,
     };
 
-    var plan = try planCommand(allocator, request, caps, .{});
-    defer plan.deinit(allocator);
-
-    try std.testing.expectEqual(@as(u32, 800), plan.effective_dpi);
-    try std.testing.expect(plan.env.scan_ir_mode);
-    try std.testing.expectEqualStrings("scanimage", plan.argv.items[0]);
-    try expectArgSequence(plan.argv.items, &.{
-        "--mode", "Gray",
-        "--source", "Transparency Unit",
-        "--resolution", "800",
-    });
+    try std.testing.expectError(error.IrWrapperRequired, planCommand(allocator, request, caps, .{}));
 }
 
 test "plans selected-area IR scan through V600 IR wrapper" {
@@ -408,6 +404,24 @@ test "plans selected-area IR scan through V600 IR wrapper" {
         "-o", "ir.tiff",
     });
     try std.testing.expect(!containsArg(plan.argv.items, "--depth"));
+}
+
+test "computes effective DPI for RGB and IR requests" {
+    try std.testing.expectEqual(@as(u32, 400), effectiveDpiForRequest(.{
+        .dpi = 200,
+        .source = .tpu,
+        .kind = .rgb,
+    }));
+    try std.testing.expectEqual(@as(u32, 800), effectiveDpiForRequest(.{
+        .dpi = 400,
+        .source = .flatbed,
+        .kind = .ir,
+    }));
+    try std.testing.expectEqual(@as(u32, 1600), effectiveDpiForRequest(.{
+        .dpi = 1600,
+        .source = .tpu,
+        .kind = .ir,
+    }));
 }
 
 test "plans V600 LUT file environment for RGB scans only" {

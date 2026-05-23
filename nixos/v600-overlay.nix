@@ -126,8 +126,8 @@ channel_usb_max_request_size (const channel *self)
       # Copy original as normal version
       cp "$ORIG_INTERP" "$out/lib/libesintA1_normal.so"
       
-      # Create IR patched version using Python script
-      cat > patch_ir.py << 'EOF'
+    # Create IR patched version using Python script
+    cat > patch_ir.py << 'EOF'
 #!/usr/bin/env python3
 import sys
 
@@ -135,21 +135,31 @@ def patch_binary(input_file, output_file):
     """Patch the interpreter binary to enable IR scanning mode."""
     with open(input_file, 'rb') as f:
         data = bytearray(f.read())
-    
+    patches = 0
+
     # Bypass source=3 validation at 0x17c83
     # This allows the TPU+IR mode to be accepted
     offset1 = 0x17c83
     if len(data) > offset1 + 4 and data[offset1:offset1+4] == bytes([0x80, 0x7a, 0x1a, 0x03]):
         data[offset1+3] = 0x04  # Change comparison from 3 to 4
+        patches += 1
         print(f"Patched validation at {offset1:#x}")
-    
+    else:
+        print(f"ERROR: validation patch site missing at {offset1:#x}", file=sys.stderr)
+
     # Change TPU source from 1 to 3 at 0x18f01
     # This enables IR channel when TPU is selected
     offset2 = 0x18f01
     if len(data) > offset2 + 4 and data[offset2:offset2+4] == bytes([0xc6, 0x40, 0x1a, 0x01]):
         data[offset2+3] = 0x03  # Change source from 1 (TPU) to 3 (TPU+IR)
+        patches += 1
         print(f"Patched source at {offset2:#x}")
-    
+    else:
+        print(f"ERROR: source patch site missing at {offset2:#x}", file=sys.stderr)
+
+    if patches != 2:
+        raise SystemExit(f"expected 2 IR interpreter patches, applied {patches}")
+
     with open(output_file, 'wb') as f:
         f.write(data)
 
@@ -173,20 +183,22 @@ EOF
   scanimage-v600 = final.writeShellScriptBin "scanimage-v600" ''
     # Normal/color scanning wrapper for Epson V600
     # Supports 16-bit depth at all resolutions (300-6400 DPI)
-    
+
     # Use the standard unpatched interpreter
     NORMAL_LIB="${final.v600-interpreters}/lib/libesintA1_normal.so"
-    
+    SANE_BACKEND_DIR="${final.epkowa}/lib/sane"
+    export SANE_CONFIG_DIR="''${SANE_CONFIG_DIR:-/etc/sane-config}"
+
     if [ -f "$NORMAL_LIB" ]; then
       # The interpreter needs C++ runtime libraries
-      export LD_LIBRARY_PATH="${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      export LD_LIBRARY_PATH="$SANE_BACKEND_DIR:${final.sane-backends}/lib/sane:${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
       # Use LD_PRELOAD to force loading our normal interpreter
       export LD_PRELOAD="$NORMAL_LIB''${LD_PRELOAD:+:$LD_PRELOAD}"
     else
-      echo "[V600] Warning: Normal interpreter not found at $NORMAL_LIB"
+      echo "[V600] Warning: Normal interpreter not found at $NORMAL_LIB" >&2
     fi
-    
-    exec ${prev.sane-backends}/bin/scanimage "$@"
+
+    exec ${final.sane-backends}/bin/scanimage "$@"
   '';
   
   # Wrapper script for IR (infrared) scanning
@@ -198,20 +210,22 @@ EOF
     #   --mode Gray
     #   --resolution 800/1600/3200
     
-    echo "[V600] IR mode - using infrared channel"
-    
+    echo "[V600] IR mode - using infrared channel" >&2
+
     # Use the patched IR interpreter
     IR_LIB="${final.v600-interpreters}/lib/libesintA1_ir.so"
-    
+    SANE_BACKEND_DIR="${final.epkowa}/lib/sane"
+    export SANE_CONFIG_DIR="''${SANE_CONFIG_DIR:-/etc/sane-config}"
+
     if [ -f "$IR_LIB" ]; then
       # The interpreter needs C++ runtime libraries
-      export LD_LIBRARY_PATH="${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      export LD_LIBRARY_PATH="$SANE_BACKEND_DIR:${final.sane-backends}/lib/sane:${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
       # Use LD_PRELOAD to force loading our IR interpreter
       export LD_PRELOAD="$IR_LIB''${LD_PRELOAD:+:$LD_PRELOAD}"
     else
-      echo "[V600] Warning: IR interpreter not found at $IR_LIB"
+      echo "[V600] Warning: IR interpreter not found at $IR_LIB" >&2
     fi
-    
-    exec ${prev.sane-backends}/bin/scanimage "$@"
+
+    exec ${final.sane-backends}/bin/scanimage "$@"
   '';
 })

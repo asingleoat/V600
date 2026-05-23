@@ -1368,6 +1368,21 @@ Later the same day, `zig build run -- scanner devices --timing-report
 `devices_found=0`; the `linux.discover.scanimage_list` timing was
 `5743827 us`.
 
+Live reboot/recovery attempt from 2026-05-23: USB saw the V600 at `001:020` and
+`sane-find-scanner` saw `libusb:001:020`, but plain ambient `scanimage -L`, the
+current system `scanimage-v600 -L`, the current system `scanimage-v600-ir -L`,
+and direct `zig build run -- scanner devices --timing-report
+.zig-cache/tmp/v600-live-scanner-feature-support.jsonl` still reported zero
+devices. SANE debug showed the current system wrappers could not load
+`libsane-epkowa.so.1`; manually prepending `/run/current-system/sw/lib/sane` to
+`LD_LIBRARY_PATH` made `scanimage-v600 -L` enumerate
+`epkowa:interpreter:001:020`. With the same manual backend path, direct Zig
+`scanner devices` selected that device in about 8.34 seconds, and direct Zig
+`scanner probe` succeeded with wrappers `true/true`, TPU `2.700 x 9.540 in`,
+max resolution `3200`, `ir_supported=true`, and about 25.77 seconds total probe
+time. Treat the checked-in wrapper fix as packaging state that still needs a
+human system rebuild/reload before plain wrapper timings are representative.
+
 ## Required Evidence For Optimization Work
 
 - Capture before and after `bench-color` output in `plan.md`.

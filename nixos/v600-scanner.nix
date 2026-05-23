@@ -19,8 +19,10 @@
   # Enable IPP-USB for driverless scanning (optional, but recommended)
   services.ipp-usb.enable = true;
   
-  # Add epkowa backend to SANE configuration
-  # This ensures the epkowa backend is loaded by SANE
+  # Add epkowa backend to SANE configuration. NixOS' SANE build reads
+  # /etc/sane-config; keep /etc/sane.d as a compatibility breadcrumb for
+  # non-NixOS tooling and older notes.
+  environment.etc."sane-config/dll.d/epkowa.conf".text = "epkowa";
   environment.etc."sane.d/dll.d/epkowa.conf".text = "epkowa";
   
   # udev rule for Epson Perfection V600 Photo scanner

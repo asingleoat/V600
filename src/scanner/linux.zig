@@ -21,10 +21,49 @@ pub const Device = struct {
     kind: []const u8 = "",
     raw_line: []const u8 = "",
 
+    pub const BackendKind = enum {
+        epson2,
+        epkowa_interpreter,
+        epkowa,
+        other,
+    };
+
+    pub fn backendKind(self: Device) BackendKind {
+        if (std.mem.indexOf(u8, self.name, "epson2") != null) return .epson2;
+        if (std.mem.indexOf(u8, self.name, "epkowa:interpreter") != null) return .epkowa_interpreter;
+        if (std.mem.indexOf(u8, self.name, "epkowa") != null) return .epkowa;
+        return .other;
+    }
+
     pub fn backendRank(self: Device) u8 {
-        if (std.mem.indexOf(u8, self.name, "epson2") != null) return 0;
-        if (std.mem.indexOf(u8, self.name, "epkowa") != null) return 1;
-        return 2;
+        return self.backendRankForKind(.rgb);
+    }
+
+    pub fn backendRankForKind(self: Device, kind: contracts.ScanKind) u8 {
+        return switch (kind) {
+            .ir, .rgb_ir => switch (self.backendKind()) {
+                .epkowa_interpreter => 0,
+                .epkowa => 1,
+                .epson2 => 2,
+                .other => 3,
+            },
+            .rgb, .gray => switch (self.backendKind()) {
+                .epson2 => 0,
+                .epkowa_interpreter => 1,
+                .epkowa => 2,
+                .other => 3,
+            },
+        };
+    }
+
+    pub fn canUseForKind(self: Device, kind: contracts.ScanKind) bool {
+        return switch (kind) {
+            .ir, .rgb_ir => switch (self.backendKind()) {
+                .epkowa_interpreter, .epkowa => true,
+                .epson2, .other => false,
+            },
+            .rgb, .gray => true,
+        };
     }
 
     pub fn looksLikeV600(self: Device) bool {
@@ -155,7 +194,10 @@ pub const Runtime = struct {
     event_sink: ?events.Sink = null,
 
     pub fn wrappers(self: Runtime) WrapperAvailability {
-        if (self.scanimage_command != null) return .{};
+        if (self.scanimage_command != null) return .{
+            .scanimage_v600 = true,
+            .scanimage_v600_ir = true,
+        };
         return .{
             .scanimage_v600 = self.commandExists("scanimage-v600"),
             .scanimage_v600_ir = self.commandExists("scanimage-v600-ir"),
@@ -233,12 +275,16 @@ pub const Runtime = struct {
     }
 
     pub fn discoverDevices(self: Runtime) ![]Device {
+        return self.discoverDevicesForKind(.rgb);
+    }
+
+    fn discoverDevicesForKind(self: Runtime, kind: contracts.ScanKind) ![]Device {
         const total_start = monotonicNowNs();
         var total_detail: []const u8 = "error";
         defer self.emitTimingSince("linux.discover.total", total_start, total_detail);
 
         const list_start = monotonicNowNs();
-        const result = runCapture(self.allocator, self.io, &.{ self.scanimageCommand(), "-L" }, self.environ_map) catch |err| {
+        const result = runCapture(self.allocator, self.io, &.{ self.discoveryCommand(), "-L" }, self.environ_map) catch |err| {
             self.emitTimingSince("linux.discover.scanimage_list", list_start, "spawn-error");
             return err;
         };
@@ -260,7 +306,7 @@ pub const Runtime = struct {
         };
         self.emitTimingSince("linux.discover.parse_device_list", parse_start, "ok");
         const select_start = monotonicNowNs();
-        const selected = selectDevice(devices);
+        const selected = selectDeviceForKind(devices, kind);
         self.emitTimingSince("linux.discover.select_device", select_start, if (selected != null) "selected" else "none");
         self.emitDeviceDiscovery(.{
             .discovery_attempted = true,
@@ -279,12 +325,12 @@ pub const Runtime = struct {
 
         self.emitStartup(.{ .platform = "linux", .backend = "sane" });
         const discover_start = monotonicNowNs();
-        const devices = try self.discoverDevices();
+        const devices = try self.discoverDevicesForKind(.rgb_ir);
         self.emitTimingSince("linux.probe.discover_devices", discover_start, "ok");
         defer freeDevices(self.allocator, devices);
 
         const select_start = monotonicNowNs();
-        const device = selectDevice(devices) orelse return error.NoV600Device;
+        const device = selectDeviceForKind(devices, .rgb_ir) orelse return error.NoV600Device;
         self.emitTimingSince("linux.probe.select_device", select_start, "selected");
         const cache_write_start = monotonicNowNs();
         self.writeCachedDeviceName(device.name);
@@ -300,6 +346,7 @@ pub const Runtime = struct {
         const parse_start = monotonicNowNs();
         var caps = sane.parseCombinedCapabilities(flatbed_help, tpu_help);
         if (caps.device_name.len == 0) caps.device_name = device.name;
+        caps.ir_supported = wrappers_available.scanimage_v600_ir and device.canUseForKind(.ir);
         self.emitTimingSince("linux.probe.parse_combined_capabilities", parse_start, "ok");
         self.emitProbe(.{
             .device = caps.device_name,
@@ -329,7 +376,7 @@ pub const Runtime = struct {
             return error.MissingOutputPath;
         }
 
-        var selected = try self.resolveDeviceName(options.device_name);
+        var selected = try self.resolveDeviceName(options.device_name, options.request.kind);
         defer selected.deinit(self.allocator);
 
         if (options.request.kind == .rgb_ir) {
@@ -345,7 +392,7 @@ pub const Runtime = struct {
         defer first_failure.?.deinit(self.allocator);
 
         if (selected.source == .cache_hit and options.device_name == null and first_failure.?.kind == .no_device) {
-            const refreshed = try self.discoverAndCacheDeviceName();
+            const refreshed = try self.discoverAndCacheDeviceName(options.request.kind);
             selected.deinit(self.allocator);
             selected = refreshed;
             var retry_failure = self.scanOnce(options, selected.name) catch |err| switch (err) {
@@ -425,16 +472,17 @@ pub const Runtime = struct {
         const combine_start = monotonicNowNs();
         try self.combineTiffPages(rgb_path, thumb_path, ir_path, options.output_path);
         self.emitTimingSince("linux.scan_rgb_ir.combine_tiff_pages", combine_start, "ok");
+        const pass_dpis = combinedPassDpis(options.request);
         const metadata_tags_start = monotonicNowNs();
         try self.applyTiffMetadataTags(options.output_path, .{
             .model = "Epson Perfection V600 Photo",
             .software = tiff_software,
-            .dpi = options.request.dpi,
+            .dpi = pass_dpis.rgb,
             .custom_luts_applied = customLutsApplied(options.request),
         });
         self.emitTimingSince("linux.scan_rgb_ir.metadata_tags", metadata_tags_start, "ok");
         const sidecar_start = monotonicNowNs();
-        const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name);
+        const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name, pass_dpis);
         self.emitTimingSince("linux.scan_rgb_ir.metadata_sidecar", sidecar_start, "ok");
         defer self.allocator.free(metadata_path);
         self.emitScanComplete(.{
@@ -515,7 +563,14 @@ pub const Runtime = struct {
         request.output_path = options.output_path;
         self.emitTimingSince("linux.scan_once.request_normalize", normalize_start, "ok");
         const plan_start = monotonicNowNs();
-        var plan = try sane.planCommand(self.allocator, request, caps, self.wrappers());
+        var plan = sane.planCommand(self.allocator, request, caps, self.wrappers()) catch |err| switch (err) {
+            error.IrWrapperRequired => {
+                self.emitTimingSince("linux.scan_once.command_plan", plan_start, "missing-ir-wrapper");
+                total_detail = "unsupported-ir-wrapper";
+                return try self.makeFailure(.unsupported_option, "IR scanning requires the scanimage-v600-ir wrapper; plain SCAN_IR_MODE fallback is not a verified scanner capability");
+            },
+            else => return err,
+        };
         defer plan.deinit(self.allocator);
         self.applyScanimageCommandOverride(&plan);
         self.emitTimingSince("linux.scan_once.command_plan", plan_start, "ok");
@@ -614,7 +669,7 @@ pub const Runtime = struct {
             .flatbed => "linux.capabilities.help.flatbed",
             .tpu => "linux.capabilities.help.tpu",
         };
-        const executable = if (std.mem.eql(u8, command, "scanimage")) self.scanimageCommand() else command;
+        const executable = if (self.scanimage_command != null and isScanimageCommand(command)) self.scanimageCommand() else command;
         const start = monotonicNowNs();
         const result = runCapture(self.allocator, self.io, &.{
             executable,
@@ -715,15 +770,21 @@ pub const Runtime = struct {
         return self.scanimage_command orelse "scanimage";
     }
 
+    fn discoveryCommand(self: Runtime) []const u8 {
+        if (self.scanimage_command) |command| return command;
+        if (self.commandExists("scanimage-v600")) return "scanimage-v600";
+        return "scanimage";
+    }
+
     fn applyScanimageCommandOverride(self: Runtime, plan: *sane.CommandPlan) void {
         const override = self.scanimage_command orelse return;
         if (plan.argv.items.len == 0) return;
-        if (std.mem.eql(u8, plan.argv.items[0], "scanimage")) {
+        if (isScanimageCommand(plan.argv.items[0])) {
             plan.argv.items[0] = override;
         }
     }
 
-    fn resolveDeviceName(self: Runtime, explicit_device_name: ?[]const u8) !DeviceChoice {
+    fn resolveDeviceName(self: Runtime, explicit_device_name: ?[]const u8, kind: contracts.ScanKind) !DeviceChoice {
         if (explicit_device_name) |name| {
             const start = monotonicNowNs();
             self.emitDeviceDiscovery(.{
@@ -742,6 +803,17 @@ pub const Runtime = struct {
         };
         self.emitTimingSince("linux.resolve.cache_lookup", cache_start, if (cached != null) "hit" else "miss");
         if (cached) |cached_name| {
+            if (!cachedDeviceUsableForKind(cached_name, kind)) {
+                self.allocator.free(cached_name);
+                self.emitTimingSince("linux.resolve.cache_kind_filter", cache_start, "ignored");
+                const discover_start = monotonicNowNs();
+                const choice = self.discoverAndCacheDeviceName(kind) catch |err| {
+                    self.emitTimingSince("linux.resolve.discover_and_cache", discover_start, "error");
+                    return err;
+                };
+                self.emitTimingSince("linux.resolve.discover_and_cache", discover_start, "selected");
+                return choice;
+            }
             self.emitDeviceDiscovery(.{
                 .discovery_attempted = false,
                 .devices_found = null,
@@ -751,7 +823,7 @@ pub const Runtime = struct {
             return .{ .name = cached_name, .source = .cache_hit };
         }
         const discover_start = monotonicNowNs();
-        const choice = self.discoverAndCacheDeviceName() catch |err| {
+        const choice = self.discoverAndCacheDeviceName(kind) catch |err| {
             self.emitTimingSince("linux.resolve.discover_and_cache", discover_start, "error");
             return err;
         };
@@ -759,10 +831,10 @@ pub const Runtime = struct {
         return choice;
     }
 
-    fn discoverAndCacheDeviceName(self: Runtime) !DeviceChoice {
-        const devices = try self.discoverDevices();
+    fn discoverAndCacheDeviceName(self: Runtime, kind: contracts.ScanKind) !DeviceChoice {
+        const devices = try self.discoverDevicesForKind(kind);
         defer freeDevices(self.allocator, devices);
-        const selected = selectDevice(devices) orelse return error.NoV600Device;
+        const selected = selectDeviceForKind(devices, kind) orelse return error.NoV600Device;
         const name = try self.allocator.dupe(u8, selected.name);
         self.writeCachedDeviceName(name);
         return .{ .name = name, .source = .discovered };
@@ -905,6 +977,29 @@ const RunResult = struct {
     }
 };
 
+const CombinedPassDpis = struct {
+    rgb: u32,
+    ir: u32,
+};
+
+fn combinedPassDpis(request: contracts.ScanRequest) CombinedPassDpis {
+    var rgb_request = request;
+    rgb_request.kind = .rgb;
+    rgb_request.depth = .sixteen;
+    rgb_request.source = if (request.source == .flatbed) .flatbed else .tpu;
+
+    var ir_request = request;
+    ir_request.kind = .ir;
+    ir_request.depth = .eight;
+    ir_request.source = .tpu;
+    ir_request.dpi = @min(request.dpi, 3200);
+
+    return .{
+        .rgb = sane.effectiveDpiForRequest(rgb_request),
+        .ir = sane.effectiveDpiForRequest(ir_request),
+    };
+}
+
 fn runCapture(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -980,10 +1075,15 @@ fn freeDevice(allocator: std.mem.Allocator, device: Device) void {
 }
 
 pub fn selectDevice(devices: []const Device) ?Device {
+    return selectDeviceForKind(devices, .rgb);
+}
+
+pub fn selectDeviceForKind(devices: []const Device, kind: contracts.ScanKind) ?Device {
     var selected: ?Device = null;
     for (devices) |device| {
         if (!device.looksLikeV600()) continue;
-        if (selected == null or device.backendRank() < selected.?.backendRank()) {
+        if (!device.canUseForKind(kind)) continue;
+        if (selected == null or device.backendRankForKind(kind) < selected.?.backendRankForKind(kind)) {
             selected = device;
         }
     }
@@ -996,15 +1096,25 @@ pub fn chooseDeviceName(
     cached_name: ?[]const u8,
     explicit_name: ?[]const u8,
 ) !?DeviceChoice {
+    return chooseDeviceNameForKind(allocator, devices, cached_name, explicit_name, .rgb);
+}
+
+pub fn chooseDeviceNameForKind(
+    allocator: std.mem.Allocator,
+    devices: []const Device,
+    cached_name: ?[]const u8,
+    explicit_name: ?[]const u8,
+    kind: contracts.ScanKind,
+) !?DeviceChoice {
     if (explicit_name) |name| {
         return .{ .name = try allocator.dupe(u8, name), .source = .explicit };
     }
     if (cached_name) |name| {
-        if (deviceListContains(devices, name)) {
+        if (cachedDeviceUsableForKind(name, kind) and deviceListContains(devices, name)) {
             return .{ .name = try allocator.dupe(u8, name), .source = .cache_hit };
         }
     }
-    if (selectDevice(devices)) |selected| {
+    if (selectDeviceForKind(devices, kind)) |selected| {
         return .{ .name = try allocator.dupe(u8, selected.name), .source = .discovered };
     }
     return null;
@@ -1230,6 +1340,7 @@ fn writeCombinedMetadataSidecar(
     io: std.Io,
     options: ScanOptions,
     device_name: []const u8,
+    pass_dpis: CombinedPassDpis,
 ) ![]u8 {
     const metadata_path = if (options.metadata_path) |path|
         try allocator.dupe(u8, path)
@@ -1243,7 +1354,6 @@ fn writeCombinedMetadataSidecar(
     var writer = file.writer(io, &buffer);
     const out = &writer.interface;
 
-    const ir_dpi = @min(options.request.dpi, 3200);
     try out.print(
         \\{{
         \\  "software": "v600-zig",
@@ -1253,6 +1363,7 @@ fn writeCombinedMetadataSidecar(
         \\  "kind": "rgb+ir",
         \\  "requested_dpi": {d},
         \\  "effective_dpi": {d},
+        \\  "rgb_effective_dpi": {d},
         \\  "ir_effective_dpi": {d},
         \\  "depth": 16,
         \\  "output": "{s}",
@@ -1273,8 +1384,9 @@ fn writeCombinedMetadataSidecar(
         device_name,
         options.request.source,
         options.request.dpi,
-        options.request.dpi,
-        ir_dpi,
+        pass_dpis.rgb,
+        pass_dpis.rgb,
+        pass_dpis.ir,
         options.output_path,
         customLutsApplied(options.request),
         tiff_software,
@@ -1309,6 +1421,19 @@ fn commandExistsScript(command: []const u8) []const u8 {
     return "false";
 }
 
+fn isScanimageCommand(command: []const u8) bool {
+    return std.mem.eql(u8, command, "scanimage") or
+        std.mem.eql(u8, command, "scanimage-v600") or
+        std.mem.eql(u8, command, "scanimage-v600-ir");
+}
+
+fn cachedDeviceUsableForKind(device_name: []const u8, kind: contracts.ScanKind) bool {
+    return switch (kind) {
+        .ir, .rgb_ir => std.mem.indexOf(u8, device_name, "epkowa") != null,
+        .rgb, .gray => true,
+    };
+}
+
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
         if (std.mem.indexOf(u8, haystack, needle) != null) return true;
@@ -1339,6 +1464,19 @@ test "parses scanimage device list and selects preferred V600 backend" {
     defer freeDevices(allocator, devices);
     try std.testing.expectEqual(@as(usize, 2), devices.len);
     try expectDeviceName(selectDevice(devices), "epson2:libusb:001:018");
+}
+
+test "selects epkowa interpreter backend for IR-capable scan kinds" {
+    const allocator = std.testing.allocator;
+    const output =
+        \\device `epkowa:interpreter:001:017' is a Epson (unknown model) flatbed scanner
+        \\device `epson2:libusb:001:018' is a Epson V600 flatbed scanner
+        \\
+    ;
+    const devices = try parseDeviceList(allocator, output);
+    defer freeDevices(allocator, devices);
+    try expectDeviceName(selectDeviceForKind(devices, .ir), "epkowa:interpreter:001:017");
+    try expectDeviceName(selectDeviceForKind(devices, .rgb_ir), "epkowa:interpreter:001:017");
 }
 
 test "accepts live epkowa interpreter listing when model text is unknown" {
@@ -1399,6 +1537,20 @@ test "ignores stale cache and falls back to discovered V600 device" {
     defer choice.deinit(allocator);
     try std.testing.expectEqual(DeviceChoiceSource.discovered, choice.source);
     try std.testing.expectEqualStrings("epkowa:interpreter:001:018", choice.name);
+}
+
+test "ignores epson2 cache for IR scans and discovers epkowa" {
+    const allocator = std.testing.allocator;
+    const devices = try parseDeviceList(allocator,
+        \\device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner
+        \\device `epson2:libusb:001:018' is a Epson V600 flatbed scanner
+        \\
+    );
+    defer freeDevices(allocator, devices);
+    const choice = (try chooseDeviceNameForKind(allocator, devices, "epson2:libusb:001:018", null, .rgb_ir)).?;
+    defer choice.deinit(allocator);
+    try std.testing.expectEqual(DeviceChoiceSource.discovered, choice.source);
+    try std.testing.expectEqualStrings("epkowa:interpreter:001:017", choice.name);
 }
 
 const NullWriter = struct {
@@ -1584,7 +1736,7 @@ test "resolve device emits cache-hit timing without discovery" {
         },
     };
 
-    const choice = try runtime.resolveDeviceName(null);
+    const choice = try runtime.resolveDeviceName(null, .rgb);
     defer choice.deinit(allocator);
 
     try std.testing.expectEqual(DeviceChoiceSource.cache_hit, choice.source);
@@ -1970,12 +2122,12 @@ test "writes RGB plus IR sidecar with stable page layout" {
     const metadata_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/combined.json", .{tmp.sub_path[0..]});
     defer allocator.free(metadata_path);
     const options = ScanOptions{
-        .request = .{ .dpi = 800, .source = .tpu, .kind = .rgb_ir },
+        .request = .{ .dpi = 400, .source = .tpu, .kind = .rgb_ir },
         .output_path = "combined.tiff",
         .metadata_path = metadata_path,
     };
 
-    const written_path = try writeCombinedMetadataSidecar(allocator, std.testing.io, options, "epkowa:interpreter:001:017");
+    const written_path = try writeCombinedMetadataSidecar(allocator, std.testing.io, options, "epkowa:interpreter:001:017", combinedPassDpis(options.request));
     defer allocator.free(written_path);
     try std.testing.expectEqualStrings(metadata_path, written_path);
 
@@ -1985,6 +2137,8 @@ test "writes RGB plus IR sidecar with stable page layout" {
     try std.testing.expect(std.mem.indexOf(u8, data, "\"index\": 0, \"kind\": \"rgb\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, data, "\"index\": 1, \"kind\": \"thumbnail\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, data, "\"index\": 2, \"kind\": \"ir\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"rgb_effective_dpi\": 400") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"ir_effective_dpi\": 800") != null);
     try std.testing.expect(std.mem.indexOf(u8, data, ".tmp.tiff") == null);
 }
 

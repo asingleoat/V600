@@ -466,8 +466,12 @@ with the Python project:
 
 - Linux and macOS scanner paths are distinct.
 - Linux RGB TPU scans should route through `scanimage-v600` when available.
-- Linux IR scans should route through `scanimage-v600-ir` when available, or
-  fall back to `scanimage` with `SCAN_IR_MODE=1`.
+- Linux IR scans require the verified `scanimage-v600-ir` wrapper. Do not treat
+  plain `scanimage` plus `SCAN_IR_MODE=1` as a supported fallback unless a
+  packaged dispatcher is added and live-tested; the wrapper must load the
+  patched interpreter, epkowa backend, and SANE config path together.
+- Linux IR and RGB+IR device selection must prefer an `epkowa` /
+  `epkowa:interpreter` device and must not use a cached `epson2` device.
 - TPU source name is `Transparency Unit`.
 - Flatbed source name is `Flatbed`.
 - TPU supported resolutions are 400, 800, 1600, and 3200 DPI.
@@ -7943,6 +7947,41 @@ Autonomous performance iteration map:
           next input is to make the scanner enumerate through SANE again
           before running gated RGB, IR, RGB+IR, native worker, or
           scanner-to-processing smoke commands.
+      - Rechecked after scanner reboot on 2026-05-23:
+        - USB visibility recovered at a new bus address:
+          `04b8:013a Seiko Epson Corp. GT-X820 [Perfection V600 Photo]` at
+          `001:020`, and `sane-find-scanner` reported a possible scanner at
+          `libusb:001:020`.
+        - Plain ambient `scanimage -L`, current system `scanimage-v600 -L`, and
+          current system `scanimage-v600-ir -L` still reported no scanner.
+          Direct `zig build run -- scanner devices --timing-report
+          .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` also reported
+          `devices_found=0` without manual environment repair.
+        - SANE debug showed the current system wrappers were not making
+          `libsane-epkowa.so.1` visible. The active wrapper searched only the
+          SANE/gcc/wgpu/vulkan library paths and therefore loaded `epson2` but
+          could not load `epkowa`.
+        - Manual backend-path repair proved the scanner and epkowa backend are
+          usable:
+          `LD_LIBRARY_PATH="/run/current-system/sw/lib/sane${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" scanimage-v600 -L`
+          listed `epkowa:interpreter:001:020`.
+        - With the same manual backend path, direct
+          `zig build run -- scanner devices --timing-report
+          .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` selected
+          `epkowa:interpreter:001:020`; discovery took about 8.34 seconds.
+        - With the same manual backend path, direct
+          `zig build run -- scanner probe --timing-report
+          .zig-cache/tmp/v600-live-scanner-feature-support.jsonl` succeeded:
+          wrappers `true/true`, flatbed `8.500 x 11.700 in`, TPU
+          `2.700 x 9.540 in`, max resolution `3200`, and
+          `ir_supported=true`. Probe timing was about 8.68 seconds for
+          discovery, 8.38 seconds for flatbed help, 8.68 seconds for TPU help,
+          and 25.77 seconds total.
+        - The repo overlay was updated so future `scanimage-v600` and
+          `scanimage-v600-ir` wrappers prepend the epkowa backend directory and
+          use `/etc/sane-config`. A system rebuild/reload is required before
+          plain wrapper commands can be expected to pass without the manual
+          `LD_LIBRARY_PATH` repair.
     - [ ] PENDING USER UPDATE: Analyze the scanner timing baseline and choose
           the first optimization.
       - Build a ranked table for startup, preview, single-pass full scan, and
