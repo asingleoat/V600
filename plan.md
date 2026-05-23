@@ -7642,9 +7642,8 @@ Autonomous performance iteration map:
       `auto_mismatches=0`, `dmin_max_abs=0.000000000000`,
       `inverted_max_abs=0`, `inverted_mismatches=0`, and matching checksums.
 
-- [ ] PENDING USER UPDATE: Finish scanner preview, scanner startup, and
-      full-resolution scan live timing before attempting scanner-side
-      optimization.
+- [x] Finish scanner preview, scanner startup, and full-resolution scan live
+      timing before attempting scanner-side optimization.
   - Why this is measurement-first: scanner startup is known slow and important,
     but live scan time is partly hardware/I/O bound. Blind changes risk
     breaking scanner parity or adding more blocking startup work.
@@ -7680,6 +7679,18 @@ Autonomous performance iteration map:
     - Record exact commands, device identity, output paths, TIFF geometry/page
       summaries, and timing breakdowns.
     - `zig build test --summary all`.
+  - Completed 2026-05-23:
+    - Rebuilt Linux wrappers enumerated `epkowa:interpreter:001:020` without
+      manual environment repair.
+    - Headless/replay timing and worker tests passed through
+      `zig build test --summary all` with `450/450` tests.
+    - Live gated RGB, IR, RGB+IR, LUT, scanner-to-processing, native
+      preview-worker, and native scan-worker smokes are recorded below with
+      exact commands, output paths, geometry, sidecars, and timing reports.
+    - First scanner-side optimization was selected and completed:
+      session-local native capability reuse avoids repeated `scanimage --help`
+      probes for selected-area preview/scan workers while preserving fallback
+      behavior.
   - Scanner instrumentation and optimization checklist:
     - [x] Define the scanner timing event contract.
       - Add a stable JSONL event shape in `src/scanner/events.zig` for timing
@@ -9483,7 +9494,7 @@ Autonomous performance iteration map:
       checkpoint without reviewing the final-output tolerance tradeoff. The
       current default `.f32` exact Gaussian adaptive path remains active.
 
-- [ ] PENDING USER UPDATE: Refresh Linux live scanner release smoke evidence.
+- [x] Refresh Linux live scanner release smoke evidence.
   - Covers release checklist item 9.
   - Required modes/evidence: RGB, IR, RGB+IR, metadata, LUT, native preview
     worker, native scan worker, and scanner-to-processing workflow.
@@ -9503,6 +9514,14 @@ Autonomous performance iteration map:
   - Required next input: make the scanner visible to SANE again, then rerun the
     RGB, IR, RGB+IR, metadata, LUT, native preview-worker, native scan-worker,
     and scanner-to-processing smoke commands.
+  - Completed 2026-05-23 after the rebuilt scanner wrapper was active:
+    - See the completed scanner-performance checklist above for the exact live
+      gated commands and timings.
+    - Required coverage is present for RGB, IR, RGB+IR, metadata, LUT, native
+      preview-worker, native scan-worker, and scanner-to-processing workflow.
+    - `docs/PARITY_MANIFEST.md` and `docs/PERFORMANCE_STRATEGY.md` record the
+      release smoke outputs, sidecar fields, timing report paths, and the
+      follow-up capability-cache optimization result.
 
 - [ ] PENDING USER UPDATE: Refresh Linux Nix package and no-hardware check
       gates.
