@@ -733,6 +733,32 @@ The FS W command byte at offset 27 (depth field) is correctly set
 to 16 by the backend — the bug is only in the post-scan processing
 path that validates the depth after data has already been received.
 
+The NixOS overlay applies this through `nixos/patch-epkowa-v600.py`, not inline
+`sed`. The patcher also replaces the USB channel request-size callbacks with a
+V600-specific larger request function and skips the 8-bit-only color-profile
+loop only for 16-bit buffers. It validates the exact expected source anchors
+and is idempotent; if nixpkgs changes the epkowa source shape, the build fails
+with a patch-site diagnostic.
+
+## Linux IR Interpreter Patch
+
+The `scanimage-v600-ir` wrapper uses Epson's Linux ELF interpreter with two
+byte patches that make TPU scans request the IR channel. The overlay applies
+those bytes through `nixos/patch-v600-interpreter-ir.py`.
+
+The patcher pins both the pre-fixup original hash and pre-fixup patched hash,
+then verifies the exact byte sequences at offsets `0x17c83` and `0x18f01`.
+After Nix fixup, the built normal and IR interpreter variants should still show
+these site bytes:
+
+    normal 0x17c83: 80 7a 1a 03
+    normal 0x18f01: c6 40 1a 01
+    IR     0x17c83: 80 7a 1a 04
+    IR     0x18f01: c6 40 1a 03
+
+This remains a proprietary binary patch, but it is now fail-fast and
+reproducible instead of a generated heredoc hidden inside the Nix expression.
+
 ## SANE epson2 IR Patch
 
 The epson2 SANE backend has better open-source 16-bit support but

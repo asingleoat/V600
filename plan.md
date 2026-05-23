@@ -8009,6 +8009,38 @@ Autonomous performance iteration map:
             `2.700 x 9.540 in`, max resolution `3200`, and
             `ir_supported=true`; discovery took `6064935 us`, flatbed help
             `6048726 us`, TPU help `6069691 us`, total probe `18209430 us`.
+        - Packaging hardening refresh 2026-05-23:
+          - Replaced inline `sed` epkowa source edits with
+            `nixos/patch-epkowa-v600.py`, which validates exact source anchors,
+            is idempotent, and applies the USB request-size override plus the
+            16-bit `dip_apply_color_profile` bypass at the intended function
+            site.
+          - Replaced the generated `patch_ir.py` heredoc with checked-in
+            `nixos/patch-v600-interpreter-ir.py`, which pins the pre-fixup
+            interpreter hashes, validates the byte sites at `0x17c83` and
+            `0x18f01`, supports idempotency, and rejects corrupted or changed
+            binaries.
+          - Hardened `scanimage-v600` and `scanimage-v600-ir` so missing packaged
+            epkowa backend/interpreter paths are fatal errors instead of warnings
+            followed by an unverified fallback.
+          - Validation commands passed:
+            `python3 nixos/patch-epkowa-v600.py --self-test`;
+            `python3 nixos/patch-v600-interpreter-ir.py --self-test`; a
+            two-pass replay of the epkowa patcher against pinned
+            `iscan_2.30.4-2.tar.gz`; extracted-interpreter patch check with
+            pre-fixup patched sha256
+            `9627a8a1f3fc492f826265b9db620b3820f7e30da642adc1004765eeaff1e74a`;
+            `nix build --impure --expr 'let pkgs = import <nixpkgs> { overlays
+            = [ (import ./nixos/v600-overlay.nix) ]; }; in pkgs.epkowa'
+            --no-link --print-build-logs --print-out-paths`;
+            equivalent targeted builds for `pkgs.v600-interpreters` and a
+            `scanimage-v600`/`scanimage-v600-ir` wrapper bundle;
+            `zig build test --summary all` passed `450/450`.
+          - Built-wrapper live smoke passed from the store bundle:
+            `scanimage-v600 -L` listed
+            `epkowa:interpreter:001:020` as an Epson Perfection V600 Photo, and
+            `scanimage-v600-ir -L` listed the same device as an Epson
+            Perfection V600 Photo with the IR interpreter preloaded.
         - Direct CLI smoke commands:
           - `env V600_HARDWARE_SMOKE=1 zig build run -- scanner smoke --out
             /tmp/v600-live-20260523-rgb.tiff --source tpu --dpi 400 --kind rgb

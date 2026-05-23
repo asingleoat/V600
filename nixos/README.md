@@ -10,6 +10,9 @@ in the project root). This is for system-level scanner access.
 
     v600-scanner.nix        NixOS module (SANE, udev, packages)
     v600-overlay.nix        nixpkgs overlay (patched epkowa, wrappers)
+    patch-epkowa-v600.py    checked source patcher for epkowa
+    patch-v600-interpreter-ir.py
+                            checked binary patcher for the IR interpreter
     example-configuration.nix
 
 ## Installation
@@ -37,8 +40,11 @@ Rebuild and re-login:
     lsusb | grep -i epson
     # 04b8:013a Seiko Epson Corp. GT-X820
 
-    scanimage -L
+    scanimage-v600 -L
     # device `epkowa:...' is a Epson GT-X820 flatbed scanner
+
+    scanimage-v600-ir -L
+    # device `epkowa:...' is a Epson ... flatbed scanner
 
 First `scanimage -L` takes 10-15 seconds. Subsequent calls are
 faster. The application caches the device name for 5 minutes.
@@ -50,6 +56,11 @@ faster. The application caches the device name for 5 minutes.
 3. Builds two interpreter variants (normal and IR-patched)
 4. Provides `scanimage-v600` and `scanimage-v600-ir` wrappers
    that load the correct interpreter via `LD_PRELOAD`
+
+The source and binary patches are applied by checked-in Python tools with exact
+site validation. If nixpkgs changes epkowa or Epson changes the interpreter
+binary, the build should fail with a specific patch-site or hash diagnostic
+instead of silently producing an unverified scanner stack.
 
 ## Supported hardware
 

@@ -5,68 +5,21 @@
 #   nixpkgs.overlays = [ (import ./v600-overlay.nix) ];
 
 (final: prev: {
-  # Override epkowa with 16-bit support patches
+  # Override epkowa with 16-bit support patches.
+  #
+  # Keep the patching logic in checked-in Python tools rather than inline sed:
+  # the tools validate exact source/binary sites, are idempotent, and fail
+  # loudly when Epson or nixpkgs changes the expected backend shape.
   epkowa = prev.epkowa.overrideAttrs (oldAttrs: rec {
     # Add tools needed for patching
     nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [
       final.python3
     ];
-    
-    # Apply patches to enable 16-bit scanning at high DPI
+
+    # Apply patches to enable 16-bit scanning at high DPI.
     postPatch = (oldAttrs.postPatch or "") + ''
-      echo "Applying V600 16-bit scanning fix..."
-      
-      # Check if max_request_size already exists (newer iscan versions)
-      if grep -q "max_request_size" backend/channel.h; then
-        echo "max_request_size already exists, adapting patch..."
-        
-        # Look for existing channel_usb_max_request_size function
-        if ! grep -q "channel_usb_max_request_size" backend/channel-usb.c; then
-          echo "Adding channel_usb_max_request_size implementation..."
-          
-          # Add function declaration if needed
-          sed -i '92a\static size_t channel_usb_max_request_size (const channel *);' backend/channel-usb.c
-          
-          # Set the function pointer
-          sed -i 's/self->max_size = 128 \* 1024;/self->max_request_size = channel_usb_max_request_size;/' backend/channel-usb.c
-          sed -i 's/self->max_size = 32 \* 1024;/self->max_request_size = channel_usb_max_request_size;/' backend/channel-usb.c
-          
-          # Add implementation that returns larger buffers for 16-bit scanning
-          echo '
-static size_t
-channel_usb_max_request_size (const channel *self)
-{
-  /* Increased buffer sizes for 16-bit scanning */
-  return (self->interpreter ? 256 : 1024) * 1024;
-}' >> backend/channel-usb.c
-        else
-          echo "Function exists, modifying return values for larger buffers..."
-          # Modify existing function to return larger values
-          sed -i '/channel_usb_max_request_size/,/^}/s/return.*/return (self->interpreter ? 256 : 1024) * 1024;/' backend/channel-usb.c
-        fi
-        
-        # Make sure epkowa.c calls the function if it doesn't already
-        if grep -q "s->hw->channel->max_size" backend/epkowa.c; then
-          sed -i 's/s->hw->channel->max_size/s->hw->channel->max_request_size(s->hw->channel)/g' backend/epkowa.c
-        fi
-      else
-        echo "ERROR: Expected max_request_size but not found, check iscan version"
-        exit 1
-      fi
-      
-      # Critical fix: Enable 16-bit color processing in dip-obj.c
-      echo "Fixing 16-bit color processing..."
-      
-      # Allow 16-bit depth (original code only allows 8-bit)
-      sed -i 's/require (8 == buf->ctx\.depth);/require (buf->ctx.depth == 8 || buf->ctx.depth == 16);/' backend/dip-obj.c
-      
-      # Skip color profiling for 16-bit to avoid complexity
-      sed -i '/if (SANE_FRAME_RGB != buf->ctx\.format)/a\
-      \
-        /* Skip color profiling for 16-bit depth */\
-        if (buf->ctx.depth == 16) return;' backend/dip-obj.c
-      
-      echo "16-bit scanning fix applied"
+      echo "Applying V600 epkowa source patch..."
+      python3 ${./patch-epkowa-v600.py} .
     '';
   });
   
@@ -126,48 +79,9 @@ channel_usb_max_request_size (const channel *self)
       # Copy original as normal version
       cp "$ORIG_INTERP" "$out/lib/libesintA1_normal.so"
       
-    # Create IR patched version using Python script
-    cat > patch_ir.py << 'EOF'
-#!/usr/bin/env python3
-import sys
-
-def patch_binary(input_file, output_file):
-    """Patch the interpreter binary to enable IR scanning mode."""
-    with open(input_file, 'rb') as f:
-        data = bytearray(f.read())
-    patches = 0
-
-    # Bypass source=3 validation at 0x17c83
-    # This allows the TPU+IR mode to be accepted
-    offset1 = 0x17c83
-    if len(data) > offset1 + 4 and data[offset1:offset1+4] == bytes([0x80, 0x7a, 0x1a, 0x03]):
-        data[offset1+3] = 0x04  # Change comparison from 3 to 4
-        patches += 1
-        print(f"Patched validation at {offset1:#x}")
-    else:
-        print(f"ERROR: validation patch site missing at {offset1:#x}", file=sys.stderr)
-
-    # Change TPU source from 1 to 3 at 0x18f01
-    # This enables IR channel when TPU is selected
-    offset2 = 0x18f01
-    if len(data) > offset2 + 4 and data[offset2:offset2+4] == bytes([0xc6, 0x40, 0x1a, 0x01]):
-        data[offset2+3] = 0x03  # Change source from 1 (TPU) to 3 (TPU+IR)
-        patches += 1
-        print(f"Patched source at {offset2:#x}")
-    else:
-        print(f"ERROR: source patch site missing at {offset2:#x}", file=sys.stderr)
-
-    if patches != 2:
-        raise SystemExit(f"expected 2 IR interpreter patches, applied {patches}")
-
-    with open(output_file, 'wb') as f:
-        f.write(data)
-
-if __name__ == "__main__":
-    patch_binary(sys.argv[1], sys.argv[2])
-EOF
-      
-      python3 patch_ir.py "$out/lib/libesintA1_normal.so" "$out/lib/libesintA1_ir.so"
+      python3 ${./patch-v600-interpreter-ir.py} \
+        "$out/lib/libesintA1_normal.so" \
+        "$out/lib/libesintA1_ir.so"
       
       echo "Created interpreters:"
       ls -la $out/lib/
@@ -189,14 +103,19 @@ EOF
     SANE_BACKEND_DIR="${final.epkowa}/lib/sane"
     export SANE_CONFIG_DIR="''${SANE_CONFIG_DIR:-/etc/sane-config}"
 
-    if [ -f "$NORMAL_LIB" ]; then
-      # The interpreter needs C++ runtime libraries
-      export LD_LIBRARY_PATH="$SANE_BACKEND_DIR:${final.sane-backends}/lib/sane:${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      # Use LD_PRELOAD to force loading our normal interpreter
-      export LD_PRELOAD="$NORMAL_LIB''${LD_PRELOAD:+:$LD_PRELOAD}"
-    else
-      echo "[V600] Warning: Normal interpreter not found at $NORMAL_LIB" >&2
+    if [ ! -d "$SANE_BACKEND_DIR" ]; then
+      echo "[V600] ERROR: epkowa SANE backend directory missing: $SANE_BACKEND_DIR" >&2
+      exit 127
     fi
+    if [ ! -f "$NORMAL_LIB" ]; then
+      echo "[V600] ERROR: normal interpreter missing: $NORMAL_LIB" >&2
+      exit 127
+    fi
+
+    # The interpreter needs C++ runtime libraries.
+    export LD_LIBRARY_PATH="$SANE_BACKEND_DIR:${final.sane-backends}/lib/sane:${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # Use LD_PRELOAD to force loading our normal interpreter.
+    export LD_PRELOAD="$NORMAL_LIB''${LD_PRELOAD:+:$LD_PRELOAD}"
 
     exec ${final.sane-backends}/bin/scanimage "$@"
   '';
@@ -217,14 +136,19 @@ EOF
     SANE_BACKEND_DIR="${final.epkowa}/lib/sane"
     export SANE_CONFIG_DIR="''${SANE_CONFIG_DIR:-/etc/sane-config}"
 
-    if [ -f "$IR_LIB" ]; then
-      # The interpreter needs C++ runtime libraries
-      export LD_LIBRARY_PATH="$SANE_BACKEND_DIR:${final.sane-backends}/lib/sane:${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      # Use LD_PRELOAD to force loading our IR interpreter
-      export LD_PRELOAD="$IR_LIB''${LD_PRELOAD:+:$LD_PRELOAD}"
-    else
-      echo "[V600] Warning: IR interpreter not found at $IR_LIB" >&2
+    if [ ! -d "$SANE_BACKEND_DIR" ]; then
+      echo "[V600] ERROR: epkowa SANE backend directory missing: $SANE_BACKEND_DIR" >&2
+      exit 127
     fi
+    if [ ! -f "$IR_LIB" ]; then
+      echo "[V600] ERROR: IR interpreter missing: $IR_LIB" >&2
+      exit 127
+    fi
+
+    # The interpreter needs C++ runtime libraries.
+    export LD_LIBRARY_PATH="$SANE_BACKEND_DIR:${final.sane-backends}/lib/sane:${final.gcc-unwrapped.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # Use LD_PRELOAD to force loading our IR interpreter.
+    export LD_PRELOAD="$IR_LIB''${LD_PRELOAD:+:$LD_PRELOAD}"
 
     exec ${final.sane-backends}/bin/scanimage "$@"
   '';
