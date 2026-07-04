@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const numeric = @import("numeric_fixture.zig");
 const ir_pure = @import("ir_pure.zig");
+const parallelism = @import("parallelism.zig");
 
 const use_native_ir_helpers = !builtin.cpu.arch.isWasm() and builtin.link_libc;
 
@@ -1873,7 +1874,7 @@ fn gaussianBlur(
     const pair_weights = kernel[radius_usize + 1 ..][0..radius_usize];
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
+    if (!parallelism.enabled or worker_count <= 1) {
         gaussianHorizontalRows(input, temp, width, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianHorizontalRowsParallel(allocator, input, temp, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -1882,7 +1883,7 @@ fn gaussianBlur(
     const output = try allocator.alloc(f64, input.len);
     errdefer allocator.free(output);
 
-    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
+    if (!parallelism.enabled or worker_count <= 1) {
         gaussianVerticalRows(temp, output, width, height, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianVerticalRowsParallel(allocator, temp, output, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2171,7 +2172,7 @@ fn gaussianBlurF32(
     const pair_weights = kernel[radius_usize + 1 ..][0..radius_usize];
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
+    if (!parallelism.enabled or worker_count <= 1) {
         gaussianHorizontalRowsF32(input, temp, width, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianHorizontalRowsParallelF32(allocator, input, temp, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2180,7 +2181,7 @@ fn gaussianBlurF32(
     const output = try allocator.alloc(f32, input.len);
     errdefer allocator.free(output);
 
-    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
+    if (!parallelism.enabled or worker_count <= 1) {
         gaussianVerticalRowsF32(temp, output, width, height, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianVerticalRowsParallelF32(allocator, temp, output, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2411,7 +2412,7 @@ fn boxBlurF32Into(
     }
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
+    if (!parallelism.enabled or worker_count <= 1) {
         boxHorizontalRowsF32(input, temp, width, radius, 0, height);
         boxVerticalColumnsF32(temp, output, width, height, radius, 0, width);
     } else {

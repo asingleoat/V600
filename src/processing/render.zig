@@ -1,8 +1,8 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const color = @import("color.zig");
 const numeric = @import("numeric_fixture.zig");
+const parallelism = @import("parallelism.zig");
 
 pub const exact_percentile_sample_limit: usize = 0;
 pub const default_percentile_sample_limit: usize = 16_384;
@@ -268,7 +268,7 @@ fn renderToDisplayU8LutF32(allocator: std.mem.Allocator, input: []const f32, out
         .scale = @floatFromInt(preview_display_lut_entries - 1),
     };
     const pixel_count = input.len / 3;
-    if (comptime builtin.cpu.arch.isWasm()) {
+    if (comptime !parallelism.enabled) {
         renderToDisplayU8LutF32Range(input, output, &table, lookup, 0, pixel_count);
         return;
     }
