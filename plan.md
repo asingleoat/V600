@@ -10832,3 +10832,112 @@ shell reload before using it.
       wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-tiff-reader-smoke
       wasm-webapp-static-smoke wasm-webapp --summary all` passed.
     - `git diff --check` passed.
+
+### Phase 14: Code Maintenance, Tidying, And Refactoring
+
+This phase is behavior-preserving cleanup recorded after the Phase 13
+pre-commit review. Parity fixtures and final outputs must not change. Every
+step lands as its own commit gated by the standard validation suite:
+`zig fmt --check` on touched Zig files, `zig build test --summary all`,
+`zig build --summary all`, `zig build -Dui=true --summary all`, the full
+`wasm-*` smoke suite, and `git diff --check`. Prefer pure code moves before
+rewrites; do not combine a move and a behavior change in one commit.
+
+- [ ] 14.1 Low-risk hygiene pass.
+  - Delete dead `rgb16ArrayBufferToF32` in `web/app_core.mjs`.
+  - Move the test-only demo fixture exports (`rawFixture`,
+    `expectedDemoPreview`, `demoRawRgb16Buffer`) out of `web/app_core.mjs`
+    into a test-side helper; keep the static-smoke assertion that the app
+    does not reference them.
+  - Decide the unreachable legacy preview-download surface in
+    `web/app_core.mjs` (`rgb16ToPpmBytes`, `rgb8ToPpmBytes`,
+    `exportFileStem`, `previewPpmFilename`, `previewMetadataFilename`,
+    `buildPreviewExportMetadata`, client `makeIrMaskU8`,
+    `inpaintBiharmonicRgb16`): delete, or keep as covered public API with a
+    recorded reason. Default is delete; tests covering deleted surface go
+    with it.
+  - Replace the raw preview cache-key `setStatus` in `web/app.mjs` with
+    human-readable status text.
+  - Bound `padding` and `grain_padding` in `validateIrInpaintGrainRequest`
+    (`src/wasm/core.zig`) so `usize -> i32` casts and the ellipse-span
+    radius math cannot overflow in the ReleaseFast Wasm artifact.
+  - Add source comments recording that `openCvEllipseSpans` intentionally
+    differs from `ir.zig` `ellipseKernelRowSpans` for radius >= 2 (OpenCV
+    ellipse vs skimage disk) and that `frameFormatById` accepts 0 as the
+    35mm default while JS ids start at 1.
+  - Map `error.Overflow` in `statusFromError` to `invalid_dimensions`
+    instead of the generic processing error.
+  - Raise or scale the fixed 5s per-message timeout in
+    `test/wasm/worker_runtime_smoke.mjs` (grain inpaint step can flake on
+    slow machines).
+  - Document `test/wasm/real_scan_ir_estimate_probe.mjs` as a manual
+    diagnostic tool (not a build-step test) where the other harnesses are
+    described.
+  - Refresh `README.md`: present the Zig native app and the browser webapp
+    as the products, the Python tree as the frozen behavior oracle, and the
+    current build/run entrypoints.
+
+- [ ] 14.2 Shared-core consolidation (Zig) per the Shared-Core Policy in
+  `docs/WEBAPP_PORT_PLAN.md`.
+  - Make the private `src/processing/ir.zig` helpers `pub` and delete their
+    verbatim copies in `src/wasm/core.zig` (~200 lines):
+    `resizeNearestMaskU8`, `addClampedLimit`, `roundF32`,
+    `labelMaskComponents8`, reflect/bilinear samplers, apply-translation,
+    and the mask resize+dilate geometry branch.
+  - Move the pure-Zig ports of the native C/C++ helpers out of
+    `src/wasm/core.zig` (~750 lines) into `src/processing/` (candidate
+    module `ir_pure.zig`, or split `grain.zig`/`ecc.zig`): local grain
+    estimate/spectrum, grain synthesis, translation-ECC stack, small DFT
+    pair, `areaResizeU8`, `gaussianBlur5Reflect101`,
+    `dilateMaskOpenCvEllipse`.
+  - Rewire the `!use_native_ir_helpers` fallbacks in `ir.zig` to call the
+    pure ports instead of returning failing no-op stubs; native libc builds
+    keep the extern OpenCV/SuperLU path unchanged. Then collapse
+    `inpaintGrainRgb16WithNoise` into the shared grain-from-noise inpaint
+    with a `uint16` value-kind, removing the re-orchestrated copy.
+  - Add Zig-level fixture tests for the moved code (grain estimate, grain
+    synthesis, ECC estimate, apply-translation) plus `detectFramesRgb16`
+    coverage so native-vs-wasm parity does not live only in Node smokes.
+  - Reduce the triple ABI declaration between `src/wasm_core.zig` and
+    `src/wasm/core.zig` with a comptime export loop or generated status
+    wrappers, keeping the extern struct layouts explicit.
+  - Consolidate the repeated `!builtin.cpu.arch.isWasm() and
+    worker_count > 1` guards in `src/processing/frames.zig`, `ir.zig`, and
+    `render.zig`: worker-count helpers already return 1 on Wasm, so the
+    architecture check should live in one choke point.
+  - Update the `docs/WEBAPP_PORT_PLAN.md` reuse map, which currently claims
+    IR mask-resize, grain, and translation-ECC are shared while they are
+    facade reimplementations until this step lands.
+
+- [ ] 14.3 Browser JS structure.
+  - Split `web/app_core.mjs` (2621 lines, ~6 concerns) into focused
+    modules: geometry/crop math, cache-input builders, export pipeline
+    orchestration, `WebPreviewClient`, and shared utils.
+  - Collapse the ~10 near-identical `WebPreviewClient` request methods into
+    one generic request helper (~500 lines).
+  - Replace the longhand message/cache-key trios in
+    `web/worker/protocol.mjs` with an operation registry (~300 lines).
+  - Extract a `wasm_abi.mjs` (alloc/free/call/pointer-width/byte-offset
+    helpers plus options-struct writers) used by both
+    `web/worker/processor.mjs` and `test/wasm/wasm_core_smoke.mjs`; the
+    struct byte layouts are currently maintained twice and can drift.
+  - Dedupe `isNodeRuntime`/`scalarArrayType` and add
+    `test/wasm/helpers.mjs` for the triplicated fixture builders.
+  - Add the Shared-Core Policy contract tests that are missing: JS
+    `computeDminFromRgb16` against the native dmin percentile fixture, and
+    JS cache-key canonicalization against the native contract. Record the
+    grain-noise determinism contract (seeded RNG, Box-Muller, flood-fill
+    noise sizing) as lockstep-critical with the native inpaint padding.
+
+- [ ] 14.4 Native structural splits (appetite-dependent; pure moves only).
+  - `build.zig`: factor the repeated C/C++ object-compilation blocks into a
+    helper and make smoke/bench step registration table-driven (native UI
+    smokes, the eight `wasm-*` steps, WebGPU step pairs).
+  - `src/ui/main.zig` (5443 lines): extract worker lifecycle, event
+    dispatch, and render passes into modules.
+  - `src/processing/frames.zig` (6266 lines): separate film-format tables
+    from detection algorithms from rotation/CLAHE helpers.
+  - `src/processing/ir.zig` (5219 lines): after 14.2, isolate the extern-C
+    boundary and fallback wiring into a small module.
+  - Leave `src/benchmarks/` and `src/tools/` as-is; they are intentional
+    build-step executables.
