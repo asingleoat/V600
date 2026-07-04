@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const color = @import("color.zig");
 const numeric = @import("numeric_fixture.zig");
@@ -267,6 +268,10 @@ fn renderToDisplayU8LutF32(allocator: std.mem.Allocator, input: []const f32, out
         .scale = @floatFromInt(preview_display_lut_entries - 1),
     };
     const pixel_count = input.len / 3;
+    if (comptime builtin.cpu.arch.isWasm()) {
+        renderToDisplayU8LutF32Range(input, output, &table, lookup, 0, pixel_count);
+        return;
+    }
     const worker_count = workerCountForPixels(pixel_count, render_u8_f32_parallel_min_pixels);
     if (worker_count > 1) {
         try renderToDisplayU8LutF32Parallel(allocator, input, output, &table, lookup, worker_count);

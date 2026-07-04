@@ -178,6 +178,7 @@ EOF
             pkg-config
             exiftool
             imagemagick
+            nodejs
             pythonProcessing
             basedpyright
           ];

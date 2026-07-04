@@ -1,7 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const numeric = @import("numeric_fixture.zig");
-const tiff = @import("../tiff.zig");
+const tiff_available = builtin.is_test and builtin.link_libc;
+const tiff = if (tiff_available) @import("../tiff.zig") else struct {};
 
 const clahe_parallel_min_pixels: usize = 1_000_000;
 const angle_gradient_parallel_min_work: usize = 1_000_000;
@@ -515,7 +517,7 @@ fn prepareDetectionGrayImage(
     errdefer image.deinit(allocator);
 
     const worker_count = workerCountForItems(pixel_count, conversion_parallel_min_items);
-    if (worker_count > 1) {
+    if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
         try prepareDetectionGrayImageParallel(allocator, data, image.gray, image.gray_u8, samples_per_pixel, bits_per_sample, options, worker_count);
     } else {
         fillDetectionGrayImageRange(data, image.gray, image.gray_u8, samples_per_pixel, bits_per_sample, options, 0, pixel_count);
@@ -719,9 +721,9 @@ pub fn applyClahe8(
     defer allocator.free(luts);
     const clip_limit = claheClipLimit(options.clip_limit, tile_area);
     const lut_scale = 255.0 / @as(f64, @floatFromInt(tile_area));
-    if (pixel_count >= clahe_parallel_min_pixels) {
+    if (!builtin.cpu.arch.isWasm() and pixel_count >= clahe_parallel_min_pixels) {
         const worker_count = @min(workerCountForItems(pixel_count, clahe_parallel_min_pixels), options.tiles_x * options.tiles_y);
-        if (worker_count > 1) {
+        if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
             try buildClahe8LutsParallel(allocator, input, luts, reflect_x, reflect_y, width, tile_width, tile_height, options.tiles_x, options.tiles_y, clip_limit, lut_scale, worker_count);
         } else {
             buildClahe8LutTiles(input, luts, reflect_x, reflect_y, width, tile_width, tile_height, options.tiles_x, clip_limit, lut_scale, 0, options.tiles_x * options.tiles_y);
@@ -736,11 +738,11 @@ pub fn applyClahe8(
     defer x_map.deinit(allocator);
     var y_map = try buildClaheAxisMap(allocator, height, tile_height, options.tiles_y);
     defer y_map.deinit(allocator);
-    if (pixel_count >= clahe_parallel_min_pixels) {
+    if (!builtin.cpu.arch.isWasm() and pixel_count >= clahe_parallel_min_pixels) {
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const worker_limit = if (cpu_count > 1) cpu_count - 1 else 1;
         const worker_count = @min(worker_limit, height);
-        if (worker_count > 1) {
+        if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
             try applyClahe8OutputParallel(allocator, input, output, width, height, options.tiles_x, luts, x_map, y_map, worker_count);
             return output;
         }
@@ -1292,11 +1294,11 @@ pub fn rotateImageExpandedReplicate(
     const pixels = try allocator.alloc(f64, transform.rotated_width * transform.rotated_height);
     errdefer allocator.free(pixels);
     const pixel_count = transform.rotated_width * transform.rotated_height;
-    if (pixel_count >= rotation_parallel_min_pixels) {
+    if (!builtin.cpu.arch.isWasm() and pixel_count >= rotation_parallel_min_pixels) {
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const worker_limit = if (cpu_count > 1) cpu_count - 1 else 1;
         const worker_count = @min(worker_limit, transform.rotated_height);
-        if (worker_count > 1) {
+        if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
             try rotateImageExpandedReplicateParallel(
                 allocator,
                 image,
@@ -1393,6 +1395,7 @@ fn rotateImageExpandedReplicateRows(
 }
 
 fn workerCountForItems(item_count: usize, min_items: usize) usize {
+    if (builtin.cpu.arch.isWasm()) return 1;
     if (item_count < min_items) return 1;
     const cpu_count = std.Thread.getCpuCount() catch 1;
     if (cpu_count <= 1) return 1;
@@ -2748,7 +2751,7 @@ fn computeAngleGradientSet(
     const half_band = angle_band_width / 2;
     const work_items = angle_strip_count * strip_len * angle_band_width;
     const worker_count = workerCountForItems(work_items, angle_gradient_parallel_min_work);
-    if (worker_count > 1) {
+    if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
         try computeAngleGradientSetParallel(
             allocator,
             gray,
@@ -5029,6 +5032,10 @@ fn expectTestDetectGroundTruthFixture(path: []const u8) !void {
 }
 
 fn expectScanDetectorParity(path: []const u8, scan_path: []const u8) !void {
+    if (!tiff_available) {
+        return error.SkipZigTest;
+    }
+
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(512 * 1024));
     defer allocator.free(text);
@@ -5678,7 +5685,7 @@ fn grayImageToInvertedU8Bytes(allocator: std.mem.Allocator, image: []const f64) 
     const data = try allocator.alloc(u8, image.len);
     errdefer allocator.free(data);
     const worker_count = workerCountForItems(image.len, conversion_parallel_min_items);
-    if (worker_count > 1) {
+    if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
         try grayImageToInvertedU8BytesParallel(allocator, image, data, worker_count);
     } else {
         fillGrayToInvertedU8Range(image, data, 0, image.len);
@@ -5731,7 +5738,7 @@ fn fillGrayToInvertedU8Range(input: []const f64, output: []u8, start: usize, end
 
 fn fillInvertedU8(allocator: std.mem.Allocator, input: []const u8, output: []u8) !void {
     const worker_count = workerCountForItems(input.len, conversion_parallel_min_items);
-    if (worker_count > 1) {
+    if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
         try fillInvertedU8Parallel(allocator, input, output, worker_count);
     } else {
         fillInvertedU8Range(input, output, 0, input.len);
@@ -5794,7 +5801,7 @@ fn u8ImageToF64(allocator: std.mem.Allocator, image: []const u8) ![]f64 {
     const data = try allocator.alloc(f64, image.len);
     errdefer allocator.free(data);
     const worker_count = workerCountForItems(image.len, conversion_parallel_min_items);
-    if (worker_count > 1) {
+    if (!builtin.cpu.arch.isWasm() and worker_count > 1) {
         try u8ImageToF64Parallel(allocator, image, data, worker_count);
     } else {
         fillU8ToF64Range(image, data, 0, image.len);

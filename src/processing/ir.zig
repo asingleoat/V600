@@ -1,6 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const numeric = @import("numeric_fixture.zig");
+
+const use_native_ir_helpers = !builtin.cpu.arch.isWasm() and builtin.link_libc;
 
 extern fn v600_align_ir_find_ecc_translation(
     rgb: [*]const f64,
@@ -12,6 +15,43 @@ extern fn v600_align_ir_find_ecc_translation(
     tx: *f64,
     ty: *f64,
 ) c_int;
+
+fn fallback_align_ir_find_ecc_translation(
+    rgb: [*]const f64,
+    rgb_width: c_int,
+    rgb_height: c_int,
+    ir: [*]const f64,
+    ir_width: c_int,
+    ir_height: c_int,
+    tx: *f64,
+    ty: *f64,
+) c_int {
+    _ = rgb;
+    _ = rgb_width;
+    _ = rgb_height;
+    _ = ir;
+    _ = ir_width;
+    _ = ir_height;
+    tx.* = 0.0;
+    ty.* = 0.0;
+    return 1;
+}
+
+fn callAlignIrFindEccTranslation(
+    rgb: [*]const f64,
+    rgb_width: c_int,
+    rgb_height: c_int,
+    ir: [*]const f64,
+    ir_width: c_int,
+    ir_height: c_int,
+    tx: *f64,
+    ty: *f64,
+) c_int {
+    if (use_native_ir_helpers) {
+        return v600_align_ir_find_ecc_translation(rgb, rgb_width, rgb_height, ir, ir_width, ir_height, tx, ty);
+    }
+    return fallback_align_ir_find_ecc_translation(rgb, rgb_width, rgb_height, ir, ir_width, ir_height, tx, ty);
+}
 
 extern fn v600_estimate_local_grain(
     roi_rgb: [*]const f64,
@@ -27,6 +67,52 @@ extern fn v600_estimate_local_grain(
     has_spectrum: *c_int,
 ) c_int;
 
+fn fallback_estimate_local_grain(
+    roi_rgb: [*]const f64,
+    roi_mask: [*]const u8,
+    width: c_int,
+    height: c_int,
+    grain_padding: c_int,
+    grain_std: [*]f64,
+    signal_out: [*]f64,
+    spectrum_out: [*]f64,
+    spectrum_capacity: c_int,
+    spectrum_len: *c_int,
+    has_spectrum: *c_int,
+) c_int {
+    _ = roi_rgb;
+    _ = roi_mask;
+    _ = width;
+    _ = height;
+    _ = grain_padding;
+    _ = grain_std;
+    _ = signal_out;
+    _ = spectrum_out;
+    _ = spectrum_capacity;
+    spectrum_len.* = 0;
+    has_spectrum.* = 0;
+    return 1;
+}
+
+fn callEstimateLocalGrain(
+    roi_rgb: [*]const f64,
+    roi_mask: [*]const u8,
+    width: c_int,
+    height: c_int,
+    grain_padding: c_int,
+    grain_std: [*]f64,
+    signal_out: [*]f64,
+    spectrum_out: [*]f64,
+    spectrum_capacity: c_int,
+    spectrum_len: *c_int,
+    has_spectrum: *c_int,
+) c_int {
+    if (use_native_ir_helpers) {
+        return v600_estimate_local_grain(roi_rgb, roi_mask, width, height, grain_padding, grain_std, signal_out, spectrum_out, spectrum_capacity, spectrum_len, has_spectrum);
+    }
+    return fallback_estimate_local_grain(roi_rgb, roi_mask, width, height, grain_padding, grain_std, signal_out, spectrum_out, spectrum_capacity, spectrum_len, has_spectrum);
+}
+
 extern fn v600_synthesize_grain_from_noise(
     noise: [*]const f64,
     width: c_int,
@@ -38,6 +124,43 @@ extern fn v600_synthesize_grain_from_noise(
     output: [*]f64,
 ) c_int;
 
+fn fallback_synthesize_grain_from_noise(
+    noise: [*]const f64,
+    width: c_int,
+    height: c_int,
+    grain_std: [*]const f64,
+    grain_spectrum: ?[*]const f64,
+    spectrum_len: c_int,
+    channels: c_int,
+    output: [*]f64,
+) c_int {
+    _ = noise;
+    _ = width;
+    _ = height;
+    _ = grain_std;
+    _ = grain_spectrum;
+    _ = spectrum_len;
+    _ = channels;
+    _ = output;
+    return 1;
+}
+
+fn callSynthesizeGrainFromNoise(
+    noise: [*]const f64,
+    width: c_int,
+    height: c_int,
+    grain_std: [*]const f64,
+    grain_spectrum: ?[*]const f64,
+    spectrum_len: c_int,
+    channels: c_int,
+    output: [*]f64,
+) c_int {
+    if (use_native_ir_helpers) {
+        return v600_synthesize_grain_from_noise(noise, width, height, grain_std, grain_spectrum, spectrum_len, channels, output);
+    }
+    return fallback_synthesize_grain_from_noise(noise, width, height, grain_std, grain_spectrum, spectrum_len, channels, output);
+}
+
 extern fn v600_solve_sparse_lu(
     n: usize,
     row_offsets: [*]const usize,
@@ -48,6 +171,43 @@ extern fn v600_solve_sparse_lu(
     rhs: [*]const f64,
     output: [*]f64,
 ) c_int;
+
+fn fallback_solve_sparse_lu(
+    n: usize,
+    row_offsets: [*]const usize,
+    columns: [*]const usize,
+    values: [*]const f64,
+    nnz: usize,
+    channels: usize,
+    rhs: [*]const f64,
+    output: [*]f64,
+) c_int {
+    _ = n;
+    _ = row_offsets;
+    _ = columns;
+    _ = values;
+    _ = nnz;
+    _ = channels;
+    _ = rhs;
+    _ = output;
+    return 1;
+}
+
+fn callSolveSparseLu(
+    n: usize,
+    row_offsets: [*]const usize,
+    columns: [*]const usize,
+    values: [*]const f64,
+    nnz: usize,
+    channels: usize,
+    rhs: [*]const f64,
+    output: [*]f64,
+) c_int {
+    if (use_native_ir_helpers) {
+        return v600_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
+    }
+    return fallback_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
+}
 
 pub const AlignOptions = struct {
     max_offset: i32 = 8,
@@ -222,7 +382,7 @@ pub fn alignIr(
 
     var tx: f64 = 0.0;
     var ty: f64 = 0.0;
-    const ecc_status = v600_align_ir_find_ecc_translation(
+    const ecc_status = callAlignIrFindEccTranslation(
         rgb.ptr,
         @intCast(rgb_width),
         @intCast(rgb_height),
@@ -945,7 +1105,7 @@ pub fn estimateLocalGrain(
     var grain_std = [_]f64{ 0.0, 0.0, 0.0 };
     var spectrum_len: c_int = 0;
     var has_spectrum: c_int = 0;
-    const status = v600_estimate_local_grain(
+    const status = callEstimateLocalGrain(
         roi_rgb.ptr,
         roi_mask.ptr,
         @intCast(width),
@@ -1002,7 +1162,7 @@ pub fn synthesizeGrainFromNoise(
     const spectrum_len = if (grain_spectrum) |spectrum| spectrum.len else 0;
     if (spectrum_len > @as(usize, @intCast(std.math.maxInt(c_int)))) return error.InvalidIrGrainSynthesisBuffer;
 
-    const status = v600_synthesize_grain_from_noise(
+    const status = callSynthesizeGrainFromNoise(
         noise.ptr,
         @intCast(width),
         @intCast(height),
@@ -1724,6 +1884,7 @@ fn roundF32(value: f64) f64 {
 }
 
 fn monotonicNowNs() u64 {
+    if (builtin.cpu.arch.isWasm() or !builtin.link_libc) return 0;
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
@@ -1808,7 +1969,7 @@ fn gaussianBlur(
     const pair_weights = kernel[radius_usize + 1 ..][0..radius_usize];
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (worker_count <= 1) {
+    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
         gaussianHorizontalRows(input, temp, width, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianHorizontalRowsParallel(allocator, input, temp, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -1817,7 +1978,7 @@ fn gaussianBlur(
     const output = try allocator.alloc(f64, input.len);
     errdefer allocator.free(output);
 
-    if (worker_count <= 1) {
+    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
         gaussianVerticalRows(temp, output, width, height, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianVerticalRowsParallel(allocator, temp, output, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2106,7 +2267,7 @@ fn gaussianBlurF32(
     const pair_weights = kernel[radius_usize + 1 ..][0..radius_usize];
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (worker_count <= 1) {
+    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
         gaussianHorizontalRowsF32(input, temp, width, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianHorizontalRowsParallelF32(allocator, input, temp, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2115,7 +2276,7 @@ fn gaussianBlurF32(
     const output = try allocator.alloc(f32, input.len);
     errdefer allocator.free(output);
 
-    if (worker_count <= 1) {
+    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
         gaussianVerticalRowsF32(temp, output, width, height, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianVerticalRowsParallelF32(allocator, temp, output, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2346,7 +2507,7 @@ fn boxBlurF32Into(
     }
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (worker_count <= 1) {
+    if (builtin.cpu.arch.isWasm() or worker_count <= 1) {
         boxHorizontalRowsF32(input, temp, width, radius, 0, height);
         boxVerticalColumnsF32(temp, output, width, height, radius, 0, width);
     } else {
@@ -3597,7 +3758,7 @@ fn solveSparseLinearSystemChannels(
     if (channels == 0 or rhs.len != matrix.n * channels or solution.len != rhs.len) {
         return error.InvalidIrBiharmonicBuffer;
     }
-    const direct_status = v600_solve_sparse_lu(
+    const direct_status = callSolveSparseLu(
         matrix.n,
         matrix.row_offsets.ptr,
         matrix.columns.ptr,
@@ -4152,6 +4313,7 @@ fn loadAlignmentFixture(
 }
 
 fn expectAlignmentFixture(path: []const u8) !void {
+    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var parsed = try loadAlignmentFixture(allocator, std.testing.io, path);
     defer parsed.deinit();
@@ -4338,6 +4500,7 @@ fn expectCoverageFixture(path: []const u8) !void {
 }
 
 fn expectLocalGrainFixture(path: []const u8) !void {
+    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
     defer allocator.free(text);
@@ -4377,6 +4540,7 @@ fn expectLocalGrainFixture(path: []const u8) !void {
 }
 
 fn expectGrainSynthesisFixture(path: []const u8) !void {
+    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
     defer allocator.free(text);
@@ -4440,6 +4604,7 @@ fn expectBiharmonicFixture(path: []const u8) !void {
 }
 
 fn expectPythonInpaintFixture(path: []const u8) !void {
+    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(512 * 1024));
     defer allocator.free(text);
@@ -4485,6 +4650,7 @@ fn expectPythonInpaintFixture(path: []const u8) !void {
 }
 
 fn expectIrCleanFixture(path: []const u8) !void {
+    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
     defer allocator.free(text);

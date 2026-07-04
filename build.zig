@@ -169,6 +169,118 @@ pub fn build(b: *std.Build) void {
         scan_worker_smoke_skip_step.dependOn(&scan_worker_smoke_skip_cmd.step);
     }
 
+    const wasm_build_options = b.addOptions();
+    wasm_build_options.addOption(bool, "webgpu", false);
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm64,
+        .os_tag = .freestanding,
+    });
+    const wasm_optimize: std.builtin.OptimizeMode = switch (optimize) {
+        .Debug => .ReleaseFast,
+        else => optimize,
+    };
+    const wasm_core_module = b.createModule(.{
+        .root_source_file = b.path("src/wasm_core.zig"),
+        .target = wasm_target,
+        .optimize = wasm_optimize,
+        .single_threaded = true,
+    });
+    wasm_core_module.addOptions("build_options", wasm_build_options);
+    const wasm_core = b.addExecutable(.{
+        .name = "v600-wasm-core",
+        .root_module = wasm_core_module,
+    });
+    wasm_core.entry = .disabled;
+    wasm_core.rdynamic = true;
+    wasm_core.export_memory = true;
+    const install_wasm_core = b.addInstallArtifact(wasm_core, .{});
+    const wasm_core_step = b.step("wasm-core", "Build the dependency-free browser WebAssembly processing core");
+    wasm_core_step.dependOn(&install_wasm_core.step);
+
+    const wasm32_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const wasm32_core_module = b.createModule(.{
+        .root_source_file = b.path("src/wasm_core.zig"),
+        .target = wasm32_target,
+        .optimize = wasm_optimize,
+        .single_threaded = true,
+    });
+    wasm32_core_module.addOptions("build_options", wasm_build_options);
+    const wasm32_core = b.addExecutable(.{
+        .name = "v600-wasm-core32",
+        .root_module = wasm32_core_module,
+    });
+    wasm32_core.entry = .disabled;
+    wasm32_core.rdynamic = true;
+    wasm32_core.export_memory = true;
+    const install_wasm32_core = b.addInstallArtifact(wasm32_core, .{});
+    const wasm32_core_step = b.step("wasm32-core", "Build the optional wasm32 compatibility processing core");
+    wasm32_core_step.dependOn(&install_wasm32_core.step);
+
+    const wasm32_core_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm32_core_smoke_cmd.addFileArg(b.path("test/wasm/wasm_core_smoke.mjs"));
+    wasm32_core_smoke_cmd.addFileArg(wasm32_core.getEmittedBin());
+    const wasm32_core_smoke_step = b.step("wasm32-core-smoke", "Load and execute the optional wasm32 compatibility processing core with Node");
+    wasm32_core_smoke_step.dependOn(&wasm32_core_smoke_cmd.step);
+
+    const wasm_core_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm_core_smoke_cmd.addFileArg(b.path("test/wasm/wasm_core_smoke.mjs"));
+    wasm_core_smoke_cmd.addFileArg(wasm_core.getEmittedBin());
+    const wasm_core_smoke_step = b.step("wasm-core-smoke", "Load and execute the browser WebAssembly processing core with Node");
+    wasm_core_smoke_step.dependOn(&wasm_core_smoke_cmd.step);
+
+    const wasm_worker_protocol_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm_worker_protocol_smoke_cmd.addFileArg(b.path("test/wasm/worker_protocol_smoke.mjs"));
+    const wasm_worker_protocol_smoke_step = b.step("wasm-worker-protocol-smoke", "Verify the browser worker protocol and cache-key boundary");
+    wasm_worker_protocol_smoke_step.dependOn(&wasm_worker_protocol_smoke_cmd.step);
+
+    const wasm_worker_runtime_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm_worker_runtime_smoke_cmd.addFileArg(b.path("test/wasm/worker_runtime_smoke.mjs"));
+    wasm_worker_runtime_smoke_cmd.addFileArg(wasm_core.getEmittedBin());
+    const wasm_worker_runtime_smoke_step = b.step("wasm-worker-runtime-smoke", "Run the browser worker runtime against the Wasm preview core");
+    wasm_worker_runtime_smoke_step.dependOn(&wasm_worker_runtime_smoke_cmd.step);
+
+    const wasm_webapp_shell_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm_webapp_shell_smoke_cmd.addFileArg(b.path("test/wasm/webapp_shell_smoke.mjs"));
+    wasm_webapp_shell_smoke_cmd.addFileArg(wasm_core.getEmittedBin());
+    const wasm_webapp_shell_smoke_step = b.step("wasm-webapp-shell-smoke", "Run the browser processing shell orchestration against the Wasm worker");
+    wasm_webapp_shell_smoke_step.dependOn(&wasm_webapp_shell_smoke_cmd.step);
+
+    const wasm_webapp_crop_export_bench_cmd = b.addSystemCommand(&.{"node"});
+    wasm_webapp_crop_export_bench_cmd.addFileArg(b.path("test/wasm/webapp_crop_export_bench.mjs"));
+    wasm_webapp_crop_export_bench_cmd.addFileArg(wasm_core.getEmittedBin());
+    const wasm_webapp_crop_export_bench_step = b.step("bench-wasm-webapp-crop-export", "Benchmark browser rotated crop/export on local scan data when available");
+    wasm_webapp_crop_export_bench_step.dependOn(&wasm_webapp_crop_export_bench_cmd.step);
+
+    const wasm_tiff_reader_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm_tiff_reader_smoke_cmd.addFileArg(b.path("test/wasm/tiff_reader_smoke.mjs"));
+    const wasm_tiff_reader_smoke_step = b.step("wasm-tiff-reader-smoke", "Verify browser-side TIFF page import against committed fixtures");
+    wasm_tiff_reader_smoke_step.dependOn(&wasm_tiff_reader_smoke_cmd.step);
+
+    const install_webapp_assets = b.addInstallDirectory(.{
+        .source_dir = b.path("web"),
+        .install_dir = .prefix,
+        .install_subdir = "webapp",
+    });
+    const install_webapp_wasm = b.addInstallFileWithDir(
+        wasm_core.getEmittedBin(),
+        .prefix,
+        "webapp/v600-wasm-core.wasm",
+    );
+    const wasm_webapp_step = b.step("wasm-webapp", "Stage the static browser WebAssembly webapp");
+    wasm_webapp_step.dependOn(&install_webapp_assets.step);
+    wasm_webapp_step.dependOn(&install_webapp_wasm.step);
+
+    const wasm_webapp_static_smoke_cmd = b.addSystemCommand(&.{"node"});
+    wasm_webapp_static_smoke_cmd.addFileArg(b.path("test/wasm/webapp_static_smoke.mjs"));
+    wasm_webapp_static_smoke_cmd.addArg(b.getInstallPath(.prefix, "webapp"));
+    wasm_webapp_static_smoke_cmd.step.dependOn(&install_webapp_assets.step);
+    wasm_webapp_static_smoke_cmd.step.dependOn(&install_webapp_wasm.step);
+    const wasm_webapp_static_smoke_step = b.step("wasm-webapp-static-smoke", "Serve-check the staged static browser webapp");
+    wasm_webapp_static_smoke_step.dependOn(&wasm_webapp_static_smoke_cmd.step);
+
     const webgpu_smoke_step = b.step("webgpu-smoke", "Run optional WebGPU adapter/device smoke test");
     const webgpu_sigmoid_compare_step = b.step("webgpu-sigmoid-compare", "Compare the apply_sigmoid WGSL kernel against the CPU reference");
     const webgpu_invert_negative_compare_step = b.step("webgpu-invert-negative-compare", "Compare the invert_negative WGSL kernel against the Zig CPU oracle");
@@ -436,8 +548,19 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     const run_tests = b.addRunArtifact(tests);
+    const wasm_core_test_module = b.createModule(.{
+        .root_source_file = b.path("src/wasm_core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wasm_core_test_module.addOptions("build_options", wasm_build_options);
+    const wasm_core_tests = b.addTest(.{
+        .root_module = wasm_core_test_module,
+    });
+    const run_wasm_core_tests = b.addRunArtifact(wasm_core_tests);
     const test_step = b.step("test", "Run Zig unit tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_wasm_core_tests.step);
 }
 
 fn requiredEnvPath(b: *std.Build, name: []const u8) []const u8 {

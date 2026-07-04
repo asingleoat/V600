@@ -172,6 +172,44 @@ testing surfaces, and the first implementation checkpoint. Do not add
 Emscripten, Node, Playwright, or browser package tooling without updating Nix
 files and asking the human to reload the shell.
 
+Current implementation checkpoint:
+
+- `pre-wasm-checkpoint` tags the source immediately before browser/Wasm source
+  work.
+- `zig build wasm-core --summary all` builds
+  `zig-out/bin/v600-wasm-core.wasm` from the default
+  `wasm64-freestanding` processing core. `zig build wasm32-core-smoke` remains
+  an optional compatibility check while it stays trivial.
+- The first exported operation is
+  `v600_preview_invert_u16_to_u8`, backed by explicit allocator/free exports
+  and final `u8 RGB` preview output.
+- `zig build wasm-core-smoke --summary all` loads the emitted Wasm module in
+  Node, exercises the exported buffer ABI, validates final `u8 RGB` output, and
+  checks invalid-dimension and invalid-stock errors.
+- `docs/WEBAPP_WORKER_PROTOCOL.md`, `web/worker/protocol.mjs`, and
+  `zig build wasm-worker-protocol-smoke --summary all` define and verify the
+  first headless worker protocol, including full-state preview cache keys,
+  cancellation, timing, error messages, and stale-result rejection.
+- `web/worker/processor.mjs` and
+  `zig build wasm-worker-runtime-smoke --summary all` run the first actual
+  browser/Node-compatible Worker loop against the emitted Wasm core.
+- `web/index.html` plus `web/app*.mjs` provide the first browser processing
+  shell for raw RGB16 inputs, backed by the Wasm worker and verified by
+  `zig build wasm-webapp-shell-smoke --summary all`.
+- `web/tiff.mjs` adds the first browser scan-file import path for
+  uncompressed classic TIFF RGB16 pages with optional IR page detection,
+  verified by `zig build wasm-tiff-reader-smoke --summary all`.
+- The browser shell currently supports render/Dmin/sample controls, TIFF
+  import/export, native export variant naming, first-slice frame autodetect,
+  multi-frame detected-frame selection, rotated RGB16/IR crops, export-all
+  detected frames, and IR-cleaned `_ir`/`ir_inv` exports when TIFF IR pages are
+  present. Large-scan crop/export benchmarking showed RGB crop is material, so
+  RGB preview and inverted-export crop now run in the worker and report
+  `worker.crop-rgb16`. IR-clean export now keeps full-page alignment
+  conversion, selected RGB/IR crop preparation, grain-noise generation, mask
+  generation, inpaint, and inversion in worker/Wasm stages; the browser caller
+  owns async sequencing and metadata assembly.
+
 ## Platform Support Matrix
 
 | Platform | Scanner | Processing CLI | Native UI | Packaging | Notes |

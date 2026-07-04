@@ -9969,3 +9969,866 @@ Autonomous performance iteration map:
     - Formatting hygiene:
       `git diff --check -- plan.md docs/CROSS_PLATFORM.md
       docs/PARITY_MANIFEST.md docs/WEBAPP_PORT_PLAN.md` passed.
+
+### Phase 13: Browser/Wasm Distribution Implementation
+
+This phase starts the browser distribution track now that the native Zig app is
+accepted for the current parity claim. Continue to use direct `zig ...`
+commands inside the ambient shell. Do not run Nix commands for ordinary loops.
+If a web dependency is missing, edit Nix files if needed and stop for a human
+shell reload before using it.
+
+- [x] Tag the pre-Wasm checkpoint.
+  - Completed 2026-05-23:
+    - Created annotated tag `pre-wasm-checkpoint` on commit `cf46f12`
+      (`Record webapp distribution plan`) before source changes for the
+      browser/Wasm implementation track.
+    - Existing release checkpoint tag `zig-port-mvp` remains untouched.
+
+- [x] Add the first dependency-free Wasm processing core build target.
+  - Scope:
+    - Add a narrow freestanding Wasm build target instead of trying to
+      compile the SDL3/Nuklear native app to a browser target.
+    - Keep the core single-threaded and free of scanner, filesystem, SDL,
+      Nuklear, OpenCV, SuperLU, libtiff, libjpeg, and `wgpu-native`
+      dependencies.
+    - Export only a tiny buffer ABI until a JS worker protocol exists.
+  - Completed 2026-05-23:
+    - Added `zig build wasm-core` to build
+      `zig-out/bin/v600-wasm-core.wasm`.
+    - Added `src/wasm_core.zig` as the exported root wrapper and
+      `src/wasm/core.zig` as the reusable implementation module.
+    - Exported `v600_wasm_alloc`, `v600_wasm_free`, and
+      `v600_preview_invert_u16_to_u8`.
+    - The first exported processing operation accepts an in-memory `u16 RGB`
+      buffer plus `PreviewOptions`, applies the accepted
+      `invert_negative`/render path with provided Dmin and film stock, and
+      writes final `u8 RGB` preview pixels.
+    - Added a Wasm-architecture sequential branch to the render helper so the
+      first freestanding target does not depend on native `std.Thread`.
+  - Validation 2026-05-23:
+    - `zig build wasm-core --summary all` passed and produced
+      `zig-out/bin/v600-wasm-core.wasm` (`705238` bytes).
+    - `strings zig-out/bin/v600-wasm-core.wasm | rg 'v600_'` showed
+      `v600_preview_invert_u16_to_u8`, `v600_wasm_free`, and
+      `v600_wasm_alloc`.
+    - `zig build test --summary all` passed `523/523`.
+    - `zig build --summary all` passed.
+    - `zig build -Dui=true --summary all` passed.
+  - Update 2026-05-24:
+    - The default browser processing core is now `wasm64-freestanding`, not
+      `wasm32-freestanding`, because large scan workflows can exceed the 4 GiB
+      wasm32 address ceiling. `wasm32` is retained only as an optional
+      compatibility artifact while it remains trivial.
+
+- [x] Add and run the headless JS/Wasm runtime harness.
+  - Completed 2026-05-23:
+    - Added `nodejs` to both `flake.nix` and `shell.nix`, then continued only
+      after the human reloaded the project shell.
+    - Added `test/wasm/wasm_core_smoke.mjs` as a Node-based headless harness.
+    - Added `zig build wasm-core-smoke` as an explicit direct Zig step.
+    - The harness loads the emitted Wasm module, verifies the expected exports,
+      packs `PreviewOptions`, allocates raw input/output/options through
+      `v600_wasm_alloc`, calls `v600_preview_invert_u16_to_u8`, checks final
+      `u8 RGB` bytes, validates invalid-dimension and invalid-stock status
+      returns, and frees caller-owned buffers.
+  - Validation 2026-05-23:
+    - `node --version` reported `v24.14.1`.
+    - `zig build wasm-core-smoke --summary all` passed and reported
+      `cold_instantiate_us=651`, `warm_processing_us=1410`,
+      `input_samples=12`, `output_bytes=12`, `status=ok`.
+    - `zig build -Doptimize=ReleaseFast wasm-core-smoke --summary all` passed
+      and reported `cold_instantiate_us=575`, `warm_processing_us=1629`.
+
+- [x] Add committed Web/Wasm fixture coverage.
+  - Completed 2026-05-23:
+    - Added a source-owned synthetic `u16 RGB` fixture and expected final
+      `u8 RGB` preview bytes to both the native Wasm-core Zig test and the Node
+      Wasm smoke harness.
+    - The accepted tolerance for the first smoke is exact final byte equality
+      because it is a tiny deterministic fixture running the same f32/LUT
+      preview path.
+    - The JS harness also exercises invalid dimensions and invalid stock IDs
+      through the exported ABI.
+  - Validation 2026-05-23:
+    - `zig build test --summary all` passed `523/523`.
+    - `zig build wasm-core-smoke --summary all` passed.
+    - `zig build --summary all` passed.
+    - `zig build -Dui=true --summary all` passed.
+
+- [x] Define the browser worker protocol boundary.
+  - Completed 2026-05-23:
+    - Added `docs/WEBAPP_WORKER_PROTOCOL.md` as the protocol contract for the
+      browser main thread and processing worker.
+    - Added `web/worker/protocol.mjs` as a source-owned browser-compatible
+      protocol helper module.
+    - Added `test/wasm/worker_protocol_smoke.mjs` and
+      `zig build wasm-worker-protocol-smoke`.
+    - Message types now cover module load, image load, process-preview,
+      process-export, cancel, ready/image-loaded, progress, timing,
+      preview-result, export-result,
+      stale-result, cancelled, and error flows.
+    - The preview/export cache keys include selected file identity, dimensions,
+      bit depth, page layout, selected frame, rebate/Dmin state, film stock
+      coefficient hash, complete processing config state, render controls,
+      preview size/quality, backend/precision, and output shape.
+    - Stale worker results are rejected when `request_id`, `generation`, or
+      `cache_key` no longer matches the active UI state.
+  - Validation 2026-05-23:
+    - `zig build wasm-worker-protocol-smoke --summary all` passed and reported
+      cache key
+      `sha256:9d82fe04aa444b45e9106a5fe6878cc1ab9552be33e99c81ea7480acb0de8f93`
+      while checking `load-module`, `load-image`, `process-preview`,
+      `process-export`, `cancel`, `preview-result`, `export-result`,
+      `stale-result`, `timing`, and `error` messages.
+    - The smoke proves cache keys change for selected file, image shape, frame
+      geometry, rebate/Dmin, film stock coefficients, processing config, render
+      config, preview sample cap, backend selection, and output shape.
+    - `zig build wasm-core-smoke --summary all` passed.
+    - `zig build test --summary all` passed `523/523`.
+    - `zig build --summary all` passed.
+    - `zig build -Dui=true --summary all` passed.
+
+- [x] Implement the browser worker runtime loop.
+  - Completed 2026-05-23:
+    - Added `web/worker/processor.mjs` as a browser/Node-compatible module
+      Worker runtime that consumes the checked protocol boundary.
+    - The worker loads the Wasm module, verifies required exports, owns
+      allocator/free calls, accepts transferred `u16 RGB` buffers, packs
+      `PreviewOptions`, calls preview or RGB16 export Wasm entrypoints, and
+      returns transferred `u8 RGB` preview or `u16 RGB` export buffers.
+    - The worker emits timing, preview-result, error, stale-result, and
+      cancelled messages through the protocol with request id, generation, and
+      cache key preserved.
+    - Added `test/wasm/worker_runtime_smoke.mjs` and
+      `zig build wasm-worker-runtime-smoke`.
+  - Validation 2026-05-23:
+    - `zig build wasm-worker-runtime-smoke --summary all` passed and reported
+      cache key
+      `sha256:b8c377a296b220e0a621d9374a8ea9bb2b3170906fba9244b80ec58507bc0313`,
+      `output_bytes=12`, and `status=ok`.
+    - The smoke verified module load/ready, transferred raw input,
+      transferred preview output, exact final `u8 RGB` bytes, recoverable
+      invalid-stock errors, and cancellation acknowledgement.
+    - `zig build wasm-worker-protocol-smoke --summary all` passed.
+    - `zig build wasm-core-smoke --summary all` passed.
+    - `zig build test --summary all` passed `523/523`.
+    - `zig build --summary all` passed.
+    - `zig build -Dui=true --summary all` passed.
+
+- [x] Build the first browser processing shell.
+  - Completed 2026-05-23:
+    - Added `web/index.html`, `web/app.mjs`, `web/app_core.mjs`, and
+      `web/styles.css`.
+    - The shell imports raw RGB16 buffers through browser file APIs, accepts
+      width/height metadata, selects built-in film stock, loads the Wasm worker,
+      runs preview processing, draws returned RGB8 pixels to canvas, and keeps
+      scanner controls out of the browser mode.
+    - Added `test/wasm/webapp_shell_smoke.mjs` and
+      `zig build wasm-webapp-shell-smoke` to test shell orchestration without a
+      browser dependency.
+    - The first shell deliberately does not port the SDL3/Nuklear native UI;
+      it is a browser-native UI around the Wasm worker.
+  - Validation 2026-05-23:
+    - `zig build wasm-webapp-shell-smoke --summary all` passed and reported
+      cache key
+      `sha256:07ffab7b1cae25df986196de64eb28cdb9c8295cbf64f422d6d0037e083589f2`,
+      `output_bytes=12`, and `status=ok`.
+    - The smoke verified raw RGB16 size validation, Worker module load, cache
+      key construction, exact final RGB8 bytes, and RGB8-to-RGBA canvas buffer
+      conversion.
+
+- [x] Add browser scan-file image I/O expansion.
+  - Completed 2026-05-23:
+    - Added `web/tiff.mjs` as a browser-side classic TIFF reader for the first
+      supported scanner-file shape.
+    - The reader preserves the committed fixture semantics for uncompressed
+      page 0 RGB16, ignored page 1 thumbnail, optional page 2 8-bit IR, RGB
+      dimensions, IR dimensions, bit depth, and page-0 DPI.
+    - Wired `.tif`/`.tiff` browser file inputs through the shell path:
+      `web/app.mjs` now decodes the RGB16 page, fills width/height, and sends
+      the decoded RGB buffer through the Wasm worker.
+    - Added `test/wasm/tiff_reader_smoke.mjs` and
+      `zig build wasm-tiff-reader-smoke`.
+  - Validation 2026-05-23:
+    - `zig build wasm-tiff-reader-smoke --summary all` passed against
+      `test/fixtures/tiff/rgb-thumb-ir.tiff`, reporting `pages=3`,
+      `rgb_samples=12`, `ir_samples=6`, `dpi=800`, and `status=ok`.
+    - `zig build wasm-webapp-shell-smoke --summary all` also processed the
+      committed TIFF RGB page through the browser shell worker path.
+
+- [x] Add browser preview controls and download output.
+  - Completed 2026-05-23:
+    - Added browser controls for Dmin RGB, contrast, curve, percentile limits,
+      exposure, color temp/tint, percentile sample cap, and built-in stock.
+    - Threaded those controls through `WebPreviewClient.processRawRgb16`, the
+      preview cache key, and the worker `PreviewOptions` request.
+    - Added `rgb8ToPpmBytes` and a browser PPM preview download action.
+    - Extended the shell smoke to prove render/Dmin/sample-limit changes alter
+      the cache key and that PPM output bytes are generated with the expected
+      header and length.
+  - Validation 2026-05-23:
+    - `zig build wasm-webapp-shell-smoke --summary all` passed and reported
+      cache key
+      `sha256:07ffab7b1cae25df986196de64eb28cdb9c8295cbf64f422d6d0037e083589f2`,
+      `output_bytes=12`, and `status=ok`.
+
+- [x] Add browser frame selection and export workflow expansion.
+  - Add browser-side frame selection state and canvas interaction for full
+    image or manual crop rectangles.
+  - Decide whether browser frame autodetect uses the existing Zig frame code in
+    Wasm or a staged later port of its dependencies.
+  - Add export-shaped output beyond preview PPM, including metadata and file
+    naming contracts, before claiming browser export parity.
+  - Completed 2026-05-23:
+    - Added normalized browser frame selection helpers and RGB16 crop logic in
+      `web/app_core.mjs`.
+    - Threaded selected frame geometry through `WebPreviewClient.processRawRgb16`,
+      the preview cache key, the cropped worker input buffer, and returned
+      result metadata without changing the native Zig UI or worker.
+    - Added numeric frame controls, a Full Frame action, and canvas drag
+      rectangle selection in the browser shell.
+    - Added deterministic preview export naming plus
+      `v600.webapp.preview-export.v1` JSON metadata sidecars alongside the PPM
+      preview download.
+    - Browser frame autodetect is explicitly staged for a later checkpoint:
+      use the accepted Zig frame code in Wasm only after its pure dependency
+      boundary is audited, rather than adding a second browser-only detector.
+  - Validation 2026-05-23:
+    - `zig build wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke --summary all`
+      passed. The shell smoke reported cache key
+      `sha256:07ffab7b1cae25df986196de64eb28cdb9c8295cbf64f422d6d0037e083589f2`,
+      `output_bytes=12`, and `status=ok`.
+    - The shell smoke verifies exact full-frame RGB8 output, manual `1x2`
+      crop sample bytes, selected-frame cache-key mutation, result frame
+      round-trip, PPM filename contract, metadata filename contract, and JSON
+      metadata schema.
+
+- [x] Add browser static packaging and local serve smoke.
+  - Add a direct Zig build step that installs or stages the web shell assets
+    and emitted `v600-wasm-core.wasm` into a single static distribution
+    directory.
+  - Keep the package static: no Node bundler, no browser framework, and no
+    runtime dependency on repository-relative paths.
+  - Add a headless or minimal HTTP smoke that proves `web/index.html`, module
+    imports, worker imports, and the Wasm artifact are addressable from the
+    staged directory.
+  - Document the normal user command for serving the static webapp locally.
+  - Completed 2026-05-23:
+    - Added `zig build wasm-webapp` to stage `web/` plus the generated
+      `v600-wasm-core.wasm` into `zig-out/webapp/`.
+    - Changed the browser shell's default Wasm URL to
+      `./v600-wasm-core.wasm`, so the staged app is self-contained instead of
+      relying on a repository-relative `zig-out/bin` path.
+    - Added `test/wasm/webapp_static_smoke.mjs` and
+      `zig build wasm-webapp-static-smoke` to verify the staged static layout
+      through a local HTTP server.
+    - Documented the local-use command:
+      `zig build wasm-webapp`, then
+      `python3 -m http.server 8433 --bind 127.0.0.1 --directory zig-out/webapp`.
+  - Validation 2026-05-23:
+    - `zig build wasm-webapp-static-smoke --summary all` passed, installed
+      `web/`, installed the generated Wasm artifact, served 8 staged files,
+      and verified the `v600-wasm-core.wasm` magic bytes.
+
+- [x] Add browser full-resolution RGB16 export path.
+  - Add a Wasm/browser export operation that can emit full selected-frame
+    output at export resolution, not only an RGB8 preview PPM.
+  - Preserve the Python/Zig accepted processing controls and metadata surface
+    in the export cache key.
+  - Decide the first browser export file format deliberately. TIFF parity is
+    preferred for scan workflow parity, but PNG or PPM may be an interim
+    artifact only if documented as not export parity.
+  - Completed 2026-05-23:
+    - Added `v600_export_invert_u16_to_u16` to the dependency-free Wasm core,
+      reusing the same custom `invert_negative` path and accepted
+      `renderToDisplayU16F32` export render surface.
+    - Added `process-export` / `export-result` protocol messages, export
+      cache-key operation separation, and worker runtime dispatch with
+      transferred `u16 RGB` output.
+    - Added `WebPreviewClient.exportRawRgb16`, `rgb16ToPpmBytes` for headless
+      diagnostics, and an `Export RGB16` browser action for the current
+      selected frame.
+    - The initial browser export operation is full-resolution selected-frame
+      RGB16 pixel output. The browser-facing file wrapper is handled by the
+      follow-up TIFF checkpoint below.
+  - Validation 2026-05-23:
+    - `zig build wasm-core-smoke wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-webapp-static-smoke --summary all`
+      passed. The core smoke reported `export_output_bytes=24`; the protocol
+      smoke checked `process-export` and `export-result`; the worker and shell
+      smokes verified transferred RGB16 output.
+    - `zig build test --summary all` passed `523/523`.
+    - The native Wasm-core test and Node smokes verify that exact tiny-fixture
+      RGB16 export samples shift down to the accepted RGB8 preview bytes.
+
+- [x] Add browser TIFF export path.
+  - Emit browser exports in an accepted native/Python-compatible TIFF shape for
+    the current RGB16 positive output.
+  - Preserve metadata sidecar semantics, selected-frame naming, bit depth, and
+    output variant contracts from the native export pipeline.
+  - Keep the RGB16 PPM helper as a diagnostic byte-surface check, not as the
+    user-facing browser export.
+  - Completed 2026-05-23:
+    - Added `rgb16ToTiffBytes` to `web/tiff.mjs` as a narrow classic
+      little-endian, uncompressed, chunky RGB16 TIFF writer with DPI metadata.
+    - Changed the browser `Export RGB16` action to download TIFF plus
+      `v600.webapp.rgb16-export.v1` JSON metadata instead of exposing the PPM
+      diagnostic format as the user-facing export.
+    - Kept `rgb16ToPpmBytes` in the headless shell smoke as a simple diagnostic
+      byte-surface helper, not as the browser export file format.
+  - Validation 2026-05-23:
+    - `zig build wasm-tiff-reader-smoke wasm-webapp-shell-smoke wasm-webapp-static-smoke --summary all`
+      passed. The TIFF reader smoke now round-trips the committed RGB fixture
+      through the browser TIFF writer. The shell smoke round-trips the Wasm
+      RGB16 export TIFF bytes through `loadRgb16PageFromTiff` and verifies DPI,
+      dimensions, and exact samples.
+
+- [x] Add browser native export variant parity.
+  - Port the native export variant model beyond the current RGB16 positive
+    output: IR-negative, IR-inverted, no-IR fallback naming, and any enabled
+    sidecar fields that the browser can support without scanner control.
+  - Keep unsupported browser-only gaps explicit, especially dust cleanup until
+    IR alignment/processing is available in the web pipeline.
+  - Completed 2026-05-23:
+    - Added browser-native definitions for the accepted export variants in the
+      same order as native Zig: `ir_neg`, `ir_inv`, `inv_only`.
+    - Preserved native suffixes and metadata variant names:
+      `_ir`/`ir_cleaned`, empty suffix/`ir_cleaned_inverted`, and
+      `_inv`/`inverted`.
+    - Added browser output checkboxes with native default selection
+      `ir_inv=true`, `ir_neg=false`, `inv_only=false`.
+    - Implemented the supported no-IR fallback behavior: `ir_neg` exports the
+      selected raw RGB16 negative crop, while `ir_inv` and `inv_only` export
+      inverted RGB16 through the Wasm worker. True IR dust cleanup remains a
+      separate processing-port checkpoint.
+    - Added native-shaped browser export filenames:
+      `<basename>_01_ir.tif`, `<basename>_01.tif`, and
+      `<basename>_01_inv.tif`, plus `.tif.json` sidecars.
+    - Added `v600.webapp.native-export-metadata.v1` metadata with native
+      `source`, `rebate_rect`, `crop`, and `variant` fields; inverted variants
+      also include stock, contrast, and Dmin like native metadata.
+  - Validation 2026-05-23:
+    - `zig build wasm-webapp-shell-smoke --summary all` passed. The shell smoke
+      verifies variant order, suffix filenames, metadata filenames,
+      per-variant cache-key separation, raw `_ir` crop bytes, inverted variant
+      output equality, and native metadata variant fields.
+
+- [x] Port browser IR cleanup and aligned RGB/IR export variants.
+  - Use TIFF page 2 IR input when present and port the accepted IR alignment,
+    adaptive dust mask, inpaint, and IR-cleaned output path to Wasm/browser.
+  - Keep the current no-IR fallback behavior as the baseline until the IR path
+    has final-output parity evidence.
+  - Add headless fixtures that compare masks, cleaned RGB16 outputs, and
+    metadata against native/Python oracle data.
+  - [x] Preserve TIFF RGB+IR identity in browser cache and sidecar metadata.
+    - Completed 2026-05-23:
+      - Browser TIFF decoding now propagates `page_layout="rgb-thumb-ir"` and
+        IR page shape metadata into preview/export cache-key payloads and
+        metadata sidecars.
+      - The webapp shell smoke asserts the IR-aware cache key differs from the
+        RGB-only descriptor for the same TIFF source.
+  - [x] Add a headless Wasm/worker IR defect-mask slice.
+    - Completed 2026-05-23:
+      - Added `IrMaskOptions` and `v600_ir_make_defect_mask_u8` to the
+        freestanding Wasm core.
+      - The Wasm path uses the accepted Zig `makeDefectMask` algorithm on
+        8-bit IR page samples converted to the same f64 domain as native TIFF
+        loading, with single-worker execution for browser/no-libc targets.
+      - Added worker protocol/runtime support for `process-ir-mask` and
+        `ir-mask-result`; cache keys include file identity, RGB/IR page layout,
+        IR dimensions, dust-removal config, backend, and output kind.
+      - Native C helper-dependent paths remain intentionally unavailable in
+        browser/no-libc builds: OpenCV ECC alignment, local-grain estimation,
+        SuperLU sparse inpaint, grain synthesis, and full cleaned-RGB export.
+    - Validation 2026-05-23:
+      - `zig build wasm-core-smoke wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-tiff-reader-smoke wasm-webapp-static-smoke --summary all`
+        passed, including `ir_mask_bytes=81`, `process-ir-mask`, and
+        `ir-mask-result` coverage.
+      - `zig build test --summary all` passed with 552 pass / 8 expected skips
+        in the no-libc `wasm_core` imported native-helper fixture tests.
+      - `zig build --summary all` passed.
+      - `zig build -Dui=true --summary all` passed.
+  - [x] Port browser IR alignment.
+    - Decide whether the browser path needs an exact pure-Zig ECC replacement,
+      a constrained translation-search approximation with final-output
+      evidence, or a documented no-alignment first checkpoint for TIFFs whose
+      RGB/IR pages are already aligned.
+    - Keep any approximation behind explicit parity metrics against native
+      `alignIr` fixtures and real RGB+IR scan crops.
+    - [x] Add a browser-safe provided-offset IR translation primitive.
+      - Completed 2026-05-23:
+        - Added `IrAlignOptions` and `v600_ir_apply_translation_f32` to the
+          freestanding Wasm core.
+        - Added `process-ir-align` and `ir-align-result` to the worker
+          protocol/runtime, plus app-core cache helpers and
+          `WebPreviewClient.applyIrTranslationF32`.
+        - This is not full browser IR alignment parity yet: it applies a known
+          offset with reflect-boundary bilinear sampling so later ECC/search
+          offset estimation can feed the same transform.
+      - Validation 2026-05-23:
+        - `zig build wasm-core-smoke wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-tiff-reader-smoke wasm-webapp-static-smoke --summary all`
+          passed.
+        - The core, worker runtime, and shell smokes replayed
+          `test/fixtures/processing/ir/align-ratio-1-to-2.json` with final
+          aligned-IR error `max_abs=0.0037903999982518144` and
+          `rms=0.00080799120470609`.
+        - `zig build test --summary all` passed with 552 pass / 8 expected
+          skips in the no-libc `wasm_core` imported native-helper fixture
+          tests.
+        - `zig build --summary all` passed.
+        - `zig build -Dui=true --summary all` passed.
+        - `git diff --check` passed.
+    - [x] Port browser offset estimation for IR alignment.
+      - Either port the native ECC dependency to pure Zig/Wasm-compatible code
+        or implement a constrained translation-search approximation with
+        final-output evidence against native `alignIr` fixtures and real
+        RGB+IR scan crops.
+      - Rejected shortcut, 2026-05-23:
+        - A direct normalized-correlation/MSE translation search against the
+          deterministic alignment fixtures selects `(tx=8, ty=-5)` for both
+          1:2 and 1:4 RGB:IR cases, while the frozen Python/OpenCV ECC oracle
+          reports `(tx=9.91815185546875, ty=-5.849216461181641)`.
+        - Applying the correlation-search offset to
+          `align-ratio-1-to-2.json` produced final aligned-IR error
+          `max_abs=5518.508537260004`, `rms=1875.8776050286474` for the
+          integer candidate. A closer OpenCV-source-shaped JS prototype still
+          produced `max_abs=4281.558554020983`, `rms=1275.7578724824039`.
+        - Do not wire a simple correlation search as the browser alignment
+          estimator without mask/final-cleaned-output evidence that justifies
+          the divergence. The next serious attempt should port the
+          translation-only ECC iteration more faithfully, including OpenCV's
+          small-image preprocessing, Gaussian smoothing, gradient filters,
+          valid-pixel mask, lambda update, and convergence semantics.
+      - [x] Add a browser worker translation-ECC estimator first slice.
+        - Completed 2026-05-23:
+          - Added `IrEstimateOptions`, `IrEstimateResult`, and
+            `v600_ir_estimate_translation_f32` to the freestanding Wasm core.
+          - The estimator follows the Python/OpenCV alignment shape:
+            RGB-to-8-bit grayscale conversion, RGB-to-IR area downscale,
+            IR 8-bit normalization, `ecc_scale=0.125` area downscale,
+            5x5 Gaussian smoothing, central-difference image gradients,
+            translation-only ECC lambda update, in-place masked image
+            zero-meaning semantics, 1/32 fixed-point bilinear warp weights,
+            and full-resolution offset scaling.
+          - Added worker/app-core protocol support for `process-ir-estimate`
+            and `ir-estimate-result`, with cache keys that include file
+            identity, RGB/IR page layout, IR dimensions, estimator config,
+            backend, and output kind.
+          - This remains a first slice, not full browser IR alignment
+            completion: it is fixture-tested but still needs real RGB+IR scan
+            crop evidence before checking off browser offset estimation.
+        - Validation 2026-05-23:
+          - `zig build wasm-core-smoke wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-tiff-reader-smoke wasm-webapp-static-smoke --summary all`
+            passed.
+          - `wasm-core-smoke` estimated `tx=9.883345603942871`,
+            `ty=-5.884145736694336`, `rho=0.987080991268158`,
+            `iterations=5` against the OpenCV/Python oracle
+            `tx=9.91815185546875`, `ty=-5.849216461181641`.
+          - Applying that estimated offset to
+            `test/fixtures/processing/ir/align-ratio-1-to-2.json` produced
+            final aligned-IR error `max_abs=141.42405929500092`,
+            `rms=41.3169664994467`.
+          - `zig build test --summary all` passed with 552 pass / 8 expected
+            skips in the no-libc `wasm_core` imported native-helper fixture
+            tests.
+          - `zig build --summary all` passed.
+          - `zig build -Dui=true --summary all` passed.
+          - Real scan probe:
+            - Native Python/OpenCV oracle on
+              `scans/scan_0006_rgbir_800dpi.tiff` reported
+              `tx=0.7342356443405151`, `ty=-2.5735411643981934`,
+              `rho=0.9041734788915521` on a `1272x6031` RGB/IR scan.
+            - `node test/wasm/real_scan_ir_estimate_probe.mjs zig-out/webapp/v600-wasm-core.wasm scans/scan_0006_rgbir_800dpi.tiff`
+              reported Wasm/browser estimate `tx=0.9593804478645325`,
+              `ty=-2.5981011390686035`, `rho=0.9173573851585388`,
+              `iterations=14`, worker elapsed `583069 us`.
+            - Applying the native and Wasm-estimated offsets to the real
+              8-bit IR page with SciPy reflect/bilinear shift produced
+              `max_abs=14.833351135253906`, `rms=0.29577261209487915`,
+              and `mismatch_rate_gt_1=0.010591764353773845`.
+        - Acceptance note:
+          - Browser IR alignment is now available as two worker/app-core
+            operations: estimate translation-ECC offset, then apply the
+            translation to the IR plane.
+          - True IR-cleaned browser export is still intentionally disabled
+            until the cleaned-RGB output item below has final-output evidence.
+  - [x] Port browser cleaned-RGB output.
+    - Reuse the browser IR mask, resize it to RGB dimensions exactly like
+      native `irCleanRegion`, then add an inpainting strategy with headless
+      mask-overlap and final `u16` cleaned-output evidence.
+    - Do not enable browser `ir_neg`/`ir_inv` true IR-cleaned exports until
+      cleaned RGB16 output and sidecar metadata have parity evidence.
+    - [x] Port browser RGB-sized IR-mask geometry.
+      - Completed 2026-05-23:
+        - Added `IrMaskResizeOptions` and `v600_ir_resize_mask_to_rgb_u8` to
+          the freestanding Wasm core.
+        - The operation matches the native `irCleanRegion` geometry branch:
+          same-size RGB/IR masks are copied, size-mismatched masks use nearest
+          IR-to-RGB resize followed by the fixed radius-1 3x3 ellipse dilation.
+        - Added `process-ir-rgb-mask` and `ir-rgb-mask-result` to the worker
+          protocol/runtime plus app-core cache helpers and
+          `WebPreviewClient.resizeIrMaskToRgbU8`.
+        - The RGB-sized-mask cache key includes the upstream IR-mask cache key,
+          RGB/IR dimensions, dust-removal config, resize mode, post-resize
+          dilation rule, backend, and output kind so cached mask geometry cannot
+          silently cross UI/config states.
+      - Validation 2026-05-23:
+        - `zig build wasm-core-smoke wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke --summary all`
+          passed.
+        - `wasm-core-smoke` replayed
+          `test/fixtures/processing/ir/ir-clean-region-resize-uint16-smoke.json`
+          through IR-mask generation plus RGB-mask resize and matched the oracle
+          `expected_ir_mask` and `expected_mask`, reporting
+          `ir_rgb_mask_bytes=2592` and `ir_rgb_mask_defect_pixels=96`.
+        - Worker protocol/runtime and shell smokes covered
+          `process-ir-rgb-mask`, `ir-rgb-mask-result`, transferred mask output,
+          cache-key equality, and client method wiring.
+    - [x] Port browser inpainting and final cleaned RGB16 output.
+      - Decide whether the first browser path ports native grain estimation,
+        biharmonic solve, and grain synthesis directly to dependency-free Zig or
+        stages a documented approximation behind final-output mask/shared-area
+        and RGB16 error evidence.
+      - Keep `ir_neg`/`ir_inv` browser export fallbacks in place until this
+        checkpoint passes final-output evidence.
+      - [x] Port browser-safe biharmonic RGB16 repair.
+        - Completed 2026-05-23:
+          - Added `IrInpaintOptions` and `v600_ir_biharmonic_inpaint_u16` to
+            the freestanding Wasm core.
+          - The operation converts caller-managed RGB16 samples to normalized
+            f64, runs the accepted Zig `biharmonicInpaint` solver with the
+            caller-provided RGB-sized mask, and writes final RGB16 samples.
+          - Added `process-ir-inpaint` and `ir-inpaint-result` to the worker
+            protocol/runtime plus app-core cache helpers and
+            `WebPreviewClient.inpaintBiharmonicRgb16`.
+          - The inpaint cache key includes file identity, RGB/IR metadata,
+            dust-removal config, upstream RGB-mask cache key, inpaint mode
+            `biharmonic-no-grain`, value kind, backend, and output kind.
+        - Validation 2026-05-23:
+          - `zig build wasm-core-smoke wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke --summary all`
+            passed.
+          - `wasm-core-smoke` replayed
+            `test/fixtures/processing/ir/biharmonic-inpaint-smoke.json` after
+            RGB16 quantization with `ir_inpaint_samples=168`,
+            `ir_inpaint_max_abs=1`, and
+            `ir_inpaint_rms=0.17251638983558856`.
+          - Worker runtime and app shell smokes transferred RGB16 plus RGB-mask
+            buffers through `process-ir-inpaint` and checked final RGB16 output
+            with `max_abs <= 2`.
+        - Remaining caveat:
+          - This is a biharmonic-only repair stage. It does not include native
+            local-grain estimation, DFT-shaped grain synthesis, runtime random
+            noise capture, or final full `irCleanRegion` RGB16 parity. Do not
+            enable browser `ir_neg`/`ir_inv` dust-cleaned exports from this
+            stage alone.
+      - [x] Port browser local-grain estimation and grain synthesis.
+        - Completed 2026-05-23:
+          - Added browser/no-libc local grain estimation that mirrors the native
+            helper contract: OpenCV-shaped ellipse dilation, sigma-2.5
+            reflect101 RGB blur, surrounding-grain standard deviation, Hann
+            windowing, radial DFT spectrum capture, and normalized spectrum
+            output.
+          - Added dependency-free DFT/IDFT grain synthesis for browser Wasm,
+            including spectrum-shaped and `1/radius` fallback shaping,
+            per-channel standard-deviation normalization, f32 rounding, and
+            interleaved RGB output.
+          - Added `IrInpaintGrainOptions` and
+            `v600_ir_inpaint_grain_u16_with_noise` to the freestanding Wasm
+            core. The exported operation runs the same component/ROI loop as
+            native `inpaintBiharmonicWithGrainFromNoise`: copy RGB16 input,
+            label 8-connected mask components, extract padded ROIs from the
+            current output buffer, estimate local grain, repair the blurred
+            signal with the accepted Zig biharmonic solver, synthesize captured
+            grain noise, and write back only masked RGB16 pixels.
+          - Extended `process-ir-inpaint` so the worker can run either
+            `biharmonic-no-grain` or `biharmonic-grain` depending on whether
+            grain options are supplied. Grain-aware calls may transfer a
+            captured `Float64` noise buffer for oracle tests or provide a
+            `noise_seed` for worker-generated runtime noise.
+          - Extended the inpaint cache key to include inpaint mode, value kind,
+            padding, grain padding, and either a captured-noise hash or seed
+            identity. This keeps cached cleaned output keyed by the full state
+            that affects the grain-aware result.
+          - Added `WebPreviewClient.inpaintGrainRgb16WithNoise` for app-shell
+            orchestration.
+        - Validation 2026-05-23:
+          - `zig build wasm-core-smoke --summary all` passed and replayed
+            `test/fixtures/processing/ir/inpaint-biharmonic-grain-uint16-smoke.json`
+            with `ir_grain_inpaint_samples=504`,
+            `ir_grain_inpaint_max_abs=0`, `ir_grain_inpaint_rms=0`, and
+            `ir_grain_inpaint_mismatches=0`.
+          - `zig build wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke --summary all`
+            passed. Worker/runtime and shell smokes transferred RGB16, RGB-mask,
+            and captured-noise buffers through `process-ir-inpaint` in
+            `biharmonic-grain` mode and checked final RGB16 output against the
+            oracle fixture tolerance.
+      - [x] Wire browser full cleaned RGB16 output.
+        - Completed 2026-05-23:
+          - Added `WebPreviewClient.exportIrCleanedRgb16`, which composes the
+            accepted browser primitives into the Python-shaped export path:
+            optional translation-ECC IR alignment over full scan pages, RGB and
+            aligned-IR frame crops using the same scaled geometry, f32 IR defect
+            mask generation, RGB-sized mask resize/dilate, grain-aware RGB16
+            inpaint, and optional Wasm inversion/render for `ir_inv`.
+          - Browser UI export now uses real IR cleaning for `_ir`/`ir_neg` and
+            empty-suffix `ir_inv` whenever the loaded TIFF includes an IR page.
+            The no-IR fallback remains for scan files without IR data.
+          - Added exact shell-level full-cleaned-output coverage for
+            `test/fixtures/processing/ir/ir-clean-region-uint16-smoke.json` in
+            `ir_neg` mode. The same smoke also verifies `ir_inv` by comparing
+            browser cleaned-plus-inverted output against the accepted Wasm
+            inversion/export path run over the oracle cleaned RGB16 image.
+          - Worker `process-ir-mask` now accepts either 8-bit TIFF IR buffers or
+            f32 IR buffers. Browser TIFF imports still use 8-bit IR pages;
+            f32 support exists so headless oracle fixtures can exercise the
+            same high-level composition without quantizing Python fixture IR.
+        - Validation 2026-05-23:
+          - `zig build wasm-webapp-shell-smoke --summary all` passed with the
+            composed `ir_neg` output within the fixture tolerance and exact
+            `ir_inv` compositional equality against accepted cleaned-input
+            inversion.
+
+- [x] Add browser frame autodetect worker and shell first slice.
+  - Scope:
+    - Expose the accepted Zig frame detector through the dependency-free Wasm
+      core rather than adding a browser-only detector.
+    - Add worker protocol/runtime coverage, cache keys that include the full
+      detection state, and browser shell controls for format and optional frame
+      count.
+    - Keep scanner control out of the browser mode.
+  - Completed 2026-05-23:
+    - Added `FrameDetectOptions`, `FrameDetectRect`,
+      `FrameDetectResult`, and `v600_detect_frames_rgb16` to the Wasm core.
+      The operation accepts raw in-memory RGB16 preview/scan data, runs
+      `frames.detectFramesFromImage`, applies the accepted single-small-frame
+      fallback and inter-frame rebate suggestion, and returns preview-space
+      frame rects plus aspect/rebate metadata.
+    - Gated frame-detector helper parallel branches on Wasm targets so the
+      browser core uses the same algorithms sequentially without importing
+      native `std.Thread` behavior into the single-threaded freestanding build.
+    - Added `process-frame-detect` / `frame-detect-result` protocol messages,
+      `frameDetectCacheKeyString`, worker runtime dispatch, and
+      `WebPreviewClient.detectFramesRgb16`.
+    - Added browser shell `Format`, optional `Frames`, and `Auto Detect`
+      controls. The shell calls the worker detector and applies the first
+      returned frame to the existing numeric/canvas crop controls.
+  - Validation 2026-05-23:
+    - `zig build wasm-worker-protocol-smoke wasm-worker-runtime-smoke --summary all`
+      passed. The worker runtime smoke synthesized the committed
+      `axis-35mm-vertical-three-frame` detector case in RGB16, ran it through
+      the emitted Wasm core, checked `aspect="24:36"`, checked all three frame
+      rects within 12 preview pixels, and confirmed a suggested rebate exists.
+    - `zig build wasm-webapp-shell-smoke --summary all` passed. The shell smoke
+      verifies `WebPreviewClient.detectFramesRgb16`, cache-key equality, aspect
+      reporting, detected frame geometry, and rebate reporting.
+    - `zig build wasm-core --summary all` passed after the detector import and
+      Wasm threading guards.
+  - Remaining caveat:
+    - This was a detector and first-shell application slice only. Multi-frame
+      browser selection, rotated crop, and export-all behavior are handled by
+      the following checkpoint.
+
+- [x] Add browser multi-frame selection, rotated crop, and export-all parity.
+  - Use `frame-detect-result.frames` as a browser selection list instead of
+    discarding all but the first frame.
+  - Preserve per-frame preview-space `cx/cy/w/h/angle`, active selection,
+    frame index, and output filenames/metadata for every selected frame.
+  - Port or expose an accepted rotated RGB16 crop path for preview/export so
+    browser output can honor detector angles and manual rotated selections
+    instead of silently forcing axis-aligned rectangles.
+  - Add headless checks for:
+    - detected frame list round-trip through `WebPreviewClient`;
+    - first/active/next selection state and cache-key separation;
+    - rotated crop final pixels against native Zig/Python fixture tolerance;
+    - export filenames using frame indexes beyond `_01`;
+    - export of all selected variants for every selected frame.
+  - Completed 2026-05-23:
+    - Browser frame selections now preserve nonzero frame angles in radians,
+      matching the Python UI and native Zig process model, and the shell exposes
+      an explicit Angle control plus a Detected frame selector.
+    - Auto Detect stores every returned frame as a selectable browser frame
+      instead of applying only the first one. The active frame is used for
+      preview/process, and the `All frames` export control exports every
+      detected/selected frame with native `_01`, `_02`, ... frame numbering.
+    - Added browser-side affine rotated crop helpers for RGB16 and scalar IR
+      buffers using the same OpenCV-style transform, reflect boundary handling,
+      crop dimensions, and radians-to-transform convention as the accepted
+      Python/Zig rotated crop path. Axis-aligned crops keep the fast row-copy
+      path.
+    - Added `frameSelectionFromDetectedFrame` and
+      `exportNativeVariantResults` so multi-frame export orchestration is
+      headlessly testable outside the DOM shell.
+  - Validation 2026-05-23:
+    - `zig build wasm-webapp-shell-smoke wasm-webapp-static-smoke --summary all`
+      passed. The shell smoke now checks detected-frame selection conversion,
+      RGB16 rotated crop against the Python/Zig rotated-crop fixture with
+      `max_abs <= 250` in 16-bit scaled sample space, f32 scalar IR rotated crop
+      with `max_abs <= 0.25`, rotated preview filename angle tagging, and
+      multi-frame/multi-variant export filenames plus metadata crop state.
+
+- [x] Benchmark browser rotated crop/export on large scan data and decide
+  whether crop should move into the Wasm worker.
+  - The new affine crop path is behavior-focused and currently runs in the
+    browser shell before handing cropped RGB/IR buffers to the Wasm processing
+    worker.
+  - Measure real scan-sized axis-aligned and rotated crops, preview, and full
+    export-all flows before moving it. If crop time is material, add a worker
+    protocol operation or fold frame selection into existing process/export
+    messages so the heavy crop runs inside the Wasm worker with the same final
+    pixel checks.
+  - Completed 2026-05-23:
+    - Added `test/wasm/webapp_crop_export_bench.mjs` and
+      `zig build bench-wasm-webapp-crop-export` for local scan-backed browser
+      crop/export timing. The benchmark skips cleanly when gitignored local
+      scans are absent and can be pointed at a scan with
+      `V600_WASM_BENCH_SCAN=...`.
+    - Added optional worker-side RGB16 crop handling to `process-preview` and
+      `process-export`. Browser preview/export cache keys still include full
+      selected-frame state, but the heavy RGB crop now runs in the Worker and
+      reports `worker.crop-rgb16` timing before the Wasm inversion/export call.
+      Axis-aligned and rotated crop pixel behavior still routes through the
+      same tested browser crop helper.
+    - The web UI now passes disposable decoded RGB buffers to the worker for
+      preview/export so selected-frame crop work no longer blocks UI state
+      handling in the common RGB preview and inverted-export paths.
+  - Benchmark evidence 2026-05-23:
+    - `V600_WASM_BENCH_SCAN=scans/scan_0006_rgbir_800dpi.tiff zig build bench-wasm-webapp-crop-export --summary all`
+      passed. It used two 35mm frames from the Python detector fixture,
+      measured axis crop median `2839 us`, rotated crop median `39365 us`,
+      `worker.crop-rgb16` export timings `43759 us` and `38660 us`,
+      export-all `224686 us`, and decision
+      `crop-is-material-and-now-runs-in-worker; consider-wasm-crop-optimization-later`.
+    - A direct 3200 DPI run,
+      `node test/wasm/webapp_crop_export_bench.mjs zig-out/webapp/v600-wasm-core.wasm --scan scans/scan_0004_rgbir_3200dpi.tiff --max-frames 1 --variant inv-only --crop-repeats 1`,
+      measured RGB `5120x24125`, one full-resolution detected frame
+      `3063x4600`, axis crop `32838 us`, rotated crop `624732 us`,
+      preview `worker.crop-rgb16=622467 us`, export
+      `worker.crop-rgb16=667572 us`, export total `1572892 us`, and crop share
+      `0.397`.
+  - Decision:
+    - Crop is too material to run on the browser UI thread. It now runs in the
+      browser Worker for RGB preview and inverted RGB16 export. Do not move it
+      into the freestanding Wasm core yet; the next useful evidence is whether
+      worker-side JS crop remains a bottleneck after the current worker-side
+      IR-clean orchestration split.
+
+- [x] Move remaining browser IR-clean export orchestration off the UI thread.
+  - `WebPreviewClient.exportIrCleanedRgb16` still performs some heavy
+    composition on the caller side: RGB and IR frame crops plus sequencing of
+    intermediate buffers.
+  - Move the remaining browser IR-clean composition into worker-owned
+    operations or a worker-owned image session so `_ir` and `ir_inv` exports do
+    not block UI state management on large scans.
+  - Keep cache keys explicit and complete. The worker may keep resident decoded
+    image buffers, but every result must still be keyed by selected file
+    identity, frame geometry, processing config, dust settings, Dmin/render
+    state, stock, output variant, and any generated noise identity.
+  - [x] Move runtime grain-noise generation into `process-ir-inpaint`.
+    - Completed 2026-05-23: `inpaintGrainRgb16WithNoise` can now send a
+      `noise_seed` instead of a full `Float64` noise buffer. The worker derives
+      deterministic standard-normal noise, reports
+      `worker.generate-ir-grain-noise`, and the inpaint cache key records
+      `seed:<noise_seed>`.
+    - Direct `zig build wasm-webapp-shell-smoke wasm-worker-runtime-smoke wasm-worker-protocol-smoke --summary all`
+      passed. The shell smoke verifies that two calls with the same seed produce
+      byte-identical grain-aware RGB16 output.
+  - [x] Move full-page RGB/IR f32 conversion for browser IR alignment out of
+    `WebPreviewClient.exportIrCleanedRgb16`.
+    - Completed 2026-05-23: `process-ir-estimate` and `process-ir-align` now
+      accept raw scalar buffer descriptors such as `u16` RGB and `u8`/`f32` IR.
+      The worker converts non-f32 inputs before calling the accepted f32 Wasm
+      exports and reports conversion timing stages.
+    - `WebPreviewClient.exportIrCleanedRgb16` now sends the original RGB16/IR
+      buffers to the worker for alignment instead of materializing full-page
+      f32 RGB and IR buffers on the caller side.
+    - Direct `zig build wasm-webapp-shell-smoke wasm-worker-runtime-smoke --summary all`
+      passed. The shell smoke verifies worker-side raw `u16` RGB conversion
+      produces a translation estimate within `0.05 px` of the f32 fixture path.
+  - [x] Move IR-clean RGB and aligned-IR frame crop preparation out of
+    `WebPreviewClient.exportIrCleanedRgb16`.
+    - Completed 2026-05-23: added `process-ir-clean-crop` /
+      `ir-clean-crop-result`. The worker crops the full RGB16 page and aligned
+      f32 IR page to the selected frame, returning both buffers with
+      `worker.crop-ir-clean-rgb16` and `worker.crop-ir-clean-ir-f32` timings.
+    - `WebPreviewClient.exportIrCleanedRgb16` now derives the downstream
+      intermediate file identity from the complete crop cache key instead of
+      concatenating and hashing cropped RGB/IR buffers on the caller side.
+  - [x] Decide whether the remaining async sequencing should become one
+    worker-owned `process-ir-clean-export` operation or a worker-owned resident
+    image session before checking this item off.
+    - Decision 2026-05-23: keep the browser IR-clean export as explicit async
+      worker stages for now. The remaining `app_core.mjs` work is request
+      sequencing and metadata assembly, while full-page conversion, selected
+      RGB/IR crop, grain-noise generation, mask generation, mask resize,
+      inpaint, and inversion all execute in the worker/Wasm path. A monolithic
+      `process-ir-clean-export` or resident worker image session remains a
+      future optimization only if benchmarks show message transfer or repeated
+      staging dominates.
+    - Direct `zig build wasm-worker-protocol-smoke wasm-worker-runtime-smoke wasm-webapp-shell-smoke --summary all`
+      passed after this split.
+
+- [x] Make wasm64 the default browser processing target.
+  - Scope:
+    - Treat support for image workflows whose resident working set can exceed
+      4 GiB as a browser architecture requirement, not as a native-only escape
+      hatch.
+    - Make the normal `wasm-core`, `wasm-core-smoke`, and `wasm-webapp` build
+      paths emit/load `wasm64-freestanding`.
+    - Retain `wasm32` only if it remains a trivial optional artifact using the
+      same source and worker ABI layer.
+    - Update the JS worker and direct Node harness so exported `usize`
+      pointers and lengths are passed as `BigInt` for wasm64 and as `Number`
+      for wasm32.
+    - Do not pretend wasm64 alone solves all large-scan memory problems:
+      tiled/streaming TIFF decode, processing, and export remain required
+      follow-up work.
+  - Completed 2026-05-24:
+    - Changed `wasm-core` to target `wasm64-freestanding`.
+    - Added optional `wasm32-core` and `wasm32-core-smoke` compatibility steps.
+    - Added `v600_wasm_pointer_bits()` to the Wasm ABI and reports
+      `pointer_bits` in worker capabilities and smoke JSON.
+    - Replaced the worker/direct-smoke signed `>>> 0` allocation normalization
+      with pointer-width-aware `usize`/pointer conversion helpers and safe
+      JS byte-offset checks.
+    - `wasm-webapp` now stages the default wasm64 artifact as
+      `zig-out/webapp/v600-wasm-core.wasm`.
+  - Validation 2026-05-24:
+    - `zig build wasm-core-smoke --summary all` passed and reported
+      `pointer_bits=64`.
+    - `zig build wasm32-core-smoke --summary all` passed and reported
+      `pointer_bits=32`.
+    - `zig build wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-webapp-static-smoke wasm-webapp --summary all`
+      passed against the default wasm64 webapp artifact.
+  - Follow-up:
+    - Add a tiled/streaming large-scan plan for browser TIFF decode,
+      IR-cleaning intermediates, and export writing so Memory64 is used to
+      remove the address ceiling, not to justify retaining every intermediate
+      full image in memory.
+
+- [x] Pre-commit review pass for the Phase 13 working tree.
+  - Scope:
+    - Review all uncommitted Phase 13 sources before the first browser/Wasm
+      commit and fix anything commit-gating; leave structural refactors to the
+      recorded maintenance plan.
+  - Completed 2026-07-03:
+    - Fixed `EccWork.init` in `src/wasm/core.zig` to `errdefer`-free earlier
+      buffers on partial allocation failure so a mid-init OOM cannot leak in
+      the long-lived worker Wasm instance.
+    - Bounded `ecc_scale` to `(finite, 0.0..1.0]` in
+      `validateIrEstimateRequest`; the unbounded value could overflow the
+      `@intFromFloat` small-dimension computation in the ReleaseFast Wasm
+      artifact where safety traps are disabled.
+    - Stopped gitignoring committed test fixtures: root-anchored the
+      `frames/` processing-output rule and added `!test/fixtures/**/*.tiff`
+      and `!test/fixtures/**/*.tif` negations. Before this fix
+      `test/fixtures/processing/frames/` (29 files) and
+      `test/fixtures/tiff/*.tiff` existed only locally, so fixture-backed
+      frame-detector, TIFF, and browser smoke tests would fail on a fresh
+      clone.
+  - Validation 2026-07-03:
+    - `zig build test --summary all` passed `602/614` with 12 expected skips.
+    - `zig build --summary all` and `zig build -Dui=true --summary all`
+      passed.
+    - `zig build wasm-core-smoke wasm32-core-smoke wasm-worker-protocol-smoke
+      wasm-worker-runtime-smoke wasm-webapp-shell-smoke wasm-tiff-reader-smoke
+      wasm-webapp-static-smoke wasm-webapp --summary all` passed.
+    - `git diff --check` passed.

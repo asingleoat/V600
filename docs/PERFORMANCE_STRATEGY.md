@@ -1448,6 +1448,34 @@ Live native scan-worker smoke improved `native.scan.runtime_scan` from
 changing from `12130892 us` to override `0 us`; output remained `200x201`
 16-bit sRGB with the same requested/effective DPI `800/800`.
 
+## Browser/Wasm Crop And Export Benchmarks
+
+Browser selected-frame crop is material on real scan data and must not run on
+the UI thread. The benchmark harness is
+`zig build bench-wasm-webapp-crop-export --summary all`; it uses local
+gitignored scans when available and skips cleanly otherwise. To pin a scan, set
+`V600_WASM_BENCH_SCAN=scans/<file>.tiff`.
+
+Evidence from 2026-05-23:
+
+- `V600_WASM_BENCH_SCAN=scans/scan_0006_rgbir_800dpi.tiff zig build bench-wasm-webapp-crop-export --summary all`
+  used two real 35mm frames. Axis crop median was `2839 us`, rotated crop
+  median was `39365 us`, worker export crop timings were `43759 us` and
+  `38660 us`, export-all was `224686 us`, and the benchmark reported
+  `worker_crop_active=true`.
+- Direct 3200 DPI run:
+  `node test/wasm/webapp_crop_export_bench.mjs zig-out/webapp/v600-wasm-core.wasm --scan scans/scan_0004_rgbir_3200dpi.tiff --max-frames 1 --variant inv-only --crop-repeats 1`
+  loaded RGB `5120x24125`, benchmarked one full-resolution `3063x4600`
+  detected frame, measured axis crop `32838 us`, rotated crop `624732 us`,
+  preview `worker.crop-rgb16=622467 us`, export
+  `worker.crop-rgb16=667572 us`, export total `1572892 us`, and crop share
+  `0.397`.
+
+Decision: selected-frame RGB16 crop now runs inside the browser Worker for
+`process-preview` and `process-export`. Do not move it into the freestanding
+Wasm core until a refreshed benchmark proves worker-side JS crop remains a
+bottleneck after the current worker-side IR-clean orchestration split.
+
 ## Required Evidence For Optimization Work
 
 - Capture before and after `bench-color` output in `plan.md`.

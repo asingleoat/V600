@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>V600 Web Processing</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div class="brand">V600</div>
+        <nav class="tabs" aria-label="Workspace">
+          <button class="tab-button" type="button" data-tab-target="scan" aria-selected="false">Scan</button>
+          <button class="tab-button" type="button" data-tab-target="process" aria-selected="true">Process</button>
+          <button class="tab-button" type="button" data-tab-target="gallery" aria-selected="false">Gallery</button>
+        </nav>
+      </header>
+
+      <section id="tab-scan" class="tab-panel scan-placeholder" data-tab-panel="scan" hidden>
+        <div class="placeholder-panel">
+          <h1>Scan</h1>
+          <p>Scanner control is not available in this browser build.</p>
+        </div>
+      </section>
+
+      <section id="tab-process" class="tab-panel process-layout" data-tab-panel="process">
+        <aside class="control-panel">
+          <section class="control-section image-section">
+            <h2>Image</h2>
+            <label>
+              Input
+              <input id="file" type="file" accept=".tif,.tiff,.rgb16,.raw,application/octet-stream">
+            </label>
+            <div class="control-grid compact">
+              <label>
+                Width
+                <input id="width" type="number" min="1" step="1" value="2">
+              </label>
+              <label>
+                Height
+                <input id="height" type="number" min="1" step="1" value="2">
+              </label>
+            </div>
+          </section>
+
+          <section class="control-section frame-section">
+            <h2>Frame</h2>
+            <div class="control-grid">
+              <label>
+                X
+                <input id="frame-x" type="number" min="0" step="1" value="0">
+              </label>
+              <label>
+                Y
+                <input id="frame-y" type="number" min="0" step="1" value="0">
+              </label>
+              <label>
+                W
+                <input id="frame-w" type="number" min="1" step="1" value="2">
+              </label>
+              <label>
+                H
+                <input id="frame-h" type="number" min="1" step="1" value="2">
+              </label>
+              <label>
+                Angle
+                <input id="frame-angle" type="number" step="0.001" value="0">
+              </label>
+              <label>
+                Detected
+                <select id="detected-frame">
+                  <option value="-1">Manual</option>
+                </select>
+              </label>
+            </div>
+            <div class="control-grid compact">
+              <label>
+                Format
+                <select id="detect-format">
+                  <option value="35mm">35mm</option>
+                  <option value="645">645</option>
+                  <option value="6x6">6x6</option>
+                  <option value="6x7">6x7</option>
+                  <option value="6x9">6x9</option>
+                </select>
+              </label>
+              <label>
+                Frames
+                <input id="detect-frames" type="number" min="0" step="1" value="0">
+              </label>
+            </div>
+            <button id="auto-detect" type="button">Auto Detect</button>
+          </section>
+
+          <section class="control-section render-section">
+            <h2>Render</h2>
+            <label>
+              Stock
+              <select id="stock">
+                <option value="0">Identity</option>
+                <option value="1">Kodak Gold</option>
+                <option value="2">Kodak Portra</option>
+              </select>
+            </label>
+            <div class="control-grid">
+              <label>
+                Dmin R
+                <input id="dmin-r" type="number" step="0.001" value="0.05">
+              </label>
+              <label>
+                Dmin G
+                <input id="dmin-g" type="number" step="0.001" value="0.06">
+              </label>
+              <label>
+                Dmin B
+                <input id="dmin-b" type="number" step="0.001" value="0.07">
+              </label>
+              <label>
+                Contrast
+                <input id="contrast" type="number" step="0.05" value="1.4">
+              </label>
+              <label>
+                Curve
+                <input id="curve-k" type="number" step="0.1" value="5.0">
+              </label>
+              <label>
+                Lo %
+                <input id="percentile-lo" type="number" step="0.1" value="0.5">
+              </label>
+              <label>
+                Hi %
+                <input id="percentile-hi" type="number" step="0.1" value="99.5">
+              </label>
+              <label>
+                Exposure
+                <input id="exposure" type="number" step="0.1" value="0">
+              </label>
+              <label>
+                Temp
+                <input id="color-temp" type="number" step="0.1" value="0">
+              </label>
+              <label>
+                Tint
+                <input id="color-tint" type="number" step="0.1" value="0">
+              </label>
+              <label>
+                Percentile cap
+                <input id="sample-limit" type="number" min="1" step="1" value="16384">
+              </label>
+              <label>
+                Preview px
+                <input id="preview-max-px" type="number" min="65536" step="65536" value="2000000">
+              </label>
+            </div>
+            <button id="update-preview" type="button">Update Preview</button>
+          </section>
+
+          <section class="control-section export-section">
+            <h2>Export</h2>
+            <label class="checkbox-label">
+              <input id="export-ir-neg" type="checkbox">
+              IR negative
+            </label>
+            <label class="checkbox-label">
+              <input id="export-ir-inv" type="checkbox" checked>
+              IR inverted
+            </label>
+            <label class="checkbox-label">
+              <input id="export-inv-only" type="checkbox">
+              Inverted only
+            </label>
+            <label class="checkbox-label">
+              <input id="export-all-frames" type="checkbox">
+              All frames
+            </label>
+            <button id="export-selected" type="button">Export Selected</button>
+          </section>
+        </aside>
+
+        <section class="workspace">
+          <div class="canvas-stack">
+            <canvas id="preview" width="2" height="2"></canvas>
+            <div id="frame-overlay" class="frame-overlay" aria-hidden="true"></div>
+            <div id="selection-overlay" class="selection-overlay" hidden></div>
+          </div>
+        </section>
+      </section>
+
+      <section id="tab-gallery" class="tab-panel gallery-panel" data-tab-panel="gallery" hidden>
+        <header class="gallery-header">
+          <h1>Gallery</h1>
+          <button id="clear-gallery" type="button">Clear</button>
+        </header>
+        <p id="gallery-empty" class="empty-state">No exports yet.</p>
+        <div id="gallery-list" class="gallery-list"></div>
+      </section>
+
+      <footer class="statusbar">
+        <span id="status">Ready</span>
+        <span id="timing"></span>
+      </footer>
+    </main>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>
