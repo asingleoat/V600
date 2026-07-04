@@ -213,3 +213,33 @@ against the emitted Wasm core. The runtime smoke verifies:
   concatenated main-thread buffer copy;
 - invalid stock errors are recoverable protocol errors;
 - cancellation is acknowledged through the protocol.
+
+## Lockstep-Critical Determinism Contracts
+
+Some browser-side JavaScript intentionally reproduces native behavior that is
+not itself behind the Wasm boundary. These pieces are lockstep-critical: a
+change on either side without the other breaks caching or grain
+reproducibility, so they must only change together with their counterpart and
+their covering smokes.
+
+- Grain-noise sizing: `requiredInpaintNoiseSamples` in `web/geometry.mjs`
+  labels 8-connected mask components and pads their bounding boxes exactly
+  like the native `requiredInpaintNoiseLen`/`labelMaskComponents8`/
+  `addClampedLimit` path in `src/processing/ir.zig`. If the sizes disagree,
+  `process-ir-inpaint` rejects the noise buffer as invalid.
+- Grain-noise generation: captured-noise runs use caller-provided `Float64`
+  buffers hashed into the cache key; seeded runs use the worker's FNV-1a
+  seed hash plus mulberry32-style generator and the Box-Muller transform in
+  `web/geometry.mjs` `generateStandardNormalNoise`. Seeded outputs must stay
+  byte-identical for a given `noise_seed`, which the shell smoke asserts.
+- Dmin estimation: `computeDminFromRgb16` mirrors the Python
+  `estimate_dmin` fallback-percentile path (density conversion, numpy-style
+  linear percentile interpolation). The shell smoke replays the native
+  `dmin-percentile-25` oracle fixture against the browser entry point within
+  a u16-quantization tolerance.
+- Cache-key canonicalization: browser cache keys are canonical-JSON sha256
+  strings pinned by exact hash vectors in the worker protocol smoke. The
+  native UI process cache uses in-memory structural keys
+  (`src/ui/process_cache.zig`), so there is no byte-level native key to
+  compare against; the shared contract is that both sides key on the same
+  state inputs, tracked by the cache-key field tables above.

@@ -236,6 +236,32 @@ try {
   assert.equal(firstDetectedSelection.angle, frameDetectResult.frames[0].angle);
   assert.equal(firstDetectedSelection.x, firstDetectedSelection.cx - firstDetectedSelection.w / 2.0);
 
+  const dminFixture = JSON.parse(fs.readFileSync("test/fixtures/processing/numeric/dmin-percentile-25.json", "utf8"));
+  const [dminPixels, dminChannels] = dminFixture.shape;
+  assert.equal(dminChannels, 3);
+  const dminRaw = new Uint16Array(dminFixture.input.length);
+  for (let index = 0; index < dminFixture.input.length; index += 1) {
+    dminRaw[index] = Math.round(65535.0 * Math.pow(10.0, -dminFixture.input[index]));
+  }
+  const dminActual = computeDminFromRgb16(
+    dminRaw.buffer.slice(dminRaw.byteOffset, dminRaw.byteOffset + dminRaw.byteLength),
+    { width: 1, height: dminPixels, dpi: null },
+    null,
+    { percentile: 25.0 },
+  );
+  // Shared-core contract: the browser Dmin estimator against the Python
+  // estimate_dmin fallback-percentile oracle fixture. The fixture records
+  // density-domain inputs; converting them to u16 transmittance samples for
+  // the browser entry point quantizes each density by at most
+  // log10(s / (s - 0.5)) ~= 3.4e-4 at the smallest sample, so the native
+  // 1e-6 fixture tolerance widens to 5e-4 here.
+  for (let channel = 0; channel < 3; channel += 1) {
+    assert.ok(
+      Math.abs(dminActual[channel] - dminFixture.expected[channel]) <= 5.0e-4,
+      `dmin channel ${channel}: ${dminActual[channel]} vs oracle ${dminFixture.expected[channel]}`,
+    );
+  }
+
   const uniformDminRaw = new Uint16Array([
     32768, 16384, 8192,
     32768, 16384, 8192,
