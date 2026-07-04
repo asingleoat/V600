@@ -1,5 +1,88 @@
 const std = @import("std");
 
+const opencv_object_command = "c++ -std=c++17 -fPIC -fno-exceptions $(pkg-config --cflags opencv4) -c \"$1\" -o \"$2\"";
+
+const NativeObjectSpec = struct {
+    command: []const u8,
+    label: []const u8,
+    source: []const u8,
+    output: []const u8,
+};
+
+const root_native_objects = [_]NativeObjectSpec{
+    .{ .command = opencv_object_command, .label = "compile-opencv-ecc", .source = "src/processing/opencv_ecc.cpp", .output = "opencv_ecc.o" },
+    .{ .command = opencv_object_command, .label = "compile-opencv-ir", .source = "src/processing/opencv_ir.cpp", .output = "opencv_ir.o" },
+    .{ .command = opencv_object_command, .label = "compile-opencv-preview", .source = "src/processing/opencv_preview.cpp", .output = "opencv_preview.o" },
+    .{ .command = "cc -std=c99 -fPIC $(pkg-config --cflags libjpeg) -c \"$1\" -o \"$2\"", .label = "compile-jpeg-encode", .source = "src/processing/jpeg_encode.c", .output = "jpeg_encode.o" },
+    .{ .command = "cc -std=c99 -fPIC -c \"$1\" -o \"$2\"", .label = "compile-superlu-sparse", .source = "src/processing/superlu_sparse.c", .output = "superlu_sparse.o" },
+};
+
+const UiSmokeSpec = struct {
+    arg: []const u8,
+    name: []const u8,
+    description: []const u8,
+    clear_env: bool = false,
+};
+
+const ui_smoke_steps = [_]UiSmokeSpec{
+    .{ .arg = "--smoke", .name = "ui-smoke", .description = "Run one native UI frame and exit" },
+    .{ .arg = "--scanner-connect-smoke", .name = "native-scanner-connect-smoke", .description = "Verify native scanner startup begins in connecting state" },
+    .{ .arg = "--process-worker-smoke", .name = "native-process-worker-smoke", .description = "Verify native Process worker keeps the UI responsive for a frame" },
+    .{ .arg = "--process-dump-smoke", .name = "native-process-dump-smoke", .description = "Verify native Process selection dump diagnostics" },
+    .{ .arg = "--process-export-smoke", .name = "native-process-export-smoke", .description = "Verify native Process export flow starts from the UI" },
+    .{ .arg = "--preview-worker-smoke", .name = "native-preview-worker-smoke-skip", .description = "Verify native preview hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .arg = "--scan-worker-smoke", .name = "native-scan-worker-smoke-skip", .description = "Verify native scan hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
+};
+
+const ScannerSmokeSpec = struct {
+    args: []const []const u8,
+    name: []const u8,
+    description: []const u8,
+    clear_env: bool = false,
+};
+
+const scanner_smoke_steps = [_]ScannerSmokeSpec{
+    .{ .args = &.{ "scanner", "smoke" }, .name = "scanner-smoke", .description = "Run gated scanner hardware smoke test" },
+    .{ .args = &.{ "scanner", "smoke" }, .name = "scanner-smoke-skip", .description = "Verify scanner hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .args = &.{ "scanner", "processing-smoke" }, .name = "scanner-processing-smoke-skip", .description = "Verify scanner processing smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .args = &.{ "scanner", "macos-smoke" }, .name = "macos-scanner-smoke-skip", .description = "Verify future macOS scanner hardware smoke skips without V600_MACOS_HARDWARE_SMOKE=1", .clear_env = true },
+};
+
+const WasmNodeSpec = struct {
+    script: []const u8,
+    name: []const u8,
+    description: []const u8,
+    artifact: enum { none, wasm64, wasm32 } = .none,
+};
+
+const wasm_node_steps = [_]WasmNodeSpec{
+    .{ .script = "test/wasm/wasm_core_smoke.mjs", .name = "wasm32-core-smoke", .description = "Load and execute the optional wasm32 compatibility processing core with Node", .artifact = .wasm32 },
+    .{ .script = "test/wasm/wasm_core_smoke.mjs", .name = "wasm-core-smoke", .description = "Load and execute the browser WebAssembly processing core with Node", .artifact = .wasm64 },
+    .{ .script = "test/wasm/worker_protocol_smoke.mjs", .name = "wasm-worker-protocol-smoke", .description = "Verify the browser worker protocol and cache-key boundary" },
+    .{ .script = "test/wasm/worker_runtime_smoke.mjs", .name = "wasm-worker-runtime-smoke", .description = "Run the browser worker runtime against the Wasm preview core", .artifact = .wasm64 },
+    .{ .script = "test/wasm/webapp_shell_smoke.mjs", .name = "wasm-webapp-shell-smoke", .description = "Run the browser processing shell orchestration against the Wasm worker", .artifact = .wasm64 },
+    .{ .script = "test/wasm/webapp_crop_export_bench.mjs", .name = "bench-wasm-webapp-crop-export", .description = "Benchmark browser rotated crop/export on local scan data when available", .artifact = .wasm64 },
+    .{ .script = "test/wasm/tiff_reader_smoke.mjs", .name = "wasm-tiff-reader-smoke", .description = "Verify browser-side TIFF page import against committed fixtures" },
+};
+
+const WebgpuProgramSpec = struct {
+    step_name: []const u8,
+    description: []const u8,
+    exe_name: []const u8,
+    source: []const u8,
+    gpu_env_pair: bool = false,
+};
+
+const webgpu_programs = [_]WebgpuProgramSpec{
+    .{ .step_name = "webgpu-smoke", .description = "Run optional WebGPU adapter/device smoke test", .exe_name = "v600-webgpu-smoke", .source = "src/tools/webgpu_smoke.zig" },
+    .{ .step_name = "webgpu-sigmoid-compare", .description = "Compare the apply_sigmoid WGSL kernel against the CPU reference", .exe_name = "v600-webgpu-sigmoid-compare", .source = "src/tools/webgpu_sigmoid_compare.zig" },
+    .{ .step_name = "webgpu-invert-negative-compare", .description = "Compare the invert_negative WGSL kernel against the Zig CPU oracle", .exe_name = "v600-webgpu-invert-negative-compare", .source = "src/tools/webgpu_invert_negative_compare.zig" },
+    .{ .step_name = "webgpu-sigmoid-runtime-smoke", .description = "Verify V600_PROCESSING_GPU selects the apply_sigmoid backend explicitly", .exe_name = "v600-webgpu-sigmoid-runtime-smoke", .source = "src/tools/webgpu_sigmoid_runtime_smoke.zig", .gpu_env_pair = true },
+    .{ .step_name = "webgpu-invert-negative-runtime-smoke", .description = "Verify V600_PROCESSING_GPU selects the invert_negative backend explicitly", .exe_name = "v600-webgpu-invert-negative-runtime-smoke", .source = "src/tools/webgpu_invert_negative_runtime_smoke.zig", .gpu_env_pair = true },
+    .{ .step_name = "bench-webgpu-sigmoid", .description = "Benchmark apply_sigmoid CPU vs WebGPU at realistic sizes", .exe_name = "bench-webgpu-sigmoid", .source = "src/benchmarks/webgpu_sigmoid.zig" },
+    .{ .step_name = "bench-webgpu-invert-negative", .description = "Benchmark invert_negative CPU vs WebGPU at realistic sizes", .exe_name = "bench-webgpu-invert-negative", .source = "src/benchmarks/webgpu_invert_negative.zig" },
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -31,55 +114,9 @@ pub fn build(b: *std.Build) void {
         root_module.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
     }
 
-    const ecc_obj_cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "c++ -std=c++17 -fPIC -fno-exceptions $(pkg-config --cflags opencv4) -c \"$1\" -o \"$2\"",
-        "compile-opencv-ecc",
-    });
-    ecc_obj_cmd.addFileArg(b.path("src/processing/opencv_ecc.cpp"));
-    const ecc_obj = ecc_obj_cmd.addOutputFileArg("opencv_ecc.o");
-    root_module.addObjectFile(ecc_obj);
-
-    const ir_obj_cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "c++ -std=c++17 -fPIC -fno-exceptions $(pkg-config --cflags opencv4) -c \"$1\" -o \"$2\"",
-        "compile-opencv-ir",
-    });
-    ir_obj_cmd.addFileArg(b.path("src/processing/opencv_ir.cpp"));
-    const ir_obj = ir_obj_cmd.addOutputFileArg("opencv_ir.o");
-    root_module.addObjectFile(ir_obj);
-
-    const preview_obj_cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "c++ -std=c++17 -fPIC -fno-exceptions $(pkg-config --cflags opencv4) -c \"$1\" -o \"$2\"",
-        "compile-opencv-preview",
-    });
-    preview_obj_cmd.addFileArg(b.path("src/processing/opencv_preview.cpp"));
-    const preview_obj = preview_obj_cmd.addOutputFileArg("opencv_preview.o");
-    root_module.addObjectFile(preview_obj);
-
-    const jpeg_obj_cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "cc -std=c99 -fPIC $(pkg-config --cflags libjpeg) -c \"$1\" -o \"$2\"",
-        "compile-jpeg-encode",
-    });
-    jpeg_obj_cmd.addFileArg(b.path("src/processing/jpeg_encode.c"));
-    const jpeg_obj = jpeg_obj_cmd.addOutputFileArg("jpeg_encode.o");
-    root_module.addObjectFile(jpeg_obj);
-
-    const sparse_obj_cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "cc -std=c99 -fPIC -c \"$1\" -o \"$2\"",
-        "compile-superlu-sparse",
-    });
-    sparse_obj_cmd.addFileArg(b.path("src/processing/superlu_sparse.c"));
-    const sparse_obj = sparse_obj_cmd.addOutputFileArg("superlu_sparse.o");
-    root_module.addObjectFile(sparse_obj);
+    for (root_native_objects) |spec| {
+        root_module.addObjectFile(compileNativeObject(b, spec));
+    }
 
     const exe = b.addExecutable(.{
         .name = "v600-zig",
@@ -95,14 +132,12 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     if (enable_ui) {
-        const nuklear_obj_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "cc -std=c99 -fPIC $(pkg-config --cflags nuklear) -c \"$1\" -o \"$2\"",
-            "compile-nuklear",
+        const nuklear_obj = compileNativeObject(b, .{
+            .command = "cc -std=c99 -fPIC $(pkg-config --cflags nuklear) -c \"$1\" -o \"$2\"",
+            .label = "compile-nuklear",
+            .source = "src/ui/nuklear_impl.c",
+            .output = "nuklear_impl.o",
         });
-        nuklear_obj_cmd.addFileArg(b.path("src/ui/nuklear_impl.c"));
-        const nuklear_obj = nuklear_obj_cmd.addOutputFileArg("nuklear_impl.o");
 
         const ui_module = b.createModule(.{
             .root_source_file = b.path("src/ui/main.zig"),
@@ -131,133 +166,49 @@ pub fn build(b: *std.Build) void {
         const ui_run_step = b.step("run-ui", "Run the SDL3/Nuklear native UI");
         ui_run_step.dependOn(&ui_run_cmd.step);
 
-        const ui_smoke_cmd = b.addRunArtifact(ui_exe);
-        ui_smoke_cmd.addArg("--smoke");
-        const ui_smoke_step = b.step("ui-smoke", "Run one native UI frame and exit");
-        ui_smoke_step.dependOn(&ui_smoke_cmd.step);
-
-        const scanner_connect_smoke_cmd = b.addRunArtifact(ui_exe);
-        scanner_connect_smoke_cmd.addArg("--scanner-connect-smoke");
-        const scanner_connect_smoke_step = b.step("native-scanner-connect-smoke", "Verify native scanner startup begins in connecting state");
-        scanner_connect_smoke_step.dependOn(&scanner_connect_smoke_cmd.step);
-
-        const process_worker_smoke_cmd = b.addRunArtifact(ui_exe);
-        process_worker_smoke_cmd.addArg("--process-worker-smoke");
-        const process_worker_smoke_step = b.step("native-process-worker-smoke", "Verify native Process worker keeps the UI responsive for a frame");
-        process_worker_smoke_step.dependOn(&process_worker_smoke_cmd.step);
-
-        const process_dump_smoke_cmd = b.addRunArtifact(ui_exe);
-        process_dump_smoke_cmd.addArg("--process-dump-smoke");
-        const process_dump_smoke_step = b.step("native-process-dump-smoke", "Verify native Process selection dump diagnostics");
-        process_dump_smoke_step.dependOn(&process_dump_smoke_cmd.step);
-
-        const process_export_smoke_cmd = b.addRunArtifact(ui_exe);
-        process_export_smoke_cmd.addArg("--process-export-smoke");
-        const process_export_smoke_step = b.step("native-process-export-smoke", "Verify native Process export flow starts from the UI");
-        process_export_smoke_step.dependOn(&process_export_smoke_cmd.step);
-
-        const preview_worker_smoke_skip_cmd = b.addRunArtifact(ui_exe);
-        preview_worker_smoke_skip_cmd.clearEnvironment();
-        preview_worker_smoke_skip_cmd.addArg("--preview-worker-smoke");
-        const preview_worker_smoke_skip_step = b.step("native-preview-worker-smoke-skip", "Verify native preview hardware smoke skips without V600_HARDWARE_SMOKE=1");
-        preview_worker_smoke_skip_step.dependOn(&preview_worker_smoke_skip_cmd.step);
-
-        const scan_worker_smoke_skip_cmd = b.addRunArtifact(ui_exe);
-        scan_worker_smoke_skip_cmd.clearEnvironment();
-        scan_worker_smoke_skip_cmd.addArg("--scan-worker-smoke");
-        const scan_worker_smoke_skip_step = b.step("native-scan-worker-smoke-skip", "Verify native scan hardware smoke skips without V600_HARDWARE_SMOKE=1");
-        scan_worker_smoke_skip_step.dependOn(&scan_worker_smoke_skip_cmd.step);
+        for (ui_smoke_steps) |spec| {
+            const cmd = b.addRunArtifact(ui_exe);
+            if (spec.clear_env) cmd.clearEnvironment();
+            cmd.addArg(spec.arg);
+            const step = b.step(spec.name, spec.description);
+            step.dependOn(&cmd.step);
+        }
     }
 
     const wasm_build_options = b.addOptions();
     wasm_build_options.addOption(bool, "webgpu", false);
-    const wasm_target = b.resolveTargetQuery(.{
-        .cpu_arch = .wasm64,
-        .os_tag = .freestanding,
-    });
     const wasm_optimize: std.builtin.OptimizeMode = switch (optimize) {
         .Debug => .ReleaseFast,
         else => optimize,
     };
-    const wasm_core_module = b.createModule(.{
-        .root_source_file = b.path("src/wasm_core.zig"),
-        .target = wasm_target,
-        .optimize = wasm_optimize,
-        .single_threaded = true,
-    });
-    wasm_core_module.addOptions("build_options", wasm_build_options);
-    const wasm_core = b.addExecutable(.{
+    const wasm_core = addWasmCore(b, .{
         .name = "v600-wasm-core",
-        .root_module = wasm_core_module,
-    });
-    wasm_core.entry = .disabled;
-    wasm_core.rdynamic = true;
-    wasm_core.export_memory = true;
-    const install_wasm_core = b.addInstallArtifact(wasm_core, .{});
-    const wasm_core_step = b.step("wasm-core", "Build the dependency-free browser WebAssembly processing core");
-    wasm_core_step.dependOn(&install_wasm_core.step);
-
-    const wasm32_target = b.resolveTargetQuery(.{
-        .cpu_arch = .wasm32,
-        .os_tag = .freestanding,
-    });
-    const wasm32_core_module = b.createModule(.{
-        .root_source_file = b.path("src/wasm_core.zig"),
-        .target = wasm32_target,
+        .cpu_arch = .wasm64,
         .optimize = wasm_optimize,
-        .single_threaded = true,
+        .options = wasm_build_options,
+        .step_name = "wasm-core",
+        .step_description = "Build the dependency-free browser WebAssembly processing core",
     });
-    wasm32_core_module.addOptions("build_options", wasm_build_options);
-    const wasm32_core = b.addExecutable(.{
+    const wasm32_core = addWasmCore(b, .{
         .name = "v600-wasm-core32",
-        .root_module = wasm32_core_module,
+        .cpu_arch = .wasm32,
+        .optimize = wasm_optimize,
+        .options = wasm_build_options,
+        .step_name = "wasm32-core",
+        .step_description = "Build the optional wasm32 compatibility processing core",
     });
-    wasm32_core.entry = .disabled;
-    wasm32_core.rdynamic = true;
-    wasm32_core.export_memory = true;
-    const install_wasm32_core = b.addInstallArtifact(wasm32_core, .{});
-    const wasm32_core_step = b.step("wasm32-core", "Build the optional wasm32 compatibility processing core");
-    wasm32_core_step.dependOn(&install_wasm32_core.step);
 
-    const wasm32_core_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm32_core_smoke_cmd.addFileArg(b.path("test/wasm/wasm_core_smoke.mjs"));
-    wasm32_core_smoke_cmd.addFileArg(wasm32_core.getEmittedBin());
-    const wasm32_core_smoke_step = b.step("wasm32-core-smoke", "Load and execute the optional wasm32 compatibility processing core with Node");
-    wasm32_core_smoke_step.dependOn(&wasm32_core_smoke_cmd.step);
-
-    const wasm_core_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm_core_smoke_cmd.addFileArg(b.path("test/wasm/wasm_core_smoke.mjs"));
-    wasm_core_smoke_cmd.addFileArg(wasm_core.getEmittedBin());
-    const wasm_core_smoke_step = b.step("wasm-core-smoke", "Load and execute the browser WebAssembly processing core with Node");
-    wasm_core_smoke_step.dependOn(&wasm_core_smoke_cmd.step);
-
-    const wasm_worker_protocol_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm_worker_protocol_smoke_cmd.addFileArg(b.path("test/wasm/worker_protocol_smoke.mjs"));
-    const wasm_worker_protocol_smoke_step = b.step("wasm-worker-protocol-smoke", "Verify the browser worker protocol and cache-key boundary");
-    wasm_worker_protocol_smoke_step.dependOn(&wasm_worker_protocol_smoke_cmd.step);
-
-    const wasm_worker_runtime_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm_worker_runtime_smoke_cmd.addFileArg(b.path("test/wasm/worker_runtime_smoke.mjs"));
-    wasm_worker_runtime_smoke_cmd.addFileArg(wasm_core.getEmittedBin());
-    const wasm_worker_runtime_smoke_step = b.step("wasm-worker-runtime-smoke", "Run the browser worker runtime against the Wasm preview core");
-    wasm_worker_runtime_smoke_step.dependOn(&wasm_worker_runtime_smoke_cmd.step);
-
-    const wasm_webapp_shell_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm_webapp_shell_smoke_cmd.addFileArg(b.path("test/wasm/webapp_shell_smoke.mjs"));
-    wasm_webapp_shell_smoke_cmd.addFileArg(wasm_core.getEmittedBin());
-    const wasm_webapp_shell_smoke_step = b.step("wasm-webapp-shell-smoke", "Run the browser processing shell orchestration against the Wasm worker");
-    wasm_webapp_shell_smoke_step.dependOn(&wasm_webapp_shell_smoke_cmd.step);
-
-    const wasm_webapp_crop_export_bench_cmd = b.addSystemCommand(&.{"node"});
-    wasm_webapp_crop_export_bench_cmd.addFileArg(b.path("test/wasm/webapp_crop_export_bench.mjs"));
-    wasm_webapp_crop_export_bench_cmd.addFileArg(wasm_core.getEmittedBin());
-    const wasm_webapp_crop_export_bench_step = b.step("bench-wasm-webapp-crop-export", "Benchmark browser rotated crop/export on local scan data when available");
-    wasm_webapp_crop_export_bench_step.dependOn(&wasm_webapp_crop_export_bench_cmd.step);
-
-    const wasm_tiff_reader_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm_tiff_reader_smoke_cmd.addFileArg(b.path("test/wasm/tiff_reader_smoke.mjs"));
-    const wasm_tiff_reader_smoke_step = b.step("wasm-tiff-reader-smoke", "Verify browser-side TIFF page import against committed fixtures");
-    wasm_tiff_reader_smoke_step.dependOn(&wasm_tiff_reader_smoke_cmd.step);
+    for (wasm_node_steps) |spec| {
+        const cmd = b.addSystemCommand(&.{"node"});
+        cmd.addFileArg(b.path(spec.script));
+        switch (spec.artifact) {
+            .none => {},
+            .wasm64 => cmd.addFileArg(wasm_core.getEmittedBin()),
+            .wasm32 => cmd.addFileArg(wasm32_core.getEmittedBin()),
+        }
+        const step = b.step(spec.name, spec.description);
+        step.dependOn(&cmd.step);
+    }
 
     const install_webapp_assets = b.addInstallDirectory(.{
         .source_dir = b.path("web"),
@@ -281,166 +232,33 @@ pub fn build(b: *std.Build) void {
     const wasm_webapp_static_smoke_step = b.step("wasm-webapp-static-smoke", "Serve-check the staged static browser webapp");
     wasm_webapp_static_smoke_step.dependOn(&wasm_webapp_static_smoke_cmd.step);
 
-    const webgpu_smoke_step = b.step("webgpu-smoke", "Run optional WebGPU adapter/device smoke test");
-    const webgpu_sigmoid_compare_step = b.step("webgpu-sigmoid-compare", "Compare the apply_sigmoid WGSL kernel against the CPU reference");
-    const webgpu_invert_negative_compare_step = b.step("webgpu-invert-negative-compare", "Compare the invert_negative WGSL kernel against the Zig CPU oracle");
-    const webgpu_sigmoid_runtime_smoke_step = b.step("webgpu-sigmoid-runtime-smoke", "Verify V600_PROCESSING_GPU selects the apply_sigmoid backend explicitly");
-    const webgpu_invert_negative_runtime_smoke_step = b.step("webgpu-invert-negative-runtime-smoke", "Verify V600_PROCESSING_GPU selects the invert_negative backend explicitly");
-    const bench_webgpu_sigmoid_step = b.step("bench-webgpu-sigmoid", "Benchmark apply_sigmoid CPU vs WebGPU at realistic sizes");
-    const bench_webgpu_invert_negative_step = b.step("bench-webgpu-invert-negative", "Benchmark invert_negative CPU vs WebGPU at realistic sizes");
+    var webgpu_steps: [webgpu_programs.len]*std.Build.Step = undefined;
+    for (webgpu_programs, 0..) |spec, index| {
+        webgpu_steps[index] = b.step(spec.step_name, spec.description);
+    }
     if (enable_webgpu) {
-        const webgpu_smoke = b.addExecutable(.{
-            .name = "v600-webgpu-smoke",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/tools/webgpu_smoke.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const webgpu_smoke_cmd = b.addRunArtifact(webgpu_smoke);
-        webgpu_smoke_step.dependOn(&webgpu_smoke_cmd.step);
-
-        const webgpu_sigmoid_compare = b.addExecutable(.{
-            .name = "v600-webgpu-sigmoid-compare",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/tools/webgpu_sigmoid_compare.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const webgpu_sigmoid_compare_cmd = b.addRunArtifact(webgpu_sigmoid_compare);
-        webgpu_sigmoid_compare_step.dependOn(&webgpu_sigmoid_compare_cmd.step);
-
-        const webgpu_invert_negative_compare = b.addExecutable(.{
-            .name = "v600-webgpu-invert-negative-compare",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/tools/webgpu_invert_negative_compare.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const webgpu_invert_negative_compare_cmd = b.addRunArtifact(webgpu_invert_negative_compare);
-        webgpu_invert_negative_compare_step.dependOn(&webgpu_invert_negative_compare_cmd.step);
-
-        const webgpu_sigmoid_runtime_smoke = b.addExecutable(.{
-            .name = "v600-webgpu-sigmoid-runtime-smoke",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/tools/webgpu_sigmoid_runtime_smoke.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const webgpu_sigmoid_runtime_cpu_cmd = b.addRunArtifact(webgpu_sigmoid_runtime_smoke);
-        const webgpu_sigmoid_runtime_gpu_cmd = b.addRunArtifact(webgpu_sigmoid_runtime_smoke);
-        webgpu_sigmoid_runtime_gpu_cmd.setEnvironmentVariable("V600_PROCESSING_GPU", "1");
-        webgpu_sigmoid_runtime_smoke_step.dependOn(&webgpu_sigmoid_runtime_cpu_cmd.step);
-        webgpu_sigmoid_runtime_smoke_step.dependOn(&webgpu_sigmoid_runtime_gpu_cmd.step);
-
-        const webgpu_invert_negative_runtime_smoke = b.addExecutable(.{
-            .name = "v600-webgpu-invert-negative-runtime-smoke",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/tools/webgpu_invert_negative_runtime_smoke.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const webgpu_invert_negative_runtime_cpu_cmd = b.addRunArtifact(webgpu_invert_negative_runtime_smoke);
-        const webgpu_invert_negative_runtime_gpu_cmd = b.addRunArtifact(webgpu_invert_negative_runtime_smoke);
-        webgpu_invert_negative_runtime_gpu_cmd.setEnvironmentVariable("V600_PROCESSING_GPU", "1");
-        webgpu_invert_negative_runtime_smoke_step.dependOn(&webgpu_invert_negative_runtime_cpu_cmd.step);
-        webgpu_invert_negative_runtime_smoke_step.dependOn(&webgpu_invert_negative_runtime_gpu_cmd.step);
-
-        const bench_webgpu_sigmoid = b.addExecutable(.{
-            .name = "bench-webgpu-sigmoid",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/benchmarks/webgpu_sigmoid.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const bench_webgpu_sigmoid_cmd = b.addRunArtifact(bench_webgpu_sigmoid);
-        bench_webgpu_sigmoid_step.dependOn(&bench_webgpu_sigmoid_cmd.step);
-
-        const bench_webgpu_invert_negative = b.addExecutable(.{
-            .name = "bench-webgpu-invert-negative",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/benchmarks/webgpu_invert_negative.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "v600", .module = root_module },
-                },
-            }),
-        });
-        const bench_webgpu_invert_negative_cmd = b.addRunArtifact(bench_webgpu_invert_negative);
-        bench_webgpu_invert_negative_step.dependOn(&bench_webgpu_invert_negative_cmd.step);
+        for (webgpu_programs, 0..) |spec, index| {
+            const program = addV600Program(b, root_module, target, optimize, spec.exe_name, spec.source);
+            if (spec.gpu_env_pair) {
+                const cpu_cmd = b.addRunArtifact(program);
+                const gpu_cmd = b.addRunArtifact(program);
+                gpu_cmd.setEnvironmentVariable("V600_PROCESSING_GPU", "1");
+                webgpu_steps[index].dependOn(&cpu_cmd.step);
+                webgpu_steps[index].dependOn(&gpu_cmd.step);
+            } else {
+                const run_cmd = b.addRunArtifact(program);
+                webgpu_steps[index].dependOn(&run_cmd.step);
+            }
+        }
     } else {
-        const webgpu_smoke_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'webgpu-smoke requires zig build -Dwebgpu=true webgpu-smoke' >&2; exit 1",
-        });
-        webgpu_smoke_step.dependOn(&webgpu_smoke_missing_cmd.step);
-
-        const webgpu_sigmoid_compare_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'webgpu-sigmoid-compare requires zig build -Dwebgpu=true webgpu-sigmoid-compare' >&2; exit 1",
-        });
-        webgpu_sigmoid_compare_step.dependOn(&webgpu_sigmoid_compare_missing_cmd.step);
-
-        const webgpu_invert_negative_compare_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'webgpu-invert-negative-compare requires zig build -Dwebgpu=true webgpu-invert-negative-compare' >&2; exit 1",
-        });
-        webgpu_invert_negative_compare_step.dependOn(&webgpu_invert_negative_compare_missing_cmd.step);
-
-        const webgpu_sigmoid_runtime_smoke_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'webgpu-sigmoid-runtime-smoke requires zig build -Dwebgpu=true webgpu-sigmoid-runtime-smoke' >&2; exit 1",
-        });
-        webgpu_sigmoid_runtime_smoke_step.dependOn(&webgpu_sigmoid_runtime_smoke_missing_cmd.step);
-
-        const webgpu_invert_negative_runtime_smoke_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'webgpu-invert-negative-runtime-smoke requires zig build -Dwebgpu=true webgpu-invert-negative-runtime-smoke' >&2; exit 1",
-        });
-        webgpu_invert_negative_runtime_smoke_step.dependOn(&webgpu_invert_negative_runtime_smoke_missing_cmd.step);
-
-        const bench_webgpu_sigmoid_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'bench-webgpu-sigmoid requires zig build -Dwebgpu=true bench-webgpu-sigmoid' >&2; exit 1",
-        });
-        bench_webgpu_sigmoid_step.dependOn(&bench_webgpu_sigmoid_missing_cmd.step);
-
-        const bench_webgpu_invert_negative_missing_cmd = b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            "echo 'bench-webgpu-invert-negative requires zig build -Dwebgpu=true bench-webgpu-invert-negative' >&2; exit 1",
-        });
-        bench_webgpu_invert_negative_step.dependOn(&bench_webgpu_invert_negative_missing_cmd.step);
+        for (webgpu_programs, 0..) |spec, index| {
+            const missing_cmd = b.addSystemCommand(&.{
+                "sh",
+                "-c",
+                b.fmt("echo '{s} requires zig build -Dwebgpu=true {s}' >&2; exit 1", .{ spec.step_name, spec.step_name }),
+            });
+            webgpu_steps[index].dependOn(&missing_cmd.step);
+        }
     }
 
     const run_cmd = b.addRunArtifact(exe);
@@ -450,55 +268,20 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the V600 Zig CLI");
     run_step.dependOn(&run_cmd.step);
 
-    const smoke_cmd = b.addRunArtifact(exe);
-    smoke_cmd.addArgs(&.{ "scanner", "smoke" });
-    const smoke_step = b.step("scanner-smoke", "Run gated scanner hardware smoke test");
-    smoke_step.dependOn(&smoke_cmd.step);
+    for (scanner_smoke_steps) |spec| {
+        const cmd = b.addRunArtifact(exe);
+        if (spec.clear_env) cmd.clearEnvironment();
+        cmd.addArgs(spec.args);
+        const step = b.step(spec.name, spec.description);
+        step.dependOn(&cmd.step);
+    }
 
-    const scanner_smoke_skip_cmd = b.addRunArtifact(exe);
-    scanner_smoke_skip_cmd.clearEnvironment();
-    scanner_smoke_skip_cmd.addArgs(&.{ "scanner", "smoke" });
-    const scanner_smoke_skip_step = b.step("scanner-smoke-skip", "Verify scanner hardware smoke skips without V600_HARDWARE_SMOKE=1");
-    scanner_smoke_skip_step.dependOn(&scanner_smoke_skip_cmd.step);
-
-    const scanner_processing_smoke_skip_cmd = b.addRunArtifact(exe);
-    scanner_processing_smoke_skip_cmd.clearEnvironment();
-    scanner_processing_smoke_skip_cmd.addArgs(&.{ "scanner", "processing-smoke" });
-    const scanner_processing_smoke_skip_step = b.step("scanner-processing-smoke-skip", "Verify scanner processing smoke skips without V600_HARDWARE_SMOKE=1");
-    scanner_processing_smoke_skip_step.dependOn(&scanner_processing_smoke_skip_cmd.step);
-
-    const macos_scanner_smoke_skip_cmd = b.addRunArtifact(exe);
-    macos_scanner_smoke_skip_cmd.clearEnvironment();
-    macos_scanner_smoke_skip_cmd.addArgs(&.{ "scanner", "macos-smoke" });
-    const macos_scanner_smoke_skip_step = b.step("macos-scanner-smoke-skip", "Verify future macOS scanner hardware smoke skips without V600_MACOS_HARDWARE_SMOKE=1");
-    macos_scanner_smoke_skip_step.dependOn(&macos_scanner_smoke_skip_cmd.step);
-
-    const bench_color = b.addExecutable(.{
-        .name = "bench-color-paths",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/color_paths.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "v600", .module = root_module },
-            },
-        }),
-    });
+    const bench_color = addV600Program(b, root_module, target, optimize, "bench-color-paths", "src/benchmarks/color_paths.zig");
     const bench_color_cmd = b.addRunArtifact(bench_color);
     const bench_color_step = b.step("bench-color", "Run headless processing color-path benchmarks");
     bench_color_step.dependOn(&bench_color_cmd.step);
 
-    const bench_render_curves = b.addExecutable(.{
-        .name = "bench-render-curves",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/render_curves.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "v600", .module = root_module },
-            },
-        }),
-    });
+    const bench_render_curves = addV600Program(b, root_module, target, optimize, "bench-render-curves", "src/benchmarks/render_curves.zig");
     const bench_render_curves_cmd = b.addRunArtifact(bench_render_curves);
     if (b.args) |args| {
         bench_render_curves_cmd.addArgs(args);
@@ -511,32 +294,12 @@ pub fn build(b: *std.Build) void {
     const bench_gpu_readiness_step = b.step("bench-gpu-readiness", "Run CPU benchmark coverage gate before GPU backend work");
     bench_gpu_readiness_step.dependOn(&bench_gpu_readiness_cmd.step);
 
-    const bench_ir_inpaint = b.addExecutable(.{
-        .name = "bench-ir-inpaint",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/ir_inpaint.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "v600", .module = root_module },
-            },
-        }),
-    });
+    const bench_ir_inpaint = addV600Program(b, root_module, target, optimize, "bench-ir-inpaint", "src/benchmarks/ir_inpaint.zig");
     const bench_ir_inpaint_cmd = b.addRunArtifact(bench_ir_inpaint);
     const bench_ir_inpaint_step = b.step("bench-ir-inpaint", "Run headless IR biharmonic inpaint benchmark");
     bench_ir_inpaint_step.dependOn(&bench_ir_inpaint_cmd.step);
 
-    const bench_processing_commands = b.addExecutable(.{
-        .name = "bench-processing-commands",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/processing_commands.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "v600", .module = root_module },
-            },
-        }),
-    });
+    const bench_processing_commands = addV600Program(b, root_module, target, optimize, "bench-processing-commands", "src/benchmarks/processing_commands.zig");
     const bench_processing_commands_cmd = b.addRunArtifact(bench_processing_commands);
     if (b.args) |args| {
         bench_processing_commands_cmd.addArgs(args);
@@ -561,6 +324,72 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run Zig unit tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_wasm_core_tests.step);
+}
+
+fn compileNativeObject(b: *std.Build, spec: NativeObjectSpec) std.Build.LazyPath {
+    const cmd = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        spec.command,
+        spec.label,
+    });
+    cmd.addFileArg(b.path(spec.source));
+    return cmd.addOutputFileArg(spec.output);
+}
+
+const WasmCoreSpec = struct {
+    name: []const u8,
+    cpu_arch: std.Target.Cpu.Arch,
+    optimize: std.builtin.OptimizeMode,
+    options: *std.Build.Step.Options,
+    step_name: []const u8,
+    step_description: []const u8,
+};
+
+fn addWasmCore(b: *std.Build, spec: WasmCoreSpec) *std.Build.Step.Compile {
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = spec.cpu_arch,
+        .os_tag = .freestanding,
+    });
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/wasm_core.zig"),
+        .target = wasm_target,
+        .optimize = spec.optimize,
+        .single_threaded = true,
+    });
+    module.addOptions("build_options", spec.options);
+    const core = b.addExecutable(.{
+        .name = spec.name,
+        .root_module = module,
+    });
+    core.entry = .disabled;
+    core.rdynamic = true;
+    core.export_memory = true;
+    const install = b.addInstallArtifact(core, .{});
+    const step = b.step(spec.step_name, spec.step_description);
+    step.dependOn(&install.step);
+    return core;
+}
+
+fn addV600Program(
+    b: *std.Build,
+    root_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    source: []const u8,
+) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "v600", .module = root_module },
+            },
+        }),
+    });
 }
 
 fn requiredEnvPath(b: *std.Build, name: []const u8) []const u8 {
