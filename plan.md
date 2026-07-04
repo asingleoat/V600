@@ -11197,12 +11197,45 @@ Chromium-only, Windows requires WinUSB driver replacement, macOS fights the
 ICA subsystem for the device, and it would be a third scanner backend to
 maintain against real hardware risk.
 
-- [ ] 15.1 Build the `v600-zig serve` companion server: loopback HTTP server
+- [x] 15.1 Build the `v600-zig serve` companion server: loopback HTTP server
   over `std.Io.net` + `std.http.Server`, static webapp serving, the endpoint
   contract above, an in-memory job event sink rendering the existing
   `v600.scanner.event.v1` lines, scan execution on a worker thread through
   `scanner.linux.Runtime`, a `--scanimage` override for hardware-free
   testing, a `companion-smoke` build step, and `docs/SCANNER_COMPANION.md`.
+  - Completed 2026-07-04:
+    - Added `src/companion.zig` with the loopback `std.Io.net` listener,
+      `std.http.Server` per-connection handling, route table, static webapp
+      serving with traversal rejection, JSON scan-request parsing with the
+      CLI's scan defaults, a single-job state machine guarded by the same
+      minimal spinlock shape as `events.zig` (`std.Io.Mutex` needs an `io`
+      parameter the sink callback cannot provide), an event sink that
+      renders buffered lines through the existing
+      `scanner.events.writeEvent` serializers, `companion-status` envelope
+      lines, cancel-file creation, and unit tests for routing, query
+      parsing, static path sanitizing, scan-body mapping, and content
+      types.
+    - Wired `v600-zig serve` with `--port`, `--webapp-dir`, `--out-dir`,
+      and `--scanimage`; exported `v600.companion`; registered the
+      `companion-smoke` step; documented the contract in
+      `docs/SCANNER_COMPANION.md`.
+    - `reuse_address` is set on the listener: without `SO_REUSEADDR` this
+      host refuses fresh loopback binds with `EADDRINUSE` (verified with
+      python against multiple unused ports; node works only because libuv
+      sets the option by default).
+  - Validation 2026-07-04:
+    - `zig build companion-smoke --summary all` passed: companion-ready
+      line, status/devices endpoints, static index/app/wasm serving with
+      correct content types, traversal and unknown-API rejection, a full
+      `rgb+ir` scan job against the fake `scanimage` polled through
+      `companion-status running -> complete` with `scan-start`, `progress`,
+      and `scan-complete` events, cursor-correct event paging, 404/409
+      status paths, and the downloaded TIFF parsed by the browser reader
+      (`rgb_width=4`, `rgb_height=2`).
+    - `zig build test --summary all` passed `616/620` with 4 expected
+      skips (five new companion unit tests); `zig build --summary all` and
+      `zig build -Dui=true --summary all` passed; `zig fmt --check` and
+      `git diff --check` passed.
 - [ ] 15.2 Wire the webapp Scan tab to the companion: a `web/companion.mjs`
   client module (status probe, scan request builder, event poller), Scan tab
   controls and progress list, handoff of the finished TIFF into the existing

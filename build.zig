@@ -224,6 +224,15 @@ pub fn build(b: *std.Build) void {
     wasm_webapp_step.dependOn(&install_webapp_assets.step);
     wasm_webapp_step.dependOn(&install_webapp_wasm.step);
 
+    const companion_smoke_cmd = b.addSystemCommand(&.{"node"});
+    companion_smoke_cmd.addFileArg(b.path("test/wasm/companion_smoke.mjs"));
+    companion_smoke_cmd.addArtifactArg(exe);
+    companion_smoke_cmd.addArg(b.getInstallPath(.prefix, "webapp"));
+    companion_smoke_cmd.step.dependOn(&install_webapp_assets.step);
+    companion_smoke_cmd.step.dependOn(&install_webapp_wasm.step);
+    const companion_smoke_step = b.step("companion-smoke", "Run the local scanner companion server against a fake scanimage");
+    companion_smoke_step.dependOn(&companion_smoke_cmd.step);
+
     const wasm_webapp_static_smoke_cmd = b.addSystemCommand(&.{"node"});
     wasm_webapp_static_smoke_cmd.addFileArg(b.path("test/wasm/webapp_static_smoke.mjs"));
     wasm_webapp_static_smoke_cmd.addArg(b.getInstallPath(.prefix, "webapp"));
