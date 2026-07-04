@@ -3,101 +3,46 @@ const builtin = @import("builtin");
 
 const numeric = @import("numeric_fixture.zig");
 const parallelism = @import("parallelism.zig");
+const clahe_ops = @import("clahe.zig");
+const film_formats = @import("film_formats.zig");
+const rotation = @import("rotation.zig");
+
+pub const FilmFormat = film_formats.FilmFormat;
+pub const format_35mm = film_formats.format_35mm;
+pub const format_645 = film_formats.format_645;
+pub const format_6x6 = film_formats.format_6x6;
+pub const format_6x7 = film_formats.format_6x7;
+pub const format_6x9 = film_formats.format_6x9;
+pub const formats = film_formats.formats;
+pub const formatByName = film_formats.formatByName;
+pub const detectFramesAspect = film_formats.detectFramesAspect;
+
+pub const ClaheOptions = clahe_ops.ClaheOptions;
+pub const applyClahe8 = clahe_ops.applyClahe8;
+
+pub const FrameRect = rotation.FrameRect;
+pub const AffineTransform = rotation.AffineTransform;
+pub const ExpandedRotation = rotation.ExpandedRotation;
+pub const RotatedCrop = rotation.RotatedCrop;
+pub const expandedRotationTransform = rotation.expandedRotationTransform;
+pub const transformFramesFromRotatedToOriginal = rotation.transformFramesFromRotatedToOriginal;
+pub const rotateImageExpandedReplicate = rotation.rotateImageExpandedReplicate;
+pub const cropRotatedRect = rotation.cropRotatedRect;
+
+const workerCountForItems = parallelism.workerCountForItems;
+const sampleToU16 = rotation.sampleToU16;
+const sampleToPythonGray8 = rotation.sampleToPythonGray8;
+const writeRoundedSample = rotation.writeRoundedSample;
+const reflect101Index = clahe_ops.reflect101Index;
 const tiff_available = builtin.is_test and builtin.link_libc;
 const tiff = if (tiff_available) @import("../tiff.zig") else struct {};
 
-const clahe_parallel_min_pixels: usize = 1_000_000;
 const angle_gradient_parallel_min_work: usize = 1_000_000;
 const component_runs_min_pixels: usize = 1_000_000;
 const conversion_parallel_min_items: usize = 1_000_000;
-const rotation_parallel_min_pixels: usize = 1_000_000;
 const grayscale_simd_width: usize = 8;
 const byte_simd_width: usize = 32;
 const f64_simd_width: usize = 4;
-
-pub const FilmFormat = struct {
-    name: []const u8,
-    frame_mm: [2]f64,
-    pitch_mm: f64,
-    strip_width_mm: f64,
-    description: []const u8,
-
-    pub fn frameWidthMm(self: FilmFormat) f64 {
-        return self.frame_mm[0];
-    }
-
-    pub fn frameHeightMm(self: FilmFormat) f64 {
-        return self.frame_mm[1];
-    }
-
-    pub fn narrowMm(self: FilmFormat) f64 {
-        return @min(self.frame_mm[0], self.frame_mm[1]);
-    }
-
-    pub fn wideMm(self: FilmFormat) f64 {
-        return @max(self.frame_mm[0], self.frame_mm[1]);
-    }
-
-    pub fn gapMm(self: FilmFormat) f64 {
-        return self.pitch_mm - self.wideMm();
-    }
-
-    pub fn pitchRatio(self: FilmFormat) f64 {
-        return self.strip_width_mm / self.wideMm();
-    }
-
-    pub fn physicalAspect(self: FilmFormat) f64 {
-        return self.frame_mm[0] / self.frame_mm[1];
-    }
-};
-
-pub const format_35mm: FilmFormat = .{
-    .name = "35mm",
-    .frame_mm = .{ 36.0, 24.0 },
-    .pitch_mm = 38.0,
-    .strip_width_mm = 35.0,
-    .description = "35mm (135 film)",
-};
-
-pub const format_645: FilmFormat = .{
-    .name = "645",
-    .frame_mm = .{ 56.0, 41.5 },
-    .pitch_mm = 60.0,
-    .strip_width_mm = 61.5,
-    .description = "645 medium format",
-};
-
-pub const format_6x6: FilmFormat = .{
-    .name = "6x6",
-    .frame_mm = .{ 56.0, 56.0 },
-    .pitch_mm = 60.0,
-    .strip_width_mm = 61.5,
-    .description = "6x6 medium format",
-};
-
-pub const format_6x7: FilmFormat = .{
-    .name = "6x7",
-    .frame_mm = .{ 56.0, 69.0 },
-    .pitch_mm = 73.0,
-    .strip_width_mm = 61.5,
-    .description = "6x7 medium format",
-};
-
-pub const format_6x9: FilmFormat = .{
-    .name = "6x9",
-    .frame_mm = .{ 56.0, 84.0 },
-    .pitch_mm = 88.0,
-    .strip_width_mm = 61.5,
-    .description = "6x9 medium format",
-};
-
-pub const formats = [_]FilmFormat{
-    format_35mm,
-    format_645,
-    format_6x6,
-    format_6x7,
-    format_6x9,
-};
 
 const u8_to_unit_f64 = initU8ToUnitF64();
 
@@ -107,13 +52,6 @@ fn initU8ToUnitF64() [256]f64 {
         value.* = @as(f64, @floatFromInt(index)) / 255.0;
     }
     return table;
-}
-
-pub fn formatByName(name: []const u8) ?FilmFormat {
-    for (formats) |format| {
-        if (std.mem.eql(u8, format.name, name)) return format;
-    }
-    return null;
 }
 
 pub const StripProfiles = struct {
@@ -172,25 +110,6 @@ const Point2 = struct {
 pub const TheilSenAngle = struct {
     median_slope: f64,
     angle: f64,
-};
-
-pub const FrameRect = struct {
-    cx: f64,
-    cy: f64,
-    w: f64,
-    h: f64,
-    angle: f64,
-};
-
-pub const AffineTransform = struct {
-    values: [6]f64,
-};
-
-pub const ExpandedRotation = struct {
-    rotated_width: usize,
-    rotated_height: usize,
-    forward: AffineTransform,
-    inverse: AffineTransform,
 };
 
 pub const FilmExtent = struct {
@@ -298,48 +217,6 @@ const FilmExtentBreakdown = struct {
     geometry_ns: u64 = 0,
 };
 
-const ClaheAxisMap = struct {
-    first: []usize,
-    second: []usize,
-    fraction: []f64,
-    inverse_fraction: []f64,
-
-    fn deinit(self: *ClaheAxisMap, allocator: std.mem.Allocator) void {
-        allocator.free(self.first);
-        allocator.free(self.second);
-        allocator.free(self.fraction);
-        allocator.free(self.inverse_fraction);
-        self.* = undefined;
-    }
-};
-
-const ClaheOutputRowsContext = struct {
-    input: []const u8,
-    output: []u8,
-    width: usize,
-    tiles_x: usize,
-    luts: []const u8,
-    x_map: ClaheAxisMap,
-    y_map: ClaheAxisMap,
-    y_start: usize,
-    y_end: usize,
-};
-
-const ClaheLutTilesContext = struct {
-    input: []const u8,
-    luts: []u8,
-    reflect_x: []const usize,
-    reflect_y: []const usize,
-    width: usize,
-    tile_width: usize,
-    tile_height: usize,
-    tiles_x: usize,
-    clip_limit: usize,
-    lut_scale: f64,
-    tile_start: usize,
-    tile_end: usize,
-};
-
 const GrayToInvertedU8RangeContext = struct {
     input: []const f64,
     output: []u8,
@@ -379,34 +256,6 @@ const AngleGradientStripsContext = struct {
     gradient_kernel: []const f64,
     strip_start: usize,
     strip_end: usize,
-};
-
-pub const ClaheOptions = struct {
-    clip_limit: f64 = 3.0,
-    tiles_x: usize = 8,
-    tiles_y: usize = 8,
-};
-
-pub const RotatedCrop = struct {
-    width: usize,
-    height: usize,
-    pixels: []f64,
-
-    pub fn deinit(self: *RotatedCrop, allocator: std.mem.Allocator) void {
-        allocator.free(self.pixels);
-        self.* = undefined;
-    }
-};
-
-const RotationRowsContext = struct {
-    image: []const f64,
-    pixels: []f64,
-    width: usize,
-    height: usize,
-    rotated_width: usize,
-    inverse: [6]f64,
-    y_start: usize,
-    y_end: usize,
 };
 
 pub const RebateMaskRect = struct {
@@ -696,262 +545,6 @@ pub fn resizeImageArea(
     return output;
 }
 
-pub fn applyClahe8(
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    width: usize,
-    height: usize,
-    options: ClaheOptions,
-) ![]u8 {
-    if (width == 0 or height == 0 or input.len != width * height) return error.InvalidClaheInput;
-    if (options.tiles_x == 0 or options.tiles_y == 0 or !std.math.isFinite(options.clip_limit)) return error.InvalidClaheInput;
-
-    const tile_width = ceilDiv(width, options.tiles_x);
-    const tile_height = ceilDiv(height, options.tiles_y);
-    const ext_width = tile_width * options.tiles_x;
-    const ext_height = tile_height * options.tiles_y;
-    const tile_area = tile_width * tile_height;
-    const pixel_count = try std.math.mul(usize, width, height);
-
-    const reflect_x = try buildReflectIndexMap(allocator, ext_width, width);
-    defer allocator.free(reflect_x);
-    const reflect_y = try buildReflectIndexMap(allocator, ext_height, height);
-    defer allocator.free(reflect_y);
-
-    const luts = try allocator.alloc(u8, options.tiles_x * options.tiles_y * 256);
-    defer allocator.free(luts);
-    const clip_limit = claheClipLimit(options.clip_limit, tile_area);
-    const lut_scale = 255.0 / @as(f64, @floatFromInt(tile_area));
-    if (parallelism.enabled and pixel_count >= clahe_parallel_min_pixels) {
-        const worker_count = @min(workerCountForItems(pixel_count, clahe_parallel_min_pixels), options.tiles_x * options.tiles_y);
-        if (worker_count > 1) {
-            try buildClahe8LutsParallel(allocator, input, luts, reflect_x, reflect_y, width, tile_width, tile_height, options.tiles_x, options.tiles_y, clip_limit, lut_scale, worker_count);
-        } else {
-            buildClahe8LutTiles(input, luts, reflect_x, reflect_y, width, tile_width, tile_height, options.tiles_x, clip_limit, lut_scale, 0, options.tiles_x * options.tiles_y);
-        }
-    } else {
-        buildClahe8LutTiles(input, luts, reflect_x, reflect_y, width, tile_width, tile_height, options.tiles_x, clip_limit, lut_scale, 0, options.tiles_x * options.tiles_y);
-    }
-
-    const output = try allocator.alloc(u8, width * height);
-    errdefer allocator.free(output);
-    var x_map = try buildClaheAxisMap(allocator, width, tile_width, options.tiles_x);
-    defer x_map.deinit(allocator);
-    var y_map = try buildClaheAxisMap(allocator, height, tile_height, options.tiles_y);
-    defer y_map.deinit(allocator);
-    if (parallelism.enabled and pixel_count >= clahe_parallel_min_pixels) {
-        const cpu_count = std.Thread.getCpuCount() catch 1;
-        const worker_limit = if (cpu_count > 1) cpu_count - 1 else 1;
-        const worker_count = @min(worker_limit, height);
-        if (worker_count > 1) {
-            try applyClahe8OutputParallel(allocator, input, output, width, height, options.tiles_x, luts, x_map, y_map, worker_count);
-            return output;
-        }
-    }
-    applyClahe8OutputRows(input, output, width, options.tiles_x, luts, x_map, y_map, 0, height);
-    return output;
-}
-
-fn buildClahe8LutsParallel(
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    luts: []u8,
-    reflect_x: []const usize,
-    reflect_y: []const usize,
-    width: usize,
-    tile_width: usize,
-    tile_height: usize,
-    tiles_x: usize,
-    tiles_y: usize,
-    clip_limit: usize,
-    lut_scale: f64,
-    worker_count: usize,
-) !void {
-    const threads = try allocator.alloc(std.Thread, worker_count);
-    defer allocator.free(threads);
-    const contexts = try allocator.alloc(ClaheLutTilesContext, worker_count);
-    defer allocator.free(contexts);
-    const tile_count = tiles_x * tiles_y;
-    var started: usize = 0;
-    errdefer {
-        for (threads[0..started]) |thread| {
-            thread.join();
-        }
-    }
-    for (0..worker_count) |worker_index| {
-        const tile_start = tile_count * worker_index / worker_count;
-        const tile_end = tile_count * (worker_index + 1) / worker_count;
-        contexts[worker_index] = .{
-            .input = input,
-            .luts = luts,
-            .reflect_x = reflect_x,
-            .reflect_y = reflect_y,
-            .width = width,
-            .tile_width = tile_width,
-            .tile_height = tile_height,
-            .tiles_x = tiles_x,
-            .clip_limit = clip_limit,
-            .lut_scale = lut_scale,
-            .tile_start = tile_start,
-            .tile_end = tile_end,
-        };
-        threads[worker_index] = try std.Thread.spawn(.{}, buildClahe8LutsWorker, .{&contexts[worker_index]});
-        started += 1;
-    }
-    for (threads) |thread| {
-        thread.join();
-    }
-}
-
-fn buildClahe8LutsWorker(context: *const ClaheLutTilesContext) void {
-    buildClahe8LutTiles(
-        context.input,
-        context.luts,
-        context.reflect_x,
-        context.reflect_y,
-        context.width,
-        context.tile_width,
-        context.tile_height,
-        context.tiles_x,
-        context.clip_limit,
-        context.lut_scale,
-        context.tile_start,
-        context.tile_end,
-    );
-}
-
-fn buildClahe8LutTiles(
-    input: []const u8,
-    luts: []u8,
-    reflect_x: []const usize,
-    reflect_y: []const usize,
-    width: usize,
-    tile_width: usize,
-    tile_height: usize,
-    tiles_x: usize,
-    clip_limit: usize,
-    lut_scale: f64,
-    tile_start: usize,
-    tile_end: usize,
-) void {
-    for (tile_start..tile_end) |tile_index| {
-        const tile_y = tile_index / tiles_x;
-        const tile_x = tile_index % tiles_x;
-        var hist = [_]usize{0} ** 256;
-        const start_x = tile_x * tile_width;
-        const start_y = tile_y * tile_height;
-        for (0..tile_height) |yy| {
-            const source_y = reflect_y[start_y + yy];
-            const source_row = input[source_y * width ..][0..width];
-            for (0..tile_width) |xx| {
-                hist[source_row[reflect_x[start_x + xx]]] += 1;
-            }
-        }
-        if (clip_limit > 0) {
-            clipHistogram(&hist, clip_limit);
-        }
-        const lut_offset = tile_index * 256;
-        var sum: usize = 0;
-        for (hist, 0..) |count, bin| {
-            sum += count;
-            luts[lut_offset + bin] = saturateRoundU8(@as(f64, @floatFromInt(sum)) * lut_scale);
-        }
-    }
-}
-
-fn applyClahe8OutputParallel(
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    output: []u8,
-    width: usize,
-    height: usize,
-    tiles_x: usize,
-    luts: []const u8,
-    x_map: ClaheAxisMap,
-    y_map: ClaheAxisMap,
-    worker_count: usize,
-) !void {
-    const threads = try allocator.alloc(std.Thread, worker_count);
-    defer allocator.free(threads);
-    const contexts = try allocator.alloc(ClaheOutputRowsContext, worker_count);
-    defer allocator.free(contexts);
-    var started: usize = 0;
-    errdefer {
-        for (threads[0..started]) |thread| {
-            thread.join();
-        }
-    }
-    for (0..worker_count) |worker_index| {
-        const y_start = height * worker_index / worker_count;
-        const y_end = height * (worker_index + 1) / worker_count;
-        contexts[worker_index] = .{
-            .input = input,
-            .output = output,
-            .width = width,
-            .tiles_x = tiles_x,
-            .luts = luts,
-            .x_map = x_map,
-            .y_map = y_map,
-            .y_start = y_start,
-            .y_end = y_end,
-        };
-        threads[worker_index] = try std.Thread.spawn(.{}, applyClahe8OutputWorker, .{&contexts[worker_index]});
-        started += 1;
-    }
-    for (threads) |thread| {
-        thread.join();
-    }
-}
-
-fn applyClahe8OutputWorker(context: *const ClaheOutputRowsContext) void {
-    applyClahe8OutputRows(
-        context.input,
-        context.output,
-        context.width,
-        context.tiles_x,
-        context.luts,
-        context.x_map,
-        context.y_map,
-        context.y_start,
-        context.y_end,
-    );
-}
-
-fn applyClahe8OutputRows(
-    input: []const u8,
-    output: []u8,
-    width: usize,
-    tiles_x: usize,
-    luts: []const u8,
-    x_map: ClaheAxisMap,
-    y_map: ClaheAxisMap,
-    y_start: usize,
-    y_end: usize,
-) void {
-    for (y_start..y_end) |y| {
-        const ty1_base = y_map.first[y] * tiles_x * 256;
-        const ty2_base = y_map.second[y] * tiles_x * 256;
-        const ya = y_map.fraction[y];
-        const ya1 = y_map.inverse_fraction[y];
-        const input_row = input[y * width ..][0..width];
-        const output_row = output[y * width ..][0..width];
-        for (0..width) |x| {
-            const xa = x_map.fraction[x];
-            const xa1 = x_map.inverse_fraction[x];
-            const value = input_row[x];
-            const tx1_offset = x_map.first[x] * 256 + value;
-            const tx2_offset = x_map.second[x] * 256 + value;
-            const lut11 = luts[ty1_base + tx1_offset];
-            const lut12 = luts[ty1_base + tx2_offset];
-            const lut21 = luts[ty2_base + tx1_offset];
-            const lut22 = luts[ty2_base + tx2_offset];
-            const top = @as(f64, @floatFromInt(lut11)) * xa1 + @as(f64, @floatFromInt(lut12)) * xa;
-            const bottom = @as(f64, @floatFromInt(lut21)) * xa1 + @as(f64, @floatFromInt(lut22)) * xa;
-            output_row[x] = saturateRoundU8(top * ya1 + bottom * ya);
-        }
-    }
-}
-
 pub fn detectFilmExtentAxisAligned(
     allocator: std.mem.Allocator,
     raw_gray: []const f64,
@@ -1232,175 +825,6 @@ pub fn detectFramesWorkScale(width: usize, height: usize) !f64 {
     const work_size = @max(width, height);
     const scale = @as(f64, @floatFromInt(work_size)) / @as(f64, @floatFromInt(@max(width, height)));
     return @min(scale, 1.0);
-}
-
-pub fn detectFramesAspect(format: FilmFormat, is_vertical: bool) []const u8 {
-    if (std.mem.eql(u8, format.name, "35mm")) return if (is_vertical) "24:36" else "36:24";
-    if (std.mem.eql(u8, format.name, "645")) return if (is_vertical) "41.5:56" else "56:41.5";
-    if (std.mem.eql(u8, format.name, "6x6")) return "56:56";
-    if (std.mem.eql(u8, format.name, "6x7")) return if (is_vertical) "56:69" else "69:56";
-    if (std.mem.eql(u8, format.name, "6x9")) return if (is_vertical) "56:84" else "84:56";
-    return if (is_vertical) "narrow:wide" else "wide:narrow";
-}
-
-pub fn expandedRotationTransform(orig_width: usize, orig_height: usize, angle_rad: f64) !ExpandedRotation {
-    if (orig_width == 0 or orig_height == 0 or !std.math.isFinite(angle_rad)) return error.InvalidRotationTransformInput;
-    const center_x = @as(f64, @floatFromInt(orig_width)) / 2.0;
-    const center_y = @as(f64, @floatFromInt(orig_height)) / 2.0;
-    const alpha = std.math.cos(angle_rad);
-    const beta = std.math.sin(angle_rad);
-    var forward = AffineTransform{ .values = .{
-        alpha,
-        beta,
-        (1.0 - alpha) * center_x - beta * center_y,
-        -beta,
-        alpha,
-        beta * center_x + (1.0 - alpha) * center_y,
-    } };
-    const rotated_width: usize = @intFromFloat(@as(f64, @floatFromInt(orig_height)) * @abs(beta) + @as(f64, @floatFromInt(orig_width)) * @abs(alpha));
-    const rotated_height: usize = @intFromFloat(@as(f64, @floatFromInt(orig_height)) * @abs(alpha) + @as(f64, @floatFromInt(orig_width)) * @abs(beta));
-    forward.values[2] += @as(f64, @floatFromInt(rotated_width)) / 2.0 - center_x;
-    forward.values[5] += @as(f64, @floatFromInt(rotated_height)) / 2.0 - center_y;
-    return .{
-        .rotated_width = rotated_width,
-        .rotated_height = rotated_height,
-        .forward = forward,
-        .inverse = try invertAffineTransform(forward),
-    };
-}
-
-pub fn transformFramesFromRotatedToOriginal(frames: []FrameRect, inverse: AffineTransform, strip_angle_rad: f64) !void {
-    if (!std.math.isFinite(strip_angle_rad)) return error.InvalidRotationTransformInput;
-    for (frames) |*frame| {
-        if (!std.math.isFinite(frame.cx) or !std.math.isFinite(frame.cy) or !std.math.isFinite(frame.angle)) {
-            return error.InvalidRotationTransformInput;
-        }
-        const rcx = frame.cx;
-        const rcy = frame.cy;
-        frame.cx = inverse.values[0] * rcx + inverse.values[1] * rcy + inverse.values[2];
-        frame.cy = inverse.values[3] * rcx + inverse.values[4] * rcy + inverse.values[5];
-        frame.angle += strip_angle_rad;
-    }
-}
-
-pub fn rotateImageExpandedReplicate(
-    allocator: std.mem.Allocator,
-    image: []const f64,
-    width: usize,
-    height: usize,
-    angle_rad: f64,
-) !RotatedCrop {
-    if (width == 0 or height == 0 or image.len != width * height) return error.InvalidRotationTransformInput;
-    const transform = try expandedRotationTransform(width, height, angle_rad);
-    const pixels = try allocator.alloc(f64, transform.rotated_width * transform.rotated_height);
-    errdefer allocator.free(pixels);
-    const pixel_count = transform.rotated_width * transform.rotated_height;
-    if (parallelism.enabled and pixel_count >= rotation_parallel_min_pixels) {
-        const cpu_count = std.Thread.getCpuCount() catch 1;
-        const worker_limit = if (cpu_count > 1) cpu_count - 1 else 1;
-        const worker_count = @min(worker_limit, transform.rotated_height);
-        if (worker_count > 1) {
-            try rotateImageExpandedReplicateParallel(
-                allocator,
-                image,
-                pixels,
-                width,
-                height,
-                transform.rotated_width,
-                transform.rotated_height,
-                transform.inverse.values,
-                worker_count,
-            );
-            return .{ .width = transform.rotated_width, .height = transform.rotated_height, .pixels = pixels };
-        }
-    }
-    rotateImageExpandedReplicateRows(image, pixels, width, height, transform.rotated_width, transform.inverse.values, 0, transform.rotated_height);
-    return .{ .width = transform.rotated_width, .height = transform.rotated_height, .pixels = pixels };
-}
-
-fn rotateImageExpandedReplicateParallel(
-    allocator: std.mem.Allocator,
-    image: []const f64,
-    pixels: []f64,
-    width: usize,
-    height: usize,
-    rotated_width: usize,
-    rotated_height: usize,
-    inverse: [6]f64,
-    worker_count: usize,
-) !void {
-    const threads = try allocator.alloc(std.Thread, worker_count);
-    defer allocator.free(threads);
-    const contexts = try allocator.alloc(RotationRowsContext, worker_count);
-    defer allocator.free(contexts);
-    var started: usize = 0;
-    errdefer {
-        for (threads[0..started]) |thread| {
-            thread.join();
-        }
-    }
-    for (0..worker_count) |worker_index| {
-        const y_start = rotated_height * worker_index / worker_count;
-        const y_end = rotated_height * (worker_index + 1) / worker_count;
-        contexts[worker_index] = .{
-            .image = image,
-            .pixels = pixels,
-            .width = width,
-            .height = height,
-            .rotated_width = rotated_width,
-            .inverse = inverse,
-            .y_start = y_start,
-            .y_end = y_end,
-        };
-        threads[worker_index] = try std.Thread.spawn(.{}, rotateImageExpandedReplicateWorker, .{&contexts[worker_index]});
-        started += 1;
-    }
-    for (threads) |thread| {
-        thread.join();
-    }
-}
-
-fn rotateImageExpandedReplicateWorker(context: *const RotationRowsContext) void {
-    rotateImageExpandedReplicateRows(
-        context.image,
-        context.pixels,
-        context.width,
-        context.height,
-        context.rotated_width,
-        context.inverse,
-        context.y_start,
-        context.y_end,
-    );
-}
-
-fn rotateImageExpandedReplicateRows(
-    image: []const f64,
-    pixels: []f64,
-    width: usize,
-    height: usize,
-    rotated_width: usize,
-    inverse: [6]f64,
-    y_start: usize,
-    y_end: usize,
-) void {
-    for (y_start..y_end) |y| {
-        const fy = @as(f64, @floatFromInt(y));
-        var src_x = inverse[1] * fy + inverse[2];
-        var src_y = inverse[4] * fy + inverse[5];
-        for (0..rotated_width) |x| {
-            pixels[y * rotated_width + x] = sampleReplicateBilinear(image, width, height, src_x, src_y);
-            src_x += inverse[0];
-            src_y += inverse[3];
-        }
-    }
-}
-
-fn workerCountForItems(item_count: usize, min_items: usize) usize {
-    if (!parallelism.enabled) return 1;
-    if (item_count < min_items) return 1;
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    if (cpu_count <= 1) return 1;
-    return @min(cpu_count - 1, item_count);
 }
 
 fn prepareClaheStripGray(allocator: std.mem.Allocator, raw_gray: []const f64, width: usize, height: usize) ![]f64 {
@@ -2156,82 +1580,6 @@ pub fn frameRmsError(detected_full: FrameRect, ground_truth_full: FrameRect) f64
 
 pub fn frameAngleErrorRadians(detected_angle: f64, ground_truth_angle: f64) f64 {
     return detected_angle - ground_truth_angle;
-}
-
-pub fn cropRotatedRect(
-    allocator: std.mem.Allocator,
-    image: []const f64,
-    img_width: usize,
-    img_height: usize,
-    cx: f64,
-    cy: f64,
-    w: f64,
-    h: f64,
-    angle_deg: f64,
-) !RotatedCrop {
-    if (img_width == 0 or img_height == 0 or image.len != img_width * img_height) return error.InvalidRotatedCropInput;
-    if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or !std.math.isFinite(w) or !std.math.isFinite(h) or !std.math.isFinite(angle_deg)) {
-        return error.InvalidRotatedCropInput;
-    }
-    if (w <= 0.0 or h <= 0.0) return error.InvalidRotatedCropInput;
-
-    const diag = @sqrt(w * w + h * h) / 2.0;
-    const margin: i64 = @as(i64, @intFromFloat(@ceil(diag))) + 4;
-    const cx_i: i64 = @intFromFloat(cx);
-    const cy_i: i64 = @intFromFloat(cy);
-    const x0_i = @max(cx_i - margin, 0);
-    const y0_i = @max(cy_i - margin, 0);
-    const x1_i = @min(cx_i + margin, @as(i64, @intCast(img_width)));
-    const y1_i = @min(cy_i + margin, @as(i64, @intCast(img_height)));
-    if (x1_i <= x0_i or y1_i <= y0_i) return error.InvalidRotatedCropInput;
-
-    const x0: usize = @intCast(x0_i);
-    const y0: usize = @intCast(y0_i);
-    const sub_w: usize = @intCast(x1_i - x0_i);
-    const sub_h: usize = @intCast(y1_i - y0_i);
-    const local_cx = cx - @as(f64, @floatFromInt(x0));
-    const local_cy = cy - @as(f64, @floatFromInt(y0));
-
-    const pad: usize = 2;
-    const out_w: usize = @as(usize, @intFromFloat(@ceil(w))) + pad * 2;
-    const out_h: usize = @as(usize, @intFromFloat(@ceil(h))) + pad * 2;
-    const final_w: usize = @intFromFloat(w);
-    const final_h: usize = @intFromFloat(h);
-    if (final_w == 0 or final_h == 0) return error.InvalidRotatedCropInput;
-
-    const radians = angle_deg * std.math.pi / 180.0;
-    const alpha = @cos(radians);
-    const beta = @sin(radians);
-    const m00 = alpha;
-    const m01 = beta;
-    var m02 = (1.0 - alpha) * local_cx - beta * local_cy;
-    const m10 = -beta;
-    const m11 = alpha;
-    var m12 = beta * local_cx + (1.0 - alpha) * local_cy;
-    m02 += @as(f64, @floatFromInt(out_w)) / 2.0 - local_cx;
-    m12 += @as(f64, @floatFromInt(out_h)) / 2.0 - local_cy;
-
-    const det = m00 * m11 - m01 * m10;
-    if (@abs(det) < 1e-12) return error.InvalidRotatedCropInput;
-    const inv00 = m11 / det;
-    const inv01 = -m01 / det;
-    const inv10 = -m10 / det;
-    const inv11 = m00 / det;
-
-    const pixels = try allocator.alloc(f64, final_w * final_h);
-    errdefer allocator.free(pixels);
-    for (0..final_h) |out_y| {
-        for (0..final_w) |out_x| {
-            const dst_x = @as(f64, @floatFromInt(out_x + pad));
-            const dst_y = @as(f64, @floatFromInt(out_y + pad));
-            const tx = dst_x - m02;
-            const ty = dst_y - m12;
-            const src_x = inv00 * tx + inv01 * ty;
-            const src_y = inv10 * tx + inv11 * ty;
-            pixels[out_y * final_w + out_x] = sampleReflectBilinear(image, img_width, x0, y0, sub_w, sub_h, src_x, src_y);
-        }
-    }
-    return .{ .width = final_w, .height = final_h, .pixels = pixels };
 }
 
 pub fn makeRebateMask(
@@ -3101,59 +2449,6 @@ fn gaussianKernel(allocator: std.mem.Allocator, kernel_size: usize) ![]f64 {
     return kernel;
 }
 
-fn reflect101Index(index: i32, len: usize) usize {
-    if (len <= 1) return 0;
-    const n: i32 = @intCast(len);
-    var reflected = index;
-    while (reflected < 0 or reflected >= n) {
-        if (reflected < 0) {
-            reflected = -reflected;
-        } else {
-            reflected = 2 * n - reflected - 2;
-        }
-    }
-    return @intCast(reflected);
-}
-
-fn buildReflectIndexMap(allocator: std.mem.Allocator, extended_len: usize, source_len: usize) ![]usize {
-    if (extended_len == 0 or source_len == 0) return error.InvalidClaheInput;
-    const map = try allocator.alloc(usize, extended_len);
-    errdefer allocator.free(map);
-    for (map, 0..) |*value, index| {
-        value.* = reflect101Index(@intCast(index), source_len);
-    }
-    return map;
-}
-
-fn buildClaheAxisMap(
-    allocator: std.mem.Allocator,
-    length: usize,
-    tile_size: usize,
-    tile_count: usize,
-) !ClaheAxisMap {
-    if (length == 0 or tile_size == 0 or tile_count == 0) return error.InvalidClaheInput;
-    var map = ClaheAxisMap{
-        .first = try allocator.alloc(usize, length),
-        .second = try allocator.alloc(usize, length),
-        .fraction = try allocator.alloc(f64, length),
-        .inverse_fraction = try allocator.alloc(f64, length),
-    };
-    errdefer map.deinit(allocator);
-
-    const inv_tile_size = 1.0 / @as(f64, @floatFromInt(tile_size));
-    for (0..length) |index| {
-        const tf = @as(f64, @floatFromInt(index)) * inv_tile_size - 0.5;
-        const first_raw: isize = @intFromFloat(@floor(tf));
-        const second_raw = first_raw + 1;
-        const frac = tf - @as(f64, @floatFromInt(first_raw));
-        map.first[index] = clampTileIndex(first_raw, tile_count);
-        map.second[index] = clampTileIndex(second_raw, tile_count);
-        map.fraction[index] = frac;
-        map.inverse_fraction[index] = 1.0 - frac;
-    }
-    return map;
-}
-
 const dtw_inf: f64 = 1e18;
 
 const DtwParent = struct {
@@ -3232,98 +2527,6 @@ fn nearestAlignedIndex(alignment: []const ?usize, target: usize) !usize {
         }
     }
     return best_value orelse error.InvalidDtwAlignment;
-}
-
-fn sampleToPythonGray8(data: []const u8, sample_index: usize, bits_per_sample: u16) u8 {
-    const sample = sampleToU16(data, sample_index, bits_per_sample);
-    if (bits_per_sample == 8) return @intCast(sample);
-    return @intCast(sample / 256);
-}
-
-fn sampleToU16(data: []const u8, sample_index: usize, bits_per_sample: u16) u16 {
-    if (bits_per_sample == 8) return data[sample_index];
-    const byte_index = sample_index * 2;
-    return std.mem.readInt(u16, data[byte_index..][0..2], .little);
-}
-
-fn writeRoundedSample(data: []u8, sample_index: usize, bits_per_sample: u16, value: f64) void {
-    const max_value: f64 = if (bits_per_sample == 8) 255.0 else 65535.0;
-    const rounded: u16 = if (!std.math.isFinite(value) or value <= 0.0)
-        0
-    else if (value >= max_value)
-        @intFromFloat(max_value)
-    else
-        @intFromFloat(@floor(value + 0.5));
-    if (bits_per_sample == 8) {
-        data[sample_index] = @intCast(rounded);
-    } else {
-        const byte_index = sample_index * 2;
-        std.mem.writeInt(u16, data[byte_index..][0..2], rounded, .little);
-    }
-}
-
-fn ceilDiv(numerator: usize, denominator: usize) usize {
-    return (numerator + denominator - 1) / denominator;
-}
-
-fn claheClipLimit(clip_limit: f64, tile_area: usize) usize {
-    if (clip_limit <= 0.0) return 0;
-    const raw: usize = @intFromFloat(clip_limit * @as(f64, @floatFromInt(tile_area)) / 256.0);
-    return @max(@as(usize, 1), raw);
-}
-
-fn clipHistogram(hist: *[256]usize, clip_limit: usize) void {
-    var clipped: usize = 0;
-    for (hist) |*count| {
-        if (count.* > clip_limit) {
-            clipped += count.* - clip_limit;
-            count.* = clip_limit;
-        }
-    }
-    const redist_batch = clipped / 256;
-    const residual_count = clipped - redist_batch * 256;
-    for (hist) |*count| {
-        count.* += redist_batch;
-    }
-    if (residual_count == 0) return;
-    const residual_step = @max(@as(usize, 1), 256 / residual_count);
-    var residual = residual_count;
-    var index: usize = 0;
-    while (index < 256 and residual > 0) : (index += residual_step) {
-        hist[index] += 1;
-        residual -= 1;
-    }
-}
-
-fn clampTileIndex(index: isize, tile_count: usize) usize {
-    if (index <= 0) return 0;
-    const value: usize = @intCast(index);
-    return @min(value, tile_count - 1);
-}
-
-fn saturateRoundU8(value: f64) u8 {
-    if (value <= 0.0) return 0;
-    if (value >= 255.0) return 255;
-    return @intFromFloat(@floor(value + 0.5));
-}
-
-fn invertAffineTransform(transform: AffineTransform) !AffineTransform {
-    const a = transform.values[0];
-    const b = transform.values[1];
-    const c = transform.values[2];
-    const d = transform.values[3];
-    const e = transform.values[4];
-    const f = transform.values[5];
-    const det = a * e - b * d;
-    if (@abs(det) <= 1e-15) return error.InvalidRotationTransformInput;
-    return .{ .values = .{
-        e / det,
-        -b / det,
-        (b * f - c * e) / det,
-        -d / det,
-        a / det,
-        (c * d - a * f) / det,
-    } };
 }
 
 fn monotonicNowNs() u64 {
@@ -4158,75 +3361,6 @@ fn sampleInvertedConstantBilinear(image: []const f64, width: usize, height: usiz
     const top = p00 * (1.0 - fx) + p10 * fx;
     const bottom = p01 * (1.0 - fx) + p11 * fx;
     return 1.0 - (top * (1.0 - fy) + bottom * fy);
-}
-
-fn sampleReplicateBilinear(image: []const f64, width: usize, height: usize, x: f64, y: f64) f64 {
-    const x_floor = @floor(x);
-    const y_floor = @floor(y);
-    const xi: i64 = @intFromFloat(x_floor);
-    const yi: i64 = @intFromFloat(y_floor);
-    const fx = x - x_floor;
-    const fy = y - y_floor;
-    const x0 = clampIndex(xi, width);
-    const x1 = clampIndex(xi + 1, width);
-    const y0 = clampIndex(yi, height);
-    const y1 = clampIndex(yi + 1, height);
-    const p00 = image[y0 * width + x0];
-    const p10 = image[y0 * width + x1];
-    const p01 = image[y1 * width + x0];
-    const p11 = image[y1 * width + x1];
-    const top = p00 * (1.0 - fx) + p10 * fx;
-    const bottom = p01 * (1.0 - fx) + p11 * fx;
-    return top * (1.0 - fy) + bottom * fy;
-}
-
-fn clampIndex(index: i64, len: usize) usize {
-    if (index <= 0) return 0;
-    const value: usize = @intCast(index);
-    return @min(value, len - 1);
-}
-
-fn sampleReflectBilinear(
-    image: []const f64,
-    img_width: usize,
-    x0: usize,
-    y0: usize,
-    sub_w: usize,
-    sub_h: usize,
-    x: f64,
-    y: f64,
-) f64 {
-    const x_floor = @floor(x);
-    const y_floor = @floor(y);
-    const xi: i64 = @intFromFloat(x_floor);
-    const yi: i64 = @intFromFloat(y_floor);
-    const fx = x - x_floor;
-    const fy = y - y_floor;
-    const x_a = reflectIndex(xi, sub_w);
-    const x_b = reflectIndex(xi + 1, sub_w);
-    const y_a = reflectIndex(yi, sub_h);
-    const y_b = reflectIndex(yi + 1, sub_h);
-    const p00 = image[(y0 + y_a) * img_width + x0 + x_a];
-    const p10 = image[(y0 + y_a) * img_width + x0 + x_b];
-    const p01 = image[(y0 + y_b) * img_width + x0 + x_a];
-    const p11 = image[(y0 + y_b) * img_width + x0 + x_b];
-    const top = p00 * (1.0 - fx) + p10 * fx;
-    const bottom = p01 * (1.0 - fx) + p11 * fx;
-    return top * (1.0 - fy) + bottom * fy;
-}
-
-fn reflectIndex(index: i64, len: usize) usize {
-    if (len <= 1) return 0;
-    const n: i64 = @intCast(len);
-    var reflected = index;
-    while (reflected < 0 or reflected >= n) {
-        if (reflected < 0) {
-            reflected = -reflected - 1;
-        } else {
-            reflected = 2 * n - reflected - 1;
-        }
-    }
-    return @intCast(reflected);
 }
 
 fn validatePreviewScale(preview_scale: f64) !void {
