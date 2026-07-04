@@ -11006,7 +11006,7 @@ rewrites; do not combine a move and a behavior change in one commit.
     - `zig build --summary all` and `zig build -Dui=true --summary all`
       passed; `zig fmt --check` and `git diff --check` passed.
 
-- [ ] 14.3 Browser JS structure.
+- [x] 14.3 Browser JS structure.
   - Split `web/app_core.mjs` (2621 lines, ~6 concerns) into focused
     modules: geometry/crop math, cache-input builders, export pipeline
     orchestration, `WebPreviewClient`, and shared utils.
@@ -11025,6 +11025,57 @@ rewrites; do not combine a move and a behavior change in one commit.
     JS cache-key canonicalization against the native contract. Record the
     grain-noise determinism contract (seeded RNG, Box-Muller, flood-fill
     noise sizing) as lockstep-critical with the native inpaint padding.
+  - Completed 2026-07-04 across commits `4c46082`, `a1e0456`, `899863c`,
+    `946b6ec`, `929dac0`, and `8b12b5d`:
+    - Extracted `test/wasm/helpers.mjs` for the fixture builders and
+      tolerance assertions that were byte-identical across
+      `wasm_core_smoke`, `worker_runtime_smoke`, and `webapp_shell_smoke`
+      (the one divergent `fillRgb16Level` copy was behaviorally identical
+      for the used levels and unified on the runtime-smoke version).
+    - Extracted `web/worker/wasm_abi.mjs`: required-export validation,
+      pointer-width index/byte-offset conversion, allocator calls, and all
+      extern options-struct byte layouts now live once behind
+      `createWasmAbi`; the worker destructures its helpers from the factory
+      and the direct core smoke drives the same module, eliminating the
+      independently maintained duplicate layouts. The static smoke follows
+      the moved assertions and serve-checks the new module.
+    - Replaced the longhand protocol trios with a `processOperations`
+      registry plus `createProcessMessage`/`processCacheKeyPayload`/
+      `processCacheKeyString` generics; all previously exported names remain
+      as aliases and the smoke-pinned sha256 cache keys are unchanged
+      (`web/worker/protocol.mjs` 736 -> 516 lines).
+    - Collapsed the nine request-shaped `WebPreviewClient` methods onto one
+      generic `request()` helper with per-operation stale labels; messages,
+      transfers, and cache keys are unchanged.
+    - Split `web/app_core.mjs` (2363 lines at the start of the pass) into
+      `util.mjs`, `config.mjs`, `geometry.mjs`, `cache_inputs.mjs`,
+      `export_pipeline.mjs`, and `preview_client.mjs`, keeping
+      `app_core.mjs` as a 20-line re-export barrel so `app.mjs`, the
+      smokes, and the bench harness import an unchanged surface; the static
+      smoke serve-checks all staged modules.
+    - Added the Shared-Core Policy Dmin contract test: the shell smoke
+      replays the Python `estimate_dmin` fallback-percentile oracle fixture
+      (`dmin-percentile-25.json`) through browser `computeDminFromRgb16`
+      within a derived u16-quantization tolerance (5e-4). Cache-key
+      canonicalization stays pinned by the exact sha256 vectors in the
+      protocol smoke; a byte-level native comparison is not meaningful
+      because the native UI cache keys are in-memory structural hashes, and
+      that boundary plus the grain-noise determinism contracts (component
+      flood-fill noise sizing, seeded FNV-1a/mulberry32 noise, Box-Muller)
+      are now recorded in `docs/WEBAPP_WORKER_PROTOCOL.md` as
+      lockstep-critical.
+  - Validation 2026-07-04 (every commit in the series):
+    - Full wasm smoke suite (`wasm-core-smoke wasm32-core-smoke
+      wasm-worker-protocol-smoke wasm-worker-runtime-smoke
+      wasm-webapp-shell-smoke wasm-tiff-reader-smoke
+      wasm-webapp-static-smoke wasm-webapp`) passed 20/20 at every commit
+      with unchanged pinned cache keys and smoke outputs;
+      `bench-wasm-webapp-crop-export` passed against the module split.
+    - `zig build test --summary all` passed `611/615` with 4 expected
+      skips; `zig build --summary all` and `zig build -Dui=true
+      --summary all` passed.
+    - `node --check` passed on every touched module and `git diff --check`
+      passed.
 
 - [ ] 14.4 Native structural splits (appetite-dependent; pure moves only).
   - `build.zig`: factor the repeated C/C++ object-compilation blocks into a
