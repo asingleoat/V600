@@ -14,9 +14,6 @@ const allocation_alignment = std.mem.Alignment.@"16";
 // usize -> i32 radius casts safe in the ReleaseFast Wasm artifact.
 const max_ir_inpaint_padding: u32 = 4096;
 
-const roundF32 = ir_processing.roundF32;
-const addClampedLimit = ir_processing.addClampedLimit;
-
 pub const Status = enum(i32) {
     ok = 0,
     invalid_buffer = 1,
@@ -559,94 +556,32 @@ pub fn inpaintGrainRgb16WithNoise(
     try validateIrInpaintGrainRequest(rgb.len, mask.len, output.len, options);
     const width: usize = @intCast(options.width);
     const height: usize = @intCast(options.height);
-    const padding: usize = @intCast(options.padding);
-    const grain_padding: usize = @intCast(options.grain_padding);
-    const channels: usize = 3;
 
-    @memcpy(output, rgb);
-
-    const labels = try allocator.alloc(usize, mask.len);
-    defer allocator.free(labels);
-    var components = try ir_processing.labelMaskComponents8(allocator, mask, width, height, labels);
-    defer components.deinit(allocator);
-
-    if (components.items.len == 0) {
-        if (captured_noise.len != 0) return error.InvalidIrInpaintNoise;
-        return 0;
+    const raw = try allocator.alloc(f64, rgb.len);
+    defer allocator.free(raw);
+    for (rgb, raw) |sample, *out| {
+        out.* = @floatFromInt(sample);
     }
-
-    var noise_offset: usize = 0;
-    for (components.items) |component| {
-        const x0 = component.left -| padding;
-        const y0 = component.top -| padding;
-        const x1 = addClampedLimit(component.right, padding, width);
-        const y1 = addClampedLimit(component.bottom, padding, height);
-        const roi_width = x1 - x0;
-        const roi_height = y1 - y0;
-        const roi_pixels = roi_width * roi_height;
-        const roi_values = roi_pixels * channels;
-        if (captured_noise.len - noise_offset < roi_values) return error.InvalidIrInpaintNoise;
-
-        const roi_rgb = try allocator.alloc(f64, roi_values);
-        defer allocator.free(roi_rgb);
-        const roi_mask = try allocator.alloc(u8, roi_pixels);
-        defer allocator.free(roi_mask);
-
-        for (0..roi_height) |ry| {
-            for (0..roi_width) |rx| {
-                const source_pixel = (y0 + ry) * width + (x0 + rx);
-                const roi_pixel = ry * roi_width + rx;
-                roi_mask[roi_pixel] = if (labels[source_pixel] == component.label) 255 else 0;
-                for (0..channels) |channel| {
-                    roi_rgb[roi_pixel * channels + channel] = roundF32(
-                        @as(f64, @floatFromInt(output[source_pixel * channels + channel])) / 65535.0,
-                    );
-                }
-            }
-        }
-
-        const estimate = try ir_pure.estimateLocalGrain(allocator, roi_rgb, roi_mask, roi_width, roi_height, grain_padding);
-        defer estimate.deinit(allocator);
-
-        const repaired_signal = try allocator.alloc(f64, roi_values);
-        defer allocator.free(repaired_signal);
-        try ir_processing.biharmonicInpaint(allocator, estimate.signal, roi_mask, roi_width, roi_height, channels, repaired_signal);
-        for (repaired_signal) |*value| {
-            value.* = roundF32(value.*);
-        }
-
-        const grain = try allocator.alloc(f64, roi_values);
-        defer allocator.free(grain);
-        const component_noise = captured_noise[noise_offset..][0..roi_values];
-        noise_offset += roi_values;
-        try ir_pure.synthesizeGrainFromNoise(
-            allocator,
-            component_noise,
-            roi_width,
-            roi_height,
-            estimate.grain_std[0..],
-            estimate.spectrum,
-            channels,
-            grain,
-        );
-
-        for (0..roi_height) |ry| {
-            for (0..roi_width) |rx| {
-                const roi_pixel = ry * roi_width + rx;
-                if (roi_mask[roi_pixel] == 0) continue;
-                const dest_pixel = (y0 + ry) * width + (x0 + rx);
-                for (0..channels) |channel| {
-                    const index = roi_pixel * channels + channel;
-                    const repaired_with_grain = roundF32(repaired_signal[index] + grain[index]);
-                    const scaled = roundF32(repaired_with_grain * 65535.0);
-                    output[dest_pixel * channels + channel] = clippedStorageU16(scaled);
-                }
-            }
-        }
+    const repaired = try allocator.alloc(f64, rgb.len);
+    defer allocator.free(repaired);
+    const inpainted_regions = try ir_processing.inpaintBiharmonicWithGrainFromNoise(
+        allocator,
+        raw,
+        mask,
+        width,
+        height,
+        repaired,
+        captured_noise,
+        .{
+            .padding = @intCast(options.padding),
+            .grain_padding = @intCast(options.grain_padding),
+            .value_kind = .uint16,
+        },
+    );
+    for (repaired, output) |value, *out| {
+        out.* = @intFromFloat(value);
     }
-
-    if (noise_offset != captured_noise.len) return error.InvalidIrInpaintNoise;
-    return components.items.len;
+    return inpainted_regions;
 }
 
 pub fn applyIrTranslationF32(
@@ -800,12 +735,6 @@ fn normalizedF64ToU16(value: f64) u16 {
     if (!std.math.isFinite(value) or value <= 0.0) return 0;
     if (value >= 1.0) return 65535;
     return @intFromFloat(@floor(value * 65535.0 + 0.5));
-}
-
-fn clippedStorageU16(value: f64) u16 {
-    if (!std.math.isFinite(value) or value <= 0.0) return 0;
-    if (value >= 65535.0) return 65535;
-    return @intFromFloat(value);
 }
 
 fn stockCoefficients(stock: u32) ?film_stocks.Coefficients {
@@ -1039,4 +968,58 @@ test "wasm preview core validates shape and stock id" {
     var bad_stock = defaultPreviewOptions(1, 1);
     bad_stock.stock = 99;
     try std.testing.expectError(error.InvalidStock, previewInvertProvidedDminU16ToU8(allocator, &raw, &output, bad_stock));
+}
+
+test "wasm frame detect finds synthetic 35mm frames" {
+    const allocator = std.testing.allocator;
+    const width: usize = 180;
+    const height: usize = 620;
+    const raw = try allocator.alloc(u16, width * height * 3);
+    defer allocator.free(raw);
+    fillTestRgb16Level(raw, width, height, 0, 0, width, height, 0.92);
+    fillTestRgb16Level(raw, width, height, 30, 20, 140, 580, 0.65);
+    fillTestRgb16Level(raw, width, height, 45, 55, 100, 150, 0.18);
+    fillTestRgb16Level(raw, width, height, 45, 235, 100, 150, 0.18);
+    fillTestRgb16Level(raw, width, height, 45, 415, 100, 150, 0.18);
+
+    var frames_out: [8]FrameDetectRect = undefined;
+    var result: FrameDetectResult = undefined;
+    try detectFramesRgb16(allocator, raw, &frames_out, &result, .{
+        .width = 180,
+        .height = 620,
+        .format = 1,
+        .frame_count_override = 3,
+        .detect_film_extent = 0,
+        .apply_clahe = 0,
+    });
+
+    try std.testing.expectEqual(@as(u32, 3), result.frame_count);
+    try std.testing.expectEqual(@as(u32, 1), result.aspect);
+    try std.testing.expectEqual(@as(u32, 1), result.has_rebate);
+    const expected = [_]FrameDetectRect{
+        .{ .cx = 95.0, .cy = 130.0, .w = 100.0, .h = 150.0, .angle = 0.0 },
+        .{ .cx = 95.0, .cy = 310.0, .w = 100.0, .h = 150.0, .angle = 0.0 },
+        .{ .cx = 95.0, .cy = 490.0, .w = 100.0, .h = 150.0, .angle = 0.0 },
+    };
+    for (expected, frames_out[0..3]) |expected_frame, actual| {
+        try std.testing.expectApproxEqAbs(expected_frame.cx, actual.cx, 12.0);
+        try std.testing.expectApproxEqAbs(expected_frame.cy, actual.cy, 12.0);
+        try std.testing.expectApproxEqAbs(expected_frame.w, actual.w, 12.0);
+        try std.testing.expectApproxEqAbs(expected_frame.h, actual.h, 12.0);
+        try std.testing.expectApproxEqAbs(expected_frame.angle, actual.angle, 0.05);
+    }
+}
+
+fn fillTestRgb16Level(pixels: []u16, image_width: usize, image_height: usize, x: usize, y: usize, w: usize, h: usize, level: f64) void {
+    const sample: u16 = @intFromFloat(@min(65535.0, @max(0.0, @round(level * 65535.0))));
+    const x1 = @min(image_width, x + w);
+    const y1 = @min(image_height, y + h);
+    for (y..y1) |yy| {
+        for (x..x1) |xx| {
+            const index = (yy * image_width + xx) * 3;
+            pixels[index] = sample;
+            pixels[index + 1] = sample;
+            pixels[index + 2] = sample;
+        }
+    }
 }

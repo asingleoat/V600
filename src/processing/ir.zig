@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const numeric = @import("numeric_fixture.zig");
+const ir_pure = @import("ir_pure.zig");
 
 const use_native_ir_helpers = !builtin.cpu.arch.isWasm() and builtin.link_libc;
 
@@ -16,41 +17,39 @@ extern fn v600_align_ir_find_ecc_translation(
     ty: *f64,
 ) c_int;
 
-fn fallback_align_ir_find_ecc_translation(
-    rgb: [*]const f64,
-    rgb_width: c_int,
-    rgb_height: c_int,
-    ir: [*]const f64,
-    ir_width: c_int,
-    ir_height: c_int,
-    tx: *f64,
-    ty: *f64,
-) c_int {
-    _ = rgb;
-    _ = rgb_width;
-    _ = rgb_height;
-    _ = ir;
-    _ = ir_width;
-    _ = ir_height;
-    tx.* = 0.0;
-    ty.* = 0.0;
-    return 1;
-}
+// Matches the opencv_ecc.cpp constants so the pure-Zig fallback estimates the
+// same translation shape as the native OpenCV helper.
+const pure_ecc_scale: f64 = 0.125;
+const pure_ecc_max_iterations: u32 = 200;
+const pure_ecc_epsilon: f64 = 1.0e-6;
 
-fn callAlignIrFindEccTranslation(
-    rgb: [*]const f64,
-    rgb_width: c_int,
-    rgb_height: c_int,
-    ir: [*]const f64,
-    ir_width: c_int,
-    ir_height: c_int,
-    tx: *f64,
-    ty: *f64,
-) c_int {
-    if (use_native_ir_helpers) {
-        return v600_align_ir_find_ecc_translation(rgb, rgb_width, rgb_height, ir, ir_width, ir_height, tx, ty);
-    }
-    return fallback_align_ir_find_ecc_translation(rgb, rgb_width, rgb_height, ir, ir_width, ir_height, tx, ty);
+fn estimateTranslationEccPure(
+    allocator: std.mem.Allocator,
+    rgb: []const f64,
+    rgb_width: usize,
+    rgb_height: usize,
+    ir: []const f64,
+    ir_width: usize,
+    ir_height: usize,
+) !ir_pure.TranslationEstimate {
+    const rgb_f32 = try allocator.alloc(f32, rgb.len);
+    defer allocator.free(rgb_f32);
+    for (rgb, rgb_f32) |value, *out| out.* = @floatCast(value);
+    const ir_f32 = try allocator.alloc(f32, ir.len);
+    defer allocator.free(ir_f32);
+    for (ir, ir_f32) |value, *out| out.* = @floatCast(value);
+    return ir_pure.estimateTranslationEccF32(
+        allocator,
+        rgb_f32,
+        rgb_width,
+        rgb_height,
+        ir_f32,
+        ir_width,
+        ir_height,
+        pure_ecc_scale,
+        pure_ecc_max_iterations,
+        pure_ecc_epsilon,
+    );
 }
 
 extern fn v600_estimate_local_grain(
@@ -67,52 +66,6 @@ extern fn v600_estimate_local_grain(
     has_spectrum: *c_int,
 ) c_int;
 
-fn fallback_estimate_local_grain(
-    roi_rgb: [*]const f64,
-    roi_mask: [*]const u8,
-    width: c_int,
-    height: c_int,
-    grain_padding: c_int,
-    grain_std: [*]f64,
-    signal_out: [*]f64,
-    spectrum_out: [*]f64,
-    spectrum_capacity: c_int,
-    spectrum_len: *c_int,
-    has_spectrum: *c_int,
-) c_int {
-    _ = roi_rgb;
-    _ = roi_mask;
-    _ = width;
-    _ = height;
-    _ = grain_padding;
-    _ = grain_std;
-    _ = signal_out;
-    _ = spectrum_out;
-    _ = spectrum_capacity;
-    spectrum_len.* = 0;
-    has_spectrum.* = 0;
-    return 1;
-}
-
-fn callEstimateLocalGrain(
-    roi_rgb: [*]const f64,
-    roi_mask: [*]const u8,
-    width: c_int,
-    height: c_int,
-    grain_padding: c_int,
-    grain_std: [*]f64,
-    signal_out: [*]f64,
-    spectrum_out: [*]f64,
-    spectrum_capacity: c_int,
-    spectrum_len: *c_int,
-    has_spectrum: *c_int,
-) c_int {
-    if (use_native_ir_helpers) {
-        return v600_estimate_local_grain(roi_rgb, roi_mask, width, height, grain_padding, grain_std, signal_out, spectrum_out, spectrum_capacity, spectrum_len, has_spectrum);
-    }
-    return fallback_estimate_local_grain(roi_rgb, roi_mask, width, height, grain_padding, grain_std, signal_out, spectrum_out, spectrum_capacity, spectrum_len, has_spectrum);
-}
-
 extern fn v600_synthesize_grain_from_noise(
     noise: [*]const f64,
     width: c_int,
@@ -123,43 +76,6 @@ extern fn v600_synthesize_grain_from_noise(
     channels: c_int,
     output: [*]f64,
 ) c_int;
-
-fn fallback_synthesize_grain_from_noise(
-    noise: [*]const f64,
-    width: c_int,
-    height: c_int,
-    grain_std: [*]const f64,
-    grain_spectrum: ?[*]const f64,
-    spectrum_len: c_int,
-    channels: c_int,
-    output: [*]f64,
-) c_int {
-    _ = noise;
-    _ = width;
-    _ = height;
-    _ = grain_std;
-    _ = grain_spectrum;
-    _ = spectrum_len;
-    _ = channels;
-    _ = output;
-    return 1;
-}
-
-fn callSynthesizeGrainFromNoise(
-    noise: [*]const f64,
-    width: c_int,
-    height: c_int,
-    grain_std: [*]const f64,
-    grain_spectrum: ?[*]const f64,
-    spectrum_len: c_int,
-    channels: c_int,
-    output: [*]f64,
-) c_int {
-    if (use_native_ir_helpers) {
-        return v600_synthesize_grain_from_noise(noise, width, height, grain_std, grain_spectrum, spectrum_len, channels, output);
-    }
-    return fallback_synthesize_grain_from_noise(noise, width, height, grain_std, grain_spectrum, spectrum_len, channels, output);
-}
 
 extern fn v600_solve_sparse_lu(
     n: usize,
@@ -285,16 +201,7 @@ pub const DefectMaskOptions = struct {
     adaptive_worker_count: usize = 1,
 };
 
-pub const LocalGrainEstimate = struct {
-    grain_std: [3]f64,
-    signal: []f64,
-    spectrum: ?[]f64,
-
-    pub fn deinit(self: LocalGrainEstimate, allocator: std.mem.Allocator) void {
-        allocator.free(self.signal);
-        if (self.spectrum) |spectrum| allocator.free(spectrum);
-    }
-};
+pub const LocalGrainEstimate = ir_pure.LocalGrainEstimate;
 
 pub const InpaintValueKind = enum {
     float32,
@@ -371,7 +278,6 @@ pub fn alignIr(
     try validateAlignmentInputs(rgb, rgb_width, rgb_height, ir, ir_width, ir_height, output);
     if (options.max_offset < 0) return error.InvalidIrAlignmentOffset;
 
-    _ = allocator;
     if (rgb_width > @as(usize, @intCast(std.math.maxInt(c_int))) or
         rgb_height > @as(usize, @intCast(std.math.maxInt(c_int))) or
         ir_width > @as(usize, @intCast(std.math.maxInt(c_int))) or
@@ -382,19 +288,28 @@ pub fn alignIr(
 
     var tx: f64 = 0.0;
     var ty: f64 = 0.0;
-    const ecc_status = callAlignIrFindEccTranslation(
-        rgb.ptr,
-        @intCast(rgb_width),
-        @intCast(rgb_height),
-        ir.ptr,
-        @intCast(ir_width),
-        @intCast(ir_height),
-        &tx,
-        &ty,
-    );
-    if (ecc_status != 0) {
-        @memcpy(output, ir);
-        return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
+    if (use_native_ir_helpers) {
+        const ecc_status = v600_align_ir_find_ecc_translation(
+            rgb.ptr,
+            @intCast(rgb_width),
+            @intCast(rgb_height),
+            ir.ptr,
+            @intCast(ir_width),
+            @intCast(ir_height),
+            &tx,
+            &ty,
+        );
+        if (ecc_status != 0) {
+            @memcpy(output, ir);
+            return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
+        }
+    } else {
+        const estimate = estimateTranslationEccPure(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height) catch {
+            @memcpy(output, ir);
+            return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
+        };
+        tx = estimate.tx;
+        ty = estimate.ty;
     }
 
     if (@abs(tx) < 0.5 and @abs(ty) < 0.5) {
@@ -1088,6 +1003,9 @@ pub fn estimateLocalGrain(
     if (width == 0 or height == 0 or roi_rgb.len != width * height * 3 or roi_mask.len != width * height) {
         return error.InvalidIrLocalGrainBuffer;
     }
+    if (!use_native_ir_helpers) {
+        return ir_pure.estimateLocalGrain(allocator, roi_rgb, roi_mask, width, height, grain_padding);
+    }
     if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
         height > @as(usize, @intCast(std.math.maxInt(c_int))) or
         grain_padding > @as(usize, @intCast(std.math.maxInt(c_int))))
@@ -1105,7 +1023,7 @@ pub fn estimateLocalGrain(
     var grain_std = [_]f64{ 0.0, 0.0, 0.0 };
     var spectrum_len: c_int = 0;
     var has_spectrum: c_int = 0;
-    const status = callEstimateLocalGrain(
+    const status = v600_estimate_local_grain(
         roi_rgb.ptr,
         roi_mask.ptr,
         @intCast(width),
@@ -1138,6 +1056,7 @@ pub fn estimateLocalGrain(
 }
 
 pub fn synthesizeGrainFromNoise(
+    allocator: std.mem.Allocator,
     noise: []const f64,
     width: usize,
     height: usize,
@@ -1153,6 +1072,9 @@ pub fn synthesizeGrainFromNoise(
     {
         return error.InvalidIrGrainSynthesisBuffer;
     }
+    if (!use_native_ir_helpers) {
+        return ir_pure.synthesizeGrainFromNoise(allocator, noise, width, height, grain_std, grain_spectrum, channels, output);
+    }
     if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
         height > @as(usize, @intCast(std.math.maxInt(c_int))) or
         channels > @as(usize, @intCast(std.math.maxInt(c_int))))
@@ -1162,7 +1084,7 @@ pub fn synthesizeGrainFromNoise(
     const spectrum_len = if (grain_spectrum) |spectrum| spectrum.len else 0;
     if (spectrum_len > @as(usize, @intCast(std.math.maxInt(c_int)))) return error.InvalidIrGrainSynthesisBuffer;
 
-    const status = callSynthesizeGrainFromNoise(
+    const status = v600_synthesize_grain_from_noise(
         noise.ptr,
         @intCast(width),
         @intCast(height),
@@ -1443,6 +1365,7 @@ pub fn inpaintBiharmonicWithGrainFromNoiseTimed(
         noise_offset += roi_values;
         const synth_started = monotonicNowNs();
         try synthesizeGrainFromNoise(
+            allocator,
             component_noise,
             roi_width,
             roi_height,
@@ -1862,10 +1785,7 @@ fn castClippedStorageValue(value: f64, value_kind: InpaintValueKind) f64 {
     };
 }
 
-pub fn roundF32(value: f64) f64 {
-    const rounded: f32 = @floatCast(value);
-    return @floatCast(rounded);
-}
+pub const roundF32 = ir_pure.roundF32;
 
 fn monotonicNowNs() u64 {
     if (builtin.cpu.arch.isWasm() or !builtin.link_libc) return 0;
@@ -4317,7 +4237,6 @@ fn loadAlignmentFixture(
 }
 
 fn expectAlignmentFixture(path: []const u8) !void {
-    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var parsed = try loadAlignmentFixture(allocator, std.testing.io, path);
     defer parsed.deinit();
@@ -4334,10 +4253,19 @@ fn expectAlignmentFixture(path: []const u8) !void {
     const output = try allocator.alloc(f64, fixture.expected.len);
     defer allocator.free(output);
     const result = try alignIr(allocator, rgb, rgb_width, rgb_height, fixture.ir, ir_width, ir_height, output, .{ .max_offset = 4 });
-    try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 1e-5);
-    try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 1e-5);
-    try std.testing.expect(result.shifted);
-    try numeric.assertCloseSlices(fixture.expected, output, fixture.tolerance);
+    if (use_native_ir_helpers) {
+        try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 1e-5);
+        try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 1e-5);
+        try std.testing.expect(result.shifted);
+        try numeric.assertCloseSlices(fixture.expected, output, fixture.tolerance);
+    } else {
+        // The pure-Zig translation ECC is not OpenCV-bit-exact. Hold it to the
+        // 0.05 px offset envelope accepted for the browser estimate path and
+        // skip the sample comparison, which bakes in the exact OpenCV offset.
+        try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 0.05);
+        try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 0.05);
+        try std.testing.expect(result.shifted);
+    }
 }
 
 fn expectThresholdFixture(path: []const u8) !void {
@@ -4504,7 +4432,6 @@ fn expectCoverageFixture(path: []const u8) !void {
 }
 
 fn expectLocalGrainFixture(path: []const u8) !void {
-    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
     defer allocator.free(text);
@@ -4544,7 +4471,6 @@ fn expectLocalGrainFixture(path: []const u8) !void {
 }
 
 fn expectGrainSynthesisFixture(path: []const u8) !void {
-    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
     defer allocator.free(text);
@@ -4566,6 +4492,7 @@ fn expectGrainSynthesisFixture(path: []const u8) !void {
     const output = try allocator.alloc(f64, expected_len);
     defer allocator.free(output);
     try synthesizeGrainFromNoise(
+        allocator,
         fixture.noise,
         width,
         height,
@@ -4608,7 +4535,6 @@ fn expectBiharmonicFixture(path: []const u8) !void {
 }
 
 fn expectPythonInpaintFixture(path: []const u8) !void {
-    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(512 * 1024));
     defer allocator.free(text);
@@ -4654,7 +4580,6 @@ fn expectPythonInpaintFixture(path: []const u8) !void {
 }
 
 fn expectIrCleanFixture(path: []const u8) !void {
-    if (!use_native_ir_helpers) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
     defer allocator.free(text);
@@ -5141,7 +5066,7 @@ test "IR local grain estimation validates dimensions" {
 
 test "IR grain synthesis validates dimensions" {
     var output = [_]f64{0};
-    try std.testing.expectError(error.InvalidIrGrainSynthesisBuffer, synthesizeGrainFromNoise(&.{ 1.0, 2.0 }, 1, 1, &.{1.0}, null, 1, &output));
+    try std.testing.expectError(error.InvalidIrGrainSynthesisBuffer, synthesizeGrainFromNoise(std.testing.allocator, &.{ 1.0, 2.0 }, 1, 1, &.{1.0}, null, 1, &output));
 }
 
 test "IR biharmonic inpaint validates dimensions and no-mask copy" {
