@@ -217,7 +217,7 @@ Current implementation checkpoint:
 | Linux | Supported through SANE, live-tested on V600 | Supported | Supported through SDL3/Nuklear | `packages.cli`, `packages.ui` | Hardware smokes require `V600_HARDWARE_SMOKE=1`. |
 | macOS | Paused until user reopens on macOS hardware; replay-tested only | Planned | Planned through SDL3/Nuklear | Flake systems listed, live build paused | Requires host Epson bundle and runtime USB binding work. |
 | Windows | Not planned for version one | Planned | Planned through SDL3/Nuklear | Not wired | Scanner commands must stay unsupported until a backend exists. |
-| Browser/Wasm | Not planned for version one; local native companion may be designed later | Planned processing webapp | Browser-native shell first; SDL3/Nuklear/Emscripten spike only | Not wired | Wasm core and browser WebGPU plan are documented in `docs/WEBAPP_PORT_PLAN.md`. |
+| Browser/Wasm | Local companion server (`v600-zig serve`) exposes the native scanner stack over loopback HTTP; browser-only WebUSB remains a recorded research track | Processing webapp implemented | Browser-native shell first; SDL3/Nuklear/Emscripten spike only | `zig build wasm-webapp` staging; companion serves it | Wasm core and browser WebGPU plan are documented in `docs/WEBAPP_PORT_PLAN.md`; the companion protocol in `docs/SCANNER_COMPANION.md`. |
 
 ## Release Checklist
 

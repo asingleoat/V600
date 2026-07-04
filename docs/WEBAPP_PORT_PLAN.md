@@ -106,6 +106,11 @@ Current reuse map, refreshed 2026-07-03:
 - Native-only by design for now: scanner drivers, SDL3/Nuklear UI, native
   filesystem path management, native thread scheduling, and native
   `wgpu-native` host setup.
+- Scanner acquisition from the browser goes through the local companion
+  server (`v600-zig serve`, Phase 15): the browser talks loopback HTTP to the
+  unmodified native scanner stack rather than driving USB itself. A
+  browser-native WebUSB ESC/I driver is recorded as a research track in
+  `plan.md` Phase 15, not a supported route.
 
 ## Current Implementation Status
 

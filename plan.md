@@ -11133,3 +11133,80 @@ rewrites; do not combine a move and a behavior change in one commit.
       chrome/selection/render assertions without a display; the two
       hardware smokes skip by design without `V600_HARDWARE_SMOKE=1`).
     - `zig fmt --check` and `git diff --check` passed.
+
+### Phase 15: Browser Scanner Companion
+
+The static browser webapp cannot reach USB hardware, so film acquisition has
+been native-only. This phase closes that gap with a local native companion
+server instead of a browser USB driver: `v600-zig serve` binds
+`127.0.0.1`, serves the staged browser webapp, and exposes the existing
+parity-accepted scanner stack over a small HTTP API. The browser gains the
+acquisition pipeline with identical scan quality because the companion runs
+the same `scanner.linux.Runtime` code path (patched epkowa SANE, gamma LUT
+upload, IR pass, TPU calibration) that the native app uses.
+
+Design rules:
+
+- The companion reuses the `v600.scanner.event.v1` JSON event schema as its
+  progress wire format; the API adds only a thin
+  `v600.companion.event.v1`/`v600.companion.api.v1` envelope (job status and
+  ready lines). No scanner behavior forks.
+- The server binds loopback only and never adds CORS headers: the webapp must
+  be served by the companion itself (same origin), which also sidesteps
+  Chrome Private Network Access preflights. Remote exposure is out of scope.
+- One scan job at a time (the scanner is exclusive hardware). Job state is
+  `idle`, `running`, `complete`, `failed`, or `cancelled`; events are
+  buffered in memory and the client polls with a `from` index. SSE/WebSocket
+  streaming is a possible later refinement, not v1.
+- Cancellation reuses the existing `--cancel-file` mechanism: the cancel
+  endpoint creates the job's cancel file and the scan runtime notices it.
+- The webapp degrades gracefully: when `/api/status` is unreachable (static
+  hosting, python http.server), the Scan tab shows companion instructions
+  and the processing pipeline remains fully functional.
+
+Endpoint contract (v1):
+
+- `GET /api/status` -> `{schema, service, version, job}` where `job` is the
+  current/last job summary or null.
+- `GET /api/devices` -> `{devices: [{name, vendor, model, kind}], error?}`;
+  discovery failures report gracefully instead of failing the request.
+- `POST /api/scan` with `{dpi?, source?, kind?, depth?, device?, x?, y?,
+  width?, height?}` -> `{job, output}`; `409` while a job is running.
+- `GET /api/scan/<id>/events?from=N` -> `{job, status, next, events: [...]}`
+  replaying buffered scanner event objects from index `N`.
+- `GET /api/scan/<id>/file` -> the combined TIFF bytes once complete.
+- `GET /api/scan/<id>/metadata` -> the sidecar JSON once complete.
+- `POST /api/scan/<id>/cancel` -> creates the cancel file.
+- Any other path serves the staged webapp directory (`/` -> `index.html`)
+  with `..` traversal rejected.
+
+Validation strategy: a hardware-free Node companion smoke drives the full
+lifecycle against a fake `scanimage` (the same override the scanner runtime
+tests use): server ready line, status/devices endpoints, static webapp
+serving, a complete `rgb_ir` scan job with polled events through
+`scan-complete`, TIFF download parsed by the browser TIFF reader, metadata
+sidecar shape, and cancel/busy status codes. Live-hardware companion evidence
+is deliberately deferred until the V600 is plugged in again and recorded then.
+
+WebUSB research note: a browser-native ESC/I driver over WebUSB is the only
+no-install path and is technically plausible against
+`docs/SCANNER_INTERNALS.md` plus the `workspace/` USB traces, with a
+shared-core-compliant split (ESC/I packet construction in Zig/Wasm, WebUSB
+transport in JS). It is recorded as a research track, not a product route:
+Chromium-only, Windows requires WinUSB driver replacement, macOS fights the
+ICA subsystem for the device, and it would be a third scanner backend to
+maintain against real hardware risk.
+
+- [ ] 15.1 Build the `v600-zig serve` companion server: loopback HTTP server
+  over `std.Io.net` + `std.http.Server`, static webapp serving, the endpoint
+  contract above, an in-memory job event sink rendering the existing
+  `v600.scanner.event.v1` lines, scan execution on a worker thread through
+  `scanner.linux.Runtime`, a `--scanimage` override for hardware-free
+  testing, a `companion-smoke` build step, and `docs/SCANNER_COMPANION.md`.
+- [ ] 15.2 Wire the webapp Scan tab to the companion: a `web/companion.mjs`
+  client module (status probe, scan request builder, event poller), Scan tab
+  controls and progress list, handoff of the finished TIFF into the existing
+  Process pipeline, graceful no-companion messaging, and smoke coverage.
+- [ ] 15.3 Live-hardware companion evidence once the scanner is reconnected:
+  real `rgb_ir` scan through the browser Scan tab, recorded in
+  `docs/PARITY_MANIFEST.md` with timing events and output identity.
