@@ -150,14 +150,20 @@ checkpoint:
 - `zig build wasm-tiff-reader-smoke --summary all` validates the TIFF reader
   against the committed `rgb-thumb-ir.tiff` Python oracle fixture and
   round-trips the fixture RGB page through the browser TIFF writer.
-- The shell exposes the first render/Dmin/sample-limit controls and a PPM
-  preview download path. These controls flow through the same cache-key and
-  worker request path as the headless shell smoke.
+- `test/wasm/real_scan_ir_estimate_probe.mjs` is a manual diagnostic, not a
+  build-step test:
+  `node test/wasm/real_scan_ir_estimate_probe.mjs zig-out/webapp/v600-wasm-core.wasm scans/<file>.tiff`
+  reports the browser translation-ECC estimate for a local RGB+IR scan so it
+  can be compared against the native estimate.
+- The shell exposes render/Dmin/sample-limit controls. These controls flow
+  through the same cache-key and worker request path as the headless shell
+  smoke. The early PPM preview download surface was removed once TIFF export
+  variants landed; canvas preview plus TIFF/JSON export downloads are the
+  supported outputs.
 - Browser-side manual frame selection now works through numeric controls and
   canvas drag rectangles. The web shell includes the normalized frame in the
   cache key, then the worker performs selected-frame RGB16 crop before calling
-  the Wasm preview/export functions. Preview downloads remain deterministic
-  PPM plus JSON metadata sidecars for the selected frame.
+  the Wasm preview/export functions.
 - The browser worker also exposes a selected-frame full-resolution RGB16 export
   operation. It uses the same in-memory crop, Dmin, film stock, and render
   controls as preview, returns `u16 RGB` through a transferred buffer, and can

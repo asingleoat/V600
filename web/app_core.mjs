@@ -80,24 +80,6 @@ export function enabledExportVariants(selection = defaultOutputSelection()) {
   return nativeExportVariantOrder.filter((variant) => Boolean(selection[variant.id]));
 }
 
-export const rawFixture = new Uint16Array([
-  51000, 42000, 35000,
-  45000, 39000, 31000,
-  39000, 33000, 26000,
-  33000, 27000, 21000,
-]);
-
-export const expectedDemoPreview = new Uint8Array([
-  0, 5, 141,
-  18, 39, 222,
-  122, 133, 255,
-  242, 243, 255,
-]);
-
-export function demoRawRgb16Buffer() {
-  return rawFixture.buffer.slice(rawFixture.byteOffset, rawFixture.byteOffset + rawFixture.byteLength);
-}
-
 export function defaultRenderConfig(overrides = {}) {
   return {
     contrast: 1.4,
@@ -526,13 +508,6 @@ function axisAlignedFrameBounds(frame, image) {
     cy: y + h / 2.0,
     angle: 0.0,
   };
-}
-
-export function rgb16ArrayBufferToF32(arrayBuffer, image) {
-  const source = parseRawRgb16Buffer(arrayBuffer, image);
-  const out = new Float32Array(source.length);
-  for (let index = 0; index < source.length; index += 1) out[index] = source[index];
-  return out.buffer;
 }
 
 export function scalarArrayBufferToF32(arrayBuffer, sampleFormat = "u8") {
@@ -1189,13 +1164,6 @@ export function defaultIrMaskResizeOptions({ image }) {
   };
 }
 
-export function defaultIrInpaintOptions({ image }) {
-  return {
-    width: image.width,
-    height: image.height,
-  };
-}
-
 export function defaultIrInpaintGrainOptions({ image, padding = 16, grainPadding = 8 }) {
   return {
     width: image.width,
@@ -1247,42 +1215,6 @@ export function rgb8ToRgba(rgb8) {
     rgba[dst + 3] = 255;
   }
   return rgba;
-}
-
-export function rgb16ToPpmBytes(rgb16, width, height) {
-  const header = new TextEncoder().encode(`P6\n${width} ${height}\n65535\n`);
-  const out = new Uint8Array(header.length + rgb16.length * 2);
-  out.set(header, 0);
-  const view = new DataView(out.buffer, out.byteOffset + header.length, rgb16.length * 2);
-  for (let index = 0; index < rgb16.length; index += 1) {
-    view.setUint16(index * 2, rgb16[index], false);
-  }
-  return out;
-}
-
-export function rgb8ToPpmBytes(rgb8, width, height) {
-  const header = new TextEncoder().encode(`P6\n${width} ${height}\n255\n`);
-  const out = new Uint8Array(header.length + rgb8.length);
-  out.set(header, 0);
-  out.set(rgb8, header.length);
-  return out;
-}
-
-export function exportFileStem({ sourceName, frame, cacheKey, operation = "preview" }) {
-  const sourceStem = sanitizeStem(sourceName.replace(/\.[^.]*$/, "")) || "scan";
-  const frameTag = frame.kind === "full-image"
-    ? "full"
-    : frameTagForFilename(frame);
-  const cacheTag = cacheKey?.startsWith("sha256:") ? cacheKey.slice(7, 19) : "uncached";
-  return `${sourceStem}_${operation}_${frameTag}_${cacheTag}`;
-}
-
-export function previewPpmFilename({ sourceName, frame, cacheKey }) {
-  return `${exportFileStem({ sourceName, frame, cacheKey, operation: "preview" })}.ppm`;
-}
-
-export function previewMetadataFilename({ sourceName, frame, cacheKey }) {
-  return `${exportFileStem({ sourceName, frame, cacheKey, operation: "preview" })}.json`;
 }
 
 export function nativeExportFilename({ sourceName, frameIndex = 0, variant }) {
@@ -1350,51 +1282,6 @@ export function buildNativeVariantExportMetadata({
     metadata.dmin = dmin;
   }
   return metadata;
-}
-
-export function buildPreviewExportMetadata({
-  file,
-  image,
-  frame,
-  stockId,
-  render,
-  dmin,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return {
-    schema: output.schema ?? "v600.webapp.preview-export.v1",
-    operation: output.operation ?? "preview-export",
-    source_file: file,
-    source_image: {
-      width: image.width,
-      height: image.height,
-      dpi: image.dpi ?? null,
-      channels: 3,
-      bit_depth: 16,
-      page_layout: image.page_layout ?? "rgb",
-      ir: image.ir ?? null,
-    },
-    frame,
-    film_stock: stockName(stockId),
-    render,
-    dmin,
-    backend: {
-      kind: "wasm-cpu",
-      precision: "f32",
-    },
-    output: {
-      kind: output.kind ?? "rgb8-preview",
-      format: output.format ?? "ppm",
-      color_space: output.color_space ?? "srgb",
-      bit_depth: output.bit_depth ?? 8,
-      width: output.width,
-      height: output.height,
-    },
-    cache_key: cacheKey,
-    timings,
-  };
 }
 
 export function metadataJsonBytes(metadata) {
@@ -1701,65 +1588,6 @@ export class WebPreviewClient {
     };
   }
 
-  async makeIrMaskU8({
-    irBuffer,
-    file,
-    image,
-    dustRemoval = defaultDustRemovalConfig(),
-  }) {
-    await this.loadModule();
-    if (!image.ir) throw new Error("IR mask processing requires image.ir metadata");
-    if (irBuffer.byteLength !== image.ir.width * image.ir.height) {
-      throw new Error(`IR input size ${irBuffer.byteLength} does not match ${image.ir.width}x${image.ir.height}`);
-    }
-    const cacheInput = buildIrMaskCacheInput({
-      file,
-      image,
-      dustRemoval,
-    });
-    const cacheKey = await irMaskCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-mask");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irMaskResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrMaskMessage({
-      requestId,
-      generation,
-      cacheKey,
-      cacheKeyPayload: cacheInput,
-      buffers: {
-        ir: {
-          buffer: irBuffer,
-          samples: irBuffer.byteLength,
-        },
-      },
-      options: {
-        ir_mask_options_layout: "IrMaskOptions/v1",
-        ir_mask_options: defaultIrMaskOptions({ image, dustRemoval }),
-      },
-    });
-    this.post(processMessage, [irBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR mask result: ${message.reason}`);
-    }
-    return {
-      cacheKey,
-      mask: new Uint8Array(message.output.buffer),
-      width: message.output.width,
-      height: message.output.height,
-      timings: message.timings,
-    };
-  }
-
   async makeIrMaskF32({
     irBuffer,
     file,
@@ -1877,75 +1705,6 @@ export class WebPreviewClient {
       mask: new Uint8Array(message.output.buffer),
       width: message.output.width,
       height: message.output.height,
-      timings: message.timings,
-    };
-  }
-
-  async inpaintBiharmonicRgb16({
-    rgbBuffer,
-    maskBuffer,
-    file,
-    image,
-    dustRemoval = defaultDustRemovalConfig(),
-    rgbMaskCacheKey,
-  }) {
-    await this.loadModule();
-    if (rgbBuffer.byteLength !== image.width * image.height * 3 * 2) {
-      throw new Error(`RGB16 input size ${rgbBuffer.byteLength} does not match ${image.width}x${image.height}`);
-    }
-    if (maskBuffer.byteLength !== image.width * image.height) {
-      throw new Error(`RGB mask size ${maskBuffer.byteLength} does not match ${image.width}x${image.height}`);
-    }
-    const cacheInput = buildIrInpaintCacheInput({
-      file,
-      image,
-      dustRemoval,
-      rgbMaskCacheKey,
-    });
-    const cacheKey = await irInpaintCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-inpaint");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irInpaintResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrInpaintMessage({
-      requestId,
-      generation,
-      cacheKey,
-      cacheKeyPayload: cacheInput,
-      buffers: {
-        rgb: {
-          buffer: rgbBuffer,
-          samples: rgbBuffer.byteLength / 2,
-        },
-        rgb_mask: {
-          buffer: maskBuffer,
-          samples: maskBuffer.byteLength,
-        },
-      },
-      options: {
-        ir_inpaint_options_layout: "IrInpaintOptions/v1",
-        ir_inpaint_options: defaultIrInpaintOptions({ image }),
-      },
-    });
-    this.post(processMessage, [rgbBuffer, maskBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR inpaint result: ${message.reason}`);
-    }
-    return {
-      cacheKey,
-      rgb16: new Uint16Array(message.output.buffer),
-      width: message.output.width,
-      height: message.output.height,
-      mode: message.output.mode,
       timings: message.timings,
     };
   }
@@ -2597,23 +2356,6 @@ function sanitizeStem(value) {
     .replace(/[^a-z0-9._-]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 96);
-}
-
-function frameTagForFilename(frame) {
-  const base = `x${numberTag(frame.x)}_y${numberTag(frame.y)}_w${numberTag(frame.w)}_h${numberTag(frame.h)}`;
-  if (Math.abs(frame.angle ?? 0) <= 1.0e-9) return base;
-  return `${base}_a${numberTag(frame.angle)}`;
-}
-
-function numberTag(value) {
-  const number = Number(value);
-  if (Math.abs(number - Math.round(number)) <= 1.0e-9) return String(Math.round(number));
-  return number
-    .toFixed(4)
-    .replace(/0+$/g, "")
-    .replace(/\.$/g, "")
-    .replace(/-/g, "m")
-    .replace(/\./g, "p");
 }
 
 function isNodeRuntime() {

@@ -10843,7 +10843,7 @@ step lands as its own commit gated by the standard validation suite:
 `wasm-*` smoke suite, and `git diff --check`. Prefer pure code moves before
 rewrites; do not combine a move and a behavior change in one commit.
 
-- [ ] 14.1 Low-risk hygiene pass.
+- [x] 14.1 Low-risk hygiene pass.
   - Delete dead `rgb16ArrayBufferToF32` in `web/app_core.mjs`.
   - Move the test-only demo fixture exports (`rawFixture`,
     `expectedDemoPreview`, `demoRawRgb16Buffer`) out of `web/app_core.mjs`
@@ -10876,6 +10876,50 @@ rewrites; do not combine a move and a behavior change in one commit.
   - Refresh `README.md`: present the Zig native app and the browser webapp
     as the products, the Python tree as the frozen behavior oracle, and the
     current build/run entrypoints.
+  - Completed 2026-07-03:
+    - Deleted the unreachable browser preview-download surface from
+      `web/app_core.mjs` (`rgb16ToPpmBytes`, `rgb8ToPpmBytes`,
+      `exportFileStem`, `previewPpmFilename`, `previewMetadataFilename`,
+      `buildPreviewExportMetadata`, plus the private
+      `frameTagForFilename`/`numberTag` helpers), the dead
+      `rgb16ArrayBufferToF32`, the orphaned `defaultIrInpaintOptions`, and
+      the `WebPreviewClient.makeIrMaskU8`/`inpaintBiharmonicRgb16` client
+      methods that the composed export path never calls. Worker-level
+      `process-ir-mask` and `biharmonic-no-grain` coverage remains in
+      `test/wasm/worker_runtime_smoke.mjs`; the shell smoke's RGB-mask
+      resize section now feeds the known one-pixel mask directly.
+    - Moved the 2x2 demo fixture out of the shipped app module into
+      `test/wasm/demo_fixture.mjs`; the static smoke's
+      "app does not reference demo data" assertion still holds.
+    - Replaced the raw preview cache-key `setStatus` in `web/app.mjs` with
+      "Preview ready".
+    - Bounded `padding`/`grain_padding` at `max_ir_inpaint_padding = 4096`
+      in `validateIrInpaintGrainRequest`, mapped checked-multiply
+      `error.Overflow` to the `invalid_dimensions` status, and recorded the
+      OpenCV-vs-skimage ellipse divergence and the `frameFormatById` zero
+      default in source comments.
+    - Raised the worker runtime smoke per-message timeout from 5s to 30s.
+    - Documented `test/wasm/real_scan_ir_estimate_probe.mjs` as a manual
+      diagnostic in `docs/WEBAPP_PORT_PLAN.md` and corrected that doc's
+      stale PPM-download claims.
+    - Refreshed `README.md` from the Python-era description to the Zig
+      CLI/native UI/browser webapp with accurate entrypoints, the platform
+      support summary, and the Python tree as frozen oracle.
+    - Recorded the surface removal in `docs/PARITY_MANIFEST.md` as the
+      "Phase 14 Browser hygiene pass" row.
+  - Validation 2026-07-03:
+    - `zig fmt --check src/wasm/core.zig` passed.
+    - `zig build test --summary all` passed `602/614` with 12 expected
+      skips.
+    - `zig build wasm-core-smoke wasm32-core-smoke
+      wasm-worker-protocol-smoke wasm-worker-runtime-smoke
+      wasm-webapp-shell-smoke wasm-tiff-reader-smoke
+      wasm-webapp-static-smoke wasm-webapp --summary all` passed 20/20
+      steps with all smoke events `status=ok`.
+    - `zig build --summary all` and `zig build -Dui=true --summary all`
+      passed.
+    - `node --check` passed on every touched `.mjs` file and
+      `git diff --check` passed.
 
 - [ ] 14.2 Shared-core consolidation (Zig) per the Shared-Core Policy in
   `docs/WEBAPP_PORT_PLAN.md`.

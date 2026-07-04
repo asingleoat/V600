@@ -9,6 +9,10 @@ const render = @import("../processing/render.zig");
 
 const allocation_alignment = std.mem.Alignment.@"16";
 
+// Sanity ceiling far above any real dust-ROI padding; keeps the downstream
+// usize -> i32 radius casts safe in the ReleaseFast Wasm artifact.
+const max_ir_inpaint_padding: u32 = 4096;
+
 pub const Status = enum(i32) {
     ok = 0,
     invalid_buffer = 1,
@@ -817,6 +821,7 @@ fn validateIrInpaintRequest(rgb_len: usize, mask_len: usize, output_len: usize, 
 fn validateIrInpaintGrainRequest(rgb_len: usize, mask_len: usize, output_len: usize, options: IrInpaintGrainOptions) !void {
     if (rgb_len == 0 or mask_len == 0 or output_len == 0) return error.InvalidBuffer;
     if (options.width == 0 or options.height == 0) return error.InvalidDimensions;
+    if (options.padding > max_ir_inpaint_padding or options.grain_padding > max_ir_inpaint_padding) return error.InvalidDimensions;
     const pixels = try std.math.mul(usize, @as(usize, options.width), @as(usize, options.height));
     if (pixels != mask_len) return error.InvalidDimensions;
     const rgb_samples = try std.math.mul(usize, pixels, 3);
@@ -1324,6 +1329,9 @@ const EllipseSpan = struct {
     x_max: i32,
 };
 
+// Matches cv::getStructuringElement(MORPH_ELLIPSE); for radius >= 2 this
+// differs from the skimage-style disk in ir.zig ellipseKernelRowSpans, so the
+// two must not be deduplicated.
 fn openCvEllipseSpans(allocator: std.mem.Allocator, radius: usize) ![]EllipseSpan {
     const diameter = radius * 2 + 1;
     const spans = try allocator.alloc(EllipseSpan, diameter);
@@ -1870,7 +1878,9 @@ fn statusFromError(err: anyerror) Status {
         error.InvalidClaheInput,
         error.InvalidRotationTransformInput,
         => .invalid_buffer,
-        error.InvalidDimensions => .invalid_dimensions,
+        error.InvalidDimensions,
+        error.Overflow,
+        => .invalid_dimensions,
         error.InvalidStock,
         error.InvalidFilmFormat,
         error.UnsupportedDensityLutOutput,
@@ -1882,6 +1892,7 @@ fn statusFromError(err: anyerror) Status {
 
 fn frameFormatById(id: u32) ?frames.FilmFormat {
     return switch (id) {
+        // 0 is the unset-field default; JS format ids start at 1 (35mm).
         0, 1 => frames.format_35mm,
         2 => frames.format_645,
         3 => frames.format_6x6,

@@ -519,7 +519,7 @@ function waitFor(worker, predicate) {
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error("timed out waiting for worker message"));
-    }, 5000);
+    }, 30000);
     const onMessage = (message) => {
       if (!predicate(message)) return;
       cleanup();

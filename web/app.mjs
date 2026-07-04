@@ -230,7 +230,7 @@ async function processCurrentInput() {
   hideSelectionOverlay();
   refreshFrameOverlay();
   elements.timing.textContent = result.timings.map((timing) => `${timing.stage}: ${timing.elapsed_us} us`).join("  ");
-  setStatus(result.cacheKey);
+  setStatus("Preview ready");
 }
 
 async function autoDetectCurrentInput() {

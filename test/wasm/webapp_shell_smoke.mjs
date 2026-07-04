@@ -10,16 +10,13 @@ import {
   buildIrInpaintCacheInput,
   buildIrMaskCacheInput,
   buildIrRgbMaskCacheInput,
-  buildPreviewExportMetadata,
   buildNativeVariantExportMetadata,
   computeDminFromRgb16,
-  demoRawRgb16Buffer,
   defaultFrameDetectConfig,
   defaultDustRemovalConfig,
   defaultOutputSelection,
   enabledExportVariants,
   exportNativeVariantResults,
-  expectedDemoPreview,
   exportRawNegativeRgb16,
   exportVariants,
   fileIdentity,
@@ -41,14 +38,10 @@ import {
   nativeExportFilename,
   nativeExportMetadataFilename,
   normalizeFrameSelection,
-  previewMetadataFilename,
-  previewPpmFilename,
-  rawFixture,
-  rgb16ToPpmBytes,
   rgb8ToRgba,
-  rgb8ToPpmBytes,
   stockIds,
 } from "../../web/app_core.mjs";
+import { demoRawRgb16Buffer, expectedDemoPreview, rawFixture } from "./demo_fixture.mjs";
 import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "../../web/tiff.mjs";
 
 const wasmPath = process.argv[2];
@@ -238,33 +231,6 @@ try {
   );
   await badLoadClient.close();
 
-  const ppm = rgb8ToPpmBytes(result.rgb8, result.width, result.height);
-  assert.equal(new TextDecoder().decode(ppm.slice(0, 11)), "P6\n2 2\n255\n");
-  assert.equal(ppm.length, 11 + expectedDemoPreview.length);
-  const metadata = buildPreviewExportMetadata({
-    file,
-    image: { width: 2, height: 2, dpi: null },
-    frame: result.frame,
-    stockId: stockIds.kodakGold,
-    render: defaultRenderConfig(),
-    dmin: [0.05, 0.06, 0.07],
-    cacheKey: result.cacheKey,
-    output: { width: result.width, height: result.height },
-    timings: result.timings,
-  });
-  const metadataText = new TextDecoder().decode(metadataJsonBytes(metadata));
-  assert.equal(JSON.parse(metadataText).schema, "v600.webapp.preview-export.v1");
-  assert.match(previewPpmFilename({
-    sourceName: "synthetic-2x2.rgb16",
-    frame: result.frame,
-    cacheKey: result.cacheKey,
-  }), /^synthetic-2x2_preview_full_[0-9a-f]{12}\.ppm$/);
-  assert.match(previewMetadataFilename({
-    sourceName: "synthetic-2x2.rgb16",
-    frame: result.frame,
-    cacheKey: result.cacheKey,
-  }), /^synthetic-2x2_preview_full_[0-9a-f]{12}\.json$/);
-
   const manualFrame = normalizeFrameSelection({ kind: "manual-rect", x: 1, y: 0, w: 1, h: 2, angle: 0 }, {
     width: 2,
     height: 2,
@@ -289,11 +255,6 @@ try {
   assert.deepEqual(cropResult.frame, manualFrame);
   assert.ok(cropResult.timings.some((timing) => timing.stage === "worker.crop-rgb16"));
   assert.notEqual(cropResult.cacheKey, result.cacheKey);
-  assert.match(previewPpmFilename({
-    sourceName: "synthetic-2x2.rgb16",
-    frame: cropResult.frame,
-    cacheKey: cropResult.cacheKey,
-  }), /^synthetic-2x2_preview_x1_y0_w1_h2_[0-9a-f]{12}\.ppm$/);
 
   const rotatedCropFixture = JSON.parse(fs.readFileSync("test/fixtures/processing/frames/rotated-rect-crop-smoke.json", "utf8"));
   const [rotatedFixtureHeight, rotatedFixtureWidth] = rotatedCropFixture.shape;
@@ -326,11 +287,6 @@ try {
     rotatedMaxAbs = Math.max(rotatedMaxAbs, Math.abs(rotatedCropRgb[index * 3] - expected));
   }
   assert.ok(rotatedMaxAbs <= 250, `rotated RGB16 crop max_abs ${rotatedMaxAbs} exceeds 250`);
-  assert.match(previewPpmFilename({
-    sourceName: "rotated.rgb16",
-    frame: rotatedCrop.frame,
-    cacheKey: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  }), /^rotated_preview_x1p5_y1p7_w4_h3_a0p2618_0123456789ab\.ppm$/);
 
   const rotatedIr = Float32Array.from(rotatedCropFixture.input);
   const rotatedIrCrop = cropIrScalarToRgbFrame(
@@ -502,9 +458,6 @@ try {
     assert.equal(exportResult.rgb16[index] >> 8, expectedDemoPreview[index]);
   }
   assert.notEqual(exportResult.cacheKey, result.cacheKey);
-  const rgb16Ppm = rgb16ToPpmBytes(exportResult.rgb16, exportResult.width, exportResult.height);
-  assert.equal(new TextDecoder().decode(rgb16Ppm.slice(0, 13)), "P6\n2 2\n65535\n");
-  assert.equal(rgb16Ppm.length, 13 + expectedDemoPreview.length * 2);
   const exportTiff = rgb16ToTiffBytes(exportResult.rgb16, exportResult.width, exportResult.height, { dpi: 800 });
   const exportTiffRoundTrip = loadRgb16PageFromTiff(
     exportTiff.buffer.slice(exportTiff.byteOffset, exportTiff.byteOffset + exportTiff.byteLength),
@@ -614,10 +567,8 @@ try {
   assert.equal(irNegMetadataValue.variant, "ir_cleaned");
   assert.equal("stock" in irNegMetadataValue, false);
 
-  const syntheticIr = new Uint8Array(9 * 9).fill(255);
-  syntheticIr[40] = 0;
-  const expectedIrMask = new Uint8Array(9 * 9);
-  expectedIrMask[40] = 255;
+  const irMaskPixels = new Uint8Array(9 * 9);
+  irMaskPixels[40] = 255;
   const irImage = {
     width: 2,
     height: 2,
@@ -640,17 +591,7 @@ try {
     ir_max_coverage: 1.0,
   });
   const irCacheInput = buildIrMaskCacheInput({ file, image: irImage, dustRemoval });
-  const expectedIrMaskKey = await irMaskCacheKey(irCacheInput);
-  const irMask = await client.makeIrMaskU8({
-    irBuffer: syntheticIr.buffer.slice(syntheticIr.byteOffset, syntheticIr.byteOffset + syntheticIr.byteLength),
-    file,
-    image: irImage,
-    dustRemoval,
-  });
-  assert.equal(irMask.cacheKey, expectedIrMaskKey);
-  assert.equal(irMask.width, 9);
-  assert.equal(irMask.height, 9);
-  assert.deepEqual(Array.from(irMask.mask), Array.from(expectedIrMask));
+  const irMaskKey = await irMaskCacheKey(irCacheInput);
   const expectedRgbMask = new Uint8Array([
     0, 255,
     255, 255,
@@ -659,71 +600,20 @@ try {
     file,
     image: irImage,
     dustRemoval,
-    irMaskCacheKey: irMask.cacheKey,
+    irMaskCacheKey: irMaskKey,
   });
   const expectedIrRgbMaskKey = await irRgbMaskCacheKey(irRgbMaskCacheInput);
   const irRgbMask = await client.resizeIrMaskToRgbU8({
-    maskBuffer: irMask.mask.buffer.slice(irMask.mask.byteOffset, irMask.mask.byteOffset + irMask.mask.byteLength),
+    maskBuffer: irMaskPixels.buffer.slice(irMaskPixels.byteOffset, irMaskPixels.byteOffset + irMaskPixels.byteLength),
     file,
     image: irImage,
     dustRemoval,
-    irMaskCacheKey: irMask.cacheKey,
+    irMaskCacheKey: irMaskKey,
   });
   assert.equal(irRgbMask.cacheKey, expectedIrRgbMaskKey);
   assert.equal(irRgbMask.width, 2);
   assert.equal(irRgbMask.height, 2);
   assert.deepEqual(Array.from(irRgbMask.mask), Array.from(expectedRgbMask));
-
-  const inpaintFixture = JSON.parse(fs.readFileSync("test/fixtures/processing/ir/biharmonic-inpaint-smoke.json", "utf8"));
-  const [inpaintHeight, inpaintWidth, inpaintChannels] = inpaintFixture.shape;
-  assert.equal(inpaintChannels, 3);
-  const inpaintInput = Uint16Array.from(inpaintFixture.input, (value) => normalizedToU16(value));
-  const inpaintMask = Uint8Array.from(inpaintFixture.mask, (value) => value === 0 ? 0 : 255);
-  const inpaintExpected = Uint16Array.from(inpaintFixture.expected, (value) => normalizedToU16(value));
-  const inpaintImage = {
-    width: inpaintWidth,
-    height: inpaintHeight,
-    dpi: null,
-    page_layout: "rgb-thumb-ir",
-    ir: {
-      width: inpaintWidth,
-      height: inpaintHeight,
-      channels: 1,
-      bit_depth: 8,
-    },
-  };
-  const inpaintBytes = new Uint8Array(inpaintInput.byteLength + inpaintMask.byteLength);
-  inpaintBytes.set(new Uint8Array(inpaintInput.buffer), 0);
-  inpaintBytes.set(inpaintMask, inpaintInput.byteLength);
-  const inpaintFile = await fileIdentity({
-    name: "biharmonic-inpaint.rgb16-mask",
-    size: inpaintBytes.byteLength,
-    lastModified: 0,
-    arrayBuffer: inpaintBytes.buffer,
-  });
-  const rgbMaskCacheKey = "sha256:webapp-shell-rgb-mask";
-  const inpaintCacheInput = buildIrInpaintCacheInput({
-    file: inpaintFile,
-    image: inpaintImage,
-    dustRemoval,
-    rgbMaskCacheKey,
-  });
-  const expectedInpaintKey = await irInpaintCacheKey(inpaintCacheInput);
-  const inpaintResult = await client.inpaintBiharmonicRgb16({
-    rgbBuffer: inpaintInput.buffer.slice(inpaintInput.byteOffset, inpaintInput.byteOffset + inpaintInput.byteLength),
-    maskBuffer: inpaintMask.buffer.slice(inpaintMask.byteOffset, inpaintMask.byteOffset + inpaintMask.byteLength),
-    file: inpaintFile,
-    image: inpaintImage,
-    dustRemoval,
-    rgbMaskCacheKey,
-  });
-  assert.equal(inpaintResult.cacheKey, expectedInpaintKey);
-  assert.equal(inpaintResult.mode, "biharmonic-no-grain");
-  let inpaintMaxAbs = 0;
-  for (let index = 0; index < inpaintResult.rgb16.length; index += 1) {
-    inpaintMaxAbs = Math.max(inpaintMaxAbs, Math.abs(inpaintResult.rgb16[index] - inpaintExpected[index]));
-  }
-  assert.ok(inpaintMaxAbs <= 2, `shell inpaint max_abs ${inpaintMaxAbs} exceeds 2`);
 
   const grainFixture = JSON.parse(fs.readFileSync("test/fixtures/processing/ir/inpaint-biharmonic-grain-uint16-smoke.json", "utf8"));
   const [grainHeight, grainWidth, grainChannels] = grainFixture.shape;
@@ -1135,21 +1025,6 @@ try {
   });
   assert.equal(tiffResult.cacheKey, tiffExpectedKey);
   assert.equal(tiffResult.rgb8.length, rgbPage.data.length);
-  const tiffMetadata = buildPreviewExportMetadata({
-    file: tiffFile,
-    image: tiffImage,
-    frame: tiffResult.frame,
-    stockId: stockIds.kodakGold,
-    render: defaultRenderConfig(),
-    dmin: [0.05, 0.06, 0.07],
-    cacheKey: tiffResult.cacheKey,
-    output: { width: tiffResult.width, height: tiffResult.height },
-    timings: tiffResult.timings,
-  });
-  const tiffMetadataValue = JSON.parse(new TextDecoder().decode(metadataJsonBytes(tiffMetadata)));
-  assert.equal(tiffMetadataValue.source_image.page_layout, "rgb-thumb-ir");
-  assert.deepEqual(tiffMetadataValue.source_image.ir, tiffImage.ir);
-
   assert.throws(() => parseRawRgb16Buffer(rawBuffer, { width: 3, height: 2 }), /does not match/);
 
   console.log(JSON.stringify({
