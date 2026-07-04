@@ -10,6 +10,14 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadRgb16PageFromTiff } from "../../web/tiff.mjs";
+import {
+  buildScanRequestBody,
+  companionStatus,
+  describeScanEvent,
+  fetchScanFile,
+  fetchScanMetadata,
+  runScanJob,
+} from "../../web/companion.mjs";
 
 const exePath = process.argv[2];
 const webappDir = process.argv[3];
@@ -159,10 +167,34 @@ try {
   assert.equal(secondStatus.job.id, 1);
   assert.equal(secondStatus.job.status, "complete");
 
+  const clientStatus = await companionStatus(fetch, base);
+  assert.equal(clientStatus.job.id, 1);
+  const clientEvents = [];
+  const clientRun = await runScanJob({
+    body: buildScanRequestBody({ dpi: 400, source: "flatbed", kind: "rgb+ir", device: "fake:device" }),
+    fetchFn: fetch,
+    base,
+    pollMs: 100,
+    onEvent: (event) => clientEvents.push(describeScanEvent(event)),
+  });
+  assert.equal(clientRun.job, 2);
+  assert.equal(clientRun.status, "complete");
+  assert.ok(clientEvents.some((line) => line.startsWith("progress ")));
+  assert.ok(clientEvents.some((line) => line === "job complete"));
+  const clientTiff = await fetchScanFile(clientRun.job, fetch, base);
+  const clientRgb = loadRgb16PageFromTiff(clientTiff);
+  assert.equal(clientRgb.width, 4);
+  assert.equal(clientRgb.height, 2);
+  const clientMetadata = await fetchScanMetadata(clientRun.job, fetch, base);
+  assert.equal(typeof clientMetadata, "object");
+  assert.throws(() => buildScanRequestBody({ kind: "negative" }));
+  assert.throws(() => buildScanRequestBody({ dpi: -1 }));
+
   console.log(JSON.stringify({
     event: "companion-smoke",
     schema: "v600.webapp.event.v1",
     job_status: terminal,
+    client_job_status: clientRun.status,
     event_names: [...eventNames].sort(),
     rgb_width: rgbPage.width,
     rgb_height: rgbPage.height,

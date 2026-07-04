@@ -17,6 +17,7 @@ const requiredPaths = [
   "cache_inputs.mjs",
   "export_pipeline.mjs",
   "preview_client.mjs",
+  "companion.mjs",
   "tiff.mjs",
   "worker/processor.mjs",
   "worker/protocol.mjs",
@@ -36,6 +37,9 @@ assert.match(index, /data-tab-target="scan"/);
 assert.match(index, /data-tab-target="process"/);
 assert.match(index, /data-tab-target="gallery"/);
 assert.match(index, /id="auto-detect"/);
+assert.match(index, /id="scan-start"/);
+assert.match(index, /id="scan-log"/);
+assert.doesNotMatch(index, /Scanner control is not available/);
 assert.match(index, /id="update-preview"/);
 assert.match(index, /id="export-selected"/);
 assert.match(index, /id="frame-overlay"/);
@@ -54,6 +58,7 @@ assert.match(app, /new URL\("\.\/v600-wasm-core\.wasm", import\.meta\.url\)\.hre
 assert.match(app, /refreshFrameOverlay/);
 assert.match(app, /applyDetectedRebate/);
 assert.match(app, /computeDminFromRgb16/);
+assert.match(app, /refreshCompanionStatus/);
 assert.match(app, /function currentPreviewFrameSelection\(image\)\s*\{\s*return defaultFrameSelection\(image\);/s);
 assert.doesNotMatch(app, /querySelector\("#wasm-url"\)/);
 assert.doesNotMatch(app, /demoRawRgb16Buffer/);

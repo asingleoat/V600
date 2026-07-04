@@ -52,3 +52,14 @@ serving and every endpoint above, drives a complete `rgb+ir` job through
 polled events, and parses the downloaded TIFF with the browser TIFF reader
 (`web/tiff.mjs`). Live-hardware evidence through the browser Scan tab is a
 recorded Phase 15 follow-up for when the V600 is reconnected.
+
+## Webapp Scan Tab
+
+`web/companion.mjs` is the browser client for this API (status probe, scan
+request builder, cursor-polled `runScanJob`, file/metadata download, event
+formatting); the Scan tab in the webapp drives it and hands the finished
+TIFF straight into the Process pipeline, exactly as if the file had been
+picked manually. When `/api/status` is unreachable (static hosting without
+the companion) the tab shows setup instructions and everything else keeps
+working. The companion smoke exercises this module against the live server
+in addition to the raw HTTP contract.

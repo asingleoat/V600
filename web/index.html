@@ -17,10 +17,57 @@
         </nav>
       </header>
 
-      <section id="tab-scan" class="tab-panel scan-placeholder" data-tab-panel="scan" hidden>
-        <div class="placeholder-panel">
-          <h1>Scan</h1>
-          <p>Scanner control is not available in this browser build.</p>
+      <section id="tab-scan" class="tab-panel scan-layout" data-tab-panel="scan" hidden>
+        <aside class="control-panel">
+          <section class="control-section">
+            <h2>Scanner</h2>
+            <p id="scan-companion-status">Checking for the local companion…</p>
+            <p id="scan-companion-help" hidden>
+              Run <code>v600-zig serve</code> on this machine to enable
+              scanning; this page keeps working for processing without it.
+            </p>
+            <label>
+              Device
+              <select id="scan-device"><option value="">auto</option></select>
+            </label>
+            <label>
+              DPI
+              <select id="scan-dpi">
+                <option value="400" selected>400</option>
+                <option value="800">800</option>
+                <option value="1600">1600</option>
+                <option value="3200">3200</option>
+              </select>
+            </label>
+            <label>
+              Source
+              <select id="scan-source">
+                <option value="tpu" selected>Transparency unit</option>
+                <option value="flatbed">Flatbed</option>
+              </select>
+            </label>
+            <label>
+              Kind
+              <select id="scan-kind">
+                <option value="rgb+ir" selected>RGB + IR</option>
+                <option value="rgb">RGB</option>
+                <option value="gray">Gray</option>
+                <option value="ir">IR</option>
+              </select>
+            </label>
+            <label>X (in) <input id="scan-x" type="number" step="0.01" min="0" placeholder="0"></label>
+            <label>Y (in) <input id="scan-y" type="number" step="0.01" min="0" placeholder="0"></label>
+            <label>Width (in) <input id="scan-area-width" type="number" step="0.01" min="0" placeholder="full"></label>
+            <label>Height (in) <input id="scan-area-height" type="number" step="0.01" min="0" placeholder="full"></label>
+            <div class="control-actions">
+              <button id="scan-start" type="button" disabled>Start Scan</button>
+              <button id="scan-cancel" type="button" disabled>Cancel</button>
+            </div>
+          </section>
+        </aside>
+        <div class="scan-progress">
+          <h2>Progress</h2>
+          <ul id="scan-log"></ul>
         </div>
       </section>
 

@@ -15,6 +15,15 @@ import {
   normalizeFrameSelection,
   stockIds,
 } from "./app_core.mjs";
+import {
+  buildScanRequestBody,
+  cancelScan,
+  companionDevices,
+  companionStatus,
+  describeScanEvent,
+  fetchScanFile,
+  runScanJob,
+} from "./companion.mjs";
 import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "./tiff.mjs";
 
 const wasmCoreUrl = new URL("./v600-wasm-core.wasm", import.meta.url).href;
@@ -70,6 +79,19 @@ const elements = {
   canvas: document.querySelector("#preview"),
   frameOverlay: document.querySelector("#frame-overlay"),
   selectionOverlay: document.querySelector("#selection-overlay"),
+  scanCompanionStatus: document.querySelector("#scan-companion-status"),
+  scanCompanionHelp: document.querySelector("#scan-companion-help"),
+  scanDevice: document.querySelector("#scan-device"),
+  scanDpi: document.querySelector("#scan-dpi"),
+  scanSource: document.querySelector("#scan-source"),
+  scanKind: document.querySelector("#scan-kind"),
+  scanX: document.querySelector("#scan-x"),
+  scanY: document.querySelector("#scan-y"),
+  scanAreaWidth: document.querySelector("#scan-area-width"),
+  scanAreaHeight: document.querySelector("#scan-area-height"),
+  scanStart: document.querySelector("#scan-start"),
+  scanCancel: document.querySelector("#scan-cancel"),
+  scanLog: document.querySelector("#scan-log"),
   galleryList: document.querySelector("#gallery-list"),
   galleryEmpty: document.querySelector("#gallery-empty"),
   clearGallery: document.querySelector("#clear-gallery"),
@@ -80,6 +102,9 @@ const elements = {
 elements.tabButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveTab(button.dataset.tabTarget);
+    if (button.dataset.tabTarget === "scan") {
+      refreshCompanionStatus().catch(() => {});
+    }
   });
 });
 
@@ -97,6 +122,128 @@ elements.file.addEventListener("change", async () => {
     processCurrentInput().catch((err) => setStatus(err.message));
   }
 });
+
+let activeScanJob = null;
+
+async function refreshCompanionStatus() {
+  const status = await companionStatus();
+  if (!status) {
+    elements.scanCompanionStatus.textContent = "Companion not detected.";
+    elements.scanCompanionHelp.hidden = false;
+    elements.scanStart.disabled = true;
+    return;
+  }
+  elements.scanCompanionHelp.hidden = true;
+  const busy = activeScanJob !== null || (status.job && status.job.status === "running");
+  elements.scanCompanionStatus.textContent = busy
+    ? "Companion connected; a scan job is running."
+    : "Companion connected.";
+  elements.scanStart.disabled = busy;
+  try {
+    const result = await companionDevices();
+    const selected = elements.scanDevice.value;
+    elements.scanDevice.innerHTML = "";
+    const auto = document.createElement("option");
+    auto.value = "";
+    auto.textContent = "auto";
+    elements.scanDevice.appendChild(auto);
+    for (const device of result.devices) {
+      const option = document.createElement("option");
+      option.value = device.name;
+      option.textContent = device.model ? `${device.model} (${device.name})` : device.name;
+      elements.scanDevice.appendChild(option);
+    }
+    elements.scanDevice.value = selected;
+  } catch {
+    // Device discovery is best-effort; manual/auto selection still works.
+  }
+}
+
+function appendScanLog(text) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  elements.scanLog.appendChild(item);
+  while (elements.scanLog.childElementCount > 500) {
+    elements.scanLog.removeChild(elements.scanLog.firstElementChild);
+  }
+  item.scrollIntoView({ block: "nearest" });
+}
+
+function scanAreaValue(input) {
+  return input.value === "" ? null : Number(input.value);
+}
+
+async function startCompanionScan() {
+  const body = buildScanRequestBody({
+    dpi: Number.parseInt(elements.scanDpi.value, 10),
+    source: elements.scanSource.value,
+    kind: elements.scanKind.value,
+    device: elements.scanDevice.value || null,
+    x: scanAreaValue(elements.scanX),
+    y: scanAreaValue(elements.scanY),
+    width: scanAreaValue(elements.scanAreaWidth),
+    height: scanAreaValue(elements.scanAreaHeight),
+  });
+  elements.scanLog.innerHTML = "";
+  elements.scanStart.disabled = true;
+  elements.scanCancel.disabled = false;
+  appendScanLog(`starting ${body.kind} scan at ${body.dpi} dpi`);
+  try {
+    const result = await runScanJob({
+      body,
+      onEvent: (event) => {
+        activeScanJob = activeScanJob ?? 1;
+        if (event.event !== "timing") appendScanLog(describeScanEvent(event));
+      },
+    });
+    activeScanJob = result.job;
+    if (result.status === "complete") {
+      appendScanLog("downloading scan…");
+      const buffer = await fetchScanFile(result.job);
+      handoffScanTiff(buffer, result.job);
+      appendScanLog("scan loaded into Process");
+    } else {
+      appendScanLog(`scan ${result.status}`);
+    }
+  } catch (err) {
+    appendScanLog(`scan failed: ${err.message}`);
+  } finally {
+    activeScanJob = null;
+    elements.scanCancel.disabled = true;
+    refreshCompanionStatus().catch(() => {});
+  }
+}
+
+async function cancelCompanionScan() {
+  const status = await companionStatus();
+  if (!status?.job || status.job.status !== "running") return;
+  cancelScan(status.job.id).then(() => appendScanLog("cancel requested")).catch((err) => appendScanLog(`cancel failed: ${err.message}`));
+}
+
+function handoffScanTiff(buffer, jobId) {
+  state.activeBuffer = buffer;
+  state.activeFile = {
+    name: `companion_scan_${String(jobId).padStart(4, "0")}.tiff`,
+    size: buffer.byteLength,
+    lastModified: Date.now(),
+  };
+  clearDetectedFrames();
+  state.rebateSelection = null;
+  tryUpdateImageControlsFromActiveInput();
+  setActiveTab("process");
+  setStatus(state.activeFile.name);
+  processCurrentInput().catch((err) => setStatus(err.message));
+}
+
+elements.scanStart.addEventListener("click", () => {
+  startCompanionScan().catch((err) => appendScanLog(`scan failed: ${err.message}`));
+});
+
+elements.scanCancel.addEventListener("click", () => {
+  cancelCompanionScan().catch(() => {});
+});
+
+refreshCompanionStatus().catch(() => {});
 
 elements.detectedFrame.addEventListener("change", () => {
   const index = Number.parseInt(elements.detectedFrame.value, 10);

@@ -11236,10 +11236,34 @@ maintain against real hardware risk.
       skips (five new companion unit tests); `zig build --summary all` and
       `zig build -Dui=true --summary all` passed; `zig fmt --check` and
       `git diff --check` passed.
-- [ ] 15.2 Wire the webapp Scan tab to the companion: a `web/companion.mjs`
+- [x] 15.2 Wire the webapp Scan tab to the companion: a `web/companion.mjs`
   client module (status probe, scan request builder, event poller), Scan tab
   controls and progress list, handoff of the finished TIFF into the existing
   Process pipeline, graceful no-companion messaging, and smoke coverage.
+  - Completed 2026-07-04:
+    - Added `web/companion.mjs` with injectable-fetch client functions
+      (`companionStatus`, `companionDevices`, `buildScanRequestBody`,
+      `startScan`, `pollScanEvents`, `cancelScan`, `fetchScanFile`,
+      `fetchScanMetadata`, `runScanJob`, `describeScanEvent`).
+    - Replaced the Scan tab placeholder with device/dpi/source/kind/area
+      controls, start/cancel buttons, and a progress log fed by the
+      polled event stream; on completion the downloaded TIFF is handed to
+      the existing Process pipeline through the same activeFile/activeBuffer
+      path as manual file picks. Without a companion the tab shows setup
+      instructions and processing remains fully functional.
+    - The companion smoke now also drives a second full scan job through
+      `web/companion.mjs` against the live server (`client_job_status:
+      complete`, browser-parsed 4x2 RGB16 output, request-builder
+      validation errors), and the static smoke serve-checks
+      `companion.mjs` plus the new Scan tab markup.
+  - Validation 2026-07-04:
+    - `zig build companion-smoke wasm-core-smoke wasm32-core-smoke
+      wasm-worker-protocol-smoke wasm-worker-runtime-smoke
+      wasm-webapp-shell-smoke wasm-tiff-reader-smoke
+      wasm-webapp-static-smoke wasm-webapp --summary all` passed 29/29.
+    - `zig build test --summary all` passed `616/620` with 4 expected
+      skips; `zig build --summary all` and `zig build -Dui=true
+      --summary all` passed; `node --check` and `git diff --check` passed.
 - [ ] 15.3 Live-hardware companion evidence once the scanner is reconnected:
   real `rgb_ir` scan through the browser Scan tab, recorded in
   `docs/PARITY_MANIFEST.md` with timing events and output identity.
