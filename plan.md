@@ -11077,7 +11077,7 @@ rewrites; do not combine a move and a behavior change in one commit.
     - `node --check` passed on every touched module and `git diff --check`
       passed.
 
-- [ ] 14.4 Native structural splits (appetite-dependent; pure moves only).
+- [x] 14.4 Native structural splits (appetite-dependent; pure moves only).
   - `build.zig`: factor the repeated C/C++ object-compilation blocks into a
     helper and make smoke/bench step registration table-driven (native UI
     smokes, the eight `wasm-*` steps, WebGPU step pairs).
@@ -11089,3 +11089,47 @@ rewrites; do not combine a move and a behavior change in one commit.
     boundary and fallback wiring into a small module.
   - Leave `src/benchmarks/` and `src/tools/` as-is; they are intentional
     build-step executables.
+  - Completed 2026-07-04 across commits `dd7821d`, `2a720f1`, `bb7ff4e`,
+    and `6a3d753`:
+    - `build.zig` (571 -> 400 lines) now drives the five root C/C++ object
+      compiles, the seven UI smoke steps, the four scanner CLI smoke steps,
+      the seven Node wasm smoke steps, and the seven WebGPU program pairs
+      from registration tables with `compileNativeObject`, `addWasmCore`,
+      and `addV600Program` helpers. The `zig build --help` step list is
+      byte-identical before and after, and the `-Dwebgpu` missing-step
+      messages are preserved exactly.
+    - `src/processing/ir_native.zig` now owns the OpenCV/SuperLU extern
+      declarations, the `available` switch, the SuperLU failing stub, and
+      the pure-ECC fallback wiring; `ir.zig` keeps only algorithm code and
+      aliases `use_native_ir_helpers` to `ir_native.available`.
+    - `src/processing/frames.zig` (6266 -> 5401 lines) split out
+      `film_formats.zig` (format tables, `formatByName`,
+      `detectFramesAspect`), `clahe.zig` (tile LUTs, reflect index maps,
+      output interpolation), and `rotation.zig` (frame/affine geometry
+      types, expanded rotation resample, rotated rect crop, byte-sample
+      helpers), with `workerCountForItems` promoted into
+      `parallelism.zig`. `frames.zig` remains the public facade via
+      aliases, so every external caller and all 52 inline fixture tests
+      are unchanged.
+    - `src/ui/main.zig` (5443 -> 3498 lines) split out `sdl_nuklear.zig`
+      (the single shared `@cImport` so C types unify across UI modules),
+      `chrome.zig` (control-panel/footer rects, layout, theme styling,
+      SDL-to-Nuklear input plumbing), `selection_geometry.zig` (scan and
+      Process selection hit-testing and coordinate transforms), and
+      `render.zig` (texture caches, the Nuklear vertex renderer, and
+      selection overlay drawing). The worker lifecycle, event handlers,
+      draw views, and smoke harnesses intentionally remain in `main.zig`:
+      they mutate `ProcessUiState` and the model together, so separating
+      them is a state refactor, not a pure move, and stays future work.
+  - Validation 2026-07-04 (every commit in the series):
+    - `zig build test --summary all` passed `611/615` with 4 expected
+      skips; `zig build --summary all` and `zig build -Dui=true
+      --summary all` passed.
+    - Full wasm smoke suite passed 20/20 with unchanged outputs.
+    - Direct `SDL_VIDEO_DRIVER=offscreen zig build -Dui=true ui-smoke
+      native-scanner-connect-smoke native-process-worker-smoke
+      native-process-dump-smoke native-process-export-smoke --summary all`
+      passed 18/18 after the UI split (the offscreen SDL driver runs the
+      chrome/selection/render assertions without a display; the two
+      hardware smokes skip by design without `V600_HARDWARE_SMOKE=1`).
+    - `zig fmt --check` and `git diff --check` passed.
