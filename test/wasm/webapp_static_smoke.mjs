@@ -14,6 +14,7 @@ const requiredPaths = [
   "tiff.mjs",
   "worker/processor.mjs",
   "worker/protocol.mjs",
+  "worker/wasm_abi.mjs",
   "v600-wasm-core.wasm",
 ];
 
@@ -58,10 +59,14 @@ assert.match(styles, /\.frame-box/);
 assert.match(styles, /\.rebate-box/);
 
 const worker = await fs.readFile(path.join(root, "worker/processor.mjs"), "utf8");
-assert.match(worker, /v600_wasm_pointer_bits/);
-assert.match(worker, /wasmPointerBits === 64 \? BigInt\(value\) : value/);
+assert.match(worker, /createWasmAbi/);
 assert.doesNotMatch(worker, /v600_wasm_alloc\(len\)\s*>>>\s*0/);
-assert.match(worker, /exceeds memory size/);
+
+const wasmAbi = await fs.readFile(path.join(root, "worker/wasm_abi.mjs"), "utf8");
+assert.match(wasmAbi, /v600_wasm_pointer_bits/);
+assert.match(wasmAbi, /pointerBits === 64 \? BigInt\(value\) : value/);
+assert.doesNotMatch(wasmAbi, /v600_wasm_alloc\(len\)\s*>>>\s*0/);
+assert.match(wasmAbi, /exceeds memory size/);
 
 const server = http.createServer(async (request, response) => {
   try {

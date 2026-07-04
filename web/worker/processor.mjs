@@ -24,17 +24,36 @@ import {
   messageTypes,
 } from "./protocol.mjs";
 
-const previewOptionsSize = 60;
-const frameDetectOptionsSize = 32;
-const frameDetectRectSize = 40;
-const frameDetectResultSize = 56;
-const irAlignOptionsSize = 16;
-const irEstimateOptionsSize = 32;
-const irEstimateResultSize = 24;
-const irMaskOptionsSize = 36;
-const irMaskResizeOptionsSize = 16;
-const irInpaintOptionsSize = 8;
-const irInpaintGrainOptionsSize = 16;
+import {
+  createWasmAbi,
+  irAlignOptionsSize,
+  irEstimateOptionsSize,
+  irEstimateResultSize,
+  irInpaintGrainOptionsSize,
+  irInpaintOptionsSize,
+  irMaskOptionsSize,
+  irMaskResizeOptionsSize,
+  frameDetectOptionsSize,
+  frameDetectRectSize,
+  frameDetectResultSize,
+  previewOptionsSize,
+} from "./wasm_abi.mjs";
+
+let alloc = null;
+let free = null;
+let callCore = null;
+let wasmIndex = null;
+let wasmByteOffset = null;
+let writePreviewOptions = null;
+let writeFrameDetectOptions = null;
+let writeIrMaskOptions = null;
+let writeIrEstimateOptions = null;
+let writeIrMaskResizeOptions = null;
+let writeIrInpaintOptions = null;
+let writeIrInpaintGrainOptions = null;
+let writeIrAlignOptions = null;
+let readIrEstimateResult = null;
+let readFrameDetectResult = null;
 const statusNames = Object.freeze([
   "ok",
   "invalid-buffer",
@@ -107,24 +126,25 @@ async function handleLoadModule(message) {
   const wasmBytes = await loadWasmBytes(message.wasm_url);
   const { instance } = await WebAssembly.instantiate(wasmBytes, {});
   wasmExports = instance.exports;
-  requireExport("memory");
-  requireExport("v600_wasm_pointer_bits");
-  requireExport("v600_wasm_alloc");
-  requireExport("v600_wasm_free");
-  requireExport("v600_preview_invert_u16_to_u8");
-  requireExport("v600_export_invert_u16_to_u16");
-  requireExport("v600_detect_frames_rgb16");
-  requireExport("v600_ir_estimate_translation_f32");
-  requireExport("v600_ir_apply_translation_f32");
-  requireExport("v600_ir_make_defect_mask_u8");
-  requireExport("v600_ir_make_defect_mask_f32");
-  requireExport("v600_ir_resize_mask_to_rgb_u8");
-  requireExport("v600_ir_biharmonic_inpaint_u16");
-  requireExport("v600_ir_inpaint_grain_u16_with_noise");
-  wasmPointerBits = wasmExports.v600_wasm_pointer_bits();
-  if (wasmPointerBits !== 32 && wasmPointerBits !== 64) {
-    throw new Error(`unsupported Wasm pointer width: ${wasmPointerBits}`);
-  }
+  const abi = createWasmAbi(wasmExports);
+  ({
+    alloc,
+    free,
+    callCore,
+    wasmIndex,
+    wasmByteOffset,
+    writePreviewOptions,
+    writeFrameDetectOptions,
+    writeIrMaskOptions,
+    writeIrEstimateOptions,
+    writeIrMaskResizeOptions,
+    writeIrInpaintOptions,
+    writeIrInpaintGrainOptions,
+    writeIrAlignOptions,
+    readIrEstimateResult,
+    readFrameDetectResult,
+  } = abi);
+  wasmPointerBits = abi.pointerBits;
   post(createTimingMessage({
     requestId: message.request_id,
     generation: null,
@@ -1033,263 +1053,6 @@ async function loadWasmBytes(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`failed to load Wasm module: ${response.status}`);
   return response.arrayBuffer();
-}
-
-function writePreviewOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, previewOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-  u32(options.width);
-  u32(options.height);
-  u32(options.stock);
-  f32(options.dmin_r);
-  f32(options.dmin_g);
-  f32(options.dmin_b);
-  f32(options.default_light);
-  f32(options.contrast);
-  f32(options.curve_k);
-  f32(options.percentile_lo);
-  f32(options.percentile_hi);
-  f32(options.exposure_compensation);
-  f32(options.color_temp);
-  f32(options.color_tint);
-  u32(options.percentile_sample_limit);
-}
-
-function writeFrameDetectOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, frameDetectOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  u32(options.format);
-  u32(options.frame_count_override ?? 0);
-  u32(options.detect_film_extent ? 1 : 0);
-  u32(options.apply_clahe ? 1 : 0);
-  u32(0);
-  u32(0);
-
-  if (offset !== frameDetectOptionsSize) throw new Error(`frame detect option layout wrote ${offset} bytes`);
-}
-
-function writeIrMaskOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irMaskOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  f32(options.threshold);
-  f32(options.hair_sensitivity);
-  u32(options.min_area);
-  u32(options.dilate_radius);
-  u32(options.close_radius);
-  u32(options.blur_size);
-  f32(options.max_coverage);
-
-  if (offset !== irMaskOptionsSize) throw new Error(`IR mask option layout wrote ${offset} bytes`);
-}
-
-function writeIrEstimateOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irEstimateOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.rgb_width);
-  u32(options.rgb_height);
-  u32(options.ir_width);
-  u32(options.ir_height);
-  u32(options.max_iterations);
-  f32(options.ecc_scale);
-  f32(options.epsilon);
-  u32(0);
-
-  if (offset !== irEstimateOptionsSize) throw new Error(`IR estimate option layout wrote ${offset} bytes`);
-}
-
-function writeIrMaskResizeOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irMaskResizeOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.ir_width);
-  u32(options.ir_height);
-  u32(options.rgb_width);
-  u32(options.rgb_height);
-
-  if (offset !== irMaskResizeOptionsSize) throw new Error(`IR mask resize option layout wrote ${offset} bytes`);
-}
-
-function writeIrInpaintOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irInpaintOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-
-  if (offset !== irInpaintOptionsSize) throw new Error(`IR inpaint option layout wrote ${offset} bytes`);
-}
-
-function writeIrInpaintGrainOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irInpaintGrainOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  u32(options.padding);
-  u32(options.grain_padding);
-
-  if (offset !== irInpaintGrainOptionsSize) throw new Error(`IR grain inpaint option layout wrote ${offset} bytes`);
-}
-
-function readIrEstimateResult(ptr) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irEstimateResultSize);
-  return {
-    mode: "estimated-translation-ecc",
-    tx: view.getFloat32(0, true),
-    ty: view.getFloat32(4, true),
-    rho: view.getFloat32(8, true),
-    iterations: view.getUint32(12, true),
-    shifted: view.getUint32(16, true) !== 0,
-  };
-}
-
-function readFrameDetectResult(resultPtr, framesPtr) {
-  const resultView = new DataView(wasmExports.memory.buffer, resultPtr, frameDetectResultSize);
-  const frameCount = resultView.getUint32(0, true);
-  const aspect = aspectName(resultView.getUint32(4, true));
-  const hasRebate = resultView.getUint32(8, true) !== 0;
-  const frames = [];
-  const framesView = new DataView(wasmExports.memory.buffer, framesPtr, frameCount * frameDetectRectSize);
-  for (let index = 0; index < frameCount; index += 1) {
-    const offset = index * frameDetectRectSize;
-    frames.push({
-      cx: framesView.getFloat64(offset, true),
-      cy: framesView.getFloat64(offset + 8, true),
-      w: framesView.getFloat64(offset + 16, true),
-      h: framesView.getFloat64(offset + 24, true),
-      angle: framesView.getFloat64(offset + 32, true),
-    });
-  }
-  return {
-    frames,
-    aspect,
-    rebate: hasRebate ? {
-      cx: resultView.getFloat64(16, true),
-      cy: resultView.getFloat64(24, true),
-      w: resultView.getFloat64(32, true),
-      h: resultView.getFloat64(40, true),
-      angle: resultView.getFloat64(48, true),
-    } : null,
-  };
-}
-
-function aspectName(code) {
-  switch (code) {
-    case 1: return "24:36";
-    case 2: return "36:24";
-    case 3: return "41.5:56";
-    case 4: return "56:41.5";
-    case 5: return "56:56";
-    case 6: return "56:69";
-    case 7: return "69:56";
-    case 8: return "56:84";
-    case 9: return "84:56";
-    default: return null;
-  }
-}
-
-function writeIrAlignOptions(ptr, options) {
-  const view = new DataView(wasmExports.memory.buffer, ptr, irAlignOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  f32(options.tx);
-  f32(options.ty);
-
-  if (offset !== irAlignOptionsSize) throw new Error(`IR align option layout wrote ${offset} bytes`);
-}
-
-function alloc(len) {
-  const ptr = wasmByteOffset(wasmExports.v600_wasm_alloc(wasmIndex(len)), "allocation pointer");
-  if (ptr === 0) throw new Error(`wasm allocation failed for ${len} bytes`);
-  if (BigInt(ptr) + BigInt(len) > BigInt(wasmExports.memory.buffer.byteLength)) {
-    throw new Error(`wasm allocation ${ptr}+${len} exceeds memory size ${wasmExports.memory.buffer.byteLength}`);
-  }
-  return ptr;
-}
-
-function free(ptr, len) {
-  if (ptr === 0 || len === 0) return;
-  wasmExports.v600_wasm_free(wasmIndex(ptr), wasmIndex(len));
-}
-
-function callCore(name, ...args) {
-  return wasmExports[name](...args.map((arg) => wasmIndex(arg)));
-}
-
-function wasmIndex(value) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`Wasm index is not a non-negative safe integer: ${value}`);
-  }
-  return wasmPointerBits === 64 ? BigInt(value) : value;
-}
-
-function wasmByteOffset(value, label) {
-  const numeric = typeof value === "bigint" ? Number(value) : value;
-  if (!Number.isSafeInteger(numeric) || numeric < 0) {
-    throw new Error(`${label} cannot be represented as a JavaScript byte offset: ${value}`);
-  }
-  return numeric;
-}
-
-function requireExport(name) {
-  if (!(name in wasmExports)) throw new Error(`missing Wasm export: ${name}`);
 }
 
 function postError(message, code, detail, recoverable) {

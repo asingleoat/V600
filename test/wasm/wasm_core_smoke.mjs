@@ -1,6 +1,17 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { alignmentPatternValue, buildAlignmentRgbFixture, normalizedToU16 } from "./helpers.mjs";
+import {
+  createWasmAbi,
+  irAlignOptionsSize,
+  irEstimateOptionsSize,
+  irEstimateResultSize,
+  irInpaintGrainOptionsSize,
+  irInpaintOptionsSize,
+  irMaskOptionsSize,
+  irMaskResizeOptionsSize,
+  previewOptionsSize,
+} from "../../web/worker/wasm_abi.mjs";
 
 const status = {
   ok: 0,
@@ -13,14 +24,6 @@ const stock = {
   kodakGold: 1,
 };
 
-const previewOptionsSize = 60;
-const irMaskOptionsSize = 36;
-const irMaskResizeOptionsSize = 16;
-const irInpaintOptionsSize = 8;
-const irInpaintGrainOptionsSize = 16;
-const irAlignOptionsSize = 16;
-const irEstimateOptionsSize = 32;
-const irEstimateResultSize = 24;
 const rawFixture = new Uint16Array([
   51000, 42000, 35000,
   45000, 39000, 31000,
@@ -39,7 +42,6 @@ const irFixture = new Uint8Array(irWidth * irHeight).fill(255);
 irFixture[40] = 0;
 const expectedIrMask = new Uint8Array(irWidth * irHeight);
 expectedIrMask[40] = 255;
-let wasmPointerBits = 32;
 
 function fail(message) {
   console.error(message);
@@ -54,7 +56,7 @@ function requireExport(exports, name, kind) {
   return exports[name];
 }
 
-function writePreviewOptions(exports, ptr, overrides = {}) {
+function writePreviewOptions(ptr, overrides = {}) {
   const options = {
     width: 2,
     height: 2,
@@ -73,37 +75,26 @@ function writePreviewOptions(exports, ptr, overrides = {}) {
     percentileSampleLimit: 16384,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, previewOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  u32(options.stock);
-  f32(options.dminR);
-  f32(options.dminG);
-  f32(options.dminB);
-  f32(options.defaultLight);
-  f32(options.contrast);
-  f32(options.curveK);
-  f32(options.percentileLo);
-  f32(options.percentileHi);
-  f32(options.exposureCompensation);
-  f32(options.colorTemp);
-  f32(options.colorTint);
-  u32(options.percentileSampleLimit);
-
-  if (offset !== previewOptionsSize) fail(`preview option layout wrote ${offset} bytes`);
+  abi.writePreviewOptions(ptr, {
+    width: options.width,
+    height: options.height,
+    stock: options.stock,
+    dmin_r: options.dminR,
+    dmin_g: options.dminG,
+    dmin_b: options.dminB,
+    default_light: options.defaultLight,
+    contrast: options.contrast,
+    curve_k: options.curveK,
+    percentile_lo: options.percentileLo,
+    percentile_hi: options.percentileHi,
+    exposure_compensation: options.exposureCompensation,
+    color_temp: options.colorTemp,
+    color_tint: options.colorTint,
+    percentile_sample_limit: options.percentileSampleLimit,
+  });
 }
 
-function writeIrMaskOptions(exports, ptr, overrides = {}) {
+function writeIrMaskOptions(ptr, overrides = {}) {
   const options = {
     width: irWidth,
     height: irHeight,
@@ -116,31 +107,20 @@ function writeIrMaskOptions(exports, ptr, overrides = {}) {
     maxCoverage: 1.0,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, irMaskOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  f32(options.threshold);
-  f32(options.hairSensitivity);
-  u32(options.minArea);
-  u32(options.dilateRadius);
-  u32(options.closeRadius);
-  u32(options.blurSize);
-  f32(options.maxCoverage);
-
-  if (offset !== irMaskOptionsSize) fail(`IR mask option layout wrote ${offset} bytes`);
+  abi.writeIrMaskOptions(ptr, {
+    width: options.width,
+    height: options.height,
+    threshold: options.threshold,
+    hair_sensitivity: options.hairSensitivity,
+    min_area: options.minArea,
+    dilate_radius: options.dilateRadius,
+    close_radius: options.closeRadius,
+    blur_size: options.blurSize,
+    max_coverage: options.maxCoverage,
+  });
 }
 
-function writeIrMaskResizeOptions(exports, ptr, overrides = {}) {
+function writeIrMaskResizeOptions(ptr, overrides = {}) {
   const options = {
     irWidth,
     irHeight,
@@ -148,41 +128,24 @@ function writeIrMaskResizeOptions(exports, ptr, overrides = {}) {
     rgbHeight: irHeight,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, irMaskResizeOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.irWidth);
-  u32(options.irHeight);
-  u32(options.rgbWidth);
-  u32(options.rgbHeight);
-
-  if (offset !== irMaskResizeOptionsSize) fail(`IR mask resize option layout wrote ${offset} bytes`);
+  abi.writeIrMaskResizeOptions(ptr, {
+    ir_width: options.irWidth,
+    ir_height: options.irHeight,
+    rgb_width: options.rgbWidth,
+    rgb_height: options.rgbHeight,
+  });
 }
 
-function writeIrInpaintOptions(exports, ptr, overrides = {}) {
+function writeIrInpaintOptions(ptr, overrides = {}) {
   const options = {
     width: 1,
     height: 1,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, irInpaintOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-
-  if (offset !== irInpaintOptionsSize) fail(`IR inpaint option layout wrote ${offset} bytes`);
+  abi.writeIrInpaintOptions(ptr, { width: options.width, height: options.height });
 }
 
-function writeIrInpaintGrainOptions(exports, ptr, overrides = {}) {
+function writeIrInpaintGrainOptions(ptr, overrides = {}) {
   const options = {
     width: 1,
     height: 1,
@@ -190,22 +153,15 @@ function writeIrInpaintGrainOptions(exports, ptr, overrides = {}) {
     grainPadding: 0,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, irInpaintGrainOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  u32(options.padding);
-  u32(options.grainPadding);
-
-  if (offset !== irInpaintGrainOptionsSize) fail(`IR grain inpaint option layout wrote ${offset} bytes`);
+  abi.writeIrInpaintGrainOptions(ptr, {
+    width: options.width,
+    height: options.height,
+    padding: options.padding,
+    grain_padding: options.grainPadding,
+  });
 }
 
-function writeIrAlignOptions(exports, ptr, overrides = {}) {
+function writeIrAlignOptions(ptr, overrides = {}) {
   const options = {
     width: irWidth,
     height: irHeight,
@@ -213,26 +169,15 @@ function writeIrAlignOptions(exports, ptr, overrides = {}) {
     ty: 0.0,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, irAlignOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.width);
-  u32(options.height);
-  f32(options.tx);
-  f32(options.ty);
-
-  if (offset !== irAlignOptionsSize) fail(`IR align option layout wrote ${offset} bytes`);
+  abi.writeIrAlignOptions(ptr, {
+    width: options.width,
+    height: options.height,
+    tx: options.tx,
+    ty: options.ty,
+  });
 }
 
-function writeIrEstimateOptions(exports, ptr, overrides = {}) {
+function writeIrEstimateOptions(ptr, overrides = {}) {
   const options = {
     rgbWidth: 160,
     rgbHeight: 128,
@@ -241,63 +186,17 @@ function writeIrEstimateOptions(exports, ptr, overrides = {}) {
     maxIterations: 200,
     eccScale: 0.125,
     epsilon: 1.0e-6,
-    reserved: 0,
     ...overrides,
   };
-  const view = new DataView(exports.memory.buffer, ptr, irEstimateOptionsSize);
-  let offset = 0;
-  const u32 = (value) => {
-    view.setUint32(offset, value, true);
-    offset += 4;
-  };
-  const f32 = (value) => {
-    view.setFloat32(offset, value, true);
-    offset += 4;
-  };
-
-  u32(options.rgbWidth);
-  u32(options.rgbHeight);
-  u32(options.irWidth);
-  u32(options.irHeight);
-  u32(options.maxIterations);
-  f32(options.eccScale);
-  f32(options.epsilon);
-  u32(options.reserved);
-
-  if (offset !== irEstimateOptionsSize) fail(`IR estimate option layout wrote ${offset} bytes`);
-}
-
-function alloc(exports, len) {
-  const ptr = wasmByteOffset(exports.v600_wasm_alloc(wasmIndex(len)), "allocation pointer");
-  if (ptr === 0) fail(`wasm allocation failed for ${len} bytes`);
-  if (BigInt(ptr) + BigInt(len) > BigInt(exports.memory.buffer.byteLength)) {
-    fail(`wasm allocation ${ptr}+${len} exceeds memory size ${exports.memory.buffer.byteLength}`);
-  }
-  return ptr;
-}
-
-function free(exports, ptr, len) {
-  if (ptr === 0 || len === 0) return;
-  exports.v600_wasm_free(wasmIndex(ptr), wasmIndex(len));
-}
-
-function callCore(exports, name, ...args) {
-  return exports[name](...args.map((arg) => wasmIndex(arg)));
-}
-
-function wasmIndex(value) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    fail(`Wasm index is not a non-negative safe integer: ${value}`);
-  }
-  return wasmPointerBits === 64 ? BigInt(value) : value;
-}
-
-function wasmByteOffset(value, label) {
-  const numeric = typeof value === "bigint" ? Number(value) : value;
-  if (!Number.isSafeInteger(numeric) || numeric < 0) {
-    fail(`${label} cannot be represented as a JavaScript byte offset: ${value}`);
-  }
-  return numeric;
+  abi.writeIrEstimateOptions(ptr, {
+    rgb_width: options.rgbWidth,
+    rgb_height: options.rgbHeight,
+    ir_width: options.irWidth,
+    ir_height: options.irHeight,
+    max_iterations: options.maxIterations,
+    ecc_scale: options.eccScale,
+    epsilon: options.epsilon,
+  });
 }
 
 function arraysEqual(a, b) {
@@ -310,9 +209,8 @@ function arraysEqual(a, b) {
 
 function runPreview(exports, ptrs, optionOverrides = {}) {
   new Uint16Array(exports.memory.buffer, ptrs.raw, rawFixture.length).set(rawFixture);
-  writePreviewOptions(exports, ptrs.options, optionOverrides);
-  return callCore(
-    exports,
+  writePreviewOptions(ptrs.options, optionOverrides);
+  return abi.callCore(
     "v600_preview_invert_u16_to_u8",
     ptrs.raw,
     rawFixture.length,
@@ -324,9 +222,8 @@ function runPreview(exports, ptrs, optionOverrides = {}) {
 
 function runExport(exports, ptrs, optionOverrides = {}) {
   new Uint16Array(exports.memory.buffer, ptrs.raw, rawFixture.length).set(rawFixture);
-  writePreviewOptions(exports, ptrs.options, optionOverrides);
-  return callCore(
-    exports,
+  writePreviewOptions(ptrs.options, optionOverrides);
+  return abi.callCore(
     "v600_export_invert_u16_to_u16",
     ptrs.raw,
     rawFixture.length,
@@ -338,9 +235,8 @@ function runExport(exports, ptrs, optionOverrides = {}) {
 
 function runIrMask(exports, ptrs, optionOverrides = {}) {
   new Uint8Array(exports.memory.buffer, ptrs.ir, irFixture.length).set(irFixture);
-  writeIrMaskOptions(exports, ptrs.irOptions, optionOverrides);
-  return callCore(
-    exports,
+  writeIrMaskOptions(ptrs.irOptions, optionOverrides);
+  return abi.callCore(
     "v600_ir_make_defect_mask_u8",
     ptrs.ir,
     irFixture.length,
@@ -352,9 +248,8 @@ function runIrMask(exports, ptrs, optionOverrides = {}) {
 
 function runIrMaskF32(exports, ptrs, optionOverrides = {}) {
   new Float32Array(exports.memory.buffer, ptrs.irF32, irFixture.length).set(irFixture);
-  writeIrMaskOptions(exports, ptrs.irOptions, optionOverrides);
-  return callCore(
-    exports,
+  writeIrMaskOptions(ptrs.irOptions, optionOverrides);
+  return abi.callCore(
     "v600_ir_make_defect_mask_f32",
     ptrs.irF32,
     irFixture.length,
@@ -372,14 +267,13 @@ function runIrAlignFixture(exports, ptrs) {
   const samples = width * height;
   if (samples > ptrs.alignSamples) fail(`alignment fixture has ${samples} samples, capacity is ${ptrs.alignSamples}`);
   new Float32Array(exports.memory.buffer, ptrs.alignInput, samples).set(fixture.ir);
-  writeIrAlignOptions(exports, ptrs.alignOptions, {
+  writeIrAlignOptions(ptrs.alignOptions, {
     width,
     height,
     tx: fixture.expected_offset[0],
     ty: fixture.expected_offset[1],
   });
-  const statusCode = callCore(
-    exports,
+  const statusCode = abi.callCore(
     "v600_ir_apply_translation_f32",
     ptrs.alignInput,
     samples,
@@ -414,14 +308,13 @@ function runIrEstimateFixture(exports, ptrs) {
   const rgb = buildAlignmentRgbFixture(fixture);
   new Float32Array(exports.memory.buffer, ptrs.estimateRgb, rgbSamples).set(rgb);
   new Float32Array(exports.memory.buffer, ptrs.alignInput, irSamples).set(fixture.ir);
-  writeIrEstimateOptions(exports, ptrs.estimateOptions, {
+  writeIrEstimateOptions(ptrs.estimateOptions, {
     rgbWidth,
     rgbHeight,
     irWidth: width,
     irHeight: height,
   });
-  const statusCode = callCore(
-    exports,
+  const statusCode = abi.callCore(
     "v600_ir_estimate_translation_f32",
     ptrs.estimateRgb,
     rgbSamples,
@@ -437,9 +330,8 @@ function runIrEstimateFixture(exports, ptrs) {
   const rho = view.getFloat32(8, true);
   const iterations = view.getUint32(12, true);
   const shifted = view.getUint32(16, true);
-  writeIrAlignOptions(exports, ptrs.alignOptions, { width, height, tx, ty });
-  const alignStatus = callCore(
-    exports,
+  writeIrAlignOptions(ptrs.alignOptions, { width, height, tx, ty });
+  const alignStatus = abi.callCore(
     "v600_ir_apply_translation_f32",
     ptrs.alignInput,
     irSamples,
@@ -529,14 +421,14 @@ function assertIrMaskResizeFixture(exports) {
   const expectedIrMaskFixture = Uint8Array.from(fixture.expected_ir_mask);
   const expectedRgbMask = Uint8Array.from(fixture.expected_mask);
 
-  const irPtr = alloc(exports, ir.byteLength);
-  const irMaskPtr = alloc(exports, expectedIrMaskFixture.byteLength);
-  const rgbMaskPtr = alloc(exports, expectedRgbMask.byteLength);
-  const irOptionsPtr = alloc(exports, irMaskOptionsSize);
-  const resizeOptionsPtr = alloc(exports, irMaskResizeOptionsSize);
+  const irPtr = abi.alloc(ir.byteLength);
+  const irMaskPtr = abi.alloc(expectedIrMaskFixture.byteLength);
+  const rgbMaskPtr = abi.alloc(expectedRgbMask.byteLength);
+  const irOptionsPtr = abi.alloc(irMaskOptionsSize);
+  const resizeOptionsPtr = abi.alloc(irMaskResizeOptionsSize);
   try {
     new Float32Array(exports.memory.buffer, irPtr, ir.length).set(ir);
-    writeIrMaskOptions(exports, irOptionsPtr, {
+    writeIrMaskOptions(irOptionsPtr, {
       width: resizeIrWidth,
       height: resizeIrHeight,
       threshold: fixture.threshold,
@@ -547,8 +439,7 @@ function assertIrMaskResizeFixture(exports) {
       blurSize: fixture.blur_size,
       maxCoverage: fixture.max_coverage,
     });
-    const maskStatus = callCore(
-      exports,
+    const maskStatus = abi.callCore(
       "v600_ir_make_defect_mask_f32",
       irPtr,
       ir.length,
@@ -562,14 +453,13 @@ function assertIrMaskResizeFixture(exports) {
       fail("IR resize fixture produced a non-oracle IR mask");
     }
 
-    writeIrMaskResizeOptions(exports, resizeOptionsPtr, {
+    writeIrMaskResizeOptions(resizeOptionsPtr, {
       irWidth: resizeIrWidth,
       irHeight: resizeIrHeight,
       rgbWidth,
       rgbHeight,
     });
-    const resizeStatus = callCore(
-      exports,
+    const resizeStatus = abi.callCore(
       "v600_ir_resize_mask_to_rgb_u8",
       irMaskPtr,
       expectedIrMaskFixture.length,
@@ -588,11 +478,11 @@ function assertIrMaskResizeFixture(exports) {
       rgbDefects: countNonZero(actualRgbMask),
     };
   } finally {
-    free(exports, resizeOptionsPtr, irMaskResizeOptionsSize);
-    free(exports, irOptionsPtr, irMaskOptionsSize);
-    free(exports, rgbMaskPtr, expectedRgbMask.byteLength);
-    free(exports, irMaskPtr, expectedIrMaskFixture.byteLength);
-    free(exports, irPtr, ir.byteLength);
+    abi.free(resizeOptionsPtr, irMaskResizeOptionsSize);
+    abi.free(irOptionsPtr, irMaskOptionsSize);
+    abi.free(rgbMaskPtr, expectedRgbMask.byteLength);
+    abi.free(irMaskPtr, expectedIrMaskFixture.byteLength);
+    abi.free(irPtr, ir.byteLength);
   }
 }
 
@@ -604,16 +494,15 @@ function assertBiharmonicInpaintFixture(exports) {
   const input = Uint16Array.from(fixture.input, (value) => normalizedToU16(value));
   const mask = Uint8Array.from(fixture.mask, (value) => value === 0 ? 0 : 255);
   const expected = Uint16Array.from(fixture.expected, (value) => normalizedToU16(value));
-  const rgbPtr = alloc(exports, input.byteLength);
-  const maskPtr = alloc(exports, mask.byteLength);
-  const outputPtr = alloc(exports, expected.byteLength);
-  const optionsPtr = alloc(exports, irInpaintOptionsSize);
+  const rgbPtr = abi.alloc(input.byteLength);
+  const maskPtr = abi.alloc(mask.byteLength);
+  const outputPtr = abi.alloc(expected.byteLength);
+  const optionsPtr = abi.alloc(irInpaintOptionsSize);
   try {
     new Uint16Array(exports.memory.buffer, rgbPtr, input.length).set(input);
     new Uint8Array(exports.memory.buffer, maskPtr, mask.length).set(mask);
-    writeIrInpaintOptions(exports, optionsPtr, { width, height });
-    const result = callCore(
-      exports,
+    writeIrInpaintOptions(optionsPtr, { width, height });
+    const result = abi.callCore(
       "v600_ir_biharmonic_inpaint_u16",
       rgbPtr,
       input.length,
@@ -644,10 +533,10 @@ function assertBiharmonicInpaintFixture(exports) {
       mismatches,
     };
   } finally {
-    free(exports, optionsPtr, irInpaintOptionsSize);
-    free(exports, outputPtr, expected.byteLength);
-    free(exports, maskPtr, mask.byteLength);
-    free(exports, rgbPtr, input.byteLength);
+    abi.free(optionsPtr, irInpaintOptionsSize);
+    abi.free(outputPtr, expected.byteLength);
+    abi.free(maskPtr, mask.byteLength);
+    abi.free(rgbPtr, input.byteLength);
   }
 }
 
@@ -660,23 +549,22 @@ function assertGrainInpaintFixture(exports) {
   const mask = Uint8Array.from(fixture.mask, (value) => value === 0 ? 0 : 255);
   const noise = Float64Array.from(fixture.noise);
   const expected = Uint16Array.from(fixture.expected);
-  const rgbPtr = alloc(exports, input.byteLength);
-  const maskPtr = alloc(exports, mask.byteLength);
-  const noisePtr = alloc(exports, noise.byteLength);
-  const outputPtr = alloc(exports, expected.byteLength);
-  const optionsPtr = alloc(exports, irInpaintGrainOptionsSize);
+  const rgbPtr = abi.alloc(input.byteLength);
+  const maskPtr = abi.alloc(mask.byteLength);
+  const noisePtr = abi.alloc(noise.byteLength);
+  const outputPtr = abi.alloc(expected.byteLength);
+  const optionsPtr = abi.alloc(irInpaintGrainOptionsSize);
   try {
     new Uint16Array(exports.memory.buffer, rgbPtr, input.length).set(input);
     new Uint8Array(exports.memory.buffer, maskPtr, mask.length).set(mask);
     new Float64Array(exports.memory.buffer, noisePtr, noise.length).set(noise);
-    writeIrInpaintGrainOptions(exports, optionsPtr, {
+    writeIrInpaintGrainOptions(optionsPtr, {
       width,
       height,
       padding: fixture.padding,
       grainPadding: fixture.grain_padding,
     });
-    const result = callCore(
-      exports,
+    const result = abi.callCore(
       "v600_ir_inpaint_grain_u16_with_noise",
       rgbPtr,
       input.length,
@@ -709,11 +597,11 @@ function assertGrainInpaintFixture(exports) {
       mismatches,
     };
   } finally {
-    free(exports, optionsPtr, irInpaintGrainOptionsSize);
-    free(exports, outputPtr, expected.byteLength);
-    free(exports, noisePtr, noise.byteLength);
-    free(exports, maskPtr, mask.byteLength);
-    free(exports, rgbPtr, input.byteLength);
+    abi.free(optionsPtr, irInpaintGrainOptionsSize);
+    abi.free(outputPtr, expected.byteLength);
+    abi.free(noisePtr, noise.byteLength);
+    abi.free(maskPtr, mask.byteLength);
+    abi.free(rgbPtr, input.byteLength);
   }
 }
 
@@ -747,10 +635,8 @@ requireExport(exports, "v600_ir_biharmonic_inpaint_u16", "function");
 requireExport(exports, "v600_ir_inpaint_grain_u16_with_noise", "function");
 requireExport(exports, "v600_ir_apply_translation_f32", "function");
 requireExport(exports, "v600_ir_estimate_translation_f32", "function");
-wasmPointerBits = exports.v600_wasm_pointer_bits();
-if (wasmPointerBits !== 32 && wasmPointerBits !== 64) {
-  fail(`unsupported Wasm pointer width: ${wasmPointerBits}`);
-}
+const abi = createWasmAbi(exports);
+const wasmPointerBits = abi.pointerBits;
 
 const alignSamplesCapacity = 80 * 64;
 const alignFixtureBytes = alignSamplesCapacity * 4;
@@ -758,21 +644,21 @@ const estimateRgbSamplesCapacity = 160 * 128 * 3;
 const estimateRgbBytes = estimateRgbSamplesCapacity * 4;
 
 const ptrs = {
-  raw: alloc(exports, rawFixture.byteLength),
-  output: alloc(exports, expectedPreview.length),
-  exportOutput: alloc(exports, rawFixture.byteLength),
-  options: alloc(exports, previewOptionsSize),
-  ir: alloc(exports, irFixture.byteLength),
-  irF32: alloc(exports, irFixture.length * 4),
-  irMask: alloc(exports, expectedIrMask.length),
-  irOptions: alloc(exports, irMaskOptionsSize),
-  alignInput: alloc(exports, alignFixtureBytes),
-  alignOutput: alloc(exports, alignFixtureBytes),
-  alignOptions: alloc(exports, irAlignOptionsSize),
+  raw: abi.alloc(rawFixture.byteLength),
+  output: abi.alloc(expectedPreview.length),
+  exportOutput: abi.alloc(rawFixture.byteLength),
+  options: abi.alloc(previewOptionsSize),
+  ir: abi.alloc(irFixture.byteLength),
+  irF32: abi.alloc(irFixture.length * 4),
+  irMask: abi.alloc(expectedIrMask.length),
+  irOptions: abi.alloc(irMaskOptionsSize),
+  alignInput: abi.alloc(alignFixtureBytes),
+  alignOutput: abi.alloc(alignFixtureBytes),
+  alignOptions: abi.alloc(irAlignOptionsSize),
   alignSamples: alignSamplesCapacity,
-  estimateRgb: alloc(exports, estimateRgbBytes),
-  estimateOptions: alloc(exports, irEstimateOptionsSize),
-  estimateResult: alloc(exports, irEstimateResultSize),
+  estimateRgb: abi.alloc(estimateRgbBytes),
+  estimateOptions: abi.alloc(irEstimateOptionsSize),
+  estimateResult: abi.alloc(irEstimateResultSize),
   estimateRgbSamples: estimateRgbSamplesCapacity,
 };
 
@@ -847,18 +733,18 @@ try {
     status: "ok",
   }));
 } finally {
-  free(exports, ptrs.estimateResult, irEstimateResultSize);
-  free(exports, ptrs.estimateOptions, irEstimateOptionsSize);
-  free(exports, ptrs.estimateRgb, estimateRgbBytes);
-  free(exports, ptrs.alignOptions, irAlignOptionsSize);
-  free(exports, ptrs.alignOutput, alignFixtureBytes);
-  free(exports, ptrs.alignInput, alignFixtureBytes);
-  free(exports, ptrs.irOptions, irMaskOptionsSize);
-  free(exports, ptrs.irMask, expectedIrMask.length);
-  free(exports, ptrs.irF32, irFixture.length * 4);
-  free(exports, ptrs.ir, irFixture.byteLength);
-  free(exports, ptrs.options, previewOptionsSize);
-  free(exports, ptrs.exportOutput, rawFixture.byteLength);
-  free(exports, ptrs.output, expectedPreview.length);
-  free(exports, ptrs.raw, rawFixture.byteLength);
+  abi.free(ptrs.estimateResult, irEstimateResultSize);
+  abi.free(ptrs.estimateOptions, irEstimateOptionsSize);
+  abi.free(ptrs.estimateRgb, estimateRgbBytes);
+  abi.free(ptrs.alignOptions, irAlignOptionsSize);
+  abi.free(ptrs.alignOutput, alignFixtureBytes);
+  abi.free(ptrs.alignInput, alignFixtureBytes);
+  abi.free(ptrs.irOptions, irMaskOptionsSize);
+  abi.free(ptrs.irMask, expectedIrMask.length);
+  abi.free(ptrs.irF32, irFixture.length * 4);
+  abi.free(ptrs.ir, irFixture.byteLength);
+  abi.free(ptrs.options, previewOptionsSize);
+  abi.free(ptrs.exportOutput, rawFixture.byteLength);
+  abi.free(ptrs.output, expectedPreview.length);
+  abi.free(ptrs.raw, rawFixture.byteLength);
 }
