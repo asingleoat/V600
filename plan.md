@@ -10921,7 +10921,7 @@ rewrites; do not combine a move and a behavior change in one commit.
     - `node --check` passed on every touched `.mjs` file and
       `git diff --check` passed.
 
-- [ ] 14.2 Shared-core consolidation (Zig) per the Shared-Core Policy in
+- [x] 14.2 Shared-core consolidation (Zig) per the Shared-Core Policy in
   `docs/WEBAPP_PORT_PLAN.md`.
   - Make the private `src/processing/ir.zig` helpers `pub` and delete their
     verbatim copies in `src/wasm/core.zig` (~200 lines):
@@ -10952,6 +10952,59 @@ rewrites; do not combine a move and a behavior change in one commit.
   - Update the `docs/WEBAPP_PORT_PLAN.md` reuse map, which currently claims
     IR mask-resize, grain, and translation-ECC are shared while they are
     facade reimplementations until this step lands.
+  - Completed 2026-07-03 across commits `a19da32`, `45b2b39`, `375df1e`,
+    `db26958`, `7d7aeb0`, and `40acf06`:
+    - Published `ir.zig` helpers (`labelMaskComponents8`, `MaskComponent`,
+      `addClampedLimit`, `roundF32`, `resizeNearestMask`, `reflectIndex`,
+      genericized `sampleReflectNearest`/`sampleReflectBilinear`/
+      `applyTranslation`, and a new `resizeMaskToRgb` extracted from the
+      `irCleanRegion` mask-geometry branch) and deleted the verbatim copies
+      in `src/wasm/core.zig`.
+    - Moved the pure OpenCV-behavior ports (grain estimate/spectrum/
+      synthesis, translation-ECC stack, small DFT pair, area resize, 5x5
+      Gaussian, OpenCV-ellipse dilate) into `src/processing/ir_pure.zig`
+      with `estimateTranslationEccF32` as the plain-typed entry.
+    - Rewired the `!use_native_ir_helpers` paths in `ir.zig` to call the
+      pure ports instead of failing no-op stubs (`alignIr` now estimates
+      with pure ECC on no-libc builds; grain estimate/synthesis dispatch to
+      `ir_pure`; `synthesizeGrainFromNoise` gained an allocator parameter).
+      SuperLU keeps its failing stub because `biharmonicInpaint` already
+      falls back to the pure iterative solver.
+    - Collapsed the Wasm `inpaintGrainRgb16WithNoise` re-orchestration into
+      the shared `inpaintBiharmonicWithGrainFromNoise` uint16 value-kind
+      path; the browser smoke still replays the uint16 grain fixture with
+      `ir_grain_inpaint_max_abs=0`.
+    - Un-skipped the formerly OpenCV-gated no-libc fixture tests: grain
+      estimate, grain synthesis, python-inpaint, and ir-clean fixtures now
+      replay exactly against the pure ports; the two alignment fixtures
+      assert the pure ECC offset within the accepted `0.05 px` envelope and
+      pin the aligned-output envelope (`max_abs <= 150`, `rms <= 45`;
+      measured `141.42`/`41.32`, matching the recorded browser evidence).
+      Added a native synthetic 35mm detector test mirroring the worker
+      smoke scenario (`frame_count_override=3`, film-extent and CLAHE off).
+    - Replaced the hand-written `src/wasm_core.zig` export shim with a
+      comptime `@export` loop over the C-callconv core ABI functions.
+    - Consolidated the scattered `!builtin.cpu.arch.isWasm()` thread guards
+      behind `src/processing/parallelism.zig` `enabled`, dropping the
+      redundant nested arch checks while preserving comptime branch
+      elimination for freestanding Wasm; libc-specific guards
+      (`use_native_ir_helpers`, `monotonicNowNs`) intentionally remain
+      direct.
+    - Refreshed the `docs/WEBAPP_PORT_PLAN.md` reuse map and recorded the
+      consolidation as a `docs/PARITY_MANIFEST.md` Phase 14 row.
+  - Validation 2026-07-03 (every commit in the series):
+    - `zig build test --summary all` finished at `611/615` passed with 4
+      expected skips (libtiff-gated scan-parity tests) and zero failures,
+      up from `602/614` with 12 skips.
+    - `zig build wasm-core-smoke wasm32-core-smoke
+      wasm-worker-protocol-smoke wasm-worker-runtime-smoke
+      wasm-webapp-shell-smoke wasm-tiff-reader-smoke
+      wasm-webapp-static-smoke wasm-webapp --summary all` passed 20/20 with
+      byte-identical smoke outputs before and after every step
+      (`ir_estimate_tx=9.883345603942871`, `ir_grain_inpaint_max_abs=0`,
+      `ir_alignment_max_abs=0.0037903999982518144`).
+    - `zig build --summary all` and `zig build -Dui=true --summary all`
+      passed; `zig fmt --check` and `git diff --check` passed.
 
 - [ ] 14.3 Browser JS structure.
   - Split `web/app_core.mjs` (2621 lines, ~6 concerns) into focused

@@ -79,19 +79,33 @@ Rules:
 - Browser WebGPU may share WGSL kernels with native WebGPU, but host adapter
   code will remain separate. CPU Wasm remains the correctness fallback.
 
-Current reuse map, 2026-05-24:
+Current reuse map, refreshed 2026-07-03:
 
-- Already shared directly by Wasm: film stock coefficients, custom negative
-  inversion, density LUT path, display rendering, IR mask/resize/inpaint
-  primitives, translation-ECC helpers, and frame detection.
+- Shared directly by Wasm through `src/processing/` modules: film stock
+  coefficients, custom negative inversion, density LUT path, display
+  rendering, IR defect masks, mask resize/dilate geometry, translation
+  application, grain-aware biharmonic inpaint orchestration (uint16 value
+  kind), and frame detection. `src/processing/ir_pure.zig` holds the
+  dependency-free ports of the native OpenCV helper behavior (local grain
+  estimation/synthesis and translation-only ECC); the browser Wasm core and
+  the no-libc native fallbacks call the same module, so `zig build test`
+  replays the shared fixtures against these ports on every run. The earlier
+  2026-05-24 version of this map overstated sharing: mask resize, grain, and
+  ECC were facade reimplementations inside `src/wasm/core.zig` until the
+  Phase 14 shared-core consolidation moved them here.
+- Native-only extern helpers with pure fallbacks: OpenCV ECC and grain run
+  through `opencv_ecc.cpp`/`opencv_ir.cpp` when libc is linked and through
+  `ir_pure.zig` otherwise (the pure ECC estimate is envelope-tested, not
+  OpenCV-bit-exact). SuperLU sparse LU keeps a failing stub without libc
+  because the biharmonic solver already falls back to the pure iterative
+  path.
 - Still adapter-owned or duplicated in browser JS: TIFF reader/writer,
   selected-frame RGB/IR crop orchestration, rotated crop helper, export
   orchestration sequencing, worker/cache-key payload construction, metadata
   sidecar assembly, and UI state mapping.
 - Native-only by design for now: scanner drivers, SDL3/Nuklear UI, native
-  filesystem path management, native thread scheduling, native `wgpu-native`
-  host setup, and C/C++ helper dependencies that have not been ported to
-  dependency-free Zig.
+  filesystem path management, native thread scheduling, and native
+  `wgpu-native` host setup.
 
 ## Current Implementation Status
 
