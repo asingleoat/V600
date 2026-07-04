@@ -5,126 +5,9 @@ const numeric = @import("numeric_fixture.zig");
 const ir_pure = @import("ir_pure.zig");
 const parallelism = @import("parallelism.zig");
 
-const use_native_ir_helpers = !builtin.cpu.arch.isWasm() and builtin.link_libc;
+const ir_native = @import("ir_native.zig");
 
-extern fn v600_align_ir_find_ecc_translation(
-    rgb: [*]const f64,
-    rgb_width: c_int,
-    rgb_height: c_int,
-    ir: [*]const f64,
-    ir_width: c_int,
-    ir_height: c_int,
-    tx: *f64,
-    ty: *f64,
-) c_int;
-
-// Matches the opencv_ecc.cpp constants so the pure-Zig fallback estimates the
-// same translation shape as the native OpenCV helper.
-const pure_ecc_scale: f64 = 0.125;
-const pure_ecc_max_iterations: u32 = 200;
-const pure_ecc_epsilon: f64 = 1.0e-6;
-
-fn estimateTranslationEccPure(
-    allocator: std.mem.Allocator,
-    rgb: []const f64,
-    rgb_width: usize,
-    rgb_height: usize,
-    ir: []const f64,
-    ir_width: usize,
-    ir_height: usize,
-) !ir_pure.TranslationEstimate {
-    const rgb_f32 = try allocator.alloc(f32, rgb.len);
-    defer allocator.free(rgb_f32);
-    for (rgb, rgb_f32) |value, *out| out.* = @floatCast(value);
-    const ir_f32 = try allocator.alloc(f32, ir.len);
-    defer allocator.free(ir_f32);
-    for (ir, ir_f32) |value, *out| out.* = @floatCast(value);
-    return ir_pure.estimateTranslationEccF32(
-        allocator,
-        rgb_f32,
-        rgb_width,
-        rgb_height,
-        ir_f32,
-        ir_width,
-        ir_height,
-        pure_ecc_scale,
-        pure_ecc_max_iterations,
-        pure_ecc_epsilon,
-    );
-}
-
-extern fn v600_estimate_local_grain(
-    roi_rgb: [*]const f64,
-    roi_mask: [*]const u8,
-    width: c_int,
-    height: c_int,
-    grain_padding: c_int,
-    grain_std: [*]f64,
-    signal_out: [*]f64,
-    spectrum_out: [*]f64,
-    spectrum_capacity: c_int,
-    spectrum_len: *c_int,
-    has_spectrum: *c_int,
-) c_int;
-
-extern fn v600_synthesize_grain_from_noise(
-    noise: [*]const f64,
-    width: c_int,
-    height: c_int,
-    grain_std: [*]const f64,
-    grain_spectrum: ?[*]const f64,
-    spectrum_len: c_int,
-    channels: c_int,
-    output: [*]f64,
-) c_int;
-
-extern fn v600_solve_sparse_lu(
-    n: usize,
-    row_offsets: [*]const usize,
-    columns: [*]const usize,
-    values: [*]const f64,
-    nnz: usize,
-    channels: usize,
-    rhs: [*]const f64,
-    output: [*]f64,
-) c_int;
-
-fn fallback_solve_sparse_lu(
-    n: usize,
-    row_offsets: [*]const usize,
-    columns: [*]const usize,
-    values: [*]const f64,
-    nnz: usize,
-    channels: usize,
-    rhs: [*]const f64,
-    output: [*]f64,
-) c_int {
-    _ = n;
-    _ = row_offsets;
-    _ = columns;
-    _ = values;
-    _ = nnz;
-    _ = channels;
-    _ = rhs;
-    _ = output;
-    return 1;
-}
-
-fn callSolveSparseLu(
-    n: usize,
-    row_offsets: [*]const usize,
-    columns: [*]const usize,
-    values: [*]const f64,
-    nnz: usize,
-    channels: usize,
-    rhs: [*]const f64,
-    output: [*]f64,
-) c_int {
-    if (use_native_ir_helpers) {
-        return v600_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
-    }
-    return fallback_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
-}
+const use_native_ir_helpers = ir_native.available;
 
 pub const AlignOptions = struct {
     max_offset: i32 = 8,
@@ -290,7 +173,7 @@ pub fn alignIr(
     var tx: f64 = 0.0;
     var ty: f64 = 0.0;
     if (use_native_ir_helpers) {
-        const ecc_status = v600_align_ir_find_ecc_translation(
+        const ecc_status = ir_native.v600_align_ir_find_ecc_translation(
             rgb.ptr,
             @intCast(rgb_width),
             @intCast(rgb_height),
@@ -305,7 +188,7 @@ pub fn alignIr(
             return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
         }
     } else {
-        const estimate = estimateTranslationEccPure(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height) catch {
+        const estimate = ir_native.estimateTranslationEccPure(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height) catch {
             @memcpy(output, ir);
             return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
         };
@@ -1024,7 +907,7 @@ pub fn estimateLocalGrain(
     var grain_std = [_]f64{ 0.0, 0.0, 0.0 };
     var spectrum_len: c_int = 0;
     var has_spectrum: c_int = 0;
-    const status = v600_estimate_local_grain(
+    const status = ir_native.v600_estimate_local_grain(
         roi_rgb.ptr,
         roi_mask.ptr,
         @intCast(width),
@@ -1085,7 +968,7 @@ pub fn synthesizeGrainFromNoise(
     const spectrum_len = if (grain_spectrum) |spectrum| spectrum.len else 0;
     if (spectrum_len > @as(usize, @intCast(std.math.maxInt(c_int)))) return error.InvalidIrGrainSynthesisBuffer;
 
-    const status = v600_synthesize_grain_from_noise(
+    const status = ir_native.v600_synthesize_grain_from_noise(
         noise.ptr,
         @intCast(width),
         @intCast(height),
@@ -3683,7 +3566,7 @@ fn solveSparseLinearSystemChannels(
     if (channels == 0 or rhs.len != matrix.n * channels or solution.len != rhs.len) {
         return error.InvalidIrBiharmonicBuffer;
     }
-    const direct_status = callSolveSparseLu(
+    const direct_status = ir_native.solveSparseLu(
         matrix.n,
         matrix.row_offsets.ptr,
         matrix.columns.ptr,
