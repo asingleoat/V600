@@ -141,13 +141,13 @@ fn allocatorForCore() std.mem.Allocator {
     return std.heap.page_allocator;
 }
 
-pub fn v600_wasm_alloc(len: usize) usize {
+pub fn v600_wasm_alloc(len: usize) callconv(.c) usize {
     if (len == 0) return 0;
     const ptr = allocatorForCore().rawAlloc(len, allocation_alignment, @returnAddress()) orelse return 0;
     return @intFromPtr(ptr);
 }
 
-pub fn v600_wasm_free(ptr_addr: usize, len: usize) void {
+pub fn v600_wasm_free(ptr_addr: usize, len: usize) callconv(.c) void {
     if (ptr_addr == 0 or len == 0) return;
     const ptr: [*]u8 = @ptrFromInt(ptr_addr);
     allocatorForCore().rawFree(ptr[0..len], allocation_alignment, @returnAddress());
@@ -159,7 +159,7 @@ pub fn v600_preview_invert_u16_to_u8(
     output_ptr: [*]u8,
     output_len: usize,
     options_ptr: *const PreviewOptions,
-) i32 {
+) callconv(.c) i32 {
     const raw = raw_ptr[0..raw_len];
     const output = output_ptr[0..output_len];
     previewInvertProvidedDminU16ToU8(allocatorForCore(), raw, output, options_ptr.*) catch |err| {
@@ -174,7 +174,7 @@ pub fn v600_export_invert_u16_to_u16(
     output_ptr: [*]u16,
     output_len: usize,
     options_ptr: *const PreviewOptions,
-) i32 {
+) callconv(.c) i32 {
     const raw = raw_ptr[0..raw_len];
     const output = output_ptr[0..output_len];
     exportInvertProvidedDminU16ToU16(allocatorForCore(), raw, output, options_ptr.*) catch |err| {
@@ -189,7 +189,7 @@ pub fn v600_ir_make_defect_mask_u8(
     output_ptr: [*]u8,
     output_len: usize,
     options_ptr: *const IrMaskOptions,
-) i32 {
+) callconv(.c) i32 {
     const ir = ir_ptr[0..ir_len];
     const output = output_ptr[0..output_len];
     makeIrDefectMaskU8(allocatorForCore(), ir, output, options_ptr.*) catch |err| {
@@ -204,7 +204,7 @@ pub fn v600_ir_make_defect_mask_f32(
     output_ptr: [*]u8,
     output_len: usize,
     options_ptr: *const IrMaskOptions,
-) i32 {
+) callconv(.c) i32 {
     const ir = ir_ptr[0..ir_len];
     const output = output_ptr[0..output_len];
     makeIrDefectMaskF32(allocatorForCore(), ir, output, options_ptr.*) catch |err| {
@@ -219,7 +219,7 @@ pub fn v600_ir_resize_mask_to_rgb_u8(
     output_ptr: [*]u8,
     output_len: usize,
     options_ptr: *const IrMaskResizeOptions,
-) i32 {
+) callconv(.c) i32 {
     const ir_mask = ir_mask_ptr[0..ir_mask_len];
     const output = output_ptr[0..output_len];
     resizeIrMaskToRgbU8(allocatorForCore(), ir_mask, output, options_ptr.*) catch |err| {
@@ -236,7 +236,7 @@ pub fn v600_ir_biharmonic_inpaint_u16(
     output_ptr: [*]u16,
     output_len: usize,
     options_ptr: *const IrInpaintOptions,
-) i32 {
+) callconv(.c) i32 {
     const rgb = rgb_ptr[0..rgb_len];
     const mask = mask_ptr[0..mask_len];
     const output = output_ptr[0..output_len];
@@ -256,7 +256,7 @@ pub fn v600_ir_inpaint_grain_u16_with_noise(
     output_ptr: [*]u16,
     output_len: usize,
     options_ptr: *const IrInpaintGrainOptions,
-) i32 {
+) callconv(.c) i32 {
     const rgb = rgb_ptr[0..rgb_len];
     const mask = mask_ptr[0..mask_len];
     const noise = noise_ptr[0..noise_len];
@@ -273,7 +273,7 @@ pub fn v600_ir_apply_translation_f32(
     output_ptr: [*]f32,
     output_len: usize,
     options_ptr: *const IrAlignOptions,
-) i32 {
+) callconv(.c) i32 {
     const ir = ir_ptr[0..ir_len];
     const output = output_ptr[0..output_len];
     applyIrTranslationF32(ir, output, options_ptr.*) catch |err| {
@@ -289,7 +289,7 @@ pub fn v600_ir_estimate_translation_f32(
     ir_len: usize,
     result_ptr: *IrEstimateResult,
     options_ptr: *const IrEstimateOptions,
-) i32 {
+) callconv(.c) i32 {
     const rgb = rgb_ptr[0..rgb_len];
     const ir = ir_ptr[0..ir_len];
     estimateIrTranslationF32(allocatorForCore(), rgb, ir, result_ptr, options_ptr.*) catch |err| {
@@ -305,7 +305,7 @@ pub fn v600_detect_frames_rgb16(
     frames_len: usize,
     result_ptr: *FrameDetectResult,
     options_ptr: *const FrameDetectOptions,
-) i32 {
+) callconv(.c) i32 {
     const raw = raw_ptr[0..raw_len];
     const output_frames = frames_ptr[0..frames_len];
     detectFramesRgb16(allocatorForCore(), raw, output_frames, result_ptr, options_ptr.*) catch |err| {
