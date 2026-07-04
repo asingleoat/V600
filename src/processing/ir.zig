@@ -4260,11 +4260,24 @@ fn expectAlignmentFixture(path: []const u8) !void {
         try numeric.assertCloseSlices(fixture.expected, output, fixture.tolerance);
     } else {
         // The pure-Zig translation ECC is not OpenCV-bit-exact. Hold it to the
-        // 0.05 px offset envelope accepted for the browser estimate path and
-        // skip the sample comparison, which bakes in the exact OpenCV offset.
+        // 0.05 px offset envelope accepted for the browser estimate path.
         try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 0.05);
         try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 0.05);
         try std.testing.expect(result.shifted);
+        var max_abs: f64 = 0.0;
+        var sum_sq: f64 = 0.0;
+        for (fixture.expected, output) |expected_sample, actual_sample| {
+            const diff = actual_sample - expected_sample;
+            max_abs = @max(max_abs, @abs(diff));
+            sum_sq += diff * diff;
+        }
+        const rms = @sqrt(sum_sq / @as(f64, @floatFromInt(output.len)));
+        // The fixture expected samples bake in the exact OpenCV offset, so the
+        // 0.035 px estimate difference produces max_abs ~141.42 and rms ~41.32
+        // on this data (the same envelope recorded for the browser estimate
+        // path in plan.md). Pin that envelope so pure-path drift fails loudly.
+        try std.testing.expect(max_abs <= 150.0);
+        try std.testing.expect(rms <= 45.0);
     }
 }
 
