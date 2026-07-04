@@ -13,6 +13,9 @@ const allocation_alignment = std.mem.Alignment.@"16";
 // usize -> i32 radius casts safe in the ReleaseFast Wasm artifact.
 const max_ir_inpaint_padding: u32 = 4096;
 
+const roundF32 = ir_processing.roundF32;
+const addClampedLimit = ir_processing.addClampedLimit;
+
 pub const Status = enum(i32) {
     ok = 0,
     invalid_buffer = 1,
@@ -518,16 +521,7 @@ pub fn resizeIrMaskToRgbU8(
     const rgb_width: usize = @intCast(options.rgb_width);
     const rgb_height: usize = @intCast(options.rgb_height);
 
-    if (ir_width == rgb_width and ir_height == rgb_height) {
-        @memcpy(output, ir_mask);
-        return;
-    }
-
-    resizeNearestMaskU8(ir_mask, ir_width, ir_height, output, rgb_width, rgb_height);
-    const dilated = try allocator.alloc(u8, output.len);
-    defer allocator.free(dilated);
-    dilateMaskRadius1U8(output, rgb_width, rgb_height, dilated);
-    @memcpy(output, dilated);
+    try ir_processing.resizeMaskToRgb(allocator, ir_mask, ir_width, ir_height, output, rgb_width, rgb_height);
 }
 
 pub fn biharmonicInpaintRgb16(
@@ -572,7 +566,7 @@ pub fn inpaintGrainRgb16WithNoise(
 
     const labels = try allocator.alloc(usize, mask.len);
     defer allocator.free(labels);
-    var components = try labelMaskComponents8Wasm(allocator, mask, width, height, labels);
+    var components = try ir_processing.labelMaskComponents8(allocator, mask, width, height, labels);
     defer components.deinit(allocator);
 
     if (components.items.len == 0) {
@@ -665,13 +659,7 @@ pub fn applyIrTranslationF32(
     if (!std.math.isFinite(options.tx) or !std.math.isFinite(options.ty)) return error.InvalidBuffer;
     const tx: f64 = @floatCast(options.tx);
     const ty: f64 = @floatCast(options.ty);
-    for (0..height) |y| {
-        for (0..width) |x| {
-            const sample_x = @as(f64, @floatFromInt(x)) + tx;
-            const sample_y = @as(f64, @floatFromInt(y)) + ty;
-            output[y * width + x] = @floatCast(sampleReflectBilinearF32(ir_f32, width, height, sample_x, sample_y));
-        }
-    }
+    ir_processing.applyTranslation(f32, ir_f32, width, height, output, tx, ty);
 }
 
 pub fn estimateIrTranslationF32(
@@ -914,11 +902,6 @@ fn clippedStorageU16(value: f64) u16 {
     return @intFromFloat(value);
 }
 
-fn roundF32(value: f64) f64 {
-    const rounded: f32 = @floatCast(value);
-    return @floatCast(rounded);
-}
-
 fn areaResizeU8(input: []const u8, in_width: usize, in_height: usize, output: []u8, out_width: usize, out_height: usize) void {
     const scale_x = @as(f64, @floatFromInt(in_width)) / @as(f64, @floatFromInt(out_width));
     const scale_y = @as(f64, @floatFromInt(in_height)) / @as(f64, @floatFromInt(out_height));
@@ -941,32 +924,6 @@ fn areaResizeU8(input: []const u8, in_width: usize, in_height: usize, output: []
     }
 }
 
-fn resizeNearestMaskU8(input: []const u8, width: usize, height: usize, output: []u8, out_width: usize, out_height: usize) void {
-    for (0..out_height) |y| {
-        const sy = @min(height - 1, y * height / out_height);
-        for (0..out_width) |x| {
-            const sx = @min(width - 1, x * width / out_width);
-            output[y * out_width + x] = input[sy * width + sx];
-        }
-    }
-}
-
-fn dilateMaskRadius1U8(input: []const u8, width: usize, height: usize, output: []u8) void {
-    @memset(output, 0);
-    for (0..height) |y| {
-        for (0..width) |x| {
-            if (input[y * width + x] != 0 or
-                (x > 0 and input[y * width + x - 1] != 0) or
-                (x + 1 < width and input[y * width + x + 1] != 0) or
-                (y > 0 and input[(y - 1) * width + x] != 0) or
-                (y + 1 < height and input[(y + 1) * width + x] != 0))
-            {
-                output[y * width + x] = 255;
-            }
-        }
-    }
-}
-
 const LocalGrainEstimateWasm = struct {
     grain_std: [3]f64,
     signal: []f64,
@@ -976,14 +933,6 @@ const LocalGrainEstimateWasm = struct {
         if (self.spectrum) |spectrum| allocator.free(spectrum);
         allocator.free(self.signal);
     }
-};
-
-const MaskComponentWasm = struct {
-    label: usize,
-    left: usize,
-    top: usize,
-    right: usize,
-    bottom: usize,
 };
 
 fn estimateLocalGrainWasm(
@@ -1357,81 +1306,6 @@ fn openCvEllipseSpans(allocator: std.mem.Allocator, radius: usize) ![]EllipseSpa
     return spans;
 }
 
-fn labelMaskComponents8Wasm(
-    allocator: std.mem.Allocator,
-    mask: []const u8,
-    width: usize,
-    height: usize,
-    labels: []usize,
-) !std.ArrayList(MaskComponentWasm) {
-    if (width == 0 or height == 0 or mask.len != width * height or labels.len != mask.len) {
-        return error.InvalidIrInpaintBuffer;
-    }
-    @memset(labels, 0);
-
-    var components: std.ArrayList(MaskComponentWasm) = .empty;
-    errdefer components.deinit(allocator);
-    const stack = try allocator.alloc(usize, mask.len);
-    defer allocator.free(stack);
-
-    for (0..mask.len) |start| {
-        if (mask[start] == 0 or labels[start] != 0) continue;
-
-        const label = components.items.len + 1;
-        var stack_len: usize = 1;
-        stack[0] = start;
-        labels[start] = label;
-
-        var left = start % width;
-        var right = left + 1;
-        var top = start / width;
-        var bottom = top + 1;
-
-        while (stack_len > 0) {
-            stack_len -= 1;
-            const index = stack[stack_len];
-            const x = index % width;
-            const y = index / width;
-            left = @min(left, x);
-            right = @max(right, x + 1);
-            top = @min(top, y);
-            bottom = @max(bottom, y + 1);
-
-            const x_i: i32 = @intCast(x);
-            const y_i: i32 = @intCast(y);
-            const deltas = [_]i32{ -1, 0, 1 };
-            for (&deltas) |dy| {
-                for (&deltas) |dx| {
-                    if (dx == 0 and dy == 0) continue;
-                    const nx = x_i + dx;
-                    const ny = y_i + dy;
-                    if (nx < 0 or ny < 0 or nx >= @as(i32, @intCast(width)) or ny >= @as(i32, @intCast(height))) continue;
-                    const next = @as(usize, @intCast(ny)) * width + @as(usize, @intCast(nx));
-                    if (mask[next] == 0 or labels[next] != 0) continue;
-                    labels[next] = label;
-                    stack[stack_len] = next;
-                    stack_len += 1;
-                }
-            }
-        }
-
-        try components.append(allocator, .{
-            .label = label,
-            .left = left,
-            .top = top,
-            .right = right,
-            .bottom = bottom,
-        });
-    }
-    return components;
-}
-
-fn addClampedLimit(value: usize, amount: usize, limit: usize) usize {
-    if (value >= limit) return limit;
-    const remaining = limit - value;
-    return if (amount >= remaining) limit else value + amount;
-}
-
 const Complex = struct {
     re: f64,
     im: f64,
@@ -1741,42 +1615,6 @@ fn eccTranslationIteration(
     }
     tx.* += inv00 * error_projection_x + inv01 * error_projection_y;
     ty.* += inv01 * error_projection_x + inv11 * error_projection_y;
-}
-
-fn sampleReflectBilinearF32(values: []const f32, width: usize, height: usize, x: f64, y: f64) f64 {
-    const x0f = @floor(x);
-    const y0f = @floor(y);
-    const x0: i32 = @intFromFloat(x0f);
-    const y0: i32 = @intFromFloat(y0f);
-    const x_frac = x - x0f;
-    const y_frac = y - y0f;
-
-    const v00 = sampleReflectNearestF32(values, width, height, x0, y0);
-    const v10 = sampleReflectNearestF32(values, width, height, x0 + 1, y0);
-    const v01 = sampleReflectNearestF32(values, width, height, x0, y0 + 1);
-    const v11 = sampleReflectNearestF32(values, width, height, x0 + 1, y0 + 1);
-    const top = v00 * (1.0 - x_frac) + v10 * x_frac;
-    const bottom = v01 * (1.0 - x_frac) + v11 * x_frac;
-    return top * (1.0 - y_frac) + bottom * y_frac;
-}
-
-fn sampleReflectNearestF32(values: []const f32, width: usize, height: usize, x: i32, y: i32) f64 {
-    const reflected_x = reflectIndex(x, width);
-    const reflected_y = reflectIndex(y, height);
-    return @floatCast(values[reflected_y * width + reflected_x]);
-}
-
-fn reflectIndex(index: i32, len: usize) usize {
-    var reflected = index;
-    const n: i32 = @intCast(len);
-    while (reflected < 0 or reflected >= n) {
-        if (reflected < 0) {
-            reflected = -reflected - 1;
-        } else {
-            reflected = 2 * n - reflected - 1;
-        }
-    }
-    return @intCast(reflected);
 }
 
 fn reflect101Index(index: i32, len: usize) usize {

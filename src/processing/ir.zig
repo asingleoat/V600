@@ -402,7 +402,7 @@ pub fn alignIr(
         return .{ .tx = tx, .ty = ty, .shifted = false };
     }
 
-    applyTranslation(ir, ir_width, ir_height, output, tx, ty);
+    applyTranslation(f64, ir, ir_width, ir_height, output, tx, ty);
     return .{
         .tx = tx,
         .ty = ty,
@@ -1582,15 +1582,7 @@ pub fn irCleanRegionWithNoiseTimed(
     const mask_rgb = try allocator.alloc(u8, rgb_width * rgb_height);
     defer allocator.free(mask_rgb);
     const resize_started = monotonicNowNs();
-    if (rgb_width != ir_width or rgb_height != ir_height) {
-        resizeNearestMask(mask_ir, ir_width, ir_height, mask_rgb, rgb_width, rgb_height);
-        const dilated = try allocator.alloc(u8, mask_rgb.len);
-        defer allocator.free(dilated);
-        try dilateMask(allocator, mask_rgb, rgb_width, rgb_height, dilated, 1);
-        @memcpy(mask_rgb, dilated);
-    } else {
-        @memcpy(mask_rgb, mask_ir);
-    }
+    try resizeMaskToRgb(allocator, mask_ir, ir_width, ir_height, mask_rgb, rgb_width, rgb_height);
     if (rgb_mask_output) |mask_out| @memcpy(mask_out, mask_rgb);
     if (timings) |out| out.mask_resize_ns += monotonicNowNs() - resize_started;
 
@@ -1687,15 +1679,7 @@ pub fn irCleanRegionTimed(
     const mask_rgb = try allocator.alloc(u8, rgb_width * rgb_height);
     defer allocator.free(mask_rgb);
     const resize_started = monotonicNowNs();
-    if (rgb_width != ir_width or rgb_height != ir_height) {
-        resizeNearestMask(mask_ir, ir_width, ir_height, mask_rgb, rgb_width, rgb_height);
-        const dilated = try allocator.alloc(u8, mask_rgb.len);
-        defer allocator.free(dilated);
-        try dilateMask(allocator, mask_rgb, rgb_width, rgb_height, dilated, 1);
-        @memcpy(mask_rgb, dilated);
-    } else {
-        @memcpy(mask_rgb, mask_ir);
-    }
+    try resizeMaskToRgb(allocator, mask_ir, ir_width, ir_height, mask_rgb, rgb_width, rgb_height);
     if (rgb_mask_output) |mask_out| @memcpy(mask_out, mask_rgb);
     if (timings) |out| out.mask_resize_ns += monotonicNowNs() - resize_started;
 
@@ -1729,7 +1713,7 @@ pub fn irCleanRegionTimed(
     };
 }
 
-const MaskComponent = struct {
+pub const MaskComponent = struct {
     label: usize,
     left: usize,
     top: usize,
@@ -1738,7 +1722,7 @@ const MaskComponent = struct {
     area: usize,
 };
 
-fn labelMaskComponents8(
+pub fn labelMaskComponents8(
     allocator: std.mem.Allocator,
     mask: []const u8,
     width: usize,
@@ -1834,7 +1818,7 @@ fn requiredInpaintNoiseLen(
     return total;
 }
 
-fn addClampedLimit(value: usize, amount: usize, limit: usize) usize {
+pub fn addClampedLimit(value: usize, amount: usize, limit: usize) usize {
     if (value >= limit) return limit;
     const remaining = limit - value;
     return if (amount >= remaining) limit else value + amount;
@@ -1878,7 +1862,7 @@ fn castClippedStorageValue(value: f64, value_kind: InpaintValueKind) f64 {
     };
 }
 
-fn roundF32(value: f64) f64 {
+pub fn roundF32(value: f64) f64 {
     const rounded: f32 = @floatCast(value);
     return @floatCast(rounded);
 }
@@ -1905,23 +1889,23 @@ fn validateAlignmentInputs(
     if (output.len != ir.len) return error.InvalidIrAlignmentBuffer;
 }
 
-fn applyTranslation(ir: []const f64, width: usize, height: usize, output: []f64, tx: f64, ty: f64) void {
+pub fn applyTranslation(comptime T: type, ir: []const T, width: usize, height: usize, output: []T, tx: f64, ty: f64) void {
     for (0..height) |y| {
         for (0..width) |x| {
             const sample_x = @as(f64, @floatFromInt(x)) + tx;
             const sample_y = @as(f64, @floatFromInt(y)) + ty;
-            output[y * width + x] = sampleReflectBilinear(ir, width, height, sample_x, sample_y);
+            output[y * width + x] = @floatCast(sampleReflectBilinear(T, ir, width, height, sample_x, sample_y));
         }
     }
 }
 
-fn sampleReflectNearest(values: []const f64, width: usize, height: usize, x: i32, y: i32) f64 {
+pub fn sampleReflectNearest(comptime T: type, values: []const T, width: usize, height: usize, x: i32, y: i32) f64 {
     const reflected_x = reflectIndex(x, width);
     const reflected_y = reflectIndex(y, height);
-    return values[reflected_y * width + reflected_x];
+    return @floatCast(values[reflected_y * width + reflected_x]);
 }
 
-fn sampleReflectBilinear(values: []const f64, width: usize, height: usize, x: f64, y: f64) f64 {
+pub fn sampleReflectBilinear(comptime T: type, values: []const T, width: usize, height: usize, x: f64, y: f64) f64 {
     const x0f = @floor(x);
     const y0f = @floor(y);
     const x0: i32 = @intFromFloat(x0f);
@@ -1929,16 +1913,16 @@ fn sampleReflectBilinear(values: []const f64, width: usize, height: usize, x: f6
     const x_frac = x - x0f;
     const y_frac = y - y0f;
 
-    const v00 = sampleReflectNearest(values, width, height, x0, y0);
-    const v10 = sampleReflectNearest(values, width, height, x0 + 1, y0);
-    const v01 = sampleReflectNearest(values, width, height, x0, y0 + 1);
-    const v11 = sampleReflectNearest(values, width, height, x0 + 1, y0 + 1);
+    const v00 = sampleReflectNearest(T, values, width, height, x0, y0);
+    const v10 = sampleReflectNearest(T, values, width, height, x0 + 1, y0);
+    const v01 = sampleReflectNearest(T, values, width, height, x0, y0 + 1);
+    const v11 = sampleReflectNearest(T, values, width, height, x0 + 1, y0 + 1);
     const top = v00 * (1.0 - x_frac) + v10 * x_frac;
     const bottom = v01 * (1.0 - x_frac) + v11 * x_frac;
     return top * (1.0 - y_frac) + bottom * y_frac;
 }
 
-fn reflectIndex(index: i32, len: usize) usize {
+pub fn reflectIndex(index: i32, len: usize) usize {
     var reflected = index;
     const n: i32 = @intCast(len);
     while (reflected < 0 or reflected >= n) {
@@ -3220,7 +3204,27 @@ fn resizeAreaPositive(
     return output;
 }
 
-fn resizeNearestMask(input: []const u8, width: usize, height: usize, output: []u8, out_width: usize, out_height: usize) void {
+pub fn resizeMaskToRgb(
+    allocator: std.mem.Allocator,
+    mask_ir: []const u8,
+    ir_width: usize,
+    ir_height: usize,
+    mask_rgb: []u8,
+    rgb_width: usize,
+    rgb_height: usize,
+) !void {
+    if (rgb_width != ir_width or rgb_height != ir_height) {
+        resizeNearestMask(mask_ir, ir_width, ir_height, mask_rgb, rgb_width, rgb_height);
+        const dilated = try allocator.alloc(u8, mask_rgb.len);
+        defer allocator.free(dilated);
+        try dilateMask(allocator, mask_rgb, rgb_width, rgb_height, dilated, 1);
+        @memcpy(mask_rgb, dilated);
+    } else {
+        @memcpy(mask_rgb, mask_ir);
+    }
+}
+
+pub fn resizeNearestMask(input: []const u8, width: usize, height: usize, output: []u8, out_width: usize, out_height: usize) void {
     for (0..out_height) |y| {
         const sy = @min(height - 1, y * height / out_height);
         for (0..out_width) |x| {
