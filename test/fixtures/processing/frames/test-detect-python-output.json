@@ -1,0 +1,183 @@
+{
+  "name": "test-detect-python-output",
+  "operation": "frozen_python_detect_frames_real_scan_outputs",
+  "python_oracle": "scratchndent/processing/frames/detection.py:detect_frames via test_detect.py load_preview semantics",
+  "generated_by": "python3 cv2 4.11.0 running frozen detect_frames on local gitignored scans",
+  "cases": [
+    {
+      "name": "scan_0001",
+      "scan": "scans/scan_0001_rgbir_3200dpi.tiff",
+      "format": "35mm",
+      "n_frames": 2,
+      "preview_width": 3496,
+      "preview_height": 8192,
+      "preview_scale": 0.720112517580872,
+      "aspect": "24:36",
+      "elapsed_seconds": 28.847002691123635,
+      "frames": [
+        {
+          "cx": 1828.4967180491512,
+          "cy": 3016.1656987143533,
+          "w": 2198.485107421875,
+          "h": 3299.0,
+          "angle": 0.005148719314738717
+        },
+        {
+          "cx": 1819.9169729464704,
+          "cy": 6456.155283389881,
+          "w": 2202.311279296875,
+          "h": 3303.0,
+          "angle": 0.0047864060582799945
+        }
+      ]
+    },
+    {
+      "name": "scan_0003",
+      "scan": "scans/scan_0003_rgbir_3200dpi.tiff",
+      "format": "35mm",
+      "n_frames": 4,
+      "preview_width": 1901,
+      "preview_height": 8192,
+      "preview_scale": 0.3870540987479329,
+      "aspect": "24:36",
+      "elapsed_seconds": 1.9484154540114105,
+      "frames": [
+        {
+          "cx": 999.6466866138865,
+          "cy": 1621.8778547351153,
+          "w": 1182.967529296875,
+          "h": 1774.0,
+          "angle": 0.004180932113552264
+        },
+        {
+          "cx": 991.4695988477049,
+          "cy": 3472.893171680715,
+          "w": 1183.2115478515625,
+          "h": 1774.0,
+          "angle": 0.0034345892601399374
+        },
+        {
+          "cx": 979.1907644887518,
+          "cy": 5324.865788918189,
+          "w": 1186.0,
+          "h": 1774.0,
+          "angle": -0.0006945122225802038
+        },
+        {
+          "cx": 973.7497584435453,
+          "cy": 7177.9097337047215,
+          "w": 1188.159912109375,
+          "h": 1778.0,
+          "angle": 0.0026502434581516104
+        }
+      ]
+    },
+    {
+      "name": "scan_0006",
+      "scan": "scans/scan_0006_rgbir_800dpi.tiff",
+      "format": "35mm",
+      "n_frames": 5,
+      "preview_width": 1272,
+      "preview_height": 6031,
+      "preview_scale": 1.0,
+      "aspect": "24:36",
+      "elapsed_seconds": 1.3713231859728694,
+      "frames": [
+        {
+          "cx": 716.4616734030312,
+          "cy": 629.8530509273882,
+          "w": 766.0331726074219,
+          "h": 1150.0,
+          "angle": 0.030303242582834396
+        },
+        {
+          "cx": 685.8757467796122,
+          "cy": 1831.4897772795887,
+          "w": 764.899658203125,
+          "h": 1148.0,
+          "angle": 0.02966016432918558
+        },
+        {
+          "cx": 651.9112068040289,
+          "cy": 3035.019323567671,
+          "w": 766.055908203125,
+          "h": 1146.0,
+          "angle": 0.028829991121609253
+        },
+        {
+          "cx": 620.1079888427442,
+          "cy": 4224.610911572877,
+          "w": 766.6407470703125,
+          "h": 1148.0,
+          "angle": 0.026311373377943703
+        },
+        {
+          "cx": 593.5499049190829,
+          "cy": 5426.876892399412,
+          "w": 768.0110778808594,
+          "h": 1151.0,
+          "angle": 0.027180818119306276
+        }
+      ]
+    },
+    {
+      "name": "scan_0004",
+      "scan": "scans/scan_0004_rgbir_3200dpi.tiff",
+      "format": "35mm",
+      "n_frames": 5,
+      "preview_width": 1738,
+      "preview_height": 8192,
+      "preview_scale": 0.33956476683937825,
+      "aspect": "24:36",
+      "elapsed_seconds": 2.1293789208866656,
+      "frames": [
+        {
+          "cx": 988.5053454574565,
+          "cy": 855.0978768197905,
+          "w": 1040.119140625,
+          "h": 1562.0,
+          "angle": 0.030346290235040523
+        },
+        {
+          "cx": 945.4347743950892,
+          "cy": 2486.034037175663,
+          "w": 1039.2316284179688,
+          "h": 1559.0,
+          "angle": 0.029564572673321063
+        },
+        {
+          "cx": 901.758493952693,
+          "cy": 4120.454189209461,
+          "w": 1038.1264038085938,
+          "h": 1557.0,
+          "angle": 0.028167154378759586
+        },
+        {
+          "cx": 860.6474877087481,
+          "cy": 5735.940403490458,
+          "w": 1037.8216552734375,
+          "h": 1559.0,
+          "angle": 0.026120975035433498
+        },
+        {
+          "cx": 820.9768063490378,
+          "cy": 7368.975413416892,
+          "w": 1040.6346435546875,
+          "h": 1564.0,
+          "angle": 0.026626876260633457
+        }
+      ]
+    }
+  ],
+  "tolerance": {
+    "abs": 1.5,
+    "rel": 0.0,
+    "reason": "Real-scan function parity against Python-detected preview coordinates; allows small OpenCV fixed-point and floating rounding differences"
+  },
+  "angle_tolerance_radians": 0.002,
+  "geometry_tolerance": {
+    "abs": 0.000000000001,
+    "rel": 0.0,
+    "reason": "Preview geometry is generated by the same integer truncation formula used by test_detect.py load_preview"
+  }
+}

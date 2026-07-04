@@ -1,0 +1,28 @@
+{
+  "name": "cross-strip-paired-gradient-smoke",
+  "operation": "measure_cross_strip_edges",
+  "python_oracle": "scratchndent.processing.frames.detection cross-strip paired-gradient section for one signed-gradient row",
+  "generated_by": "nix develop path:. -c python3 (2026-05-15)",
+  "cross_dim_est": 20.0,
+  "cross_search_r": 4,
+  "gradient_signed": [
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.2,
+    1.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.4,
+    -1.0, -0.3, 0.0, 0.0, 0.0, -0.2, 0.0, 0.0, 0.0, 0.0,
+    0.0
+  ],
+  "expected": {
+    "left_t": -8.833333333333334,
+    "right_t": 10.96153846153846,
+    "cross_w": 19.794871794871796,
+    "cross_center_offset": 1.064102564102563,
+    "hw_idx": 10,
+    "coarse_k": 10
+  },
+  "tolerance": {
+    "abs": 1e-09,
+    "rel": 1e-09,
+    "reason": "subpixel paired-gradient offsets"
+  }
+}

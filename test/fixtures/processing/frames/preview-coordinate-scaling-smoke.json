@@ -1,0 +1,62 @@
+{
+  "name": "preview-coordinate-scaling-smoke",
+  "operation": "preview_coordinate_scaling",
+  "python_oracle": "v600/gui/process_handlers.py:136; v600/gui/extract_ui.html:1280; test_detect.py:138",
+  "generated_by": "python3 - <<'PY' using frozen Python preview_scale, JS export rect, and test_detect gt_to_full formulas",
+  "full_width": 12000,
+  "full_height": 8000,
+  "preview_size": 8192,
+  "expected_preview_scale": 0.6826666666666666,
+  "expected_preview_width": 8192,
+  "expected_preview_height": 5461,
+  "frame_preview": {
+    "cx": 1024.0,
+    "cy": 768.0,
+    "w": 512.0,
+    "h": 256.0,
+    "angle": 0.123
+  },
+  "expected_frame_full": {
+    "cx": 1500.0,
+    "cy": 1125.0,
+    "w": 750.0,
+    "h": 375.0,
+    "angle": 0.123
+  },
+  "selection_preview": {
+    "x": 768.0,
+    "y": 640.0,
+    "w": 512.0,
+    "h": 256.0,
+    "angle": -0.25
+  },
+  "expected_selection_full_frame": {
+    "cx": 1500.0,
+    "cy": 1125.0,
+    "w": 750.0,
+    "h": 375.0,
+    "angle": -0.25
+  },
+  "rebate_preview": {
+    "x": 256.0,
+    "y": 128.0,
+    "w": 64.0,
+    "h": 32.0,
+    "angle": 0.5
+  },
+  "expected_rebate_full": {
+    "x": 375.0,
+    "y": 187.5,
+    "w": 93.75,
+    "h": 46.875,
+    "angle": 0.5
+  },
+  "no_downscale_full_width": 1000,
+  "no_downscale_full_height": 800,
+  "no_downscale_preview_size": 8192,
+  "tolerance": {
+    "abs": 1e-12,
+    "rel": 1e-12,
+    "reason": "pure coordinate arithmetic should match Python formulas to floating-point precision"
+  }
+}

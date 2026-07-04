@@ -1,0 +1,49 @@
+{
+  "name": "area-resize-smoke",
+  "operation": "cv2_resize_inter_area_preview",
+  "python_oracle": "cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_AREA)",
+  "generated_by": "python3 cv2 4.11.0 deterministic uint8/uint16 arrays",
+  "cases": [
+    {
+      "name": "u16-rgb-5x4-to-3x2",
+      "width": 5,
+      "height": 4,
+      "samples_per_pixel": 3,
+      "bits_per_sample": 16,
+      "target_width": 3,
+      "target_height": 2,
+      "sample_values": [
+        0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000,
+        10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000,
+        18000, 19000, 20000, 21000, 22000, 23000, 24000, 25000,
+        26000, 27000, 28000, 29000, 30000, 31000, 32000, 33000,
+        34000, 35000, 36000, 37000, 38000, 39000, 40000, 41000,
+        42000, 43000, 44000, 45000, 46000, 47000, 48000, 49000,
+        50000, 51000, 52000, 53000, 54000, 55000, 56000, 57000,
+        58000, 59000
+      ],
+      "expected": [
+        8700, 9700, 10700, 13500, 14500, 15500, 18300, 19300, 20300,
+        38700, 39700, 40700, 43500, 44500, 45500, 48300, 49300, 50300
+      ]
+    },
+    {
+      "name": "u8-gray-6x3-to-4x2",
+      "width": 6,
+      "height": 3,
+      "samples_per_pixel": 1,
+      "bits_per_sample": 8,
+      "target_width": 4,
+      "target_height": 2,
+      "sample_values": [
+        0, 20, 40, 60, 80, 100,
+        120, 140, 160, 180, 200, 220,
+        240, 230, 210, 190, 170, 150
+      ],
+      "expected": [
+        47, 73, 107, 133,
+        200, 196, 184, 176
+      ]
+    }
+  ]
+}

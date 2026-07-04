@@ -1,0 +1,54 @@
+{
+  "name": "film-extent-close-binary-smoke",
+  "operation": "cv2_morphology_close_square_binary",
+  "python_oracle": "cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k,k), np.uint8))",
+  "generated_by": "python3 cv2 4.11.0 deterministic bool masks",
+  "cases": [
+    {
+      "name": "border-hole-k3",
+      "width": 7,
+      "height": 6,
+      "kernel_size": 3,
+      "input": [
+        true, true, false, false, false, false, false,
+        true, false, false, true, true, false, false,
+        false, false, false, true, false, false, false,
+        false, true, true, true, false, false, true,
+        false, false, false, false, false, true, true,
+        true, false, false, false, false, false, true
+      ],
+      "expected": [
+        true, true, true, true, true, false, false,
+        true, true, true, true, true, false, false,
+        true, true, true, true, true, false, false,
+        true, true, true, true, true, true, true,
+        true, false, false, false, false, true, true,
+        true, false, false, false, false, true, true
+      ]
+    },
+    {
+      "name": "large-gap-k5",
+      "width": 9,
+      "height": 7,
+      "kernel_size": 5,
+      "input": [
+        false, false, false, false, false, false, false, false, false,
+        false, true, true, false, false, true, true, false, false,
+        false, true, false, false, false, false, true, false, false,
+        false, true, true, false, false, true, true, false, false,
+        false, false, false, false, false, false, false, false, false,
+        true, true, false, false, false, false, false, true, true,
+        true, true, false, false, false, false, false, true, true
+      ],
+      "expected": [
+        true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true,
+        true, true, false, false, false, false, false, true, true,
+        true, true, false, false, false, false, false, true, true,
+        true, true, false, false, false, false, false, true, true
+      ]
+    }
+  ]
+}

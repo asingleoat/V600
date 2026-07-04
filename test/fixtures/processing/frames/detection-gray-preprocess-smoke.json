@@ -1,0 +1,101 @@
+{
+  "name": "detection-gray-preprocess-smoke",
+  "operation": "prepare_detection_gray",
+  "python_oracle": "scratchndent/processing/frames/detection.py:508",
+  "generated_by": "hand-authored from frozen Python grayscale conversion, inversion, and uint16 truncation semantics",
+  "cases": [
+    {
+      "name": "gray8-raw",
+      "width": 2,
+      "height": 2,
+      "samples_per_pixel": 1,
+      "bits_per_sample": 8,
+      "invert": false,
+      "sample_values": [0, 64, 128, 255],
+      "expected": [
+        0.0,
+        0.25098039215686274,
+        0.5019607843137255,
+        1.0
+      ]
+    },
+    {
+      "name": "gray8-inverted",
+      "width": 2,
+      "height": 2,
+      "samples_per_pixel": 1,
+      "bits_per_sample": 8,
+      "invert": true,
+      "sample_values": [0, 64, 128, 255],
+      "expected": [
+        1.0,
+        0.7490196078431373,
+        0.4980392156862745,
+        0.0
+      ]
+    },
+    {
+      "name": "rgb8-opencv-grayscale",
+      "width": 3,
+      "height": 1,
+      "samples_per_pixel": 3,
+      "bits_per_sample": 8,
+      "invert": false,
+      "sample_values": [
+        255, 0, 0,
+        0, 255, 0,
+        0, 0, 255
+      ],
+      "expected": [
+        0.2980392156862745,
+        0.5882352941176471,
+        0.11372549019607843
+      ]
+    },
+    {
+      "name": "rgb16-python-mean-truncate",
+      "width": 1,
+      "height": 2,
+      "samples_per_pixel": 3,
+      "bits_per_sample": 16,
+      "invert": false,
+      "sample_values": [
+        65535, 32768, 0,
+        512, 256, 0
+      ],
+      "expected": [
+        0.4980392156862745,
+        0.00392156862745098
+      ]
+    },
+    {
+      "name": "rgb16-python-mean-truncate-inverted",
+      "width": 1,
+      "height": 1,
+      "samples_per_pixel": 3,
+      "bits_per_sample": 16,
+      "invert": true,
+      "sample_values": [65535, 32768, 0],
+      "expected": [0.5019607843137255]
+    },
+    {
+      "name": "gray16-python-truncate",
+      "width": 3,
+      "height": 1,
+      "samples_per_pixel": 1,
+      "bits_per_sample": 16,
+      "invert": false,
+      "sample_values": [0, 65535, 258],
+      "expected": [
+        0.0,
+        1.0,
+        0.00392156862745098
+      ]
+    }
+  ],
+  "tolerance": {
+    "abs": 0.000000000001,
+    "rel": 0.0,
+    "reason": "preprocessing fixture stores exact uint8-normalized grayscale values"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "name": "film-extent-axis-aligned-smoke",
+  "operation": "detect_film_extent_axis_aligned",
+  "python_oracle": "scratchndent/processing/frames/detection.py:106",
+  "generated_by": "hand-authored synthetic masks using Python minAreaRect's axis-aligned rectangle dimensions",
+  "cases": [
+    {
+      "name": "vertical-strip",
+      "width": 100,
+      "height": 320,
+      "background_level": 0.9,
+      "film_rect": {
+        "x": 20.0,
+        "y": 10.0,
+        "w": 80.0,
+        "h": 280.0,
+        "angle": 0.0
+      },
+      "film_level": 0.2,
+      "expected_extent": {
+        "strip_narrow_px": 79.0,
+        "strip_long_px": 279.0,
+        "strip_angle": 0.0
+      }
+    },
+    {
+      "name": "horizontal-strip",
+      "width": 340,
+      "height": 120,
+      "background_level": 0.88,
+      "film_rect": {
+        "x": 15.0,
+        "y": 30.0,
+        "w": 300.0,
+        "h": 70.0,
+        "angle": 0.0
+      },
+      "film_level": 0.18,
+      "expected_extent": {
+        "strip_narrow_px": 69.0,
+        "strip_long_px": 299.0,
+        "strip_angle": 0.0
+      }
+    },
+    {
+      "name": "component-below-area-threshold",
+      "width": 100,
+      "height": 100,
+      "background_level": 0.9,
+      "film_rect": {
+        "x": 45.0,
+        "y": 45.0,
+        "w": 8.0,
+        "h": 8.0,
+        "angle": 0.0
+      },
+      "film_level": 0.1
+    },
+    {
+      "name": "no-film-separation",
+      "width": 64,
+      "height": 64,
+      "background_level": 0.5
+    }
+  ],
+  "tolerance": {
+    "abs": 0.000000001,
+    "rel": 0.0,
+    "reason": "axis-aligned extent smoke fixture expects exact synthetic component dimensions"
+  }
+}

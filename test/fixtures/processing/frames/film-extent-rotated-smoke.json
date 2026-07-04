@@ -1,0 +1,51 @@
+{
+  "name": "film-extent-rotated-smoke",
+  "operation": "detect_film_extent_rotated",
+  "python_oracle": "scratchndent/processing/frames/detection.py:_detect_film_extent with cv2.minAreaRect box angle logic",
+  "generated_by": "python3 cv2 4.11.0 on deterministic rotated rectangles",
+  "cases": [
+    {
+      "name": "vertical-positive-angle",
+      "width": 220,
+      "height": 620,
+      "background_level": 0.9019607843137255,
+      "film_rect": {
+        "x": 60.0,
+        "y": 60.0,
+        "w": 100.0,
+        "h": 500.0,
+        "angle": 0.048869219055841226
+      },
+      "film_level": 0.2,
+      "expected_extent": {
+        "strip_narrow_px": 99.99457550048828,
+        "strip_long_px": 499.972900390625,
+        "strip_angle": 0.04887409543328591
+      }
+    },
+    {
+      "name": "horizontal-negative-angle",
+      "width": 620,
+      "height": 220,
+      "background_level": 0.9019607843137255,
+      "film_rect": {
+        "x": 60.0,
+        "y": 60.0,
+        "w": 500.0,
+        "h": 100.0,
+        "angle": -0.041887902047863905
+      },
+      "film_level": 0.2,
+      "expected_extent": {
+        "strip_narrow_px": 99.99602508544922,
+        "strip_long_px": 499.9562072753906,
+        "strip_angle": 0.04189165239975532
+      }
+    }
+  ],
+  "tolerance": {
+    "abs": 1.25,
+    "rel": 0.0,
+    "reason": "Zig PCA/projection estimator approximates cv2 minAreaRect dimensions and sign convention on clean rotated synthetic masks"
+  }
+}

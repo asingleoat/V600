@@ -1,0 +1,142 @@
+{
+  "name": "synthetic-detection-fixtures",
+  "operation": "headless_synthetic_frame_detection_targets",
+  "generated_by": "hand-authored procedural grayscale fixtures for later full detect_frames parity tests; no scan TIFFs required",
+  "cases": [
+    {
+      "name": "synthetic-35mm-vertical-three-frame",
+      "format": "35mm",
+      "orientation": "vertical",
+      "width": 180,
+      "height": 600,
+      "preview_scale": 1.0,
+      "background_level": 0.92,
+      "strip_rect": {
+        "x": 25.0,
+        "y": 20.0,
+        "w": 130.0,
+        "h": 560.0,
+        "angle": 0.0
+      },
+      "strip_level": 0.65,
+      "frame_level": 0.18,
+      "expected_frames": [
+        {
+          "x": 40.0,
+          "y": 45.0,
+          "w": 100.0,
+          "h": 150.0,
+          "angle": 0.0
+        },
+        {
+          "x": 40.0,
+          "y": 225.0,
+          "w": 100.0,
+          "h": 150.0,
+          "angle": 0.0
+        },
+        {
+          "x": 40.0,
+          "y": 405.0,
+          "w": 100.0,
+          "h": 150.0,
+          "angle": 0.0
+        }
+      ],
+      "expected_full": [
+        {
+          "cx": 90.0,
+          "cy": 120.0,
+          "w": 100.0,
+          "h": 150.0,
+          "angle": 0.0
+        },
+        {
+          "cx": 90.0,
+          "cy": 300.0,
+          "w": 100.0,
+          "h": 150.0,
+          "angle": 0.0
+        },
+        {
+          "cx": 90.0,
+          "cy": 480.0,
+          "w": 100.0,
+          "h": 150.0,
+          "angle": 0.0
+        }
+      ],
+      "expected_frame_pixel_count": 45000
+    },
+    {
+      "name": "synthetic-6x6-horizontal-three-frame",
+      "format": "6x6",
+      "orientation": "horizontal",
+      "width": 520,
+      "height": 220,
+      "preview_scale": 1.0,
+      "background_level": 0.9,
+      "strip_rect": {
+        "x": 20.0,
+        "y": 45.0,
+        "w": 480.0,
+        "h": 130.0,
+        "angle": 0.0
+      },
+      "strip_level": 0.62,
+      "frame_level": 0.16,
+      "expected_frames": [
+        {
+          "x": 50.0,
+          "y": 55.0,
+          "w": 110.0,
+          "h": 110.0,
+          "angle": 0.0
+        },
+        {
+          "x": 200.0,
+          "y": 55.0,
+          "w": 110.0,
+          "h": 110.0,
+          "angle": 0.0
+        },
+        {
+          "x": 350.0,
+          "y": 55.0,
+          "w": 110.0,
+          "h": 110.0,
+          "angle": 0.0
+        }
+      ],
+      "expected_full": [
+        {
+          "cx": 105.0,
+          "cy": 110.0,
+          "w": 110.0,
+          "h": 110.0,
+          "angle": 0.0
+        },
+        {
+          "cx": 255.0,
+          "cy": 110.0,
+          "w": 110.0,
+          "h": 110.0,
+          "angle": 0.0
+        },
+        {
+          "cx": 405.0,
+          "cy": 110.0,
+          "w": 110.0,
+          "h": 110.0,
+          "angle": 0.0
+        }
+      ],
+      "expected_frame_pixel_count": 36300
+    }
+  ],
+  "tolerance": {
+    "abs": 1e-09,
+    "rel": 1e-12,
+    "reason": "procedural synthetic fixtures use integer geometry and exact preview scale"
+  }
+}

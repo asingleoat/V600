@@ -1,0 +1,64 @@
+{
+  "name": "rotation-back-transform-smoke",
+  "operation": "detect_frames_rotation_back_transform",
+  "python_oracle": "scratchndent/processing/frames/detection.py:454 and detection.py:1234",
+  "generated_by": "python3 cv2.getRotationMatrix2D and cv2.invertAffineTransform",
+  "orig_width": 320,
+  "orig_height": 180,
+  "strip_angle": 0.04363323129985824,
+  "expected_rotated_width": 327,
+  "expected_rotated_height": 193,
+  "forward_matrix": [
+    0.9990482215818578,
+    0.043619387365336,
+    -0.27346031597748777,
+    -0.043619387365336,
+    0.9990482215818578,
+    13.564762036086558
+  ],
+  "inverse_matrix": [
+    0.9990482215818576,
+    -0.04361938736533599,
+    0.8648866521211853,
+    0.04361938736533599,
+    0.9990482215818576,
+    -13.539923216881704
+  ],
+  "rotated_frames": [
+    {
+      "cx": 90.25,
+      "cy": 55.75,
+      "w": 40.0,
+      "h": 65.0,
+      "angle": 0.01
+    },
+    {
+      "cx": 210.5,
+      "cy": 120.25,
+      "w": 42.0,
+      "h": 66.0,
+      "angle": -0.015
+    }
+  ],
+  "expected_original_frames": [
+    {
+      "cx": 88.59720780426635,
+      "cy": 46.093664846028425,
+      "w": 40.0,
+      "h": 65.0,
+      "angle": 0.05363323129985824
+    },
+    {
+      "cx": 205.91930596442054,
+      "cy": 115.77750646873992,
+      "w": 42.0,
+      "h": 66.0,
+      "angle": 0.028633231299858238
+    }
+  ],
+  "tolerance": {
+    "abs": 0.000000001,
+    "rel": 0.0,
+    "reason": "affine transform should match Python double arithmetic closely"
+  }
+}

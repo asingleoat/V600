@@ -11,6 +11,10 @@ __pycache__/
 scans/
 test_scans/
 
+# Committed test fixtures override the scan-output rules
+!test/fixtures/**/*.tiff
+!test/fixtures/**/*.tif
+
 # Build directories
 sane-local/
 firmware/
@@ -22,7 +26,7 @@ epdaughter_config.toml
 scratchndent_config.toml
 
 # Processing outputs
-frames/
+/frames/
 
 # Test binaries
 test_direct_usb

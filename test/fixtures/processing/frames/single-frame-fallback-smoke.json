@@ -1,0 +1,27 @@
+{
+  "name": "single-frame-fallback-smoke",
+  "operation": "single_frame_fallback",
+  "python_oracle": "v600.gui.process_handlers /auto-detect single-frame area guard",
+  "generated_by": "source inspection (2026-05-15)",
+  "preview_width": 1000.0,
+  "preview_height": 500.0,
+  "frame": {
+    "cx": 200.0,
+    "cy": 150.0,
+    "w": 200.0,
+    "h": 300.0,
+    "angle": 0.12
+  },
+  "expected": {
+    "cx": 500.0,
+    "cy": 250.0,
+    "w": 1000.0,
+    "h": 500.0,
+    "angle": 0.0
+  },
+  "tolerance": {
+    "abs": 0.0,
+    "rel": 0.0,
+    "reason": "exact full-preview fallback rectangle"
+  }
+}
