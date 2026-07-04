@@ -222,158 +222,70 @@ export function createLoadImageMessage({ requestId, generation, image, file }) {
   });
 }
 
-export function createProcessPreviewMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processPreview, requestId, {
+export const processOperations = Object.freeze({
+  "process-preview": {
+    type: messageTypes.processPreview,
+    requiredPaths: requiredPreviewCacheKeyPaths,
+  },
+  "process-export": {
+    type: messageTypes.processExport,
+    requiredPaths: requiredPreviewCacheKeyPaths,
+  },
+  "process-frame-detect": {
+    type: messageTypes.processFrameDetect,
+    requiredPaths: requiredFrameDetectCacheKeyPaths,
+  },
+  "process-ir-estimate": {
+    type: messageTypes.processIrEstimate,
+    requiredPaths: requiredIrEstimateCacheKeyPaths,
+  },
+  "process-ir-align": {
+    type: messageTypes.processIrAlign,
+    requiredPaths: requiredIrAlignCacheKeyPaths,
+  },
+  "process-ir-mask": {
+    type: messageTypes.processIrMask,
+    requiredPaths: requiredIrMaskCacheKeyPaths,
+  },
+  "process-ir-rgb-mask": {
+    type: messageTypes.processIrRgbMask,
+    requiredPaths: requiredIrRgbMaskCacheKeyPaths,
+  },
+  "process-ir-inpaint": {
+    type: messageTypes.processIrInpaint,
+    requiredPaths: requiredIrInpaintCacheKeyPaths,
+  },
+  "process-ir-clean-crop": {
+    type: messageTypes.processIrCleanCrop,
+    requiredPaths: requiredIrCleanCropCacheKeyPaths,
+  },
+});
+
+function processOperationSpec(operation) {
+  const spec = processOperations[operation];
+  if (!spec) throw new Error(`unknown process operation: ${operation}`);
+  return spec;
+}
+
+export function createProcessMessage(operation, { requestId, generation, cacheKey, cacheKeyPayload, buffers, options }) {
+  return baseRequest(processOperationSpec(operation).type, requestId, {
     generation,
     cache_key: cacheKey,
-    cache_key_payload: previewCacheKeyPayload(cacheKeyPayload),
+    cache_key_payload: processCacheKeyPayload(operation, cacheKeyPayload),
     buffers,
     options,
   });
 }
 
-export function createProcessExportMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processExport, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: exportCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessFrameDetectMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processFrameDetect, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: frameDetectCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessIrMaskMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processIrMask, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: irMaskCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessIrRgbMaskMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processIrRgbMask, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: irRgbMaskCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessIrInpaintMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processIrInpaint, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: irInpaintCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessIrCleanCropMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processIrCleanCrop, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: irCleanCropCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessIrEstimateMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processIrEstimate, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: irEstimateCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
-
-export function createProcessIrAlignMessage({
-  requestId,
-  generation,
-  cacheKey,
-  cacheKeyPayload,
-  buffers,
-  options,
-}) {
-  return baseRequest(messageTypes.processIrAlign, requestId, {
-    generation,
-    cache_key: cacheKey,
-    cache_key_payload: irAlignCacheKeyPayload(cacheKeyPayload),
-    buffers,
-    options,
-  });
-}
+export const createProcessPreviewMessage = (fields) => createProcessMessage("process-preview", fields);
+export const createProcessExportMessage = (fields) => createProcessMessage("process-export", fields);
+export const createProcessFrameDetectMessage = (fields) => createProcessMessage("process-frame-detect", fields);
+export const createProcessIrEstimateMessage = (fields) => createProcessMessage("process-ir-estimate", fields);
+export const createProcessIrAlignMessage = (fields) => createProcessMessage("process-ir-align", fields);
+export const createProcessIrMaskMessage = (fields) => createProcessMessage("process-ir-mask", fields);
+export const createProcessIrRgbMaskMessage = (fields) => createProcessMessage("process-ir-rgb-mask", fields);
+export const createProcessIrInpaintMessage = (fields) => createProcessMessage("process-ir-inpaint", fields);
+export const createProcessIrCleanCropMessage = (fields) => createProcessMessage("process-ir-clean-crop", fields);
 
 export function createCancelMessage({ requestId, generation, reason = "user" }) {
   return baseRequest(messageTypes.cancel, requestId, {
@@ -413,14 +325,8 @@ export function createTimingMessage({ requestId, generation, stage, elapsedUs, d
   });
 }
 
-export function createPreviewResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.previewResult, requestId, {
+export function createOperationResultMessage(type, { requestId, generation, cacheKey, output, timings = [] }) {
+  return baseResponse(type, requestId, {
     generation,
     cache_key: cacheKey,
     output,
@@ -428,20 +334,13 @@ export function createPreviewResultMessage({
   });
 }
 
-export function createExportResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.exportResult, requestId, {
-    generation,
-    cache_key: cacheKey,
-    output,
-    timings,
-  });
-}
+export const createPreviewResultMessage = (fields) => createOperationResultMessage(messageTypes.previewResult, fields);
+export const createExportResultMessage = (fields) => createOperationResultMessage(messageTypes.exportResult, fields);
+export const createIrMaskResultMessage = (fields) => createOperationResultMessage(messageTypes.irMaskResult, fields);
+export const createIrAlignResultMessage = (fields) => createOperationResultMessage(messageTypes.irAlignResult, fields);
+export const createIrRgbMaskResultMessage = (fields) => createOperationResultMessage(messageTypes.irRgbMaskResult, fields);
+export const createIrInpaintResultMessage = (fields) => createOperationResultMessage(messageTypes.irInpaintResult, fields);
+export const createIrCleanCropResultMessage = (fields) => createOperationResultMessage(messageTypes.irCleanCropResult, fields);
 
 export function createFrameDetectResultMessage({
   requestId,
@@ -462,21 +361,6 @@ export function createFrameDetectResultMessage({
   });
 }
 
-export function createIrMaskResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.irMaskResult, requestId, {
-    generation,
-    cache_key: cacheKey,
-    output,
-    timings,
-  });
-}
-
 export function createIrEstimateResultMessage({
   requestId,
   generation,
@@ -488,66 +372,6 @@ export function createIrEstimateResultMessage({
     generation,
     cache_key: cacheKey,
     alignment,
-    timings,
-  });
-}
-
-export function createIrAlignResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.irAlignResult, requestId, {
-    generation,
-    cache_key: cacheKey,
-    output,
-    timings,
-  });
-}
-
-export function createIrRgbMaskResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.irRgbMaskResult, requestId, {
-    generation,
-    cache_key: cacheKey,
-    output,
-    timings,
-  });
-}
-
-export function createIrInpaintResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.irInpaintResult, requestId, {
-    generation,
-    cache_key: cacheKey,
-    output,
-    timings,
-  });
-}
-
-export function createIrCleanCropResultMessage({
-  requestId,
-  generation,
-  cacheKey,
-  output,
-  timings = [],
-}) {
-  return baseResponse(messageTypes.irCleanCropResult, requestId, {
-    generation,
-    cache_key: cacheKey,
-    output,
     timings,
   });
 }
@@ -577,41 +401,33 @@ export function createErrorMessage({ requestId, generation = null, code, message
   });
 }
 
-export function previewCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-preview");
+export function processCacheKeyPayload(operation, input) {
+  return operationCacheKeyPayload(input, operation, processOperationSpec(operation).requiredPaths);
 }
 
-export function exportCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-export");
+export function processCacheKeyString(operation, input) {
+  return stableStringify(processCacheKeyPayload(operation, input));
 }
 
-export function frameDetectCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-frame-detect", requiredFrameDetectCacheKeyPaths);
-}
+export const previewCacheKeyPayload = (input) => processCacheKeyPayload("process-preview", input);
+export const exportCacheKeyPayload = (input) => processCacheKeyPayload("process-export", input);
+export const frameDetectCacheKeyPayload = (input) => processCacheKeyPayload("process-frame-detect", input);
+export const irMaskCacheKeyPayload = (input) => processCacheKeyPayload("process-ir-mask", input);
+export const irRgbMaskCacheKeyPayload = (input) => processCacheKeyPayload("process-ir-rgb-mask", input);
+export const irInpaintCacheKeyPayload = (input) => processCacheKeyPayload("process-ir-inpaint", input);
+export const irCleanCropCacheKeyPayload = (input) => processCacheKeyPayload("process-ir-clean-crop", input);
+export const irEstimateCacheKeyPayload = (input) => processCacheKeyPayload("process-ir-estimate", input);
+export const irAlignCacheKeyPayload = (input) => processCacheKeyPayload("process-ir-align", input);
 
-export function irMaskCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-ir-mask", requiredIrMaskCacheKeyPaths);
-}
-
-export function irRgbMaskCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-ir-rgb-mask", requiredIrRgbMaskCacheKeyPaths);
-}
-
-export function irInpaintCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-ir-inpaint", requiredIrInpaintCacheKeyPaths);
-}
-
-export function irCleanCropCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-ir-clean-crop", requiredIrCleanCropCacheKeyPaths);
-}
-
-export function irEstimateCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-ir-estimate", requiredIrEstimateCacheKeyPaths);
-}
-
-export function irAlignCacheKeyPayload(input) {
-  return operationCacheKeyPayload(input, "process-ir-align", requiredIrAlignCacheKeyPaths);
-}
+export const previewCacheKeyString = (input) => processCacheKeyString("process-preview", input);
+export const exportCacheKeyString = (input) => processCacheKeyString("process-export", input);
+export const frameDetectCacheKeyString = (input) => processCacheKeyString("process-frame-detect", input);
+export const irMaskCacheKeyString = (input) => processCacheKeyString("process-ir-mask", input);
+export const irRgbMaskCacheKeyString = (input) => processCacheKeyString("process-ir-rgb-mask", input);
+export const irInpaintCacheKeyString = (input) => processCacheKeyString("process-ir-inpaint", input);
+export const irCleanCropCacheKeyString = (input) => processCacheKeyString("process-ir-clean-crop", input);
+export const irEstimateCacheKeyString = (input) => processCacheKeyString("process-ir-estimate", input);
+export const irAlignCacheKeyString = (input) => processCacheKeyString("process-ir-align", input);
 
 export function operationCacheKeyPayload(input, operation, requiredPaths = requiredPreviewCacheKeyPaths) {
   const payload = {
@@ -625,42 +441,6 @@ export function operationCacheKeyPayload(input, operation, requiredPaths = requi
     throw new Error(`cache key missing fields: ${missing.join(", ")}`);
   }
   return canonicalize(payload);
-}
-
-export function previewCacheKeyString(input) {
-  return stableStringify(previewCacheKeyPayload(input));
-}
-
-export function exportCacheKeyString(input) {
-  return stableStringify(exportCacheKeyPayload(input));
-}
-
-export function frameDetectCacheKeyString(input) {
-  return stableStringify(frameDetectCacheKeyPayload(input));
-}
-
-export function irMaskCacheKeyString(input) {
-  return stableStringify(irMaskCacheKeyPayload(input));
-}
-
-export function irRgbMaskCacheKeyString(input) {
-  return stableStringify(irRgbMaskCacheKeyPayload(input));
-}
-
-export function irInpaintCacheKeyString(input) {
-  return stableStringify(irInpaintCacheKeyPayload(input));
-}
-
-export function irCleanCropCacheKeyString(input) {
-  return stableStringify(irCleanCropCacheKeyPayload(input));
-}
-
-export function irEstimateCacheKeyString(input) {
-  return stableStringify(irEstimateCacheKeyPayload(input));
-}
-
-export function irAlignCacheKeyString(input) {
-  return stableStringify(irAlignCacheKeyPayload(input));
 }
 
 export function isStaleResponse(response, active) {
