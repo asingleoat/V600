@@ -1,14 +1,6 @@
 import {
+  createProcessMessage,
   createLoadModuleMessage,
-  createProcessFrameDetectMessage,
-  createProcessExportMessage,
-  createProcessIrAlignMessage,
-  createProcessIrCleanCropMessage,
-  createProcessIrEstimateMessage,
-  createProcessIrInpaintMessage,
-  createProcessIrMaskMessage,
-  createProcessIrRgbMaskMessage,
-  createProcessPreviewMessage,
   exportCacheKeyString,
   frameDetectCacheKeyString,
   irAlignCacheKeyString,
@@ -1352,21 +1344,14 @@ export class WebPreviewClient {
       detection: normalizedDetection,
     });
     const cacheKey = await frameDetectCacheKey(cacheInput);
-    const requestId = this.nextRequestId("frame-detect");
-    const generation = this.sequence;
     const rawBuffer = arrayBuffer.slice(0);
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.frameDetectResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessFrameDetectMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "frame-detect",
+      operation: "process-frame-detect",
+      resultType: messageTypes.frameDetectResult,
+      staleLabel: "frame detection",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         raw_rgb: {
           buffer: rawBuffer,
@@ -1381,15 +1366,8 @@ export class WebPreviewClient {
         }),
         max_frames: maxFrames,
       },
+      transfer: [rawBuffer],
     });
-    this.post(processMessage, [rawBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale frame detection result: ${message.reason}`);
-    }
     return {
       cacheKey,
       frames: message.frames,
@@ -1433,21 +1411,14 @@ export class WebPreviewClient {
       },
     });
     const cacheKey = await previewCacheKey(cacheInput);
-    const requestId = this.nextRequestId("preview");
-    const generation = this.sequence;
     const rawBuffer = transferInput ? arrayBuffer : arrayBuffer.slice(0);
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.previewResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessPreviewMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "preview",
+      operation: "process-preview",
+      resultType: messageTypes.previewResult,
+      staleLabel: "preview",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         raw_rgb: {
           buffer: rawBuffer,
@@ -1480,15 +1451,8 @@ export class WebPreviewClient {
             mode: "area-box",
           },
       },
+      transfer: [rawBuffer],
     });
-    this.post(processMessage, [rawBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale preview result: ${message.reason}`);
-    }
     return {
       cacheKey,
       rgb8: new Uint8Array(message.output.buffer),
@@ -1533,21 +1497,14 @@ export class WebPreviewClient {
       output: { kind: "rgb16-export", color_space: "srgb", variant: variant.id },
     });
     const cacheKey = await exportCacheKey(cacheInput);
-    const requestId = this.nextRequestId("export");
-    const generation = this.sequence;
     const rawBuffer = transferInput ? arrayBuffer : arrayBuffer.slice(0);
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.exportResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessExportMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "export",
+      operation: "process-export",
+      resultType: messageTypes.exportResult,
+      staleLabel: "export",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         raw_rgb: {
           buffer: rawBuffer,
@@ -1569,15 +1526,8 @@ export class WebPreviewClient {
           frame_selection: crop.frame,
         },
       },
+      transfer: [rawBuffer],
     });
-    this.post(processMessage, [rawBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale export result: ${message.reason}`);
-    }
     return {
       cacheKey,
       rgb16: new Uint16Array(message.output.buffer),
@@ -1605,20 +1555,13 @@ export class WebPreviewClient {
       dustRemoval,
     });
     const cacheKey = await irMaskCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-mask-f32");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irMaskResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrMaskMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "ir-mask-f32",
+      operation: "process-ir-mask",
+      resultType: messageTypes.irMaskResult,
+      staleLabel: "IR f32 mask",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         ir: {
           buffer: irBuffer,
@@ -1630,15 +1573,8 @@ export class WebPreviewClient {
         ir_mask_options_layout: "IrMaskOptions/v1",
         ir_mask_options: defaultIrMaskOptions({ image, dustRemoval }),
       },
+      transfer: [irBuffer],
     });
-    this.post(processMessage, [irBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR f32 mask result: ${message.reason}`);
-    }
     return {
       cacheKey,
       mask: new Uint8Array(message.output.buffer),
@@ -1667,20 +1603,13 @@ export class WebPreviewClient {
       irMaskCacheKey,
     });
     const cacheKey = await irRgbMaskCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-rgb-mask");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irRgbMaskResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrRgbMaskMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "ir-rgb-mask",
+      operation: "process-ir-rgb-mask",
+      resultType: messageTypes.irRgbMaskResult,
+      staleLabel: "RGB-sized IR mask",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         ir_mask: {
           buffer: maskBuffer,
@@ -1691,15 +1620,8 @@ export class WebPreviewClient {
         ir_mask_resize_options_layout: "IrMaskResizeOptions/v1",
         ir_mask_resize_options: defaultIrMaskResizeOptions({ image }),
       },
+      transfer: [maskBuffer],
     });
-    this.post(processMessage, [maskBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale RGB-sized IR mask result: ${message.reason}`);
-    }
     return {
       cacheKey,
       mask: new Uint8Array(message.output.buffer),
@@ -1746,20 +1668,13 @@ export class WebPreviewClient {
       noiseHash,
     });
     const cacheKey = await irInpaintCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-inpaint-grain");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irInpaintResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrInpaintMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "ir-inpaint-grain",
+      operation: "process-ir-inpaint",
+      resultType: messageTypes.irInpaintResult,
+      staleLabel: "IR inpaint grain",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         rgb: {
           buffer: rgbBuffer,
@@ -1783,15 +1698,8 @@ export class WebPreviewClient {
           noise_seed: noiseSeed,
         },
       },
+      transfer: noiseBuffer ? [rgbBuffer, maskBuffer, noiseBuffer] : [rgbBuffer, maskBuffer],
     });
-    this.post(processMessage, noiseBuffer ? [rgbBuffer, maskBuffer, noiseBuffer] : [rgbBuffer, maskBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR inpaint grain result: ${message.reason}`);
-    }
     return {
       cacheKey,
       rgb16: new Uint16Array(message.output.buffer),
@@ -1825,20 +1733,13 @@ export class WebPreviewClient {
       alignment,
     });
     const cacheKey = await irCleanCropCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-clean-crop");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irCleanCropResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrCleanCropMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "ir-clean-crop",
+      operation: "process-ir-clean-crop",
+      resultType: messageTypes.irCleanCropResult,
+      staleLabel: "IR clean crop",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         raw_rgb: {
           buffer: arrayBuffer,
@@ -1855,15 +1756,8 @@ export class WebPreviewClient {
         image,
         frame_selection: normalizedFrame,
       },
+      transfer: [arrayBuffer, irBuffer],
     });
-    this.post(processMessage, [arrayBuffer, irBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR clean crop result: ${message.reason}`);
-    }
     return {
       cacheKey,
       rgb16: new Uint16Array(message.output.rgb.buffer),
@@ -2064,20 +1958,13 @@ export class WebPreviewClient {
       alignment,
     });
     const cacheKey = await irAlignCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-align");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irAlignResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrAlignMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "ir-align",
+      operation: "process-ir-align",
+      resultType: messageTypes.irAlignResult,
+      staleLabel: "IR alignment",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         ir: {
           buffer: irBuffer,
@@ -2089,15 +1976,8 @@ export class WebPreviewClient {
         ir_align_options_layout: "IrAlignOptions/v1",
         ir_align_options: defaultIrAlignOptions({ image, alignment }),
       },
+      transfer: [irBuffer],
     });
-    this.post(processMessage, [irBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR alignment result: ${message.reason}`);
-    }
     return {
       cacheKey,
       ir: new Float32Array(message.output.buffer),
@@ -2132,20 +2012,13 @@ export class WebPreviewClient {
       estimator,
     });
     const cacheKey = await irEstimateCacheKey(cacheInput);
-    const requestId = this.nextRequestId("ir-estimate");
-    const generation = this.sequence;
-    const result = this.waitFor((message) => {
-      return message.request_id === requestId && (
-        message.type === messageTypes.irEstimateResult ||
-        message.type === messageTypes.error ||
-        message.type === messageTypes.staleResult
-      );
-    });
-    const processMessage = createProcessIrEstimateMessage({
-      requestId,
-      generation,
+    const message = await this.request({
+      prefix: "ir-estimate",
+      operation: "process-ir-estimate",
+      resultType: messageTypes.irEstimateResult,
+      staleLabel: "IR estimate",
       cacheKey,
-      cacheKeyPayload: cacheInput,
+      cacheInput,
       buffers: {
         rgb: {
           buffer: rgbBuffer,
@@ -2162,20 +2035,51 @@ export class WebPreviewClient {
         ir_estimate_options_layout: "IrEstimateOptions/v1",
         ir_estimate_options: defaultIrEstimateOptions({ image, estimator }),
       },
+      transfer: [rgbBuffer, irBuffer],
     });
-    this.post(processMessage, [rgbBuffer, irBuffer]);
-    const message = await result;
-    if (message.type === messageTypes.error) {
-      throw new Error(message.message);
-    }
-    if (message.type === messageTypes.staleResult) {
-      throw new Error(`stale IR estimate result: ${message.reason}`);
-    }
     return {
       cacheKey,
       alignment: message.alignment,
       timings: message.timings,
     };
+  }
+
+  async request({
+    prefix,
+    operation,
+    resultType,
+    staleLabel,
+    cacheKey,
+    cacheInput,
+    buffers,
+    options,
+    transfer = [],
+  }) {
+    const requestId = this.nextRequestId(prefix);
+    const generation = this.sequence;
+    const result = this.waitFor((message) => {
+      return message.request_id === requestId && (
+        message.type === resultType ||
+        message.type === messageTypes.error ||
+        message.type === messageTypes.staleResult
+      );
+    });
+    this.post(createProcessMessage(operation, {
+      requestId,
+      generation,
+      cacheKey,
+      cacheKeyPayload: cacheInput,
+      buffers,
+      options,
+    }), transfer);
+    const message = await result;
+    if (message.type === messageTypes.error) {
+      throw new Error(message.message);
+    }
+    if (message.type === messageTypes.staleResult) {
+      throw new Error(`stale ${staleLabel} result: ${message.reason}`);
+    }
+    return message;
   }
 
   close() {
