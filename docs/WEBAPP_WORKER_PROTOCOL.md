@@ -1,18 +1,25 @@
 # Browser Worker Protocol
 
-This document defines the first browser processing worker boundary. It is a
-headless protocol contract for the future webapp shell; it is not a browser UI
-implementation.
+The message contract between the webapp's main thread (`web/app.mjs`,
+`web/preview_client.mjs`) and its processing worker (`web/worker/`).
+`docs/WEBAPP.md` covers the app as a whole.
 
 ## Scope
 
 The browser main thread owns file pickers, UI state, canvas presentation,
-downloads, persistent config, cache lookup, and stale-result suppression. The
-worker owns Wasm module lifetime and processing execution.
+downloads, cache keys, and stale-result checks. The worker owns the Wasm
+module and runs the processing.
 
-All expensive image processing runs in the worker. The main thread must never
-block on image processing and must never accept a worker result unless the
-request id, generation, and cache key still match the current UI state.
+The contract: expensive image processing runs in the worker, and the main
+thread accepts a worker result only if its request id, generation, and cache
+key still match the current UI state.
+
+What the current app implements of this: cache keys are computed and sent,
+but there is no result cache that uses them; the worker handles messages
+synchronously, so its stale-result check never fires; `cancel` is
+acknowledged but stops nothing; and `load-image` is defined but has no worker
+handler. TIFF decoding, file hashing, and rebate Dmin still run on the main
+thread. See `docs/WEBAPP.md`.
 
 ## Message Schema
 
@@ -28,6 +35,7 @@ Main-to-worker messages:
 
 - `load-module`: load or replace the Wasm module.
 - `load-image`: hand the worker decoded scan metadata and image buffers.
+  Defined but not handled by the worker yet.
 - `process-preview`: run the preview inversion operation for a complete cache
   key and explicit buffer/options descriptors. When `options.crop` is present,
   the worker crops the transferred full RGB16 buffer before calling Wasm and
@@ -160,14 +168,14 @@ The main thread tracks the active `{ request_id, generation, cache_key }`.
 Every worker result that contains any of those fields is rejected as stale when
 one does not match the active tuple.
 
-This rule is separate from undo history. Undo history will later be a light
-record of configuration state; cache correctness is based only on the full
-operation key.
+Cache correctness depends only on the full operation key, not on undo
+history.
 
 ## Executable Contract
 
-`web/worker/protocol.mjs` is the source-owned protocol helper module, and
-`web/worker/processor.mjs` is the first worker runtime that consumes it.
+`web/worker/protocol.mjs` holds the message builders and cache-key
+canonicalization; `web/worker/processor.mjs` is the worker that consumes
+them.
 
 `zig build wasm-worker-protocol-smoke --summary all` runs the headless Node
 contract test. The protocol smoke verifies:
