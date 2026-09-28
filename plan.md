@@ -91,9 +91,6 @@ Open:
 
 Native UI (scanning):
 
-- The TPU dpi list offers 1200 and 6400, which the scanner delivers at 800
-  and 3200. Python resampled to the requested dpi; Zig names the file and
-  estimates sizes for the requested dpi but delivers the native one.
 - No `scanimage` timeout; a hung scan waits until cancelled.
 - The IR page of RGB+IR files lacks Make/Model/Software/DateTime.
 - The scan preview cannot be zoomed.

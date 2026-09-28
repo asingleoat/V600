@@ -24,11 +24,11 @@ pub const ScanMode = enum {
         };
     }
 
+    // Linux TPU scans run only at 400, 800, 1600, and 3200 dpi
+    // (scanner/sane.zig); anything else would be delivered at a different dpi.
     pub fn validDpis(self: ScanMode) []const u32 {
         return switch (self) {
-            .rgb_ir => &.{ 800, 1600, 3200, 6400 },
-            .rgb => &.{ 800, 1200, 1600, 3200, 6400 },
-            .ir => &.{ 800, 1600, 3200 },
+            .rgb_ir, .rgb, .ir => &.{ 800, 1600, 3200 },
         };
     }
 
@@ -799,7 +799,7 @@ test "scan controls preserve browser mode dpi choices" {
 
     controls.setMode(.rgb);
     controls.setDpi(1200);
-    try std.testing.expectEqual(@as(u32, 1200), controls.dpi);
+    try std.testing.expectEqual(@as(u32, 800), controls.dpi);
 
     controls.setDpi(6400);
     controls.setMode(.ir);

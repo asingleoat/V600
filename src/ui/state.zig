@@ -2567,7 +2567,7 @@ test "native Scan selection estimate changes through state selection mode and dp
     try std.testing.expect(!std.mem.eql(u8, initial, resized));
 
     state.scan_controls.setMode(.rgb);
-    state.scan_controls.setDpi(6400);
+    state.scan_controls.setDpi(1600);
     var mode_buffer: [192]u8 = undefined;
     const mode_changed = (try scan_workflow.formatScanSelectionEstimate(&mode_buffer, state.scan_controls, state.scanner.info())).?;
     try std.testing.expect(!std.mem.eql(u8, resized, mode_changed));
@@ -3894,39 +3894,39 @@ test "native UI scan status strings follow handle_scan pass transitions" {
     var state = State.init("scans", "frames", 0);
     defer state.deinit(std.testing.allocator);
     state.scannerConnected(1000, 500, 10.0, 5.0);
-    state.scan_controls.setDpi(6400);
+    state.scan_controls.setDpi(1600);
     state.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
     try std.testing.expect(state.queueScanStart(null));
-    try std.testing.expectEqualStrings("Pass 1/2: Scanning RGB at 6400 DPI...", state.scanner.scan_status);
+    try std.testing.expectEqualStrings("Pass 1/2: Scanning RGB at 1600 DPI...", state.scanner.scan_status);
 
     state.applyScannerBackendEvent(.{ .scan_start = .{
         .device = "epkowa:interpreter:001:017",
-        .output = "scans/scan_0001_rgbir_6400dpi.tiff.rgb.tmp.tiff",
+        .output = "scans/scan_0001_rgbir_1600dpi.tiff.rgb.tmp.tiff",
         .source = .tpu,
         .kind = .rgb,
-        .requested_dpi = 6400,
-        .effective_dpi = 6400,
+        .requested_dpi = 1600,
+        .effective_dpi = 1600,
     } });
-    try std.testing.expectEqualStrings("Pass 1/2: Scanning RGB at 6400 DPI...", state.scanner.scan_status);
+    try std.testing.expectEqualStrings("Pass 1/2: Scanning RGB at 1600 DPI...", state.scanner.scan_status);
 
     state.applyScannerBackendEvent(.{ .scan_start = .{
         .device = "epkowa:interpreter:001:017",
-        .output = "scans/scan_0001_rgbir_6400dpi.tiff.ir.tmp.tiff",
+        .output = "scans/scan_0001_rgbir_1600dpi.tiff.ir.tmp.tiff",
         .source = .tpu,
         .kind = .ir,
-        .requested_dpi = 3200,
-        .effective_dpi = 3200,
+        .requested_dpi = 1600,
+        .effective_dpi = 1600,
     } });
-    try std.testing.expectEqualStrings("Pass 2/2: Scanning IR at 3200 DPI...", state.scanner.scan_status);
+    try std.testing.expectEqualStrings("Pass 2/2: Scanning IR at 1600 DPI...", state.scanner.scan_status);
 
     state.applyScannerBackendEvent(.{ .scan_complete = .{
-        .output = "scans/scan_0001_rgbir_6400dpi.tiff",
-        .metadata = "scans/scan_0001_rgbir_6400dpi.tiff.json",
+        .output = "scans/scan_0001_rgbir_1600dpi.tiff",
+        .metadata = "scans/scan_0001_rgbir_1600dpi.tiff.json",
     } });
     try std.testing.expect(!state.scanner.scanning);
     try std.testing.expectEqual(@as(usize, 2), state.scanner.scan_counter);
-    try std.testing.expectEqualStrings("Saved: scan_0001_rgbir_6400dpi.tiff", state.scanner.scan_status);
-    try std.testing.expectEqualStrings("Saved: scan_0001_rgbir_6400dpi.tiff", state.status);
+    try std.testing.expectEqualStrings("Saved: scan_0001_rgbir_1600dpi.tiff", state.scanner.scan_status);
+    try std.testing.expectEqualStrings("Saved: scan_0001_rgbir_1600dpi.tiff", state.status);
 }
 
 test "native UI scan-start request preserves offline connecting and no-selection behavior" {
@@ -3961,7 +3961,7 @@ test "native UI applies browser scanner config restore semantics" {
     var loaded = scanner_config.LoadedConfig{};
     try loaded.values.mode.set("rgb");
     loaded.active.mode = true;
-    loaded.values.dpi = 1200;
+    loaded.values.dpi = 1600;
     loaded.active.dpi = true;
     loaded.values.autoselect = false;
     loaded.active.autoselect = true;
@@ -3976,7 +3976,7 @@ test "native UI applies browser scanner config restore semantics" {
 
     state.applyScannerConfig(loaded);
     try std.testing.expectEqual(ScanMode.rgb, state.scan_controls.mode);
-    try std.testing.expectEqual(@as(u32, 1200), state.scan_controls.dpi);
+    try std.testing.expectEqual(@as(u32, 1600), state.scan_controls.dpi);
     try std.testing.expect(!state.scan_controls.autoselect);
     try std.testing.expect(state.scan_controls.selection == null);
     try std.testing.expect(state.pending_config_selection != null);
@@ -4010,7 +4010,7 @@ test "native UI saves scanner config controls without requiring a selection" {
     state.scannerConnected(1000, 500, 10.0, 5.0);
 
     state.scan_controls.setMode(.rgb);
-    state.scan_controls.setDpi(1200);
+    state.scan_controls.setDpi(1600);
     state.scan_controls.autoselect = false;
     var updates = state.scannerConfigUpdates();
     try std.testing.expect(updates.active.dpi);
@@ -4020,7 +4020,7 @@ test "native UI saves scanner config controls without requiring a selection" {
     try std.testing.expect(!updates.active.sel_y_in);
     try std.testing.expect(!updates.active.sel_w_in);
     try std.testing.expect(!updates.active.sel_h_in);
-    try std.testing.expectEqual(@as(u32, 1200), updates.values.dpi);
+    try std.testing.expectEqual(@as(u32, 1600), updates.values.dpi);
     try std.testing.expectEqualStrings("rgb", updates.values.mode.slice());
     try std.testing.expect(!updates.values.autoselect);
 
@@ -4039,7 +4039,7 @@ test "native UI saves scanner config controls without requiring a selection" {
     try std.testing.expect(!saved.active.sel_y_in);
     try std.testing.expect(!saved.active.sel_w_in);
     try std.testing.expect(!saved.active.sel_h_in);
-    try std.testing.expectEqual(@as(u32, 1200), saved.values.dpi);
+    try std.testing.expectEqual(@as(u32, 1600), saved.values.dpi);
     try std.testing.expectEqualStrings("rgb", saved.values.mode.slice());
     try std.testing.expect(!saved.values.autoselect);
 
@@ -4050,7 +4050,7 @@ test "native UI saves scanner config controls without requiring a selection" {
     try std.testing.expect(updates.active.mode);
     try std.testing.expect(updates.active.autoselect);
     try std.testing.expect(updates.active.sel_x_in);
-    try std.testing.expectEqual(@as(u32, 1200), updates.values.dpi);
+    try std.testing.expectEqual(@as(u32, 1600), updates.values.dpi);
     try std.testing.expectEqualStrings("rgb", updates.values.mode.slice());
     try std.testing.expect(!updates.values.autoselect);
     try std.testing.expectApproxEqAbs(1.0, updates.values.sel_x_in, 0.0);
@@ -4062,7 +4062,7 @@ test "native UI saves scanner config controls without requiring a selection" {
     saved = try scanner_config.loadFile(std.testing.allocator, std.testing.io, path);
     try std.testing.expect(saved.active.dpi);
     try std.testing.expect(saved.active.sel_h_in);
-    try std.testing.expectEqual(@as(u32, 1200), saved.values.dpi);
+    try std.testing.expectEqual(@as(u32, 1600), saved.values.dpi);
     try std.testing.expectEqualStrings("rgb", saved.values.mode.slice());
     try std.testing.expectApproxEqAbs(2.0, saved.values.sel_w_in, 0.0);
 
