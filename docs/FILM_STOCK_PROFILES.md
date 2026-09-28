@@ -193,13 +193,9 @@ coeffs = [
 Each row is one basis term. The three values are the contribution of
 that term to the R, G, B output channels respectively.
 
-## Zig Rewrite Decision
-
-The function-for-function Zig rewrite preserves this manual TOML workflow for
-version-one parity. Config-defined `[stocks.*]` profiles remain the supported
-custom stock mechanism; the native UI may list and select them, but a richer
-profile editor is deferred until after backend parity. The backend must parse,
-resolve, and re-serialize custom profiles without dropping them.
+Custom `[stocks.*]` profiles in `scratchndent_config.toml` are the way to add
+stocks. The native app parses, lists, and re-serializes them; there is no
+profile editor. The browser webapp supports only the built-in stocks.
 
 ## Built-in Profiles
 
@@ -257,12 +253,15 @@ coeffs = fit_density_transform(measured, target, regularization=1e-4)
 
 This uses ridge regression to find the least-squares optimal polynomial
 mapping. The regularization parameter prevents overfitting when you have
-few calibration patches.
+few calibration patches. Fitting exists only in the Python code; it has not
+been ported to Zig.
 
 ## Code References
 
-- **Polynomial basis & coefficients:** `scratchndent/calibration/film_stocks.py`
-- **Density conversion & Dmin:** `scratchndent/calibration/measurement.py`
-- **Inversion pipeline:** `scratchndent/processing/negative/inversion.py`
-- **Display rendering:** `scratchndent/processing/negative/render.py`
-- **Config storage:** `scratchndent/config.py`
+| | Zig | Python |
+| --- | --- | --- |
+| Polynomial basis and coefficients | `src/processing/film_stocks.zig` | `scratchndent/calibration/film_stocks.py` |
+| Density conversion and Dmin | `src/processing/measurement.zig` | `scratchndent/calibration/measurement.py` |
+| Inversion pipeline | `src/processing/inversion.zig` | `scratchndent/processing/negative/inversion.py` |
+| Display rendering | `src/processing/render.zig` | `scratchndent/processing/negative/render.py` |
+| Config storage | `src/processing/config.zig` | `scratchndent/config.py` |

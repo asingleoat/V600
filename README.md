@@ -8,10 +8,9 @@ per-stock color profiles.
 
 The application is written in Zig: a scanner and processing CLI
 (`v600-zig`), a native SDL3/Nuklear UI (`v600-ui`), and a browser
-WebAssembly processing webapp built from the same processing core.
-The original Python implementation stays in-tree as the frozen
-behavior oracle for the port; `docs/PARITY_MANIFEST.md` tracks the
-function-by-function parity evidence.
+WebAssembly processing webapp built from the same processing code. The
+original Python implementation stays in-tree, frozen, as the behavior
+reference for the port.
 
 ## Getting started
 
@@ -22,22 +21,26 @@ Requires [Nix](https://nixos.org/download/).
     zig build -Dui=true run-ui         # native scan/process/gallery UI
     zig build run -- scanner devices   # or drive the CLI directly
 
-Browser processing webapp (processes existing scan TIFFs; no scanner
-control in the browser):
+Browser webapp, processing scan TIFFs you already have:
 
     zig build wasm-webapp
     python3 -m http.server 8433 --bind 127.0.0.1 --directory zig-out/webapp
 
-then open `http://127.0.0.1:8433/`.
+then open `http://127.0.0.1:8433/`. To scan from the browser as well, serve
+it with the scanner companion on the Linux machine the scanner is attached
+to (see `docs/SCANNER_COMPANION.md`):
+
+    zig build wasm-webapp && zig build run -- serve
 
 ## Platform support
 
-Linux is fully supported: scanner through the patched epkowa SANE
-backend, processing CLI, and native UI, all live-tested on V600
-hardware. macOS support is paused until the interpreter USB runtime is
-wired (replay-tested only). The browser webapp covers processing on any
-platform with a modern browser. See `docs/CROSS_PLATFORM.md` for the
-full matrix.
+- Linux: scanner through the patched epkowa SANE backend, processing CLI,
+  and native UI. Scanning has been exercised on a V600.
+- macOS: paused. The scanner protocol code is replay-tested only.
+- Browser: the webapp has been tested with Node harnesses, not yet in a real
+  browser. Scanning from it needs the companion on a Linux host.
+
+See `docs/CROSS_PLATFORM.md`.
 
 ## Scanner setup (Linux)
 
@@ -48,7 +51,7 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
 
     zig build --summary all             # build the CLI (zig-out/bin/v600-zig)
     zig build -Dui=true --summary all   # build the native UI (zig-out/bin/v600-ui)
-    zig build test --summary all        # unit + fixture tests
+    zig build test --summary all        # unit and fixture tests
 
     v600-zig scanner devices                          # list SANE devices
     v600-zig scanner scan --out scans/scan.tiff \
@@ -56,6 +59,7 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
     v600-zig processing detect --input scans/scan.tiff
     v600-zig processing export --input scans/scan.tiff \
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs
+    v600-zig serve                                    # scanner companion for the webapp
 
 Scans go to `scans/`, processed frames to `frames/`. Hardware smoke
 steps are opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
@@ -65,29 +69,38 @@ steps are opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
     build.zig               build, test, smoke, benchmark, and webapp steps
     src/
       main.zig              CLI entry point
-      scanner/              SANE (Linux) and future macOS interpreter backends
+      companion.zig         scanner companion server for the webapp
+      scanner/              Linux SANE backend; macOS interpreter protocol
       processing/           frame detection, inversion, IR cleaning, render, export
       ui/                   SDL3/Nuklear native UI, workers, process cache
-      wasm/                 browser WebAssembly processing core (shared algorithms)
-    web/                    browser webapp shell, worker, protocol, TIFF I/O
+      wasm/                 browser WebAssembly processing core
+      benchmarks/, tools/   benchmarks and WebGPU tools
+    web/                    browser webapp, worker, protocol, TIFF I/O
     test/
-      fixtures/             committed parity fixtures (Python-oracle outputs)
-      wasm/                 Node harnesses for the Wasm core, worker, and webapp
+      fixtures/             Python-generated parity fixtures
+      wasm/                 Node harnesses for the Wasm core, webapp, and companion
+    nixos/                  NixOS module and overlay for the scanner
     scanner.py, scan.py, v600/, scratchndent/
-                            frozen Python reference implementation (oracle)
+                            frozen Python implementation
 
 ## Documentation
 
-- [Cross-platform plan](docs/CROSS_PLATFORM.md) — platform support
-  matrix, macOS/Windows/browser build plans, release checklist
-- [Parity manifest](docs/PARITY_MANIFEST.md) — Python-to-Zig parity
-  evidence, validation gates
-- [Webapp port plan](docs/WEBAPP_PORT_PLAN.md) — browser distribution
-  scope, shared-core policy, worker/WebGPU strategy
+- [Plan](plan.md) — current state, decisions, backlog
+- [Cross-platform](docs/CROSS_PLATFORM.md) — support matrix, macOS
+  and Windows requirements
+- [Parity map](docs/PARITY_MANIFEST.md) — Python-to-Zig mapping and
+  how each port is verified
+- [Performance](docs/PERFORMANCE_STRATEGY.md) — optimization rules,
+  current numbers, GPU status
+- [Webapp](docs/WEBAPP.md) and [worker protocol](docs/WEBAPP_WORKER_PROTOCOL.md)
+- [Scanner companion](docs/SCANNER_COMPANION.md) — local server that
+  lets the webapp scan
 - [Scanner internals](docs/SCANNER_INTERNALS.md) — ESC/I protocol,
   interpreter ABI, USB packet format, TPU calibration, IR
   challenge-response, gamma LUT protocol, epkowa/epson2 patches
 - [Film stock profiles](docs/FILM_STOCK_PROFILES.md) — polynomial
   calibration format, built-in presets, how to create custom profiles
+- [TIFF handling](docs/TIFF_STRATEGY.md), [render transform](docs/RENDER_TRANSFORM_CLOSED_FORM.md),
+  [native UI verification](docs/NATIVE_UI_VERIFICATION.md)
 - [NixOS setup](nixos/README.md) — hardware configuration, patched
   epkowa backend

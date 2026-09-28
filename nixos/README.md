@@ -3,8 +3,9 @@
 Hardware support for the Epson V600 on NixOS: udev rules, patched
 epkowa SANE backend with 16-bit and IR support, wrapper scripts.
 
-Not needed for running the application (that's handled by `shell.nix`
-in the project root). This is for system-level scanner access.
+Not needed for building or running the application (the project's Nix dev
+shell handles that). This is for system-level scanner access on Linux.
+Custom film LUTs are not applied by these wrappers yet; see `plan.md`.
 
 ## Files
 

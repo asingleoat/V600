@@ -1,4 +1,12 @@
-# Linux Porting Guide for epdaughter
+# Scanner Internals
+
+Reference for the Epson V600 USB protocol, the proprietary interpreter ABI,
+TPU calibration, IR enablement, gamma LUTs, and the epkowa/epson2 patches,
+reverse-engineered while writing the Python driver. Code examples (ctypes,
+pyusb) come from that driver. The Zig port of the protocol is in
+`src/scanner/interpreter.zig` and `src/scanner/macos.zig`; the Linux app does
+not use this path and drives the scanner through SANE and the patched epkowa
+backend instead (`nixos/`).
 
 ## Architecture Overview
 
