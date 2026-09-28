@@ -54,8 +54,9 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
     zig build test --summary all        # unit and fixture tests
 
     v600-zig scanner devices                          # list SANE devices
-    v600-zig scanner scan --out scans/scan.tiff \
-        --source tpu --kind rgb+ir --dpi 3200         # real scanner pass
+    v600-zig scanner preview                          # TPU preview; prints the film area
+    v600-zig scanner scan --source tpu --kind rgb+ir --dpi 3200 \
+        --x IN --y IN --width IN --height IN          # scans/scan_NNNN_rgbir_3200dpi.tiff
     v600-zig processing detect --input scans/scan.tiff
     v600-zig processing export --input scans/scan.tiff \
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs

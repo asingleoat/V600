@@ -95,10 +95,6 @@ Open:
 Native UI (scanning):
 
 
-CLI (`v600-zig processing`):
-
-- No preview command and no automatic output name for `scanner scan`.
-
 Webapp: see the missing features in `docs/WEBAPP.md`; the most significant
 are the missing dust-removal controls and DPI scaling, and Dmin staying at
 placeholder values when no rebate is detected.

@@ -28,6 +28,7 @@ pub const adjustedPreviewSelection = scan_workflow.adjustedPreviewSelection;
 pub const scanSelectionEstimate = scan_workflow.scanSelectionEstimate;
 pub const formatScanSelectionEstimate = scan_workflow.formatScanSelectionEstimate;
 pub const handleScanFormatEta = scan_workflow.handleScanFormatEta;
+pub const detectFilmAreaSelection = scan_workflow.detectFilmAreaSelection;
 
 pub const PreviewImageInfo = struct {
     output_path: []const u8,

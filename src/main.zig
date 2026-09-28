@@ -115,8 +115,14 @@ fn handleScannerSane(
             return err;
         };
         writeReportStatus(&timing_report, "scanner probe", "ok", null, null);
+    } else if (std.mem.eql(u8, subcommand, "preview")) {
+        try runScannerPreview(allocator, io, runtime, remaining, stdout);
     } else if (std.mem.eql(u8, subcommand, "scan")) {
-        const options = try parseScanOptions(remaining);
+        var options = try parseScanOptions(remaining);
+        var auto_output_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        if (options.output_path.len == 0) {
+            options.output_path = try autoScanOutputPath(&auto_output_buffer, io, options.request);
+        }
         try writeScanReportContext(&timing_report, "scanner scan", options);
         runtime.scan(options) catch |err| {
             writeReportStatus(&timing_report, "scanner scan", "error", @errorName(err), reportOutput(options.output_path));
@@ -256,6 +262,69 @@ fn parseScannerCommonOptions(allocator: std.mem.Allocator, args: *std.process.Ar
         }
     }
     return common;
+}
+
+/// scans/scan_NNNN_<mode>_<dpi>dpi.tiff, numbered after the highest existing
+/// scan so nothing is overwritten, named with the dpi the scanner delivers.
+fn autoScanOutputPath(buffer: []u8, io: std.Io, request: v600.scanner.contracts.ScanRequest) ![]const u8 {
+    const dir = "scans";
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    const number = try v600.tiff.nextScanNumber(io, dir, "scan_");
+    const tag = switch (request.kind) {
+        .rgb => "rgb",
+        .rgb_ir => "rgbir",
+        .ir => "ir",
+        .gray => "gray",
+    };
+    const dpi = v600.scanner.sane.effectiveDpiForRequest(request);
+    return std.fmt.bufPrint(buffer, "{s}/scan_{d:0>4}_{s}_{d}dpi.tiff", .{ dir, number, tag, dpi });
+}
+
+/// Scans the whole transparency unit at 400 dpi, 8-bit, and reports the film
+/// area in the inch coordinates `scanner scan --x --y --width --height` takes.
+fn runScannerPreview(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    runtime: v600.scanner.linux.Runtime,
+    args: []const []const u8,
+    stdout: anytype,
+) !void {
+    var options = try parseScanOptions(args);
+    options.request = .{ .dpi = 400, .source = .tpu, .kind = .rgb, .depth = .eight };
+    if (options.output_path.len == 0) {
+        try std.Io.Dir.cwd().createDirPath(io, "scans");
+        options.output_path = "scans/preview.tiff";
+    }
+    try runtime.scan(options);
+
+    const image = try v600.tiff.loadRgbPage(allocator, options.output_path);
+    defer image.deinit(allocator);
+    const dpi: f64 = @floatFromInt(v600.scanner.sane.effectiveDpiForRequest(options.request));
+    const info = v600.app_state.ScannerInfo{
+        .preview_width = image.width,
+        .preview_height = image.height,
+        .tpu_width_in = @as(f64, @floatFromInt(image.width)) / dpi,
+        .tpu_height_in = @as(f64, @floatFromInt(image.height)) / dpi,
+        .scan_counter = 0,
+    };
+    const selection = try v600.native_ui.detectFilmAreaSelection(
+        allocator,
+        image.data,
+        image.width,
+        image.height,
+        image.samples_per_pixel,
+        @intFromFloat(dpi),
+        info.tpu_width_in,
+        info.tpu_height_in,
+        .{},
+    );
+    const controls = v600.native_ui.ScanControls{ .selection = selection };
+    try stdout.print("{{\"ok\":true,\"preview\":\"{s}\",\"film_area\":", .{options.output_path});
+    if (controls.selectionForScanStart(info)) |area| {
+        try stdout.print("{{\"x\":{d:.3},\"y\":{d:.3},\"width\":{d:.3},\"height\":{d:.3}}}}}\n", .{ area.x, area.y, area.w, area.h });
+    } else {
+        try stdout.print("null}}\n", .{});
+    }
 }
 
 fn parseScanOptions(args: []const []const u8) !v600.scanner.linux.ScanOptions {
@@ -462,7 +531,9 @@ fn printScannerUsage() !void {
         \\commands:
         \\  devices                       list SANE devices
         \\  probe                         report selected V600 capabilities
-        \\  scan --out PATH [options]      run a real scanner pass
+        \\  preview [--out PATH]           400 dpi TPU preview; prints the film area for scan
+        \\  scan [--out PATH] [options]    run a real scanner pass; default output is
+        \\                                 scans/scan_NNNN_<mode>_<dpi>dpi.tiff
         \\  usb-reset --yes                explicitly reset the V600 USB device
         \\  smoke [--out PATH] [options]   gated hardware smoke scan
         \\  processing-smoke [options]     gated scan then processing load smoke
