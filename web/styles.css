@@ -135,6 +135,11 @@ h2 {
   color: #aaaaaa;
 }
 
+.section-note {
+  font-size: 0.78rem;
+  color: #888888;
+}
+
 label {
   display: grid;
   gap: 0.25rem;

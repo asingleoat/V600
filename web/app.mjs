@@ -6,6 +6,9 @@ import {
   defaultFrameSelection,
   defaultOutputSelection,
   computeDminFromRgb16,
+  computeImageDminFromRgb16,
+  defaultDustRemovalConfig,
+  dustRemovalForDpi,
   drawRgb8ToCanvas,
   enabledExportVariants,
   exportNativeVariantResults,
@@ -36,6 +39,8 @@ const state = {
   lastResult: null,
   detectedFrames: [],
   rebateSelection: null,
+  // Where the Dmin fields came from: null (placeholders), "image", "rebate", or "manual".
+  dminSource: null,
   activeFrameIndex: -1,
   galleryEntries: [],
   nextGalleryId: 1,
@@ -61,6 +66,13 @@ const elements = {
   dminG: document.querySelector("#dmin-g"),
   dminB: document.querySelector("#dmin-b"),
   contrast: document.querySelector("#contrast"),
+  irThreshold: document.querySelector("#ir-threshold"),
+  irHair: document.querySelector("#ir-hair"),
+  irDilate: document.querySelector("#ir-dilate"),
+  irClose: document.querySelector("#ir-close"),
+  irMinArea: document.querySelector("#ir-min-area"),
+  irMaxCoverage: document.querySelector("#ir-max-coverage"),
+  irPadding: document.querySelector("#ir-padding"),
   curveK: document.querySelector("#curve-k"),
   percentileLo: document.querySelector("#percentile-lo"),
   percentileHi: document.querySelector("#percentile-hi"),
@@ -115,6 +127,7 @@ elements.file.addEventListener("change", async () => {
   state.activeFile = file;
   clearDetectedFrames();
   state.rebateSelection = null;
+  state.dminSource = null;
   tryUpdateImageControlsFromActiveInput();
   setActiveTab("process");
   setStatus(file.name);
@@ -229,6 +242,7 @@ function handoffScanTiff(buffer, jobId) {
   };
   clearDetectedFrames();
   state.rebateSelection = null;
+  state.dminSource = null;
   tryUpdateImageControlsFromActiveInput();
   setActiveTab("process");
   setStatus(state.activeFile.name);
@@ -265,6 +279,12 @@ elements.detectedFrame.addEventListener("change", () => {
       updateDetectedFrameControl();
     }
     refreshFrameOverlay();
+  });
+});
+
+[elements.dminR, elements.dminG, elements.dminB].forEach((input) => {
+  input.addEventListener("input", () => {
+    state.dminSource = "manual";
   });
 });
 
@@ -343,6 +363,7 @@ async function processCurrentInput() {
 
   const stockId = Number.parseInt(elements.stock.value, 10);
   const render = currentRenderConfig();
+  ensureDmin(source, image);
   const dmin = currentDmin();
   const previewFrameSelection = currentPreviewFrameSelection({ width, height });
   const file = await fileIdentity({
@@ -438,6 +459,7 @@ async function exportCurrentInput() {
 
   const stockId = Number.parseInt(elements.stock.value, 10);
   const render = currentRenderConfig();
+  ensureDmin(source, image);
   const dmin = currentDmin();
   const file = await fileIdentity({
     name: state.activeFile.name,
@@ -464,6 +486,7 @@ async function exportCurrentInput() {
     percentileSampleLimit: Number.parseInt(elements.sampleLimit.value, 10),
     frameSelections,
     variants,
+    dustRemoval: currentDustRemovalConfig(source.dpi),
     transferInput: true,
   });
   for (const item of exported) {
@@ -536,6 +559,26 @@ function currentRenderConfig() {
     color_temp: Number.parseFloat(elements.colorTemp.value),
     color_tint: Number.parseFloat(elements.colorTint.value),
   });
+}
+
+function currentDustRemovalConfig(dpi) {
+  return dustRemovalForDpi(defaultDustRemovalConfig({
+    ir_threshold: Number.parseFloat(elements.irThreshold.value),
+    ir_hair_sensitivity: Number.parseFloat(elements.irHair.value),
+    ir_dilate_radius: Number.parseInt(elements.irDilate.value, 10),
+    ir_close_radius: Number.parseInt(elements.irClose.value, 10),
+    ir_min_area: Number.parseInt(elements.irMinArea.value, 10),
+    ir_max_coverage: Number.parseFloat(elements.irMaxCoverage.value),
+    inpaint_padding: Number.parseInt(elements.irPadding.value, 10),
+  }), dpi);
+}
+
+// Without a rebate or a typed value, use the whole image's Dmin rather than
+// the placeholder values, as the native app does.
+function ensureDmin(source, image) {
+  if (state.dminSource !== null) return;
+  setDminControls(computeImageDminFromRgb16(source.inputBuffer, image));
+  state.dminSource = "image";
 }
 
 function currentDmin() {
@@ -725,6 +768,7 @@ function applyDetectedRebate(rebate, arrayBuffer, image) {
   state.rebateSelection = frame;
   const dmin = computeDminFromRgb16(arrayBuffer, image, frame);
   setDminControls(dmin);
+  state.dminSource = "rebate";
   return `Dmin ${dmin.map((value) => formatControlNumber(value)).join(" ")}`;
 }
 

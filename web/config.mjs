@@ -43,6 +43,22 @@ export function defaultDustRemovalConfig(overrides = {}) {
   };
 }
 
+// Dust-removal values are given at 800 dpi. Scale them to the scan: linear
+// sizes with dpi, ir_min_area with its square, truncating to integers and
+// keeping the blur size odd, as src/processing/config.zig getParam does.
+export function dustRemovalForDpi(dustRemoval, dpi) {
+  if (!Number.isFinite(dpi) || dpi <= 0) return dustRemoval;
+  const scale = dpi / 800;
+  return {
+    ...dustRemoval,
+    ir_min_area: Math.trunc(dustRemoval.ir_min_area * scale * scale),
+    ir_dilate_radius: Math.trunc(dustRemoval.ir_dilate_radius * scale),
+    ir_close_radius: Math.trunc(dustRemoval.ir_close_radius * scale),
+    ir_blur_size: Math.trunc(dustRemoval.ir_blur_size * scale) | 1,
+    inpaint_padding: Math.trunc(dustRemoval.inpaint_padding * scale),
+  };
+}
+
 export function defaultPreviewOptions({
   width,
   height,

@@ -154,6 +154,18 @@ export function computeDminFromRgb16(arrayBuffer, image, frameSelection = null, 
   ];
 }
 
+// Whole-image Dmin, the fallback when no rebate is known. Large scans are
+// sampled at an even pixel stride to keep the main thread responsive.
+export function computeImageDminFromRgb16(arrayBuffer, image, {
+  percentile = 1.0,
+  defaultLight = 65535.0,
+  maxPixels = 1_000_000,
+} = {}) {
+  const samples = parseRawRgb16Buffer(arrayBuffer, image);
+  const stride = Math.max(1, Math.floor((image.width * image.height) / maxPixels));
+  return [0, 1, 2].map((channel) => percentileDensityChannel(samples, channel, percentile, defaultLight, stride));
+}
+
 export function cropRgb16AxisAligned(source, image, frame) {
   const bounds = axisAlignedFrameBounds(frame, image);
   const out = new Uint16Array(bounds.w * bounds.h * 3);
@@ -171,13 +183,13 @@ export function cropRgb16AxisAligned(source, image, frame) {
   };
 }
 
-export function percentileDensityChannel(samples, channel, percentile, defaultLight) {
+export function percentileDensityChannel(samples, channel, percentile, defaultLight, stride = 1) {
   const pixelCount = samples.length / 3;
-  const values = new Float64Array(pixelCount);
-  for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+  const values = new Float64Array(Math.ceil(pixelCount / stride));
+  for (let pixelIndex = 0, valueIndex = 0; pixelIndex < pixelCount; pixelIndex += stride, valueIndex += 1) {
     const sample = samples[pixelIndex * 3 + channel];
     const transmittance = Math.max(sample / defaultLight, 1.0e-8);
-    values[pixelIndex] = -Math.log10(transmittance);
+    values[valueIndex] = -Math.log10(transmittance);
   }
   values.sort();
   const rank = ((values.length - 1) * percentile) / 100.0;

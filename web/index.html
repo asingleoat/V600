@@ -203,6 +203,41 @@
             <button id="update-preview" type="button">Update Preview</button>
           </section>
 
+          <section class="control-section dust-section">
+            <h2>Dust &amp; Scratch</h2>
+            <p class="section-note">Used by IR-cleaned exports. Sizes are at 800 dpi and scale with the scan's dpi.</p>
+            <div class="control-grid">
+              <label title="How far below the local background a pixel must be to count as a defect. Lower values detect fainter dust but may flag film grain. Higher values only catch obvious defects">
+                IR thresh
+                <input id="ir-threshold" type="number" min="0" step="0.01" value="0.10">
+              </label>
+              <label title="Meijering ridge filter threshold for detecting thin linear features like hairs and scratches. Lower values catch finer or fainter hairs but may produce false positives on textured areas">
+                Hair sens
+                <input id="ir-hair" type="number" min="0" step="0.01" value="0.10">
+              </label>
+              <label title="Expand detected defect regions by this many pixels (at 800 dpi), so the inpainter covers the full extent of each defect including soft edges">
+                Dilate
+                <input id="ir-dilate" type="number" min="0" step="1" value="4">
+              </label>
+              <label title="Morphological close radius (at 800 dpi). Fills small gaps within partially detected large defects, joining nearby detected regions into a single defect">
+                Close
+                <input id="ir-close" type="number" min="0" step="1" value="6">
+              </label>
+              <label title="Detected regions smaller than this many pixels (at 800 dpi) are discarded as noise. Increase to ignore tiny specks, decrease to catch very small dust">
+                Min area
+                <input id="ir-min-area" type="number" min="0" step="1" value="3">
+              </label>
+              <label title="Safety limit: if more than this fraction of the image is flagged as defects, detection is assumed to be wrong and no cleaning is done">
+                Max cov
+                <input id="ir-max-coverage" type="number" min="0" step="0.005" value="0.03">
+              </label>
+              <label title="How many pixels of clean context (at 800 dpi) to include around each defect when inpainting. More padding gives better reconstruction but is slower">
+                Padding
+                <input id="ir-padding" type="number" min="0" step="2" value="16">
+              </label>
+            </div>
+          </section>
+
           <section class="control-section export-section">
             <h2>Export</h2>
             <label class="checkbox-label">

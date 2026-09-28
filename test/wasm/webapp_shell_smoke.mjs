@@ -12,8 +12,10 @@ import {
   buildIrRgbMaskCacheInput,
   buildNativeVariantExportMetadata,
   computeDminFromRgb16,
+  computeImageDminFromRgb16,
   defaultFrameDetectConfig,
   defaultDustRemovalConfig,
+  dustRemovalForDpi,
   defaultOutputSelection,
   enabledExportVariants,
   exportNativeVariantResults,
@@ -938,6 +940,28 @@ try {
   assert.equal(tiffResult.cacheKey, tiffExpectedKey);
   assert.equal(tiffResult.rgb8.length, rgbPage.data.length);
   assert.throws(() => parseRawRgb16Buffer(rawBuffer, { width: 3, height: 2 }), /does not match/);
+
+  // Dust sizes scale from 800 dpi like src/processing/config.zig getParam.
+  assert.deepEqual(dustRemovalForDpi(defaultDustRemovalConfig(), 800), defaultDustRemovalConfig());
+  const dust3200 = dustRemovalForDpi(defaultDustRemovalConfig(), 3200);
+  assert.equal(dust3200.ir_min_area, 48);
+  assert.equal(dust3200.ir_dilate_radius, 16);
+  assert.equal(dust3200.ir_close_radius, 24);
+  assert.equal(dust3200.ir_blur_size, 1205);
+  assert.equal(dust3200.inpaint_padding, 64);
+  assert.equal(dust3200.ir_threshold, defaultDustRemovalConfig().ir_threshold);
+  assert.equal(dustRemovalForDpi(defaultDustRemovalConfig(), 400).ir_blur_size, 151);
+  assert.deepEqual(dustRemovalForDpi(defaultDustRemovalConfig(), null), defaultDustRemovalConfig());
+
+  // Whole-image Dmin fallback: exact for small images, strided sampling for large ones.
+  const dminImage = { width: 2, height: 2 };
+  assert.deepEqual(
+    computeImageDminFromRgb16(rawBuffer.slice(0), dminImage),
+    computeDminFromRgb16(rawBuffer.slice(0), dminImage, null),
+  );
+  const sampled = computeImageDminFromRgb16(rawBuffer.slice(0), dminImage, { maxPixels: 2 });
+  assert.equal(sampled.length, 3);
+  assert.ok(sampled.every(Number.isFinite));
 
   console.log(JSON.stringify({
     event: "webapp-shell-smoke",
