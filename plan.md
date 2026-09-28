@@ -26,7 +26,7 @@ As of 2026-09-28, on branch `zig-rewrite`:
 - Python: frozen at 2026-04-17, kept for reference only. Its fixtures are
   now regression baselines. A 2026-09-28 check found that the native UI
   covers every scanning, GUI, and processing workflow the Python app had;
-  the gaps are listed under "Missing from the Python app".
+  the smaller gaps it found have since been closed.
 - All Zig tests and Node smokes pass in the dev shell. The real-scan
   detection tests need the local `scans/` directory. There is no CI; the
   flake check runs the Zig tests, the UI build, and the hardware-skip smokes.
@@ -90,13 +90,6 @@ Open:
 - Passing test runs print about 130 JSON scanner timing events on stderr,
   which makes `zig build test` print a misleading `failed command:` line.
 
-### Missing from the Python app
-
-Native UI (scanning):
-
-
-Webapp: see the missing features in `docs/WEBAPP.md`.
-
 ### Native code cleanup
 
 - Delete dead code: 31 unused aliases in `src/ui/main.zig`, uncalled
@@ -139,6 +132,13 @@ Webapp: see the missing features in `docs/WEBAPP.md`.
   dependency from IR cleaning.
 
 ### Webapp cleanup
+
+- Features the native app has and the webapp lacks: custom stocks, output
+  rotation, manual rebate selection, settings persistence, multi-image
+  browsing, the embedded metadata tag, and preview or LUT scans through the
+  companion (details in `docs/WEBAPP.md`).
+- After auto-detect sets the rebate Dmin, the preview is not re-rendered
+  until Update Preview is pressed.
 
 - The SHA-256 cache-key layer is computed but never used as a cache: delete
   it or build the cache.
