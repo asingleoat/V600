@@ -4,8 +4,9 @@ Scanning and film processing for the Epson V600 and related scanners with a
 transparency unit. The application is Zig 0.16: a CLI (`v600-zig`), a native
 SDL3/Nuklear UI (`v600-ui`), a browser WebAssembly processing webapp built
 from the same processing code, and a local scanner companion server that lets
-the webapp drive a Linux scanner. The original Python implementation stays in
-the tree, frozen, as the behavior reference.
+the webapp drive a Linux scanner. The original Python implementation, a work
+in progress that drove the port, stays in the tree for reference; the Zig app
+has replaced it.
 
 Current state, decisions, and open work: `plan.md`.
 
@@ -70,7 +71,7 @@ Benchmarks: `zig build -Doptimize=ReleaseFast bench-processing-commands`
 `bench-ir-inpaint`, `bench-gpu-readiness`. WebGPU tools need `-Dwebgpu=true`
 and the `WGPU_NATIVE_*` environment variables from the `webgpu` dev shell.
 
-Test data: four frame-detection parity tests run against real scans in the
+Test data: four frame-detection tests run against real scans in the
 gitignored `scans/` directory (`scan_0001`, `0003`, `0004`, `0006`) and skip
 when they are absent, which they are in a fresh clone. The Linux scan path
 shells out to ImageMagick `magick` and `tiffcp`, and the fake `scanimage`
@@ -101,39 +102,41 @@ Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
     web/                    browser app: ES modules, no bundler
       worker/               Wasm worker, message protocol, ABI layer
     test/
-      fixtures/             committed Python-oracle fixtures (JSON, small TIFFs)
+      fixtures/             committed regression fixtures, originally Python-generated
       wasm/                 Node harnesses for the Wasm core, worker, webapp, companion
     nixos/                  NixOS module and overlay: udev, patched epkowa backend
     scanner.py, scan.py, v600/, scratchndent/, test_detect.py
-                            frozen Python implementation
+                            original Python implementation (reference only)
 
 Dependency direction: `ui` imports `processing`, `scanner`, and `tiff`;
 `processing` and `scanner` import only `tiff`; `companion` imports `scanner`.
 Keep it that way. `processing` and `scanner` must not import each other or UI
 code.
 
-## Python is the behavior reference
+## Behavior changes and the Python code
 
-- Do not change the Python code. It has not changed since 2026-04-17.
-- The committed JSON fixtures in `test/fixtures/` are the practical oracle.
-  There are no committed generator scripts, so regenerating a fixture means
-  running the Python by hand; say so if you do.
-- Port behavior function-for-function. If Python calls a named algorithm
-  (OpenCV ECC, morphology, scikit-image Meijering or biharmonic inpainting,
-  SciPy shift), Zig calls the same algorithm or ports the same steps. A
-  different algorithm is a separate change that needs the owner's approval,
-  even when it is faster or looks close.
-- `docs/PARITY_MANIFEST.md` maps Python functions to Zig code. Update the row
-  when you port or change a mapped behavior.
+- The Zig app is the product. Python parity is not a requirement: changes
+  that improve results, including new defaults and threshold tweaks, are
+  expected.
+- Do not change the Python code. It has been frozen since 2026-04-17 and is
+  kept only as a reference for how things used to work.
+- The fixture tests in `test/fixtures/` were generated from the Python code
+  and now serve as regression baselines. When you change output on purpose,
+  update the affected expectations in the same commit and state what changed
+  at the output (`max_abs`, RMS, mask overlap, frame geometry). Never loosen
+  a tolerance just to make a test pass.
+- Measure behavior changes on the real scans in `scans/` where possible, not
+  only on fixtures, and say what you looked at.
+- `docs/PYTHON_PORT_MAP.md` records where each Python function landed. It is
+  historical and does not need updating.
 
 ## Performance rules
 
-- Optimize the same operation: better layout, fewer allocations, caching,
-  SIMD, threads, or GPU, with behavior still traceable to the Python function.
-- Small final-output error is acceptable for a large speedup when it is
-  measured and documented at the surface that matters: final `u8` preview
-  pixels, final `u16` export pixels, masks, frame geometry, or metadata.
-  Report `max_abs`, RMS, or mismatch counts.
+- Performance work keeps user-visible results the same unless the change is
+  meant to improve them. Approximations (sampling, f32, lookup tables,
+  downsampling) are fine when the speedup is worth the measured difference
+  at the final surface: `u8` preview pixels, `u16` export pixels, masks,
+  frame geometry, or metadata. Report `max_abs`, RMS, or mismatch counts.
 - Benchmark with `-Doptimize=ReleaseFast` against the current Zig path.
   Record the command, input, dimensions, time, speedup, and error metric in
   the commit message; update the current-numbers table in
@@ -148,7 +151,11 @@ code.
   copied inputs. UI code draws and dispatches; it does not implement
   algorithms.
 
-## Domain invariants
+## Domain notes
+
+The scanner, TIFF, and coordinate facts below are hard constraints. The frame
+detection and processing details describe current behavior; change them
+deliberately, not by accident.
 
 ### Scanner
 
@@ -228,7 +235,8 @@ code.
 ## Docs
 
 - `plan.md`: current state, decisions, backlog.
-- `docs/PARITY_MANIFEST.md`: Python-to-Zig map and verification status.
+- `docs/PYTHON_PORT_MAP.md`: where each Python function landed in Zig
+  (historical).
 - `docs/PERFORMANCE_STRATEGY.md`: optimization policy and current numbers.
 - `docs/CROSS_PLATFORM.md`: platform support and the macOS/Windows plans.
 - `docs/WEBAPP.md`, `docs/WEBAPP_WORKER_PROTOCOL.md`: browser app and worker

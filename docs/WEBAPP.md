@@ -208,7 +208,9 @@ Missing:
 
 - Custom film stocks. Only the three built-in stocks exist.
 - Output rotation (native `applyRotation`).
-- Manual rebate selection. Dmin is typed in or comes from the detected rebate.
+- Manual rebate selection. Dmin is typed in or comes from the detected
+  rebate; there is no full-image fallback, so without a detected rebate Dmin
+  stays at the placeholder values 0.05/0.06/0.07.
 - Dust-removal controls. `defaultDustRemovalConfig()` is always used, with no
   native DPI scaling of IR parameters (`config.getParam(..., current_dpi)`).
 - Settings persistence.

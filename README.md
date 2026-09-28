@@ -9,8 +9,8 @@ per-stock color profiles.
 The application is written in Zig: a scanner and processing CLI
 (`v600-zig`), a native SDL3/Nuklear UI (`v600-ui`), and a browser
 WebAssembly processing webapp built from the same processing code. The
-original Python implementation stays in-tree, frozen, as the behavior
-reference for the port.
+original Python implementation, a work in progress that drove the port,
+stays in-tree for reference.
 
 ## Getting started
 
@@ -77,19 +77,19 @@ steps are opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
       benchmarks/, tools/   benchmarks and WebGPU tools
     web/                    browser webapp, worker, protocol, TIFF I/O
     test/
-      fixtures/             Python-generated parity fixtures
+      fixtures/             regression fixtures, originally Python-generated
       wasm/                 Node harnesses for the Wasm core, webapp, and companion
     nixos/                  NixOS module and overlay for the scanner
     scanner.py, scan.py, v600/, scratchndent/
-                            frozen Python implementation
+                            original Python implementation (reference only)
 
 ## Documentation
 
 - [Plan](plan.md) — current state, decisions, backlog
 - [Cross-platform](docs/CROSS_PLATFORM.md) — support matrix, macOS
   and Windows requirements
-- [Parity map](docs/PARITY_MANIFEST.md) — Python-to-Zig mapping and
-  how each port is verified
+- [Python port map](docs/PYTHON_PORT_MAP.md) — where each Python
+  function landed in Zig (historical)
 - [Performance](docs/PERFORMANCE_STRATEGY.md) — optimization rules,
   current numbers, GPU status
 - [Webapp](docs/WEBAPP.md) and [worker protocol](docs/WEBAPP_WORKER_PROTOCOL.md)

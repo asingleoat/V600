@@ -1,17 +1,20 @@
-# Python To Zig Parity Map
+# Python To Zig Port Map
 
-Maps each behavior of the frozen Python implementation (`scanner.py`,
-`scan.py`, `v600/`, `scratchndent/`) to the Zig code that ports it, with how
-the port is verified. Python line numbers refer to the Python tree, which has
-not changed since 2026-04-17 (commit 48a4c79).
+Where each function of the original Python app (`scanner.py`, `scan.py`,
+`v600/`, `scratchndent/`) landed in the Zig code, and how the port was
+checked at the time. Python line numbers refer to the Python tree, unchanged
+since 2026-04-17 (commit 48a4c79).
 
-This is a condensed map. The per-row test names, evidence, and notes recorded
-during the May-July 2026 port are in git history: see this file at commit
-f3fb3e3 or earlier.
+The Python app was a work in progress and only drove the port. It is not a
+spec: the Zig app may change behavior, defaults, and thresholds to improve
+results, so this map is a historical guide for finding the Zig counterpart
+of Python code, not a list of behaviors to preserve. It is not kept up to
+date. Per-row test names and evidence from the May-July 2026 port are in git
+history (`git show f3fb3e3:docs/PARITY_MANIFEST.md`).
 
-## Status tags
+## Verification tags
 
-A row lists every kind of verification it has, strongest first:
+How each row was checked during the port, strongest first:
 
 - `hardware`: exercised on a real V600 on Linux (SANE/epkowa). No macOS
   hardware evidence exists.
@@ -23,26 +26,17 @@ A row lists every kind of verification it has, strongest first:
   `scanimage`, recorded protocol bytes, synthetic arrays).
 - `headless`: SDL dummy-driver render or interaction smoke.
 - `real-display`: screenshots on a real display, captured and judged by an
-  agent, not reviewed by the owner.
-- `approx`: accepted approximation of the Python result, recorded as
-  owner-approved in the May 2026 log; not reconfirmed.
-- `deferred`: intentionally not ported yet.
+  agent.
+- `approx`: deliberately approximates the Python result for speed.
+- `deferred`: not ported.
 
-No row has been reviewed and accepted by the owner as full parity.
-
-## Known discrepancies
+## Known issues
 
 - Linux custom film LUTs are not applied. The Zig scanner sets
   `V600_LUT_FILE` and marks scans `custom_luts_applied=true` (TIFF tag
   50000), but nothing in the installed interpreter or SANE wrappers reads
   that variable; only the unbuilt `lut_dispatcher.c` shim does. The
   `hardware` evidence used an identity LUT, which cannot tell the difference.
-- `render_to_display` picks its display range from a sampled percentile (up
-  to 16,384 samples) instead of Python's exact full-image percentile, for
-  previews and exports alike (`approx`). Only the benchmarks use the exact
-  path.
-- The legacy `_save_image` PNG writer and exact `scanner.py` argparse
-  compatibility are `deferred`.
 
 ## Scanner and CLI
 

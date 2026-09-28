@@ -23,15 +23,26 @@ As of 2026-09-28, on branch `zig-rewrite`:
   browser.
 - Scanner companion (`v600-zig serve`): lets the webapp scan through a Linux
   host. Tested only against a fake `scanimage`; has known bugs (below).
-- Python: frozen at 2026-04-17; the committed JSON fixtures are the working
-  oracle.
+- Python: frozen at 2026-04-17, kept for reference only. Its fixtures are
+  now regression baselines. A 2026-09-28 check found that the native UI
+  covers every scanning, GUI, and processing workflow the Python app had;
+  the gaps are listed under "Missing from the Python app".
 - All Zig tests and Node smokes pass in the dev shell. The real-scan
   detection tests need the local `scans/` directory. There is no CI; the
   flake check runs the Zig tests, the UI build, and the hardware-skip smokes.
 
-## Decisions on record
+## Decisions
 
-Recorded by agents in the May-July log. Correct anything that is wrong.
+Confirmed by the owner, 2026-09-28:
+
+- Python parity is not a requirement. The Python app was a work in progress
+  that drove the port; the Zig app may change behavior, defaults, and
+  thresholds to improve results. Fixture tests are regression baselines and
+  are updated deliberately when output changes on purpose.
+- The render display range uses a sampled percentile (16,384 samples) for
+  previews and exports, for performance.
+
+Recorded in the May-July log; correct anything that is wrong:
 
 - 2026-05-18: use the ambient Nix shell; no Nix evaluations in ordinary
   build/test loops.
@@ -41,26 +52,20 @@ Recorded by agents in the May-July log. Correct anything that is wrong.
 - GPU processing stays opt-in and off by default; measured whole-workflow
   runs were slower than the CPU path.
 
-Recorded as owner decisions but not reconfirmed:
+Open:
 
-- The render display range uses a sampled percentile (16,384 samples)
-  instead of the exact full-image percentile, for previews and exports.
-- Mask overlap (IoU/Dice) is the primary acceptance gate for IR detector
-  changes. It was used to make f32 adaptive dust the default, but a
-  downsampled variant with higher overlap was rejected; see
-  `docs/PERFORMANCE_STRATEGY.md`.
-- "The project has met and exceeded Python parity for the native-app
-  release" (2026-05-23). This was used to defer the legacy `_save_image` PNG
-  writer and exact `scanner.py` argparse compatibility, and to close the
-  release audit, although no parity-manifest row had been accepted.
-- The browser webapp and the scanner companion were started by agents after
-  that release claim. No owner request for either is recorded; the earlier
-  plan had called the companion "a later design option".
+- The browser webapp and the scanner companion were started by agents; no
+  owner request for either is recorded. Keep, park, or drop?
 
 ## Backlog
 
 ### Bugs
 
+- Scans can be overwritten. The native UI starts its scan counter at 1 on
+  every launch (`src/app_state.zig`) and does not check for existing files,
+  so the first scan after a restart with the same mode and dpi replaces
+  `scans/scan_0001_<mode>_<dpi>dpi.tiff`. Python resumed from the highest
+  existing number. The companion has the same flaw.
 - Linux custom film LUTs are not applied, but scans are marked as if they
   were. `src/scanner/linux.zig` sets `V600_LUT_FILE` and writes
   `custom_luts_applied=true` and TIFF tag 50000; nothing installed reads the
@@ -89,13 +94,55 @@ Recorded as owner decisions but not reconfirmed:
 - Passing test runs print about 130 JSON scanner timing events on stderr,
   which makes `zig build test` print a misleading `failed command:` line.
 
+### Missing from the Python app
+
+Native UI (scanning):
+
+- Progress shows only a per-pass percentage; Python showed ETA, elapsed
+  time, the combined RGB+IR total, and the ETA in the window title. The ETA
+  formatters in `src/ui/scan_workflow.zig` exist but nothing calls them.
+- No choice of scan and export directories (Python had `--scan-dir` and
+  `--output-dir`); the UI uses `scans/` and `frames/` under the launch
+  directory.
+- No sound when a scan finishes.
+- The TPU dpi list offers 1200 and 6400, which the scanner delivers at 800
+  and 3200. Python resampled to the requested dpi; Zig names the file and
+  estimates sizes for the requested dpi but delivers the native one.
+- No `scanimage` timeout; a hung scan waits until cancelled.
+- The IR page of RGB+IR files lacks Make/Model/Software/DateTime.
+- The scan preview cannot be zoomed.
+
+Native UI (processing), smaller:
+
+- Export variant checkboxes are not saved when toggled.
+- Prev/Next do not rescan the image folder for new scans.
+- No frame labels, rebate label, fills, or cursor changes on the canvas; no
+  tooltips on controls.
+
+CLI (`v600-zig processing`):
+
+- `export` ignores `scratchndent_config.toml` (defaults only), takes dpi only
+  from `--dpi` instead of the TIFF, estimates Dmin per crop unless `--dmin`
+  is given (so colour varies between frames) and never uses the Dmin saved
+  by `rebate`, and accepts built-in stocks only.
+- `detect` runs at full resolution and lacks the one-small-frame fallback.
+- No preview command and no automatic output name for `scanner scan`.
+
+Webapp: see the missing features in `docs/WEBAPP.md`; the most significant
+are the missing dust-removal controls and DPI scaling, and Dmin staying at
+placeholder values when no rebate is detected.
+
 ### Native code cleanup
 
 - Delete dead code: 31 unused aliases in `src/ui/main.zig`, uncalled
   functions (frames, film_formats, tiff, process_cache, linux, macos,
   interpreter, gpu_boundary, ui/state), the `linux.zig` Python-port stubs,
-  unused imports, `src/processing/xmp.zig` (not called by the product), and
-  test-only `State` methods.
+  unused imports, and test-only `State` methods. Also the ports of Python
+  code that was dead in Python too: `src/processing/xmp.zig` (darktable XMP),
+  `negadoctor`, the darktable sigmoid and CAT16 paths in `color.zig`,
+  `sigmoidTonemap`/`applySrgbGamma`, `makeRebateMask`, and the unused
+  rebate-mask and dark/light inputs to `inversion.zig`. Check the WebGPU
+  `apply_sigmoid` kernel, which depends on the sigmoid code.
 - Remove rejected experiments: the `AdaptiveDustPrecision` variants and
   approximate blurs in `ir.zig`, benchmark-only `invertNegative*` variants,
   and concluded tradeoff cases in `src/benchmarks/processing_commands.zig`
@@ -122,8 +169,9 @@ Recorded as owner decisions but not reconfirmed:
 - Build C/C++ with `addCSourceFiles`/`linkLibCpp` instead of `sh -c "c++
   ..."`, so optimize flags and header dependencies apply.
 - Consider replacing `opencv_ir.cpp` and `opencv_ecc.cpp` with the pure Zig
-  ports: the grain ports replay the fixtures exactly and ECC agrees within
-  0.05 px. Needs the owner's OK on that tolerance.
+  ports, which the webapp already uses: the grain ports replay the fixtures
+  exactly and ECC agrees within 0.05 px. That would remove the OpenCV
+  dependency from IR cleaning.
 
 ### Webapp cleanup
 
@@ -147,8 +195,9 @@ Recorded as owner decisions but not reconfirmed:
   `unified_dispatcher.c`, `test_unified_dispatcher.sh`, `scripts/`,
   `lut_capturexhc1.pcapng` (cited by `docs/SCANNER_INTERNALS.md`),
   `test/test-combined-features.sh`.
-- Decide whether the Python tree stays in HEAD or only in history (tag
-  48a4c79); the parity map's line references assume it stays.
+- With parity dropped, decide whether the Python tree stays in HEAD or only
+  in history (commit 48a4c79). `docs/PYTHON_PORT_MAP.md` line references
+  would then point at that commit.
 - One Nix entry point: `shell.nix` and the flake dev shell have drifted
   (Nuklear defined twice, different Python sets). Add `build.zig.zon` with
   `minimum_zig_version`. Expose `nixos/` as flake outputs; fix the `lib.mkIf`
@@ -158,8 +207,8 @@ Recorded as owner decisions but not reconfirmed:
   builds from git-tracked sources.
 - An aggregate `web-test` build step.
 - Fixtures: compact the one-number-per-line IR JSON arrays, delete or use the
-  14 unreferenced scanner fixtures, correct fixture READMEs, and record how
-  fixtures can be regenerated.
+  14 unreferenced scanner fixtures, and update the fixture READMEs, which
+  still describe the fixtures as Python oracles.
 - `.gitignore`: anchor the image rules to output directories, drop dead
   entries, add `result*` and `.direnv/`.
 
@@ -177,5 +226,3 @@ Recorded as owner decisions but not reconfirmed:
 - Tiled or streaming processing for very large browser scans.
 - GPU `render_to_display`.
 - The f32 `invert_negative` preview hotspot.
-- Legacy `_save_image` PNG writer and exact `scanner.py` argparse
-  compatibility.

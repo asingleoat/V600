@@ -1,31 +1,27 @@
 # Performance Strategy
 
-Rules for accelerating the Zig rewrite, current measurements, and the verdicts
+Rules for making the Zig app faster, current measurements, and the verdicts
 of past experiments. The per-iteration benchmark log that used to live here is
 in git history; its dated entries run from 2026-05-15 to 2026-05-23.
 
 ## Rules
 
-- Parity first. The frozen Python code is the behavior oracle. SIMD,
-  threading, and GPU work must keep the Python function's observable behavior
-  and algorithmic contract; an optimized Zig path stays a port of a named
-  Python function.
-- A different algorithm is a separate change that needs explicit owner
-  approval. Approximate statistics (sampling, histograms, fixed-bin CDFs,
-  t-digests) also need owner approval plus final-output error evidence.
-- Numeric approximations (f32, LUTs, polynomials, SIMD, GPU) need not match
-  the oracle or intermediate buffers byte for byte. They are acceptable for a
-  large speedup when the error is measured at the final surface: `u8`
-  preview, `u16` export, binary mask, frame geometry, or metadata.
-- Keep the exact path reachable for fixtures and oracle checks
-  (`percentile_sample_limit = 0`, `invertNegativeProvidedDminScalar`,
+- Keep user-visible results the same unless the change is meant to improve
+  them. Python parity is not a requirement; the Python code is only a record
+  of where the port started.
+- Approximations (sampling, f32, LUTs, polynomials, downsampling, SIMD, GPU)
+  are fine when the speedup is worth the measured difference at the final
+  surface: `u8` preview, `u16` export, binary mask, frame geometry, or
+  metadata. Record both.
+- Keep an exact reference path where it is cheap, so approximations can be
+  measured (`percentile_sample_limit = 0`, `invertNegativeProvidedDminScalar`,
   `AdaptiveDustPrecision.f64`).
 - Order: remove CPU algorithmic waste, then SIMD for stable per-pixel kernels
   (scalar fallback kept, same fixtures), then GPU for parallel image
   transforms whose CPU version is accepted.
 - No GPU work on control paths: scanner startup, command planning, config
   I/O, TIFF metadata, XMP, gallery filesystem work, Nuklear layout.
-  `negadoctor` is not a GPU target; it stays for darktable/XMP parity only.
+  `negadoctor` is not a GPU target.
 - UI rendering stays separate from processing acceleration. WebGPU is an
   optional processing backend, not a required runtime dependency; the CPU
   path stays for tests and fallback.
@@ -36,20 +32,21 @@ in git history; its dated entries run from 2026-05-15 to 2026-05-23.
 
 ## Benchmark Evidence
 
-- Timings use `-Doptimize=ReleaseFast`. Name the Python function being
-  accelerated and record before and after benchmark output.
+- Timings use `-Doptimize=ReleaseFast`. Record before and after benchmark
+  output.
 - Exact changes show `max_abs=0`, `mismatches=0` or equal checksums at the
   final surface; exports also `metadata_equal=true`, `file_set_equal=true`.
 - Approximate changes show `max_abs`, RMS or MSE, and mismatch count or rate
-  next to the speedup. Detector changes also show mask-area overlap (IoU,
-  Dice, area retained, area confirmed); the May 2026 log records that as the
-  agreed primary gate for detector changes, not reconfirmed.
+  next to the speedup. Detector changes also show mask-area overlap against
+  the previous output (IoU, Dice, area retained, area confirmed), and should
+  be looked at on real scans.
 - Judge by end-to-end wall time on a real scan: aggregate worker substages can
   improve while the slowest worker regresses. Use staged `*_breakdown` cases
   for small passes; single wall-clock runs are noisy.
 - GPU benchmarks report cold and warm timings. No silent CPU fallback.
-- Oracle fixtures keep passing unless an approved tolerance shift is recorded;
-  a shift covers representational differences, not a different algorithm.
+- Fixture tests are regression baselines. When output changes on purpose,
+  update the expectations in the same commit and record the measured change;
+  never loosen a tolerance just to pass.
 - SIMD and GPU backends need backend-selection tests proving the scalar
   fallback remains; GPU needs a headless CPU-vs-GPU comparison before UI use.
 - Run gates from the ambient shell. Run Nix gates only when `flake.nix`,
@@ -110,25 +107,25 @@ Major wins (scan_0004 unless noted):
 
 ## Concluded Experiments
 
-Verdicts as recorded in the log. "Exact" means final-output parity.
+Verdicts as recorded in the log. "Exact" means identical final output.
 
 Render and inversion:
 
 - Exact `pdq` sort for render, Dmin, IR, detector percentiles: adopted, exact.
 - 16,384-sample f32 luminance range plus 256-entry display LUT: adopted, `u8`
-  `max_abs=1`, RMS `0.364`. Recorded as owner-approved in the May 2026 log;
-  not reconfirmed. Code also applies it to exports (see Open Items).
+  `max_abs=1`, RMS `0.364`. Approved by the owner for performance; applies
+  to previews and exports.
 - Direct `u8` preview render (`renderToDisplayU8`): adopted, `2.260x`, `u8`
   `max_abs=1`.
 - f32 display-table index (`renderToDisplayU8F32`): adopted, `u8` `max_abs=2`
   against the f64-index path.
 - Parallel preview display write: adopted, byte-identical to serial.
 - Fused SIMD provided-Dmin inversion (default light, no dark/light RGB):
-  adopted; scalar kept as oracle.
+  adopted; scalar kept as reference.
 - Linear-only coefficient fast path (`usesOnlyLinearTerms`): adopted, exact.
 - Direct-`u16` SIMD preview inversion, no f64 staging: adopted, exact.
 - f64 density LUT: exact, `138229 us`; not chosen for preview; kept for
-  oracle comparisons and non-preview paths.
+  reference comparisons and non-preview paths.
 - f32 density LUT to f32 scene for preview, built from f32 Dmin: adopted,
   `u8` `max_abs=2`.
 - f32 density-LUT export (default light, linear coefficients): adopted,
@@ -177,7 +174,7 @@ IR cleaning (`ir.zig`):
 - First f32 adaptive dust, before the Gaussian work: not promoted; wall
   `0.970x`, final export `max_abs=27825`, RMS `105.251609`.
 - f32 adaptive dust with the same Gaussian work: adopted as default
-  (`AdaptiveDustPrecision.f32`, `.f64` kept as reference). The Python oracle
+  (`AdaptiveDustPrecision.f32`, `.f64` kept as reference). The Python code
   computes this detector in float32 (`scratchndent/processing/defects/
   ir_removal.py`). `1.757x` export wall; IoU `91.713%`, Dice `95.677%`
   against f64; final TIFF RMS `110.633142`. Accepted on mask overlap.
@@ -331,13 +328,11 @@ split.
   a decision.
 - `auto_detect`: film extent is the largest stage (`47.4%` average after the
   eighth pass); binary close is its largest substage.
-- Exports use the sampled luminance range: `renderOptionsForConfig` leaves
-  `percentile_sample_limit` at 16,384, and no final-`u16` error against exact
-  percentiles is recorded. Measure it or make exports exact.
-- The adaptive-dust acceptance criteria are inconsistent. The f32 default was
-  accepted on mask overlap (IoU `91.713%`, final TIFF RMS `110.633142`) under
-  a gate recorded as agreed but not reconfirmed, while full-plan
-  `f32_down4` was rejected at a higher IoU (`92.158%`). Settle the gate, then
-  revisit both.
+- Adaptive dust variants were judged by mask overlap with the f64 detector:
+  f32 became the default at IoU `91.713%` (final TIFF RMS `110.633142`)
+  while full-plan `f32_down4` was rejected at `92.158%`, and
+  `f32_down4_coarse` (`1.279x`, IoU `99.281%` against f32) is parked. With
+  parity no longer required, choose between them on detection quality and
+  speed on real scans.
 - The WebGPU comparison predates the current CPU path; re-measure before more
   GPU work.
