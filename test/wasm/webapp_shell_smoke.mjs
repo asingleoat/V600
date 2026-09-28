@@ -16,6 +16,7 @@ import {
   defaultFrameDetectConfig,
   defaultDustRemovalConfig,
   dustRemovalForDpi,
+  supportsWasm64,
   defaultOutputSelection,
   enabledExportVariants,
   exportNativeVariantResults,
@@ -940,6 +941,9 @@ try {
   assert.equal(tiffResult.cacheKey, tiffExpectedKey);
   assert.equal(tiffResult.rgb8.length, rgbPage.data.length);
   assert.throws(() => parseRawRgb16Buffer(rawBuffer, { width: 3, height: 2 }), /does not match/);
+
+  // This Node runs the wasm64 core, so the memory64 probe must accept it.
+  assert.equal(supportsWasm64(), true);
 
   // Dust sizes scale from 800 dpi like src/processing/config.zig getParam.
   assert.deepEqual(dustRemovalForDpi(defaultDustRemovalConfig(), 800), defaultDustRemovalConfig());

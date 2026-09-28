@@ -23,6 +23,7 @@ const requiredPaths = [
   "worker/protocol.mjs",
   "worker/wasm_abi.mjs",
   "v600-wasm-core.wasm",
+  "v600-wasm-core32.wasm",
 ];
 
 for (const relative of requiredPaths) {
@@ -54,7 +55,7 @@ assert.doesNotMatch(index, />Download<\/button>/);
 assert.doesNotMatch(index, />Export RGB16<\/button>/);
 
 const app = await fs.readFile(path.join(root, "app.mjs"), "utf8");
-assert.match(app, /new URL\("\.\/v600-wasm-core\.wasm", import\.meta\.url\)\.href/);
+assert.match(app, /supportsWasm64\(\) \? "\.\/v600-wasm-core\.wasm" : "\.\/v600-wasm-core32\.wasm"/);
 assert.match(app, /refreshFrameOverlay/);
 assert.match(app, /applyDetectedRebate/);
 assert.match(app, /computeDminFromRgb16/);

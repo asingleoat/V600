@@ -19,8 +19,8 @@ As of 2026-09-28, on branch `zig-rewrite`:
   transport and the CLI refuses the backend. Paused.
 - Windows: not wired.
 - Browser webapp: processing and export in WebAssembly, built from the same
-  Zig processing code. Tested only with Node harnesses; never run in a real
-  browser.
+  Zig processing code. Node smokes plus a manual headless Chrome/Chromium
+  check; Firefox and Safari untried.
 - Scanner companion (`v600-zig serve`): lets the webapp scan through a Linux
   host. Tested only against a fake `scanimage`; has known bugs (below).
 - Python: frozen at 2026-04-17, kept for reference only. Its fixtures are

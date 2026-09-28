@@ -18,8 +18,10 @@ native app remains the reference implementation.
 zig build wasm-webapp
 ```
 
-This copies `web/` into `zig-out/webapp/` and puts the wasm64 core next to
-`index.html` as `v600-wasm-core.wasm`.
+This copies `web/` into `zig-out/webapp/` and puts both cores next to
+`index.html`: `v600-wasm-core.wasm` (wasm64) and `v600-wasm-core32.wasm`
+(wasm32). `app.mjs` loads wasm64 when the browser supports Wasm memory64
+(`supportsWasm64()`), and wasm32 otherwise.
 
 To serve it with scanning enabled:
 
@@ -81,10 +83,10 @@ node test/wasm/real_scan_ir_estimate_probe.mjs zig-out/webapp/v600-wasm-core.was
 `src/wasm_core.zig` exports the functions defined in `src/wasm/core.zig`.
 `addWasmCore` in `build.zig` builds two targets:
 
-- `wasm64-freestanding` as `v600-wasm-core.wasm` (step `wasm-core`). This is
-  the one the webapp stages.
-- `wasm32-freestanding` as `v600-wasm-core32.wasm` (step `wasm32-core`). It is
-  tested but never staged.
+- `wasm64-freestanding` as `v600-wasm-core.wasm` (step `wasm-core`), used by
+  browsers with memory64 (Chrome 133+, current Firefox).
+- `wasm32-freestanding` as `v600-wasm-core32.wasm` (step `wasm32-core`), the
+  fallback for browsers without it; limited to 4 GiB of memory.
 
 Both builds are single-threaded, have no entry point, export their memory, and
 set `rdynamic`. They build as ReleaseFast unless `-Doptimize` names another
@@ -219,18 +221,17 @@ Missing:
 
 ## Verification status
 
-The webapp is untested in real browsers. All recorded evidence comes from
-Node harnesses and a static serve check:
-
-- The smokes run the Wasm core, the worker under `node:worker_threads`,
-  `WebPreviewClient`, the export pipeline, the TIFF reader, and the companion
-  client against a fake `scanimage`.
-- No test executes `app.mjs`. The static smoke only regex-matches its text.
-- No real-browser run, DOM test, screenshot, or live scan through the Scan
-  tab is recorded.
-- Only the wasm64 core is staged, and `app.mjs` hard-codes its URL with no
-  feature detection. A browser that cannot instantiate a memory64 module
-  gets an error in the status bar and has no fallback.
+- The Node smokes run the Wasm core, the worker under
+  `node:worker_threads`, `WebPreviewClient`, the export pipeline, the TIFF
+  reader, and the companion client against a fake `scanimage`.
+- On 2026-09-28 the staged app was driven in headless Chrome 145 (wasm64)
+  and Chromium 129 (wasm32 fallback) over the DevTools protocol: load
+  `scans/scan_0006_rgbir_800dpi.tiff`, preview, auto-detect (5 frames),
+  export an IR-cleaned frame. Both gave the same frames and Dmin, with no
+  console errors. This is a manual check, not a build step; Chromium is not
+  in the dev shell. Firefox and Safari have not been tried.
+- No test executes `app.mjs` automatically, and no live scan through the
+  Scan tab is recorded.
 
 ## Known issues
 

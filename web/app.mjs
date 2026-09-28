@@ -7,6 +7,7 @@ import {
   defaultOutputSelection,
   computeDminFromRgb16,
   computeImageDminFromRgb16,
+  supportsWasm64,
   defaultDustRemovalConfig,
   dustRemovalForDpi,
   drawRgb8ToCanvas,
@@ -29,7 +30,9 @@ import {
 } from "./companion.mjs";
 import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "./tiff.mjs";
 
-const wasmCoreUrl = new URL("./v600-wasm-core.wasm", import.meta.url).href;
+// Browsers without Wasm memory64 (Chromium before 133, for example) cannot
+// instantiate the wasm64 core; they get the wasm32 build, limited to 4 GiB.
+const wasmCoreUrl = new URL(supportsWasm64() ? "./v600-wasm-core.wasm" : "./v600-wasm-core32.wasm", import.meta.url).href;
 
 const state = {
   client: null,

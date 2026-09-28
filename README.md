@@ -37,8 +37,9 @@ to (see `docs/SCANNER_COMPANION.md`):
 - Linux: scanner through the patched epkowa SANE backend, processing CLI,
   and native UI. Scanning has been exercised on a V600.
 - macOS: paused. The scanner protocol code is replay-tested only.
-- Browser: the webapp has been tested with Node harnesses, not yet in a real
-  browser. Scanning from it needs the companion on a Linux host.
+- Browser: checked in Chrome and Chromium (older browsers without Wasm
+  memory64 get a wasm32 build). Scanning from it needs the companion on a
+  Linux host.
 
 See `docs/CROSS_PLATFORM.md`.
 

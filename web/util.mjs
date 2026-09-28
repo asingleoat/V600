@@ -82,3 +82,13 @@ export function sanitizeStem(value) {
 export function isNodeRuntime() {
   return typeof process !== "undefined" && !!process.versions?.node;
 }
+
+// True when the runtime accepts 64-bit tables and memories (Wasm memory64),
+// which the wasm64 processing core needs.
+export function supportsWasm64() {
+  return WebAssembly.validate(new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+    0x04, 0x04, 0x01, 0x70, 0x04, 0x00, // table section: one funcref table, i64 limits, min 0
+    0x05, 0x03, 0x01, 0x04, 0x00, // memory section: one memory, i64 limits, min 0
+  ]));
+}

@@ -9,7 +9,7 @@ What runs where, and what each missing platform needs.
 | Linux | SANE via patched epkowa; exercised on a V600 | Yes | SDL3/Nuklear | `packages.cli`, `packages.ui` |
 | macOS | Paused. Protocol code replay-tested only; no USB transport | Untested | Untested | Flake systems listed, never built on a Mac |
 | Windows | Not planned | Not wired | Not wired | Not wired |
-| Browser | Through the Linux companion (`v600-zig serve`) only | Webapp (Wasm), Node-tested only | Browser UI in `web/` | `zig build wasm-webapp` |
+| Browser | Through the Linux companion (`v600-zig serve`) only | Webapp (Wasm); checked in Chrome and Chromium | Browser UI in `web/` | `zig build wasm-webapp` |
 
 Linux hardware steps run only with `V600_HARDWARE_SMOKE=1`. See
 `docs/WEBAPP.md` for the browser app and `docs/SCANNER_COMPANION.md` for the
@@ -92,6 +92,8 @@ and processing over existing TIFFs, and needs:
 ## Browser
 
 The webapp processes scan files in WebAssembly and scans only through the
-companion running on a Linux host. It has not been run in a real browser.
+companion running on a Linux host. It has been checked by hand in headless
+Chrome 145 and Chromium 129 (wasm32 fallback); Firefox and Safari are
+untried.
 Details and known gaps: `docs/WEBAPP.md`. Direct browser scanner control
 (WebUSB) is a research idea only.
