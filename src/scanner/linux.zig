@@ -480,6 +480,11 @@ pub const Runtime = struct {
             .dpi = pass_dpis.rgb,
             .custom_luts_applied = customLutsApplied(options.request),
         });
+        try tiff.writeScannerPageMetadata(self.allocator, options.output_path, contracts.TiffPageLayout.ir, .{
+            .model = "Epson Perfection V600 Photo",
+            .software = tiff_software,
+            .dpi = pass_dpis.ir,
+        });
         self.emitTimingSince("linux.scan_rgb_ir.metadata_tags", metadata_tags_start, "ok");
         const sidecar_start = monotonicNowNs();
         const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name, pass_dpis);

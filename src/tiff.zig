@@ -121,6 +121,10 @@ fn readCurrentDpi(tiff: *c.TIFF) ?u32 {
 }
 
 pub fn writeScannerMetadata(allocator: std.mem.Allocator, path: []const u8, metadata: ScannerMetadata) !void {
+    return writeScannerPageMetadata(allocator, path, 0, metadata);
+}
+
+pub fn writeScannerPageMetadata(allocator: std.mem.Allocator, path: []const u8, page: u16, metadata: ScannerMetadata) !void {
     if (metadata.custom_luts_applied) ensureCustomTagsRegistered();
 
     const path_z = try allocator.dupeZ(u8, path);
@@ -129,7 +133,7 @@ pub fn writeScannerMetadata(allocator: std.mem.Allocator, path: []const u8, meta
     const tiff = c.TIFFOpen(path_z.ptr, "r+") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
-    if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
+    if (c.TIFFSetDirectory(tiff, page) == 0) return error.MissingTiffPage;
 
     const make_z = try allocator.dupeZ(u8, metadata.make);
     defer allocator.free(make_z);
@@ -708,6 +712,38 @@ test "writes scanner TIFF metadata including DPI and custom LUT marker" {
     defer allocator.free(marker);
     try std.testing.expectEqualStrings(scanner_custom_lut_marker, marker);
     try std.testing.expectEqual(@as(?u32, 2400), try readDpi(allocator, path));
+}
+
+test "writes scanner metadata on the IR page of a combined RGB+IR file" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/rgb-ir-metadata.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(path);
+    try writePageFixture(allocator, path, &.{
+        .{ .width = 1, .height = 1, .samples_per_pixel = 3, .bits_per_sample = 16, .data = &.{ 1, 0, 2, 0, 3, 0 } },
+        .{ .width = 1, .height = 1, .samples_per_pixel = 3, .bits_per_sample = 8, .data = &.{ 1, 2, 3 } },
+        .{ .width = 1, .height = 1, .samples_per_pixel = 1, .bits_per_sample = 8, .data = &.{7} },
+    });
+
+    try writeScannerMetadata(allocator, path, .{ .model = "Epson Perfection V600 Photo", .dpi = 6400, .datetime = "2026:09:28 10:00:00" });
+    try writeScannerPageMetadata(allocator, path, 2, .{ .model = "Epson Perfection V600 Photo", .dpi = 3200, .datetime = "2026:09:28 10:00:00" });
+    try std.testing.expectError(error.MissingTiffPage, writeScannerPageMetadata(allocator, path, 3, .{}));
+
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+    const handle = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(handle);
+    try std.testing.expect(c.TIFFSetDirectory(handle, 2) != 0);
+    var model: [*c]const u8 = null;
+    try std.testing.expect(c.TIFFGetField(handle, c.TIFFTAG_MODEL, &model) != 0);
+    try std.testing.expectEqualStrings("Epson Perfection V600 Photo", std.mem.span(model));
+    var datetime: [*c]const u8 = null;
+    try std.testing.expect(c.TIFFGetField(handle, c.TIFFTAG_DATETIME, &datetime) != 0);
+    try std.testing.expectEqualStrings("2026:09:28 10:00:00", std.mem.span(datetime));
+    try std.testing.expectEqual(@as(?u32, 3200), readCurrentDpi(handle));
+    try std.testing.expectEqual(@as(?u32, 6400), try readDpi(allocator, path));
 }
 
 test "writes export TIFF with private JSON metadata tag" {

@@ -91,7 +91,6 @@ Open:
 
 Native UI (scanning):
 
-- The IR page of RGB+IR files lacks Make/Model/Software/DateTime.
 - The scan preview cannot be zoomed.
 
 Native UI (processing), smaller:
