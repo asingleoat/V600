@@ -85,6 +85,8 @@ Open:
 - With no film stock selected, exports still invert with `kodak_gold`
   (`film_stock orelse "kodak_gold"` in `src/processing/export.zig`). Python
   had no inversion without a stock. Decide which is intended.
+- The image list ignores symlinked TIFFs (`tiff.findImages` accepts only
+  regular files), so a scan folder of symlinks shows "No scan TIFFs found".
 - Flaky test: a native UI scanner-worker test failed once with
   `TestUnexpectedResult` in 22 direct runs of the test binary.
 - Passing test runs print about 130 JSON scanner timing events on stderr,
