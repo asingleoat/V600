@@ -511,13 +511,7 @@ fn runProcessOperation(context: *Context) !void {
             errdefer result.deinit(context.allocator);
             logAutoDetectComplete(context, result, elapsedMsSince(detector_start_ms));
             if (result.rebate) |rebate| {
-                const full = try processing_frames.previewRebateToFullResolution(.{
-                    .x = rebate.cx - rebate.w / 2.0,
-                    .y = rebate.cy - rebate.h / 2.0,
-                    .w = rebate.w,
-                    .h = rebate.h,
-                    .angle = rebate.angle,
-                }, preview.info.preview_scale);
+                const full = try processing_workflow.fullResolutionRebate(rebate, preview.info.preview_scale);
                 context.full_rebate = .{
                     .x = full.x,
                     .y = full.y,

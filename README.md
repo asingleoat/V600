@@ -58,7 +58,7 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
     v600-zig scanner preview                          # TPU preview; prints the film area
     v600-zig scanner scan --source tpu --kind rgb+ir --dpi 3200 \
         --x IN --y IN --width IN --height IN          # scans/scan_NNNN_rgbir_3200dpi.tiff
-    v600-zig processing detect --input scans/scan.tiff
+    v600-zig processing detect --input scans/scan.tiff  # frames, rebate, and its Dmin (saved)
     v600-zig processing export --input scans/scan.tiff \
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs
     v600-zig serve                                    # scanner companion for the webapp

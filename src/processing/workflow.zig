@@ -731,6 +731,18 @@ pub fn autoDetectPreview(
     return try autoDetectDetectedFrames(&detected, preview.preview_width, preview.preview_height);
 }
 
+/// The rebate auto-detect suggests, converted from preview center form to a
+/// full-resolution rectangle with its origin at the top-left corner.
+pub fn fullResolutionRebate(rebate: frames.RebateRect, preview_scale: f64) !frames.RebateOriginRect {
+    return frames.previewRebateToFullResolution(.{
+        .x = rebate.cx - rebate.w / 2.0,
+        .y = rebate.cy - rebate.h / 2.0,
+        .w = rebate.w,
+        .h = rebate.h,
+        .angle = rebate.angle,
+    }, preview_scale);
+}
+
 pub fn autoDetectDetectedFrames(
     detected: *frames.DetectFramesResult,
     preview_width: usize,

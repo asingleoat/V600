@@ -21,11 +21,15 @@ pub const InfoOptions = struct {
     input: []const u8 = "",
 };
 
+const default_preview_size: i64 = 8192;
+
 pub const DetectOptions = struct {
     input: []const u8 = "",
     format: []const u8 = "35mm",
     n_frames: ?usize = null,
-    preview_size: i64 = 8192,
+    preview_size: i64 = default_preview_size,
+    config_path: []const u8 = config.config_file,
+    save: bool = true,
     apply_clahe: bool = true,
     detect_film_extent: bool = true,
 };
@@ -49,6 +53,7 @@ pub const ExportOptions = struct {
     frame_count: usize = 0,
     outputs: export_pipeline.OutputSelection = .{},
     film_stock: ?[]const u8 = null,
+    format: []const u8 = "35mm",
     dmin: ?[3]f64 = null,
     current_dpi: ?u32 = null,
     config_path: []const u8 = config.config_file,
@@ -91,7 +96,7 @@ pub fn runCommand(
 ) !void {
     switch (command) {
         .info => |options| try runInfo(allocator, options, stdout),
-        .detect => |options| try runDetect(allocator, options, stdout),
+        .detect => |options| try runDetect(allocator, io, options, stdout),
         .rebate => |options| try runRebate(allocator, io, options, stdout),
         .export_frames => |options| try runExport(allocator, io, options, stdout, processing_gpu_request),
     }
@@ -135,6 +140,12 @@ fn parseDetectArgs(argv: []const []const u8) !DetectOptions {
             index += 1;
             if (index >= argv.len) return error.MissingPreviewSize;
             options.preview_size = try std.fmt.parseInt(i64, argv[index], 10);
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingConfigPath;
+            options.config_path = argv[index];
+        } else if (std.mem.eql(u8, arg, "--no-save")) {
+            options.save = false;
         } else if (std.mem.eql(u8, arg, "--no-clahe")) {
             options.apply_clahe = false;
         } else if (std.mem.eql(u8, arg, "--no-film-extent")) {
@@ -236,6 +247,10 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
             index += 1;
             if (index >= argv.len) return error.MissingStock;
             options.film_stock = argv[index];
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingFormat;
+            options.format = argv[index];
         } else if (std.mem.eql(u8, arg, "--dmin")) {
             index += 1;
             if (index >= argv.len) return error.MissingDmin;
@@ -263,6 +278,7 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
     if (options.input.len == 0) return error.MissingInputPath;
     if (options.frame_count == 0) return error.MissingFrameSpec;
     if (!options.outputs.any()) return error.NoExportOutputsSelected;
+    _ = frames.formatByName(options.format) orelse return error.InvalidFilmFormat;
     return options;
 }
 
@@ -314,10 +330,11 @@ fn runInfo(allocator: std.mem.Allocator, options: InfoOptions, stdout: anytype) 
     try stdout.print("}}\n", .{});
 }
 
-fn runDetect(allocator: std.mem.Allocator, options: DetectOptions, stdout: anytype) !void {
+fn runDetect(allocator: std.mem.Allocator, io: std.Io, options: DetectOptions, stdout: anytype) !void {
     // Detect on the quick preview, as the native UI does (including its
     // single-small-frame fallback), then report full-resolution coordinates
-    // for `export --frame`.
+    // for `export --frame`. Like the UI, measure Dmin on the rebate it finds
+    // and save it to the processing config.
     const preview = try workflow.loadQuickPreview(allocator, options.input, options.preview_size);
     defer preview.deinit(allocator);
     var result = try workflow.autoDetectPreview(allocator, preview, .{
@@ -328,6 +345,12 @@ fn runDetect(allocator: std.mem.Allocator, options: DetectOptions, stdout: anyty
     });
     defer result.deinit(allocator);
     const to_full = 1.0 / preview.info.preview_scale;
+
+    var dmin: ?[3]f64 = null;
+    if (result.rebate) |rebate| {
+        dmin = try workflow.computeRebateDminFromTiff(allocator, options.input, try workflow.fullResolutionRebate(rebate, preview.info.preview_scale));
+        if (options.save) try workflow.saveRebateDmin(allocator, io, options.config_path, dmin.?);
+    }
 
     try stdout.print("{{\"ok\":true,\"aspect\":", .{});
     try writeJsonString(stdout, result.aspect);
@@ -342,7 +365,31 @@ fn runDetect(allocator: std.mem.Allocator, options: DetectOptions, stdout: anyty
     } else {
         try stdout.print("null", .{});
     }
+    try stdout.print(",\"dmin\":", .{});
+    try writeDminJson(stdout, dmin);
     try stdout.print("}}\n", .{});
+}
+
+/// Auto-detects on the scan's quick preview and returns the suggested rebate
+/// in full-resolution pixels, or null when detection finds none or fails.
+fn detectedRebate(allocator: std.mem.Allocator, input: []const u8, format: []const u8) !?frames.RebateOriginRect {
+    const preview = try workflow.loadQuickPreview(allocator, input, default_preview_size);
+    defer preview.deinit(allocator);
+    var result = workflow.autoDetectPreview(allocator, preview, .{ .format = format }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer result.deinit(allocator);
+    const rebate = result.rebate orelse return null;
+    return try workflow.fullResolutionRebate(rebate, preview.info.preview_scale);
+}
+
+fn writeDminJson(stdout: anytype, dmin: ?[3]f64) !void {
+    if (dmin) |value| {
+        try stdout.print("[{d},{d},{d}]", .{ value[0], value[1], value[2] });
+    } else {
+        try stdout.print("null", .{});
+    }
 }
 
 fn runRebate(allocator: std.mem.Allocator, io: std.Io, options: RebateOptions, stdout: anytype) !void {
@@ -377,11 +424,22 @@ fn runExport(
     defer pages.deinit(allocator);
     const current_dpi = options.current_dpi orelse pages.dpi;
 
-    // One Dmin for the whole strip: the flag, else the one saved by `rebate`,
-    // else the whole image, so every frame gets the same base color.
-    var dmin = options.dmin orelse loaded_config.savedDmin();
+    // One Dmin for the whole strip, so every frame gets the same base color:
+    // the flag, else the rebate auto-detect finds on this scan, else the saved
+    // Dmin (which may come from another scan), else the whole image.
+    var dmin = options.dmin;
+    var dmin_source: []const u8 = if (dmin != null) "flag" else "none";
     if (dmin == null and options.outputs.needInvert()) {
-        dmin = try inversion.computeDmin(allocator, pages.rgb.pixels, null, .{});
+        if (try detectedRebate(allocator, options.input, options.format)) |rebate| {
+            dmin = try workflow.computeRebateDminFromImage(allocator, pages.rgb, rebate);
+            dmin_source = "rebate";
+        } else if (loaded_config.savedDmin()) |saved| {
+            dmin = saved;
+            dmin_source = "config";
+        } else {
+            dmin = try inversion.computeDmin(allocator, pages.rgb.pixels, null, .{});
+            dmin_source = "image";
+        }
     }
 
     var aligned_ir: ?export_pipeline.Image = null;
@@ -489,7 +547,9 @@ fn runExport(
         if (index != 0) try stdout.print(",", .{});
         try writeJsonString(stdout, name);
     }
-    try stdout.print("]}}\n", .{});
+    try stdout.print("],\"dmin\":", .{});
+    try writeDminJson(stdout, dmin);
+    try stdout.print(",\"dmin_source\":\"{s}\"}}\n", .{dmin_source});
 }
 
 fn isCancelled(io: std.Io, cancel_file: ?[]const u8) bool {
@@ -592,6 +652,10 @@ test "processing CLI parses command options" {
     try std.testing.expectEqual(CommandTag.detect, std.meta.activeTag(detect));
     try std.testing.expectEqual(@as(?usize, 4), detect.detect.n_frames);
     try std.testing.expect(!detect.detect.apply_clahe);
+    try std.testing.expect(detect.detect.save);
+    const detect_no_save = try parseArgs(&.{ "detect", "--input", "scan.tiff", "--no-save", "--config", "roll.toml" });
+    try std.testing.expect(!detect_no_save.detect.save);
+    try std.testing.expectEqualStrings("roll.toml", detect_no_save.detect.config_path);
 
     const rebate = try parseArgs(&.{ "rebate", "--input", "scan.tiff", "--x", "1", "--y", "2", "--width", "3", "--height", "4", "--no-save" });
     try std.testing.expectEqual(CommandTag.rebate, std.meta.activeTag(rebate));
@@ -607,4 +671,8 @@ test "processing CLI parses command options" {
     try std.testing.expectEqualStrings("cancel.flag", export_cmd.export_frames.cancel_file.?);
     try std.testing.expectEqual(@as(usize, 1), export_cmd.export_frames.frame_count);
     try std.testing.expectApproxEqAbs(0.2, export_cmd.export_frames.dmin.?[1], 0.0);
+    try std.testing.expectEqualStrings("35mm", export_cmd.export_frames.format);
+    const export_645 = try parseArgs(&.{ "export", "--input", "scan.tiff", "--frame", "16,16,8,6", "--format", "645" });
+    try std.testing.expectEqualStrings("645", export_645.export_frames.format);
+    try std.testing.expectError(error.InvalidFilmFormat, parseArgs(&.{ "export", "--input", "scan.tiff", "--frame", "16,16,8,6", "--format", "110" }));
 }

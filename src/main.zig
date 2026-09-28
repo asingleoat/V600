@@ -561,11 +561,14 @@ fn printProcessingUsage() !void {
         \\commands:
         \\  info --input PATH
         \\  detect --input PATH [--format 35mm|645|6x6|6x7|6x9] [--n-frames N] [--preview-size PX]
-        \\         (detects on a preview, max side PX, default 8192; prints full-resolution frames)
+        \\         [--config PATH] [--no-save]
+        \\         (detects on a preview, max side PX, default 8192; prints full-resolution frames
+        \\          and the rebate, and saves the rebate's Dmin to the config)
         \\  rebate --input PATH --x PX --y PX --width PX --height PX [--angle RAD] [--config PATH] [--no-save]
         \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]
-        \\         [--stock NAME] [--dmin R,G,B] [--dpi DPI] [--config PATH]
-        \\         (stock, Dmin, and parameters default to scratchndent_config.toml; dpi to the TIFF)
+        \\         [--stock NAME] [--dmin R,G,B] [--format FMT] [--dpi DPI] [--config PATH]
+        \\         (stock and parameters come from scratchndent_config.toml, dpi from the TIFF; Dmin
+        \\          from --dmin, else this scan's detected rebate, else the saved Dmin, else the image)
         \\
     , .{});
 }
