@@ -97,11 +97,6 @@ Native UI (scanning):
 
 CLI (`v600-zig processing`):
 
-- `export` ignores `scratchndent_config.toml` (defaults only), takes dpi only
-  from `--dpi` instead of the TIFF, estimates Dmin per crop unless `--dmin`
-  is given (so colour varies between frames) and never uses the Dmin saved
-  by `rebate`, and accepts built-in stocks only.
-- `detect` runs at full resolution and lacks the one-small-frame fallback.
 - No preview command and no automatic output name for `scanner scan`.
 
 Webapp: see the missing features in `docs/WEBAPP.md`; the most significant

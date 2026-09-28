@@ -3,13 +3,12 @@ const std = @import("std");
 const config = @import("config.zig");
 const events = @import("events.zig");
 const export_pipeline = @import("export.zig");
-const film_stocks = @import("film_stocks.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
-const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
+const workflow = @import("workflow.zig");
 
 pub const CommandTag = enum {
     info,
@@ -26,6 +25,7 @@ pub const DetectOptions = struct {
     input: []const u8 = "",
     format: []const u8 = "35mm",
     n_frames: ?usize = null,
+    preview_size: i64 = 8192,
     apply_clahe: bool = true,
     detect_film_extent: bool = true,
 };
@@ -48,9 +48,10 @@ pub const ExportOptions = struct {
     frames: [64]export_pipeline.FrameRect = undefined,
     frame_count: usize = 0,
     outputs: export_pipeline.OutputSelection = .{},
-    film_stock: []const u8 = "kodak_gold",
+    film_stock: ?[]const u8 = null,
     dmin: ?[3]f64 = null,
     current_dpi: ?u32 = null,
+    config_path: []const u8 = config.config_file,
     align_ir: bool = true,
     emit_events: bool = false,
     cancel_file: ?[]const u8 = null,
@@ -61,16 +62,6 @@ pub const ProcessingCommand = union(CommandTag) {
     detect: DetectOptions,
     rebate: RebateOptions,
     export_frames: ExportOptions,
-};
-
-const LoadedPages = struct {
-    rgb: export_pipeline.Image,
-    ir: ?export_pipeline.Image = null,
-
-    fn deinit(self: LoadedPages, allocator: std.mem.Allocator) void {
-        self.rgb.deinit(allocator);
-        if (self.ir) |ir| ir.deinit(allocator);
-    }
 };
 
 pub fn parseArgs(argv: []const []const u8) !ProcessingCommand {
@@ -140,6 +131,10 @@ fn parseDetectArgs(argv: []const []const u8) !DetectOptions {
             index += 1;
             if (index >= argv.len) return error.MissingFrameCount;
             options.n_frames = try std.fmt.parseInt(usize, argv[index], 10);
+        } else if (std.mem.eql(u8, arg, "--preview-size")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingPreviewSize;
+            options.preview_size = try std.fmt.parseInt(i64, argv[index], 10);
         } else if (std.mem.eql(u8, arg, "--no-clahe")) {
             options.apply_clahe = false;
         } else if (std.mem.eql(u8, arg, "--no-film-extent")) {
@@ -249,6 +244,10 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
             index += 1;
             if (index >= argv.len) return error.MissingDpi;
             options.current_dpi = try std.fmt.parseInt(u32, argv[index], 10);
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingConfigPath;
+            options.config_path = argv[index];
         } else if (std.mem.eql(u8, arg, "--no-align-ir")) {
             options.align_ir = false;
         } else if (std.mem.eql(u8, arg, "--events")) {
@@ -264,7 +263,6 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
     if (options.input.len == 0) return error.MissingInputPath;
     if (options.frame_count == 0) return error.MissingFrameSpec;
     if (!options.outputs.any()) return error.NoExportOutputsSelected;
-    _ = film_stocks.builtinStock(options.film_stock) orelse return error.UnknownFilmStock;
     return options;
 }
 
@@ -317,35 +315,30 @@ fn runInfo(allocator: std.mem.Allocator, options: InfoOptions, stdout: anytype) 
 }
 
 fn runDetect(allocator: std.mem.Allocator, options: DetectOptions, stdout: anytype) !void {
-    const image = try tiff.loadRgbPage(allocator, options.input);
-    defer image.deinit(allocator);
-    const format = frames.formatByName(options.format).?;
-    var result = try frames.detectFramesFromImage(
-        allocator,
-        image.data,
-        image.width,
-        image.height,
-        image.samples_per_pixel,
-        image.bits_per_sample,
-        format,
-        .{
-            .frame_count_override = options.n_frames,
-            .detect_film_extent = options.detect_film_extent,
-            .apply_clahe = options.apply_clahe,
-        },
-    );
+    // Detect on the quick preview, as the native UI does (including its
+    // single-small-frame fallback), then report full-resolution coordinates
+    // for `export --frame`.
+    const preview = try workflow.loadQuickPreview(allocator, options.input, options.preview_size);
+    defer preview.deinit(allocator);
+    var result = try workflow.autoDetectPreview(allocator, preview, .{
+        .format = options.format,
+        .n_frames = options.n_frames,
+        .detect_film_extent = options.detect_film_extent,
+        .apply_clahe = options.apply_clahe,
+    });
     defer result.deinit(allocator);
+    const to_full = 1.0 / preview.info.preview_scale;
 
     try stdout.print("{{\"ok\":true,\"aspect\":", .{});
     try writeJsonString(stdout, result.aspect);
     try stdout.print(",\"frames\":[", .{});
     for (result.frames, 0..) |frame, index| {
         if (index != 0) try stdout.print(",", .{});
-        try writeFrameJson(stdout, frame);
+        try writeFrameJson(stdout, .{ .cx = frame.cx * to_full, .cy = frame.cy * to_full, .w = frame.w * to_full, .h = frame.h * to_full, .angle = frame.angle });
     }
     try stdout.print("],\"rebate\":", .{});
-    if (frames.computeInterFrameRebate(result.frames)) |rebate| {
-        try writeRebateJson(stdout, rebate);
+    if (result.rebate) |rebate| {
+        try writeRebateJson(stdout, .{ .cx = rebate.cx * to_full, .cy = rebate.cy * to_full, .w = rebate.w * to_full, .h = rebate.h * to_full, .angle = rebate.angle });
     } else {
         try stdout.print("null", .{});
     }
@@ -353,26 +346,14 @@ fn runDetect(allocator: std.mem.Allocator, options: DetectOptions, stdout: anyty
 }
 
 fn runRebate(allocator: std.mem.Allocator, io: std.Io, options: RebateOptions, stdout: anytype) !void {
-    const pages = try loadPagesAsF64(allocator, options.input, false);
-    defer pages.deinit(allocator);
-
-    const crop = try export_pipeline.cropFrame(allocator, pages.rgb.pixels, pages.rgb.width, pages.rgb.height, pages.rgb.channels, .{
-        .cx = options.x + options.w / 2.0,
-        .cy = options.y + options.h / 2.0,
+    const result = try workflow.processRebateFromTiff(allocator, io, options.input, options.config_path, .{
+        .x = options.x,
+        .y = options.y,
         .w = options.w,
         .h = options.h,
-        .angle = options.angle * 180.0 / std.math.pi,
-    });
-    defer crop.deinit(allocator);
-
-    const dmin = try inversion.computeDmin(allocator, crop.pixels, null, .{});
-    if (options.save) {
-        const list = try config.FloatList.init(&dmin);
-        try config.saveFile(allocator, io, options.config_path, &.{
-            .{ .name = "dmin", .value = .{ .list = list } },
-        });
-    }
-
+        .angle = options.angle,
+    }, options.save);
+    const dmin = result.dmin;
     try stdout.print("{{\"ok\":true,\"dmin\":[{d},{d},{d}]}}\n", .{ dmin[0], dmin[1], dmin[2] });
 }
 
@@ -383,10 +364,25 @@ fn runExport(
     stdout: anytype,
     processing_gpu_request: webgpu.Request,
 ) !void {
+    // Settings come from the processing config, as in the native UI; flags override.
+    const loaded_config = try config.loadFile(allocator, io, options.config_path);
+    var override_buffer: [32]config.Override = undefined;
+    const overrides = loaded_config.overrides(&override_buffer);
+    const stock_name = options.film_stock orelse loaded_config.activeStock() orelse "kodak_gold";
+    const stock = loaded_config.availableStock(stock_name) orelse return error.UnknownFilmStock;
+
     try std.Io.Dir.cwd().createDirPath(io, options.output_dir);
     const need_ir = options.outputs.needIr();
-    var pages = try loadPagesAsF64(allocator, options.input, need_ir);
+    var pages = try workflow.loadFullImageAsF64(allocator, options.input, need_ir);
     defer pages.deinit(allocator);
+    const current_dpi = options.current_dpi orelse pages.dpi;
+
+    // One Dmin for the whole strip: the flag, else the one saved by `rebate`,
+    // else the whole image, so every frame gets the same base color.
+    var dmin = options.dmin orelse loaded_config.savedDmin();
+    if (dmin == null and options.outputs.needInvert()) {
+        dmin = try inversion.computeDmin(allocator, pages.rgb.pixels, null, .{});
+    }
 
     var aligned_ir: ?export_pipeline.Image = null;
     defer if (aligned_ir) |image| image.deinit(allocator);
@@ -410,8 +406,8 @@ fn runExport(
     }
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
-    const stock = film_stocks.builtinStock(options.film_stock).?;
-    var prng = std.Random.DefaultPrng.init(0x563030);
+    const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
+    const ir_clean_options = workflow.irCleanOptionsForConfig(current_dpi, overrides);
     var written = std.array_list.Managed([]u8).init(allocator);
     defer {
         for (written.items) |name| allocator.free(name);
@@ -444,6 +440,7 @@ fn runExport(
         }
         const paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs);
         defer paths.deinit(allocator);
+        var prng = std.Random.DefaultPrng.init(workflow.frameExportSeed(frame_index));
         const result = try export_pipeline.processFrame(
             allocator,
             frame_index,
@@ -459,11 +456,11 @@ fn runExport(
                     .source = std.fs.path.basename(options.input),
                     .crop = rect,
                 },
-                .film_stock = options.film_stock,
+                .film_stock = stock_name,
                 .stock_coeffs = stock.coeffs,
-                .dmin = options.dmin,
-                .render_options = renderOptions(options.current_dpi),
-                .ir_clean_options = irCleanOptions(options.current_dpi),
+                .dmin = dmin,
+                .render_options = render_options,
+                .ir_clean_options = ir_clean_options,
                 .invert_request = processing_gpu_request,
                 .random = prng.random(),
             },
@@ -534,77 +531,6 @@ fn outputPathsForFrame(
     if (outputs.ir_inv) result.paths.ir_inv = try export_pipeline.uniqueFrameOutputPath(allocator, io, output_dir, basename, frame_index, .ir_inv);
     if (outputs.inv_only) result.paths.inv_only = try export_pipeline.uniqueFrameOutputPath(allocator, io, output_dir, basename, frame_index, .inv_only);
     return result;
-}
-
-fn loadPagesAsF64(allocator: std.mem.Allocator, path: []const u8, include_ir: bool) !LoadedPages {
-    const pages = try tiff.loadRgbIrPages(allocator, path);
-    defer pages.deinit(allocator);
-    const rgb = try imageToF64(allocator, pages.rgb);
-    errdefer rgb.deinit(allocator);
-    var ir: ?export_pipeline.Image = null;
-    errdefer if (ir) |image| image.deinit(allocator);
-    if (include_ir) {
-        if (pages.ir) |ir_page| {
-            ir = try imageToF64(allocator, ir_page);
-        }
-    }
-    return .{ .rgb = rgb, .ir = ir };
-}
-
-fn imageToF64(allocator: std.mem.Allocator, image: tiff.Image) !export_pipeline.Image {
-    const width: usize = image.width;
-    const height: usize = image.height;
-    const channels: usize = image.samples_per_pixel;
-    if (channels != 1 and channels != 3) return error.UnsupportedProcessingImage;
-    const sample_count = width * height * channels;
-    const pixels = try allocator.alloc(f64, sample_count);
-    errdefer allocator.free(pixels);
-    switch (image.bits_per_sample) {
-        8 => {
-            if (image.data.len != sample_count) return error.UnsupportedProcessingImage;
-            for (image.data, pixels) |sample, *out| out.* = @floatFromInt(sample);
-        },
-        16 => {
-            if (image.data.len != sample_count * 2) return error.UnsupportedProcessingImage;
-            for (pixels, 0..) |*out, index| {
-                out.* = @floatFromInt(std.mem.readInt(u16, image.data[index * 2 ..][0..2], .little));
-            }
-        },
-        else => return error.UnsupportedProcessingImage,
-    }
-    return .{ .width = width, .height = height, .channels = channels, .pixels = pixels };
-}
-
-fn renderOptions(current_dpi: ?u32) render.RenderToDisplayOptions {
-    return .{
-        .contrast = config.getParam("render_contrast", current_dpi, &.{}).?.asFloat(),
-        .curve_k = config.getParam("render_curve_k", current_dpi, &.{}).?.asFloat(),
-        .percentile_lo = config.getParam("render_percentile_lo", current_dpi, &.{}).?.asFloat(),
-        .percentile_hi = config.getParam("render_percentile_hi", current_dpi, &.{}).?.asFloat(),
-        .exposure_compensation = config.getParam("exposure_compensation", current_dpi, &.{}).?.asFloat(),
-        .color_temp = config.getParam("color_temp", current_dpi, &.{}).?.asFloat(),
-        .color_tint = config.getParam("color_tint", current_dpi, &.{}).?.asFloat(),
-    };
-}
-
-fn irCleanOptions(current_dpi: ?u32) ir_processing.IrCleanOptions {
-    return .{
-        .defect_mask = .{
-            .threshold = config.getParam("ir_threshold", current_dpi, &.{}).?.asFloat(),
-            .hair_sensitivity = config.getParam("ir_hair_sensitivity", current_dpi, &.{}).?.asFloat(),
-            .min_area = @intFromFloat(config.getParam("ir_min_area", current_dpi, &.{}).?.asFloat()),
-            .dilate_radius = @intFromFloat(config.getParam("ir_dilate_radius", current_dpi, &.{}).?.asFloat()),
-            .close_radius = @intFromFloat(config.getParam("ir_close_radius", current_dpi, &.{}).?.asFloat()),
-            .blur_size = @intFromFloat(config.getParam("ir_blur_size", current_dpi, &.{}).?.asFloat()),
-            .max_coverage = config.getParam("ir_max_coverage", current_dpi, &.{}).?.asFloat(),
-            .adaptive_precision = .f32,
-        },
-        .inpaint = .{
-            .padding = @intFromFloat(config.getParam("inpaint_padding", current_dpi, &.{}).?.asFloat()),
-            .grain_padding = 8,
-            .value_kind = .uint16,
-        },
-    };
 }
 
 fn writeFrameJson(stdout: anytype, frame: frames.FrameRect) !void {

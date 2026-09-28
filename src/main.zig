@@ -489,9 +489,12 @@ fn printProcessingUsage() !void {
         \\
         \\commands:
         \\  info --input PATH
-        \\  detect --input PATH [--format 35mm|645|6x6|6x7|6x9] [--n-frames N]
+        \\  detect --input PATH [--format 35mm|645|6x6|6x7|6x9] [--n-frames N] [--preview-size PX]
+        \\         (detects on a preview, max side PX, default 8192; prints full-resolution frames)
         \\  rebate --input PATH --x PX --y PX --width PX --height PX [--angle RAD] [--config PATH] [--no-save]
-        \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only] [--dmin R,G,B]
+        \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]
+        \\         [--stock NAME] [--dmin R,G,B] [--dpi DPI] [--config PATH]
+        \\         (stock, Dmin, and parameters default to scratchndent_config.toml; dpi to the TIFF)
         \\
     , .{});
 }

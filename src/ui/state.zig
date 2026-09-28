@@ -910,7 +910,7 @@ pub const State = struct {
         }
         return .{
             .entries = out_entries[0..count],
-            .active_stock = processingConfigActiveStock(&self.processing_config),
+            .active_stock = self.processing_config.activeStock(),
             .preview_inversion = processingConfigBool(&self.processing_config, "preview_inversion") orelse false,
         };
     }
@@ -935,7 +935,7 @@ pub const State = struct {
             count += 1;
         }
         return .{
-            .active = processingConfigActiveStock(&self.processing_config),
+            .active = self.processing_config.activeStock(),
             .stocks = out_stocks[0..count],
         };
     }
@@ -1166,7 +1166,7 @@ pub const State = struct {
 
     pub fn processingInvertedPreviewOptions(self: *const State) processing_workflow.InvertedPreviewOptions {
         return .{
-            .stock = processingConfigActiveStock(&self.processing_config),
+            .stock = self.processing_config.activeStock(),
             .dmin = self.processing.dmin,
             .render_options = .{
                 .contrast = processingConfigFloat(&self.processing_config, "render_contrast"),
@@ -1566,8 +1566,8 @@ pub const State = struct {
             return error.NoProcessImageLoaded;
         };
         var overrides_buffer: [32]processing_config.Override = undefined;
-        const overrides = processingConfigOverrides(&self.processing_config, &overrides_buffer);
-        const active_stock = processingConfigActiveStock(&self.processing_config);
+        const overrides = self.processing_config.overrides(&overrides_buffer);
+        const active_stock = self.processing_config.activeStock();
         const stock_coeffs = if (active_stock) |stock_name| blk: {
             const profile = self.processing_config.availableStock(stock_name) orelse return error.UnknownFilmStock;
             if (!profile.has_coeffs) return error.UnknownFilmStock;
@@ -2082,8 +2082,8 @@ pub const State = struct {
         if (processingConfigBool(&self.processing_config, "preview_inversion")) |enabled| {
             self.processing_preview_inversion_enabled = enabled;
         }
-        if (processingConfigActiveStock(&self.processing_config) != null) {
-            if (processingConfigDmin(&self.processing_config)) |dmin| {
+        if (self.processing_config.activeStock() != null) {
+            if (self.processing_config.savedDmin()) |dmin| {
                 self.processing.dmin = dmin;
             }
         }
@@ -2215,13 +2215,6 @@ fn processImagePathIndex(paths: []const []const u8, selected_path: []const u8) ?
     return null;
 }
 
-fn processingConfigActiveStock(loaded: *const processing_config.LoadedConfig) ?[]const u8 {
-    const entry = processingConfigEntry(loaded, "stock") orelse return null;
-    if (std.meta.activeTag(entry.value) != .string) return null;
-    const stock = entry.value.string.slice();
-    return if (stock.len == 0) null else stock;
-}
-
 fn processingConfigBool(loaded: *const processing_config.LoadedConfig, name: []const u8) ?bool {
     const entry = processingConfigEntry(loaded, name) orelse return null;
     if (std.meta.activeTag(entry.value) != .boolean) return null;
@@ -2234,34 +2227,12 @@ fn processingConfigFloat(loaded: *const processing_config.LoadedConfig, name: []
     return default.asFloat();
 }
 
-fn processingConfigDmin(loaded: *const processing_config.LoadedConfig) ?[3]f64 {
-    const entry = processingConfigEntry(loaded, "dmin") orelse return null;
-    if (std.meta.activeTag(entry.value) != .list) return null;
-    const values = entry.value.list.slice();
-    if (values.len < 3) return null;
-    return .{ values[0], values[1], values[2] };
-}
-
 fn galleryFileListsEqual(lhs: []const []const u8, rhs: []const []const u8) bool {
     if (lhs.len != rhs.len) return false;
     for (lhs, rhs) |a, b| {
         if (!std.mem.eql(u8, a, b)) return false;
     }
     return true;
-}
-
-fn processingConfigOverrides(
-    loaded: *const processing_config.LoadedConfig,
-    out: *[32]processing_config.Override,
-) []const processing_config.Override {
-    var count: usize = 0;
-    for (loaded.entries[0..loaded.len]) |entry| {
-        const name = entry.name.slice();
-        if (std.mem.eql(u8, name, "_stocks")) continue;
-        out[count] = .{ .name = name, .value = entry.value };
-        count += 1;
-    }
-    return out[0..count];
 }
 
 fn processingUpdatesContain(updates: []const processing_config.Override, name: []const u8) bool {
@@ -3020,7 +2991,7 @@ test "native UI process settings and stocks mirror process_handlers routes" {
     try state.saveProcessingSettings(allocator, std.testing.io, config_path, &updates);
     try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
     try std.testing.expect(!state.processing_preview_inversion_enabled);
-    try std.testing.expectEqualStrings("kodak_portra", processingConfigActiveStock(&state.processing_config).?);
+    try std.testing.expectEqualStrings("kodak_portra", state.processing_config.activeStock().?);
     const preview_options = state.processingInvertedPreviewOptions();
     try std.testing.expectEqualStrings("kodak_portra", preview_options.stock.?);
     try std.testing.expectApproxEqAbs(1.6, preview_options.render_options.contrast, 0.0);

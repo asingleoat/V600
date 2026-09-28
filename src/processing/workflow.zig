@@ -1956,7 +1956,7 @@ fn frameExportWorker(queue: *FrameExportQueue) void {
     }
 }
 
-fn frameExportSeed(frame_index: usize) u64 {
+pub fn frameExportSeed(frame_index: usize) u64 {
     return 0x563030 + @as(u64, @intCast(frame_index));
 }
 
@@ -2584,7 +2584,7 @@ fn noOutputExportResult(allocator: std.mem.Allocator) !ExportWorkflowResult {
     };
 }
 
-fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override) render.RenderToDisplayOptions {
+pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override) render.RenderToDisplayOptions {
     return .{
         .contrast = config.getParam("render_contrast", current_dpi, overrides).?.asFloat(),
         .curve_k = config.getParam("render_curve_k", current_dpi, overrides).?.asFloat(),
@@ -2596,7 +2596,7 @@ fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override)
     };
 }
 
-fn irCleanOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override) ir_processing.IrCleanOptions {
+pub fn irCleanOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override) ir_processing.IrCleanOptions {
     return .{
         .defect_mask = .{
             .threshold = config.getParam("ir_threshold", current_dpi, overrides).?.asFloat(),

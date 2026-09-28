@@ -192,6 +192,34 @@ pub const LoadedConfig = struct {
         return self.stock_len - 1;
     }
 
+    pub fn activeStock(self: *const LoadedConfig) ?[]const u8 {
+        const found = self.entry("stock") orelse return null;
+        if (std.meta.activeTag(found.value) != .string) return null;
+        const stock = found.value.string.slice();
+        return if (stock.len == 0) null else stock;
+    }
+
+    pub fn savedDmin(self: *const LoadedConfig) ?[3]f64 {
+        const found = self.entry("dmin") orelse return null;
+        if (std.meta.activeTag(found.value) != .list) return null;
+        const values = found.value.list.slice();
+        if (values.len < 3) return null;
+        return .{ values[0], values[1], values[2] };
+    }
+
+    /// Every loaded setting as an override list for getParam, minus the
+    /// custom stock table.
+    pub fn overrides(self: *const LoadedConfig, out: *[32]Override) []const Override {
+        var count: usize = 0;
+        for (self.entries[0..self.len]) |*item| {
+            const name = item.name.slice();
+            if (std.mem.eql(u8, name, "_stocks")) continue;
+            out[count] = .{ .name = name, .value = item.value };
+            count += 1;
+        }
+        return out[0..count];
+    }
+
     pub fn customStock(self: *const LoadedConfig, name: []const u8) ?StockProfile {
         for (self.stocks[0..self.stock_len]) |stock| {
             if (std.mem.eql(u8, stock.name.slice(), name)) return stock;
