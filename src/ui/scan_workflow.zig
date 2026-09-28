@@ -607,8 +607,7 @@ pub fn handleScanRgbProgressStatus(
 ) ![]u8 {
     const weights = rgbIrProgressWeights(dpi);
     const total_pct: u64 = @intFromFloat(@as(f64, @floatFromInt(percent)) * weights.rgb_weight);
-    const safe_percent = @max(percent, 1);
-    const total_eta = eta_seconds + eta_seconds / @as(f64, @floatFromInt(safe_percent)) * 100.0 * weights.ir_weight;
+    const total_eta = rgbIrTotalEtaSeconds(dpi, percent, eta_seconds);
     var eta_buffer: [32]u8 = undefined;
     var elapsed_buffer: [32]u8 = undefined;
     const eta = try handleScanFormatEta(&eta_buffer, total_eta);
@@ -668,6 +667,11 @@ pub fn handleScanSavedStatus(buffer: []u8, output_path: []const u8) ![]u8 {
 
 pub fn handleScanErrorStatus(buffer: []u8, detail: []const u8) ![]u8 {
     return std.fmt.bufPrint(buffer, "Error: {s}", .{detail});
+}
+
+pub fn rgbIrTotalEtaSeconds(dpi: u32, rgb_percent: u8, rgb_eta_seconds: f64) f64 {
+    const safe_percent = @max(rgb_percent, 1);
+    return rgb_eta_seconds + rgb_eta_seconds / @as(f64, @floatFromInt(safe_percent)) * 100.0 * rgbIrProgressWeights(dpi).ir_weight;
 }
 
 pub fn rgbIrProgressWeights(dpi: u32) RgbIrProgressWeights {

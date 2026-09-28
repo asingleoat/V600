@@ -519,6 +519,7 @@ pub fn main(init: std.process.Init) !void {
     var gallery_shortcuts_checked = false;
     var gallery_confirmation_checked = false;
     var last_gallery_refresh_ms: u64 = 0;
+    var window_title_eta: ?u64 = null;
     const smoke_started_ms = c.SDL_GetTicks();
     var smoke_resize_applied = false;
     while (running) {
@@ -641,6 +642,8 @@ pub fn main(init: std.process.Init) !void {
         _ = connect_worker.poll(&model);
         _ = preview_worker.poll(&model);
         _ = scan_worker.poll(&model);
+        model.updateScanProgressStatus(c.SDL_GetTicks());
+        updateWindowTitle(window, &model, &window_title_eta);
         if (process_worker.poll(&model)) {
             if (process_worker.takeLastAutoAspect()) |aspect| {
                 process_ui.aspect_index = processAspectIndexClosestTo(aspect) orelse process_ui.aspect_index;
@@ -2310,6 +2313,7 @@ fn footerStatusText(
 
 fn scanFooterStatusText(buffer: []u8, model: *const v600.native_ui.State) []const u8 {
     const status = model.scanStatusDisplay();
+    if (model.scan_eta_seconds != null) return std.fmt.bufPrint(buffer, "Scan | {s}", .{status}) catch status;
     if (model.scanner_progress_percent) |percent| {
         return std.fmt.bufPrint(
             buffer,
@@ -2318,6 +2322,19 @@ fn scanFooterStatusText(buffer: []u8, model: *const v600.native_ui.State) []cons
         ) catch status;
     }
     return std.fmt.bufPrint(buffer, "Scan | {s}", .{status}) catch status;
+}
+
+fn updateWindowTitle(window: *c.SDL_Window, model: *const v600.native_ui.State, shown_eta: *?u64) void {
+    const eta: ?u64 = if (model.scan_eta_seconds) |seconds| @intFromFloat(@max(seconds, 0.0)) else null;
+    if (std.meta.eql(eta, shown_eta.*)) return;
+    shown_eta.* = eta;
+    var eta_buffer: [32]u8 = undefined;
+    var title_buffer: [64]u8 = undefined;
+    const title = if (eta) |seconds| blk: {
+        const text = v600.native_ui.handleScanFormatEta(&eta_buffer, @floatFromInt(seconds)) catch break :blk "V600";
+        break :blk std.fmt.bufPrintZ(&title_buffer, "{s} — V600", .{text}) catch "V600";
+    } else "V600";
+    _ = c.SDL_SetWindowTitle(window, title.ptr);
 }
 
 fn processFooterStatusText(

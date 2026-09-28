@@ -28,6 +28,7 @@ pub const previewSelectionFromDraw = scan_workflow.previewSelectionFromDraw;
 pub const adjustedPreviewSelection = scan_workflow.adjustedPreviewSelection;
 pub const scanSelectionEstimate = scan_workflow.scanSelectionEstimate;
 pub const formatScanSelectionEstimate = scan_workflow.formatScanSelectionEstimate;
+pub const handleScanFormatEta = scan_workflow.handleScanFormatEta;
 
 pub const PreviewImageInfo = struct {
     output_path: []const u8,
@@ -388,6 +389,10 @@ pub const State = struct {
     preview_image: ?PreviewImageInfo = null,
     scanner_capabilities: ?scanner_contracts.ScannerCapabilities = null,
     scanner_progress_percent: ?u8 = null,
+    scan_started_ms: ?u64 = null,
+    scan_pass_started_ms: ?u64 = null,
+    scan_ir_pass: bool = false,
+    scan_eta_seconds: ?f64 = null,
     scanner_timing_stage: []const u8 = "",
     scanner_timing_elapsed_us: u64 = 0,
     scanner_timing_detail: ?[]const u8 = null,
@@ -508,6 +513,41 @@ pub const State = struct {
 
     pub fn setScanStatus(self: *State, message: []const u8) void {
         self.scanner.scan_status = message;
+    }
+
+    pub fn updateScanProgressStatus(self: *State, now_ms: u64) void {
+        if (!self.scanner.scanning or self.preview_requested) {
+            self.scan_started_ms = null;
+            self.scan_pass_started_ms = null;
+            self.scan_eta_seconds = null;
+            return;
+        }
+        const mode = self.active_scan_mode orelse return;
+        const scan_started = self.scan_started_ms orelse now_ms;
+        const pass_started = self.scan_pass_started_ms orelse now_ms;
+        self.scan_started_ms = scan_started;
+        self.scan_pass_started_ms = pass_started;
+        const percent = self.scanner_progress_percent orelse return;
+        if (percent == 0) return;
+
+        const done: f64 = @floatFromInt(@min(percent, 100));
+        const pass_elapsed = @as(f64, @floatFromInt(now_ms -| pass_started)) / 1000.0;
+        const pass_eta = pass_elapsed * (100.0 - done) / done;
+        const elapsed = @as(f64, @floatFromInt(now_ms -| scan_started)) / 1000.0;
+        const dpi = self.active_scan_dpi;
+        const message = switch (mode) {
+            .rgb_ir => if (self.scan_ir_pass)
+                scan_workflow.handleScanIrProgressStatus(&self.scan_status_buffer, dpi, percent, pass_eta, elapsed)
+            else
+                scan_workflow.handleScanRgbProgressStatus(&self.scan_status_buffer, dpi, percent, pass_eta, elapsed),
+            .rgb, .ir => scan_workflow.handleScanSingleProgressStatus(&self.scan_status_buffer, mode, percent, pass_eta, elapsed),
+        } catch return;
+        self.scanner.scan_status = message;
+        self.status = message;
+        self.scan_eta_seconds = if (mode == .rgb_ir and !self.scan_ir_pass)
+            scan_workflow.rgbIrTotalEtaSeconds(dpi, percent, pass_eta)
+        else
+            pass_eta;
     }
 
     pub fn syncScanCounter(self: *State, io: std.Io) void {
@@ -1962,6 +2002,10 @@ pub const State = struct {
         self.scanner.scanning = true;
         self.scanner.cancel_requested = false;
         self.scanner_progress_percent = null;
+        self.scan_started_ms = null;
+        self.scan_pass_started_ms = null;
+        self.scan_ir_pass = false;
+        self.scan_eta_seconds = null;
         self.active_scan_mode = plan.mode;
         self.active_scan_dpi = plan.request.dpi;
         const message = scan_workflow.handleScanInitialStatus(
@@ -1979,6 +2023,9 @@ pub const State = struct {
         const mode = self.active_scan_mode orelse scanModeFromBackendKind(scan_start.kind);
         self.active_scan_mode = mode;
         if (self.active_scan_dpi == 0) self.active_scan_dpi = scan_start.requested_dpi;
+        self.scan_pass_started_ms = null;
+        self.scan_ir_pass = mode == .rgb_ir and scan_start.kind == .ir;
+        self.scan_eta_seconds = null;
 
         const message = if (mode == .rgb_ir and scan_start.kind == .ir)
             scan_workflow.handleScanRgbIrSecondPassStatus(&self.scan_status_buffer, self.active_scan_dpi) catch "Scanning..."
@@ -3558,6 +3605,50 @@ test "native UI preview status follows scanner backend events headlessly" {
     try std.testing.expect(state.preview_ready);
     try std.testing.expectEqual(@as(?u8, null), state.scanner_progress_percent);
     try std.testing.expectEqualStrings("Preview ready", status.status);
+}
+
+test "native Scan progress shows ETA, elapsed time, and the combined RGB+IR total" {
+    var state = State.init("scans", "frames", 0);
+    defer state.deinit(std.testing.allocator);
+    state.active_scan_mode = .rgb_ir;
+    state.active_scan_dpi = 3200;
+    state.applyScannerBackendEvent(.{ .scan_start = .{
+        .device = "epkowa:interpreter:001:017",
+        .output = "scans/scan_0001_rgbir_3200dpi.tiff.rgb.tmp.tiff",
+        .source = .tpu,
+        .kind = .rgb,
+        .requested_dpi = 3200,
+        .effective_dpi = 3200,
+    } });
+    state.updateScanProgressStatus(1_000);
+    try std.testing.expectEqual(@as(?f64, null), state.scan_eta_seconds);
+
+    state.applyScannerBackendEvent(.{ .progress = .{ .percent = 25 } });
+    state.updateScanProgressStatus(21_000);
+    try std.testing.expectEqualStrings("RGB 25% — total 18%, ETA 2m00s, elapsed 20s", state.scanStatusDisplay());
+    try std.testing.expectApproxEqAbs(@as(f64, 120.0), state.scan_eta_seconds.?, 0.001);
+
+    state.applyScannerBackendEvent(.{ .scan_start = .{
+        .device = "epkowa:interpreter:001:017",
+        .output = "scans/scan_0001_rgbir_3200dpi.tiff.ir.tmp.tiff",
+        .source = .tpu,
+        .kind = .ir,
+        .requested_dpi = 3200,
+        .effective_dpi = 3200,
+    } });
+    state.updateScanProgressStatus(61_000);
+    try std.testing.expectEqualStrings("Pass 2/2: Scanning IR at 3200 DPI...", state.scanStatusDisplay());
+    state.applyScannerBackendEvent(.{ .progress = .{ .percent = 50 } });
+    state.updateScanProgressStatus(71_000);
+    try std.testing.expectEqualStrings("IR 50% — total 87%, ETA 10s, elapsed 1m10s", state.scanStatusDisplay());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), state.scan_eta_seconds.?, 0.001);
+
+    state.applyScannerBackendEvent(.{ .scan_complete = .{
+        .output = "scans/scan_0001_rgbir_3200dpi.tiff",
+        .metadata = "scans/scan_0001_rgbir_3200dpi.tiff.json",
+    } });
+    state.updateScanProgressStatus(72_000);
+    try std.testing.expectEqual(@as(?f64, null), state.scan_eta_seconds);
 }
 
 test "native UI preview auto-select applies python film-area detector result" {
