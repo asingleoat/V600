@@ -2734,10 +2734,10 @@ fn drawProcessView(
             refreshAndLoadProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
         if (c.nk_button_label(ctx, "Prev") != 0) {
-            startPreviousProcessingImage(model, process_worker, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
+            startPreviousProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
         if (c.nk_button_label(ctx, "Next") != 0) {
-            startNextProcessingImage(model, process_worker, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
+            startNextProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
         if (c.nk_button_label(ctx, "Trash") != 0) {
             requestProcessConfirmation(model, confirmation, allocator, .trash) catch |err| setProcessUiError(model, err);
@@ -2860,12 +2860,9 @@ fn drawProcessView(
         c.nk_filter_default,
     );
     layoutRow(ctx, 28.0, 3);
-    var ir_neg = nkBool(ui.export_ir_neg);
-    if (c.nk_checkbox_label(ctx, "IR neg", &ir_neg) != 0) ui.export_ir_neg = ir_neg != 0;
-    var ir_inv = nkBool(ui.export_ir_inv);
-    if (c.nk_checkbox_label(ctx, "IR inv", &ir_inv) != 0) ui.export_ir_inv = ir_inv != 0;
-    var inv_only = nkBool(ui.export_inv_only);
-    if (c.nk_checkbox_label(ctx, "Inv only", &inv_only) != 0) ui.export_inv_only = inv_only != 0;
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR neg", "export_ir_neg", &ui.export_ir_neg);
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR inv", "export_ir_inv", &ui.export_ir_inv);
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "Inv only", "export_inv_only", &ui.export_inv_only);
     layoutRow(ctx, 30.0, 1);
     if (export_active) {
         c.nk_label(ctx, "Exporting...", c.NK_TEXT_LEFT);
@@ -3156,8 +3153,11 @@ fn refreshAndLoadProcessingImage(
 fn startPreviousProcessingImage(
     model: *v600.native_ui.State,
     process_worker: *ProcessWorker,
+    allocator: std.mem.Allocator,
+    io: std.Io,
     preview_size: i64,
 ) !void {
+    _ = try model.refreshProcessingImageList(allocator, io);
     const count = model.processing_images.paths.len;
     if (count == 0) {
         model.setStatus("No images");
@@ -3170,8 +3170,11 @@ fn startPreviousProcessingImage(
 fn startNextProcessingImage(
     model: *v600.native_ui.State,
     process_worker: *ProcessWorker,
+    allocator: std.mem.Allocator,
+    io: std.Io,
     preview_size: i64,
 ) !void {
+    _ = try model.refreshProcessingImageList(allocator, io);
     const count = model.processing_images.paths.len;
     if (count == 0) {
         model.setStatus("No images");
@@ -3268,6 +3271,23 @@ fn selectProcessStock(
         .{ .name = "export_ir_inv", .value = .{ .boolean = true } },
     };
     try model.saveProcessingSettings(allocator, io, config_path, &updates);
+}
+
+fn drawProcessExportVariant(
+    ctx: *c.struct_nk_context,
+    model: *v600.native_ui.State,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config_path: []const u8,
+    label: [*:0]const u8,
+    setting: []const u8,
+    enabled: *bool,
+) void {
+    var checked = nkBool(enabled.*);
+    if (c.nk_checkbox_label(ctx, label, &checked) == 0) return;
+    enabled.* = checked != 0;
+    const updates = [_]v600.processing.config.Override{.{ .name = setting, .value = .{ .boolean = enabled.* } }};
+    model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
 }
 
 fn queueProcessFloatSetting(

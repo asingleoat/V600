@@ -95,8 +95,6 @@ Native UI (scanning):
 
 Native UI (processing), smaller:
 
-- Export variant checkboxes are not saved when toggled.
-- Prev/Next do not rescan the image folder for new scans.
 - No frame labels, rebate label, fills, or cursor changes on the canvas; no
   tooltips on controls.
 
