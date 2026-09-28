@@ -45,6 +45,23 @@ pub fn updateUiChromeRects(window: *c.SDL_Window, model: *const v600.native_ui.S
     );
 }
 
+/// Shows a word-wrapped tooltip when the next widget is hovered. Call it after
+/// the widget's layout row and before the widget.
+pub fn tooltip(ctx: *c.struct_nk_context, text: []const u8) void {
+    if (c.nk_widget_is_hovered(ctx) == 0) return;
+    var buffer: [512:0]u8 = undefined;
+    const label = std.fmt.bufPrintZ(&buffer, "{s}", .{text[0..@min(text.len, buffer.len)]}) catch return;
+    const font = ctx.style.font;
+    const width = 360.0 * runtime_ui_config.metrics().scale;
+    const line_width = width - 24.0;
+    const text_width = font.*.width.?(font.*.userdata, font.*.height, label.ptr, @intCast(label.len));
+    const lines = if (text_width <= line_width) 1.0 else @ceil(text_width / line_width) + 1.0;
+    if (c.nk_tooltip_begin(ctx, width) == 0) return;
+    c.nk_layout_row_dynamic(ctx, lines * (font.*.height + 3.0), 1);
+    c.nk_label_wrap(ctx, label.ptr);
+    c.nk_tooltip_end(ctx);
+}
+
 pub fn footerBarHeight() f32 {
     return runtime_ui_config.metrics().row(46.0);
 }

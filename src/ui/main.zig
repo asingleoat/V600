@@ -22,6 +22,7 @@ const cursor = @import("cursor.zig");
 
 const layoutRow = chrome.layoutRow;
 const layoutRowStatic = chrome.layoutRowStatic;
+const tooltip = chrome.tooltip;
 const applyNuklearStyle = chrome.applyNuklearStyle;
 const nkColor = chrome.nkColor;
 const setRendererColor = chrome.setRendererColor;
@@ -2850,18 +2851,23 @@ fn drawProcessView(
         c.nk_label(ctx, "Trash", c.NK_TEXT_CENTERED);
         c.nk_label(ctx, "Delete", c.NK_TEXT_CENTERED);
     } else {
+        tooltip(ctx, "Rescan the scan folder for new images");
         if (c.nk_button_label(ctx, "Refresh") != 0) {
             refreshAndLoadProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
+        tooltip(ctx, "Previous image");
         if (c.nk_button_label(ctx, "Prev") != 0) {
             startPreviousProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
+        tooltip(ctx, "Next image");
         if (c.nk_button_label(ctx, "Next") != 0) {
             startNextProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
+        tooltip(ctx, "Move the current scan to the trash");
         if (c.nk_button_label(ctx, "Trash") != 0) {
             requestProcessConfirmation(model, confirmation, allocator, .trash) catch |err| setProcessUiError(model, err);
         }
+        tooltip(ctx, "Permanently delete the current scan");
         if (c.nk_button_label(ctx, "Delete") != 0) {
             requestProcessConfirmation(model, confirmation, allocator, .delete) catch |err| setProcessUiError(model, err);
         }
@@ -2889,11 +2895,13 @@ fn drawProcessView(
     c.nk_label(ctx, "Preview", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 2);
     const old_preview_size = ui.preview_size;
+    tooltip(ctx, "Longest side of the preview image in pixels. Larger is sharper but slower to load and process");
     c.nk_property_int(ctx, "Max px", 512, &ui.preview_size, 8192, 512, 256);
     if (ui.preview_size != old_preview_size) {
         queueProcessIntSetting(model, ui, "preview_size", ui.preview_size);
     }
     var inverted = nkBool(model.processing_preview_inversion_enabled);
+    tooltip(ctx, "Show the live inverted positive instead of the plain negative");
     if (c.nk_checkbox_label(ctx, "Inverted", &inverted) != 0) {
         const enabled = inverted != 0;
         model.setProcessingPreviewInversionEnabled(enabled);
@@ -2917,32 +2925,39 @@ fn drawProcessView(
     }
     layoutRow(ctx, 28.0, @intCast(process_format_labels.len));
     for (process_format_labels, 0..) |label, index| {
+        tooltip(ctx, "Film format for auto-detection");
         if (c.nk_option_label(ctx, label, nkBool(ui.format_index == index)) != 0) {
             ui.format_index = index;
         }
     }
     const old_scale = ui.scale_percent;
     layoutRow(ctx, 28.0, 2);
+    tooltip(ctx, "Number of frames to detect. 0 lets auto-detection decide");
     c.nk_property_int(ctx, "Frames", 0, &ui.n_frames, 12, 1, 1);
+    tooltip(ctx, "Scale adjustment for auto-detected frames. Positive grows frames, negative shrinks them");
     c.nk_property_float(ctx, "Scale %", -1.0, &ui.scale_percent, 1.0, 0.1, 0.05);
     if (old_scale != ui.scale_percent) {
         model.rescaleProcessAutoSelections(@floatCast(ui.scale_percent));
     }
     layoutRow(ctx, 28.0, 4);
+    tooltip(ctx, "Automatically detect frame positions based on the film format");
     if (worker_active) {
         c.nk_label(ctx, "Auto Detect", c.NK_TEXT_CENTERED);
     } else if (c.nk_button_label(ctx, "Auto Detect") != 0) {
         startProcessAutoDetect(model, process_worker, config_path, ui) catch |err| setProcessUiError(model, err);
     }
+    tooltip(ctx, "Remove all frame selections");
     if (c.nk_button_label(ctx, "Clear") != 0) {
         model.clearProcessingSelections();
         model.setStatus("Selections cleared");
     }
+    tooltip(ctx, "Measure the film base color (Dmin) from the rebate box, used to remove the orange mask");
     if (worker_active) {
         c.nk_label(ctx, "Dmin", c.NK_TEXT_CENTERED);
     } else if (c.nk_button_label(ctx, "Dmin") != 0) {
         startProcessRebate(model, process_worker, config_path) catch |err| setProcessUiError(model, err);
     }
+    tooltip(ctx, "Print the current selections to the terminal as ground truth");
     if (c.nk_button_label(ctx, "Dump") != 0) {
         model.dumpProcessSelections() catch |err| setProcessUiError(model, err);
     }
@@ -2950,6 +2965,7 @@ fn drawProcessView(
     if (c.nk_button_label(ctx, "+ New selection") != 0) {
         addProcessSelectionFromUi(model, ui, transform) catch |err| setProcessUiError(model, err);
     }
+    tooltip(ctx, "Select an area of unexposed film (the orange strip between frames or at the edge of the strip) to calibrate base color removal");
     if (c.nk_button_label(ctx, "Set rebate") != 0) {
         interaction.pending_draw = .rebate;
         interaction.rebate_active = true;
@@ -2980,9 +2996,9 @@ fn drawProcessView(
         c.nk_filter_default,
     );
     layoutRow(ctx, 28.0, 3);
-    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR neg", "export_ir_neg", &ui.export_ir_neg);
-    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR inv", "export_ir_inv", &ui.export_ir_inv);
-    drawProcessExportVariant(ctx, model, allocator, io, config_path, "Inv only", "export_inv_only", &ui.export_inv_only);
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR neg", "export_ir_neg", &ui.export_ir_neg, "Export the IR-cleaned negative (dust and scratch removal only)");
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR inv", "export_ir_inv", &ui.export_ir_inv, "Export the inverted positive, with IR cleaning and color inversion");
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "Inv only", "export_inv_only", &ui.export_inv_only, "Export the inverted positive without IR cleaning");
     layoutRow(ctx, 30.0, 1);
     if (export_active) {
         c.nk_label(ctx, "Exporting...", c.NK_TEXT_LEFT);
@@ -3092,18 +3108,19 @@ fn drawProcessSettingsControls(
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Render", c.NK_TEXT_LEFT);
-    drawFloatSetting(ctx, model, ui, "Contrast", "render_contrast", &ui.render_contrast, 1.0, 2.0, 0.05);
-    drawFloatSetting(ctx, model, ui, "Curve k", "render_curve_k", &ui.render_curve_k, 2.0, 10.0, 0.5);
-    drawFloatSetting(ctx, model, ui, "Black %", "render_percentile_lo", &ui.render_percentile_lo, 0.0, 5.0, 0.1);
-    drawFloatSetting(ctx, model, ui, "White %", "render_percentile_hi", &ui.render_percentile_hi, 95.0, 100.0, 0.1);
-    drawFloatSetting(ctx, model, ui, "Exposure", "exposure_compensation", &ui.exposure_compensation, -0.5, 2.0, 0.05);
+    drawFloatSetting(ctx, model, ui, "Contrast", "render_contrast", &ui.render_contrast, 1.0, 2.0, 0.05, "S-curve contrast strength. 1.0 = no contrast adjustment (linear), higher values darken shadows and brighten highlights for more punch");
+    drawFloatSetting(ctx, model, ui, "Curve k", "render_curve_k", &ui.render_curve_k, 2.0, 10.0, 0.5, "Multiplier for the S-curve steepness. Higher values make the contrast curve sharper at the midpoint. Interacts with Contrast");
+    drawFloatSetting(ctx, model, ui, "Black %", "render_percentile_lo", &ui.render_percentile_lo, 0.0, 5.0, 0.1, "Percentile of image data used as the black point. Higher values clip more shadow detail but can reduce haze in low-contrast scans");
+    drawFloatSetting(ctx, model, ui, "White %", "render_percentile_hi", &ui.render_percentile_hi, 95.0, 100.0, 0.1, "Percentile of image data used as the white point. Lower values clip more highlight detail but can prevent washed-out highlights");
+    drawFloatSetting(ctx, model, ui, "Exposure", "exposure_compensation", &ui.exposure_compensation, -0.5, 2.0, 0.05, "Shift the overall brightness in density space before rendering. Positive values produce a brighter image, negative values darken it");
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Color Balance", c.NK_TEXT_LEFT);
     drawColorPad(ctx, model, ui);
-    drawFloatSetting(ctx, model, ui, "Temp", "color_temp", &ui.color_temp, -1.0, 1.0, 0.05);
-    drawFloatSetting(ctx, model, ui, "Tint", "color_tint", &ui.color_tint, -1.0, 1.0, 0.05);
+    drawFloatSetting(ctx, model, ui, "Temp", "color_temp", &ui.color_temp, -1.0, 1.0, 0.05, "Color temperature, from blue to yellow. 0 is neutral. Same as the horizontal axis of the pad above");
+    drawFloatSetting(ctx, model, ui, "Tint", "color_tint", &ui.color_tint, -1.0, 1.0, 0.05, "Tint, from green to magenta. 0 is neutral. Same as the vertical axis of the pad above");
     layoutRow(ctx, 26.0, 1);
+    tooltip(ctx, "Set temperature and tint back to neutral");
     if (c.nk_button_label(ctx, "Reset Color") != 0) {
         ui.color_temp = 0.0;
         ui.color_tint = 0.0;
@@ -3114,13 +3131,13 @@ fn drawProcessSettingsControls(
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Dust & Scratch", c.NK_TEXT_LEFT);
-    drawFloatSetting(ctx, model, ui, "IR thresh", "ir_threshold", &ui.ir_threshold, 0.02, 0.50, 0.01);
-    drawFloatSetting(ctx, model, ui, "Hair sens", "ir_hair_sensitivity", &ui.ir_hair_sensitivity, 0.02, 0.30, 0.01);
-    drawIntSetting(ctx, model, ui, "Dilate", "ir_dilate_radius", &ui.ir_dilate_radius, 0, 10, 1);
-    drawIntSetting(ctx, model, ui, "Close", "ir_close_radius", &ui.ir_close_radius, 0, 15, 1);
-    drawIntSetting(ctx, model, ui, "Min area", "ir_min_area", &ui.ir_min_area, 1, 20, 1);
-    drawFloatSetting(ctx, model, ui, "Max cov", "ir_max_coverage", &ui.ir_max_coverage, 0.005, 0.10, 0.005);
-    drawIntSetting(ctx, model, ui, "Padding", "inpaint_padding", &ui.inpaint_padding, 4, 48, 2);
+    drawFloatSetting(ctx, model, ui, "IR thresh", "ir_threshold", &ui.ir_threshold, 0.02, 0.50, 0.01, "How far below the local background a pixel must be to count as a defect. Lower values detect fainter dust but may flag film grain. Higher values only catch obvious defects");
+    drawFloatSetting(ctx, model, ui, "Hair sens", "ir_hair_sensitivity", &ui.ir_hair_sensitivity, 0.02, 0.30, 0.01, "Meijering ridge filter threshold for detecting thin linear features like hairs and scratches. Lower values catch finer or fainter hairs but may produce false positives on textured areas");
+    drawIntSetting(ctx, model, ui, "Dilate", "ir_dilate_radius", &ui.ir_dilate_radius, 0, 10, 1, "Expand detected defect regions by this many pixels, so the inpainter covers the full extent of each defect including soft edges");
+    drawIntSetting(ctx, model, ui, "Close", "ir_close_radius", &ui.ir_close_radius, 0, 15, 1, "Morphological close radius. Fills small gaps within partially detected large defects, joining nearby detected regions into a single defect");
+    drawIntSetting(ctx, model, ui, "Min area", "ir_min_area", &ui.ir_min_area, 1, 20, 1, "Detected regions smaller than this many pixels are discarded as noise. Increase to ignore tiny specks, decrease to catch very small dust");
+    drawFloatSetting(ctx, model, ui, "Max cov", "ir_max_coverage", &ui.ir_max_coverage, 0.005, 0.10, 0.005, "Safety limit: if more than this fraction of the image is flagged as defects, detection is assumed to be wrong and no cleaning is done. Prevents damaging the image when thresholds are too aggressive");
+    drawIntSetting(ctx, model, ui, "Padding", "inpaint_padding", &ui.inpaint_padding, 4, 48, 2, "How many pixels of clean context to include around each defect when inpainting. More padding gives better reconstruction but is slower for large defects");
     if (processSettingsCommitReady(ctx)) {
         commitPendingProcessSettings(model, allocator, io, config_path, ui) catch |err| setProcessUiError(model, err);
     }
@@ -3144,6 +3161,7 @@ fn drawProcessStockControls(
     for (info.stocks) |stock| {
         layoutRow(ctx, 24.0, 1);
         const selected = std.mem.eql(u8, active, stock.name);
+        tooltip(ctx, if (stock.description.len != 0) stock.description else stock.name);
         if (c.nk_option_text(ctx, stock.name.ptr, @intCast(stock.name.len), nkBool(selected)) != 0) {
             selectProcessStock(model, allocator, io, config_path, ui, stock.name) catch |err| setProcessUiError(model, err);
         }
@@ -3156,6 +3174,7 @@ fn drawColorPad(
     ui: *ProcessUiState,
 ) void {
     layoutRow(ctx, 88.0, 1);
+    tooltip(ctx, "Drag the point to adjust color balance. Horizontal: temperature, blue to yellow. Vertical: tint, green to magenta. The center is neutral");
     var bounds: c.struct_nk_rect = undefined;
     if (c.nk_widget(&bounds, ctx) == c.NK_WIDGET_INVALID) return;
 
@@ -3217,9 +3236,11 @@ fn drawFloatSetting(
     min: f32,
     max: f32,
     step: f32,
+    help: []const u8,
 ) void {
     const before = value.*;
     layoutRow(ctx, 26.0, 1);
+    tooltip(ctx, help);
     c.nk_property_float(ctx, label, min, value, max, step, step * 0.25);
     if (@abs(value.* - before) > 0.000001) {
         queueProcessFloatSetting(model, ui, name, value.*);
@@ -3236,9 +3257,11 @@ fn drawIntSetting(
     min: c_int,
     max: c_int,
     step: c_int,
+    help: []const u8,
 ) void {
     const before = value.*;
     layoutRow(ctx, 26.0, 1);
+    tooltip(ctx, help);
     c.nk_property_int(ctx, label, min, value, max, step, @floatFromInt(step));
     if (value.* != before) {
         queueProcessIntSetting(model, ui, name, value.*);
@@ -3402,8 +3425,10 @@ fn drawProcessExportVariant(
     label: [*:0]const u8,
     setting: []const u8,
     enabled: *bool,
+    help: []const u8,
 ) void {
     var checked = nkBool(enabled.*);
+    tooltip(ctx, help);
     if (c.nk_checkbox_label(ctx, label, &checked) == 0) return;
     enabled.* = checked != 0;
     const updates = [_]v600.processing.config.Override{.{ .name = setting, .value = .{ .boolean = enabled.* } }};

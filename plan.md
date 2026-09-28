@@ -82,6 +82,9 @@ Open:
     CLI's, and the aliases have drifted (`rgb_ir` vs `rgbir`; both accept
     `rgb+ir`).
 - Webapp: see the known issues in `docs/WEBAPP.md`.
+- With no film stock selected, exports still invert with `kodak_gold`
+  (`film_stock orelse "kodak_gold"` in `src/processing/export.zig`). Python
+  had no inversion without a stock. Decide which is intended.
 - Flaky test: a native UI scanner-worker test failed once with
   `TestUnexpectedResult` in 22 direct runs of the test binary.
 - Passing test runs print about 130 JSON scanner timing events on stderr,
@@ -91,10 +94,6 @@ Open:
 
 Native UI (scanning):
 
-
-Native UI (processing), smaller:
-
-- No tooltips on controls.
 
 CLI (`v600-zig processing`):
 
