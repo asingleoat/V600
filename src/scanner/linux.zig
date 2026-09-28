@@ -587,9 +587,16 @@ pub const Runtime = struct {
             .effective_dpi = plan.effective_dpi,
         });
         const run_start = monotonicNowNs();
-        const result = try self.runScanPlan(&plan, options.cancel_file);
-        self.emitTimingSince("linux.scan_once.run_scan_plan", run_start, if (result.succeeded()) "ok" else "failed");
+        const timeout_ms = scanTimeoutMs(request, plan.effective_dpi, plan.source, caps);
+        const result = try self.runScanPlan(&plan, options.cancel_file, timeout_ms);
+        self.emitTimingSince("linux.scan_once.run_scan_plan", run_start, if (result.succeeded()) "ok" else if (result.timed_out) "timeout" else "failed");
         defer result.deinit(self.allocator);
+        if (result.timed_out) {
+            total_detail = "scan-timeout";
+            var detail_buffer: [96]u8 = undefined;
+            const detail = std.fmt.bufPrint(&detail_buffer, "scanimage did not finish within {d} s and was stopped", .{timeout_ms / std.time.ms_per_s}) catch "scanimage timed out";
+            return try self.makeFailure(.scanimage_failed, detail);
+        }
         if (!result.succeeded()) {
             total_detail = "scan-failed";
             return try self.makeFailure(classifyFailure(result.stderr), result.stderr);
@@ -693,7 +700,7 @@ pub const Runtime = struct {
         return result.stdout;
     }
 
-    fn runScanPlan(self: Runtime, plan: *const sane.CommandPlan, cancel_file: ?[]const u8) !RunResult {
+    fn runScanPlan(self: Runtime, plan: *const sane.CommandPlan, cancel_file: ?[]const u8, timeout_ms: u64) !RunResult {
         const total_start = monotonicNowNs();
         var total_detail: []const u8 = "error";
         defer self.emitTimingSince("linux.scan.run_plan.total", total_start, total_detail);
@@ -719,8 +726,9 @@ pub const Runtime = struct {
         errdefer stderr.deinit();
 
         var stream_buffer: [128]u8 = undefined;
-        var reader = child.stderr.?.readerStreaming(self.io, &.{});
+        const stderr_fd = child.stderr.?.handle;
         const stream_start = monotonicNowNs();
+        const deadline_ns = total_start + timeout_ms * std.time.ns_per_ms;
         var progress_emit_ns: u64 = 0;
         var stream_detail: []const u8 = "ok";
         while (true) {
@@ -734,8 +742,23 @@ pub const Runtime = struct {
                     return error.ScanCancelled;
                 }
             }
+            if (monotonicNowNs() >= deadline_ns) {
+                self.emitTimingSince("linux.scan.stderr_stream", stream_start, "timeout");
+                child.kill(self.io);
+                total_detail = "timeout";
+                return .{
+                    .term = .{ .unknown = 0 },
+                    .stdout = &.{},
+                    .stderr = try stderr.toOwnedSlice(),
+                    .timed_out = true,
+                };
+            }
 
-            const n = reader.interface.readSliceShort(&stream_buffer) catch |err| return err;
+            // Wait for output in short steps so cancel and the deadline are
+            // checked even while scanimage is silent.
+            var poll_fds = [_]std.posix.pollfd{.{ .fd = stderr_fd, .events = std.posix.POLL.IN, .revents = 0 }};
+            if (try std.posix.poll(&poll_fds, 250) == 0) continue;
+            const n = try std.posix.read(stderr_fd, &stream_buffer);
             if (n == 0) break;
             try stderr.appendSlice(stream_buffer[0..n]);
             const progress_start = monotonicNowNs();
@@ -963,6 +986,7 @@ const RunResult = struct {
     term: std.process.Child.Term,
     stdout: []u8,
     stderr: []u8,
+    timed_out: bool = false,
 
     fn deinit(self: RunResult, allocator: std.mem.Allocator) void {
         if (self.stdout.len != 0) allocator.free(self.stdout);
@@ -970,12 +994,26 @@ const RunResult = struct {
     }
 
     fn succeeded(self: RunResult) bool {
+        if (self.timed_out) return false;
         return switch (self.term) {
             .exited => |code| code == 0,
             else => false,
         };
     }
 };
+
+// Python's estimate (10 s plus 2 s per megapixel, tripled at 3200 dpi and
+// above); scanimage gets twice that, and at least five minutes.
+fn scanTimeoutMs(request: contracts.ScanRequest, effective_dpi: u32, source: contracts.Source, caps: contracts.ScannerCapabilities) u64 {
+    const full_width_in = if (source == .tpu) caps.tpu_width_in else caps.flatbed_width_in;
+    const full_height_in = if (source == .tpu) caps.tpu_height_in else caps.flatbed_height_in;
+    const dpi: f64 = @floatFromInt(effective_dpi);
+    const width_px = (request.area.width orelse full_width_in) * dpi;
+    const height_px = (request.area.height orelse full_height_in) * dpi;
+    var estimate_s = 10.0 + width_px * height_px / 1_000_000.0 * 2.0;
+    if (effective_dpi >= 3200) estimate_s *= 3.0;
+    return @intFromFloat(@max(300.0, estimate_s * 2.0) * std.time.ms_per_s);
+}
 
 const CombinedPassDpis = struct {
     rgb: u32,
@@ -1934,7 +1972,7 @@ test "scanner cancellation kills fake long-running child" {
         },
     };
 
-    try std.testing.expectError(error.ScanCancelled, runtime.runScanPlan(&plan, cancel_path));
+    try std.testing.expectError(error.ScanCancelled, runtime.runScanPlan(&plan, cancel_path, 60_000));
     try std.testing.expect(recorder.indexOfTiming("linux.scan.environment") != null);
     try std.testing.expect(recorder.indexOfTiming("linux.scan.child_spawn") != null);
     try std.testing.expect(recorder.indexOfTiming("linux.scan.cancel_file") != null);
@@ -1945,6 +1983,81 @@ test "scanner cancellation kills fake long-running child" {
     defer allocator.free(pid_bytes);
     const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_bytes, " \t\r\n"), 10);
     try std.testing.expect(!processExists(pid));
+}
+
+fn runSilentFakeScan(allocator: std.mem.Allocator, touch_cancel_file: bool, timeout_ms: u64) !struct { result: anyerror!RunResult, pid: std.posix.pid_t, elapsed_ms: u64 } {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Starts, optionally requests cancel, then stays silent: no more stderr output.
+    const script =
+        \\cancel_file="$1"
+        \\pid_file="$2"
+        \\printf '%s\n' "$$" > "$pid_file"
+        \\printf 'Progress: 1%%\n' >&2
+        \\if [ "$3" = "cancel" ]; then : > "$cancel_file"; fi
+        \\exec sleep 30
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fake-scanimage.sh", .data = script });
+    const script_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/fake-scanimage.sh", .{tmp.sub_path[0..]});
+    defer allocator.free(script_path);
+    const cancel_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/cancel", .{tmp.sub_path[0..]});
+    defer allocator.free(cancel_path);
+    const pid_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/pid", .{tmp.sub_path[0..]});
+    defer allocator.free(pid_path);
+
+    var plan = sane.CommandPlan{ .effective_dpi = 400, .original_dpi = 400, .source = .tpu, .kind = .rgb };
+    defer plan.deinit(allocator);
+    for ([_][]const u8{ "sh", script_path, cancel_path, pid_path, if (touch_cancel_file) "cancel" else "wait" }) |arg| {
+        try plan.argv.append(allocator, arg);
+    }
+
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    const runtime = Runtime{ .allocator = allocator, .io = std.testing.io, .environ_map = &environ_map };
+
+    const start_ns = monotonicNowNs();
+    const result = runtime.runScanPlan(&plan, cancel_path, timeout_ms);
+    const elapsed_ms = (monotonicNowNs() - start_ns) / std.time.ns_per_ms;
+    const pid_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, pid_path, allocator, .limited(64));
+    defer allocator.free(pid_bytes);
+    const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, pid_bytes, " \t\r\n"), 10);
+    return .{ .result = result, .pid = pid, .elapsed_ms = elapsed_ms };
+}
+
+test "scan run stops a silent scanimage at its deadline" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const run = try runSilentFakeScan(allocator, false, 500);
+    const result = try run.result;
+    defer result.deinit(allocator);
+    try std.testing.expect(result.timed_out);
+    try std.testing.expect(!result.succeeded());
+    try std.testing.expect(run.elapsed_ms < 5_000);
+    try std.testing.expect(!processExists(run.pid));
+}
+
+test "cancel stops a scanimage that has gone silent" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const run = try runSilentFakeScan(allocator, true, 60_000);
+    try std.testing.expectError(error.ScanCancelled, run.result);
+    try std.testing.expect(run.elapsed_ms < 5_000);
+    try std.testing.expect(!processExists(run.pid));
+}
+
+test "scan timeout follows the Python estimate with a five-minute floor" {
+    const caps = contracts.ScannerCapabilities{};
+    const small: contracts.ScanRequest = .{ .dpi = 800, .area = .{ .width = 1.0, .height = 1.5 } };
+    try std.testing.expectEqual(@as(u64, 300_000), scanTimeoutMs(small, 800, .tpu, caps));
+
+    // 1.0 x 9.0 in at 3200 dpi is 92.16 MP: (10 + 184.32) s x 3 x 2 = 1165.92 s.
+    const strip: contracts.ScanRequest = .{ .dpi = 3200, .area = .{ .width = 1.0, .height = 9.0 } };
+    const strip_ms: i64 = @intCast(scanTimeoutMs(strip, 3200, .tpu, caps));
+    try std.testing.expect(@abs(strip_ms - 1_165_920) <= 1);
 }
 
 test "single-pass scan emits timing diagnostics with fake scanimage" {
