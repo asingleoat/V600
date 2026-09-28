@@ -209,35 +209,8 @@ pub fn main(init: std.process.Init) !void {
     var smoke_resize_to: ?SmokeWindowSize = null;
     var initial_window_size: ?SmokeWindowSize = null;
     var process_ui = ProcessUiState{};
-    var model = v600.native_ui.State.init("scans", "frames", 0);
-    defer model.deinit(std.heap.page_allocator);
-    std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
-    model.syncScanCounter(init.io);
-    var scanner_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
-    model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
-    var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const processing_config_path = v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
-    model.loadProcessingConfig(std.heap.page_allocator, init.io, processing_config_path) catch {};
-    model.setProcessingGpuRequest(
-        std.heap.page_allocator,
-        try v600.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
-    );
-    syncProcessUiFromConfig(&process_ui, &model);
-    var timing_report: ?v600.scanner.events.TimingReport = null;
-    defer if (timing_report) |*report| report.deinit();
-    var connect_worker = ConnectWorker.init(std.heap.page_allocator, init.io, init.environ_map);
-    defer connect_worker.deinit();
-    var preview_worker = PreviewWorker.init(std.heap.page_allocator, init.io, init.environ_map);
-    defer preview_worker.deinit();
-    var scan_worker = ScanWorker.init(std.heap.page_allocator, init.io, init.environ_map);
-    defer scan_worker.deinit();
-    var process_worker = ProcessWorker.init(std.heap.page_allocator, init.io);
-    defer process_worker.deinit();
-    var process_export_worker = ProcessExportWorker.init(std.heap.page_allocator, init.io);
-    defer process_export_worker.deinit();
-    var inverted_preview_worker = InvertedPreviewWorker.init(std.heap.page_allocator);
-    defer inverted_preview_worker.deinit();
+    var scan_dir: []const u8 = "scans";
+    var output_dir: []const u8 = "frames";
     chrome.runtime_ui_config = ui_theme.Config.fromEnvironment(init.environ_map);
 
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
@@ -328,6 +301,10 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--window-size")) {
             const value = args.next() orelse return error.MissingWindowSize;
             initial_window_size = try parseSmokeWindowSize(value);
+        } else if (std.mem.eql(u8, arg, "--scan-dir")) {
+            scan_dir = args.next() orelse return error.MissingScanDir;
+        } else if (std.mem.eql(u8, arg, "--output-dir")) {
+            output_dir = args.next() orelse return error.MissingOutputDir;
         } else if (std.mem.eql(u8, arg, "--out")) {
             const output = args.next() orelse return error.MissingSmokeOutput;
             preview_worker_output = output;
@@ -335,6 +312,35 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
+    var model = v600.native_ui.State.init(scan_dir, output_dir, 0);
+    defer model.deinit(std.heap.page_allocator);
+    std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
+    model.syncScanCounter(init.io);
+    var scanner_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
+    model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
+    var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const processing_config_path = v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
+    model.loadProcessingConfig(std.heap.page_allocator, init.io, processing_config_path) catch {};
+    model.setProcessingGpuRequest(
+        std.heap.page_allocator,
+        try v600.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
+    );
+    syncProcessUiFromConfig(&process_ui, &model);
+    var timing_report: ?v600.scanner.events.TimingReport = null;
+    defer if (timing_report) |*report| report.deinit();
+    var connect_worker = ConnectWorker.init(std.heap.page_allocator, init.io, init.environ_map);
+    defer connect_worker.deinit();
+    var preview_worker = PreviewWorker.init(std.heap.page_allocator, init.io, init.environ_map);
+    defer preview_worker.deinit();
+    var scan_worker = ScanWorker.init(std.heap.page_allocator, init.io, init.environ_map);
+    defer scan_worker.deinit();
+    var process_worker = ProcessWorker.init(std.heap.page_allocator, init.io);
+    defer process_worker.deinit();
+    var process_export_worker = ProcessExportWorker.init(std.heap.page_allocator, init.io);
+    defer process_export_worker.deinit();
+    var inverted_preview_worker = InvertedPreviewWorker.init(std.heap.page_allocator);
+    defer inverted_preview_worker.deinit();
     if (timing_report_path) |path| {
         timing_report = try v600.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
         if (timing_report) |*report| {

@@ -61,8 +61,10 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs
     v600-zig serve                                    # scanner companion for the webapp
 
-Scans go to `scans/`, processed frames to `frames/`. Hardware smoke
-steps are opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
+Scans go to `scans/`, processed frames to `frames/`, relative to the
+directory the app starts in. The native UI takes `--scan-dir DIR` and
+`--output-dir DIR` to use other directories. Hardware smoke steps are
+opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
 
 ## Project layout
 

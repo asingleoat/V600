@@ -94,9 +94,6 @@ Native UI (scanning):
 - Progress shows only a per-pass percentage; Python showed ETA, elapsed
   time, the combined RGB+IR total, and the ETA in the window title. The ETA
   formatters in `src/ui/scan_workflow.zig` exist but nothing calls them.
-- No choice of scan and export directories (Python had `--scan-dir` and
-  `--output-dir`); the UI uses `scans/` and `frames/` under the launch
-  directory.
 - No sound when a scan finishes.
 - The TPU dpi list offers 1200 and 6400, which the scanner delivers at 800
   and 3200. Python resampled to the requested dpi; Zig names the file and
