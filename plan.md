@@ -91,7 +91,6 @@ Open:
 
 Native UI (scanning):
 
-- No sound when a scan finishes.
 - The TPU dpi list offers 1200 and 6400, which the scanner delivers at 800
   and 3200. Python resampled to the requested dpi; Zig names the file and
   estimates sizes for the requested dpi but delivers the native one.

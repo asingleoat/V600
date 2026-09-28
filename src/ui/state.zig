@@ -393,6 +393,7 @@ pub const State = struct {
     scan_pass_started_ms: ?u64 = null,
     scan_ir_pass: bool = false,
     scan_eta_seconds: ?f64 = null,
+    scan_finished_pending: bool = false,
     scanner_timing_stage: []const u8 = "",
     scanner_timing_elapsed_us: u64 = 0,
     scanner_timing_detail: ?[]const u8 = null,
@@ -1088,6 +1089,12 @@ pub const State = struct {
             return null;
         };
         return refreshed_index;
+    }
+
+    pub fn takeScanFinished(self: *State) bool {
+        const finished = self.scan_finished_pending;
+        self.scan_finished_pending = false;
+        return finished;
     }
 
     pub fn takeProcessAutoDetectPending(self: *State) bool {
@@ -2041,6 +2048,7 @@ pub const State = struct {
 
     fn finishHandleScan(self: *State, output_path: []const u8) void {
         self.scanner.scanning = false;
+        self.scan_finished_pending = true;
         self.scanner_progress_percent = null;
         self.scanner.scan_counter += 1;
         self.active_scan_mode = null;
@@ -3605,6 +3613,7 @@ test "native UI preview status follows scanner backend events headlessly" {
     try std.testing.expect(state.preview_ready);
     try std.testing.expectEqual(@as(?u8, null), state.scanner_progress_percent);
     try std.testing.expectEqualStrings("Preview ready", status.status);
+    try std.testing.expect(!state.takeScanFinished());
 }
 
 test "native Scan progress shows ETA, elapsed time, and the combined RGB+IR total" {
@@ -3649,6 +3658,8 @@ test "native Scan progress shows ETA, elapsed time, and the combined RGB+IR tota
     } });
     state.updateScanProgressStatus(72_000);
     try std.testing.expectEqual(@as(?f64, null), state.scan_eta_seconds);
+    try std.testing.expect(state.takeScanFinished());
+    try std.testing.expect(!state.takeScanFinished());
 }
 
 test "native UI preview auto-select applies python film-area detector result" {

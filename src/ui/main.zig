@@ -17,6 +17,7 @@ const c = @import("sdl_nuklear.zig").c;
 const chrome = @import("chrome.zig");
 const selection_geometry = @import("selection_geometry.zig");
 const render_layer = @import("render.zig");
+const sound = @import("sound.zig");
 
 const layoutRow = chrome.layoutRow;
 const layoutRowStatic = chrome.layoutRowStatic;
@@ -447,6 +448,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return error.SdlInitFailed;
     defer c.SDL_Quit();
+    defer sound.deinit();
 
     const runtime_metrics = chrome.runtime_ui_config.metrics();
     const initial_width = if (initial_window_size) |size| size.width else runtime_metrics.initialWindowWidth();
@@ -643,6 +645,8 @@ pub fn main(init: std.process.Init) !void {
         _ = preview_worker.poll(&model);
         _ = scan_worker.poll(&model);
         model.updateScanProgressStatus(c.SDL_GetTicks());
+        if (model.takeScanFinished()) sound.playScanFinished();
+        sound.update();
         updateWindowTitle(window, &model, &window_title_eta);
         if (process_worker.poll(&model)) {
             if (process_worker.takeLastAutoAspect()) |aspect| {
