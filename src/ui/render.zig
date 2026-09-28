@@ -882,8 +882,8 @@ pub fn renderProcessSelections(
     }
 }
 
-/// Draws a label centered above the topmost corner of a (possibly rotated)
-/// selection, clear of its handles, or below it when there is no room above.
+/// Draws a label centered over a (possibly rotated) selection, above its
+/// topmost corner and clear of its handles, or below it when there is no room.
 fn renderSelectionLabel(
     renderer: *c.SDL_Renderer,
     image_rect: v600.native_ui.PreviewScreenRect,
@@ -892,18 +892,17 @@ fn renderSelectionLabel(
     color: c.SDL_FColor,
 ) void {
     const corners = processSelectionScreenCorners(image_rect, selection);
-    var top = corners[0];
-    var bottom = corners[0];
-    for (corners[1..]) |corner| {
-        if (corner.y < top.y) top = corner;
-        if (corner.y > bottom.y) bottom = corner;
+    var top = corners[0].y;
+    var bottom = corners[0].y;
+    var center_x: f64 = 0.0;
+    for (corners) |corner| {
+        top = @min(top, corner.y);
+        bottom = @max(bottom, corner.y);
+        center_x += corner.x / @as(f64, @floatFromInt(corners.len));
     }
     const margin = 28.0;
-    if (top.y - margin >= 0.0) {
-        renderCanvasLabel(renderer, label, top.x, top.y - margin, color, true);
-    } else {
-        renderCanvasLabel(renderer, label, bottom.x, bottom.y + margin / 2.0, color, true);
-    }
+    const y = if (top - margin >= 0.0) top - margin else bottom + margin / 2.0;
+    renderCanvasLabel(renderer, label, center_x, y, color, true);
 }
 
 fn renderCanvasLabel(renderer: *c.SDL_Renderer, text: [:0]const u8, x: f64, y: f64, color: c.SDL_FColor, centered: bool) void {
