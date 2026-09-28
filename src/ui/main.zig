@@ -212,6 +212,7 @@ pub fn main(init: std.process.Init) !void {
     var model = v600.native_ui.State.init("scans", "frames", 0);
     defer model.deinit(std.heap.page_allocator);
     std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
+    model.syncScanCounter(init.io);
     var scanner_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
@@ -585,7 +586,7 @@ pub fn main(init: std.process.Init) !void {
                 ) catch |err| setProcessUiError(&model, err);
             }
             switch (model.active_view) {
-                .scan => drawScanView(&ctx, &model),
+                .scan => drawScanView(&ctx, &model, init.io),
                 .process => drawProcessView(
                     &ctx,
                     &model,
@@ -2422,7 +2423,7 @@ fn drawNavigation(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void 
     if (c.nk_option_label(ctx, "Gallery", nkBool(model.active_view == .gallery)) != 0) model.show(.gallery);
 }
 
-fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void {
+fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State, io: std.Io) void {
     const scanner_busy = model.scannerWorkActive();
     layoutRow(ctx, 28.0, 3);
     if (scanner_busy) c.nk_widget_disable_begin(ctx);
@@ -2470,7 +2471,10 @@ fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void {
 
     layoutRow(ctx, 30.0, 2);
     if (!scanner_busy) {
-        if (c.nk_button_label(ctx, "Scan Selection") != 0) _ = model.queueScanStart(".zig-cache/v600-native-scan.cancel");
+        if (c.nk_button_label(ctx, "Scan Selection") != 0) {
+            model.syncScanCounter(io);
+            _ = model.queueScanStart(".zig-cache/v600-native-scan.cancel");
+        }
     } else {
         if (c.nk_button_label(ctx, "Cancel") != 0) model.requestScannerCancel();
     }

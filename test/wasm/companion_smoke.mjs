@@ -190,6 +190,19 @@ try {
   assert.throws(() => buildScanRequestBody({ kind: "negative" }));
   assert.throws(() => buildScanRequestBody({ dpi: -1 }));
 
+  // Scans already on disk (from another session or process) are never overwritten.
+  fs.writeFileSync(path.join(outDir, "companion_scan_0009.tiff"), "");
+  const resumedRun = await runScanJob({
+    body: buildScanRequestBody({ dpi: 400, source: "flatbed", kind: "rgb", device: "fake:device" }),
+    fetchFn: fetch,
+    base,
+    pollMs: 100,
+  });
+  assert.equal(resumedRun.job, 10);
+  assert.equal(resumedRun.status, "complete");
+  assert.ok(fs.existsSync(path.join(outDir, "companion_scan_0010.tiff")));
+  assert.equal(fs.statSync(path.join(outDir, "companion_scan_0009.tiff")).size, 0);
+
   console.log(JSON.stringify({
     event: "companion-smoke",
     schema: "v600.webapp.event.v1",

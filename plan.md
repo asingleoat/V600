@@ -61,11 +61,6 @@ Open:
 
 ### Bugs
 
-- Scans can be overwritten. The native UI starts its scan counter at 1 on
-  every launch (`src/app_state.zig`) and does not check for existing files,
-  so the first scan after a restart with the same mode and dpi replaces
-  `scans/scan_0001_<mode>_<dpi>dpi.tiff`. Python resumed from the highest
-  existing number. The companion has the same flaw.
 - Linux custom film LUTs are not applied, but scans are marked as if they
   were. `src/scanner/linux.zig` sets `V600_LUT_FILE` and writes
   `custom_luts_applied=true` and TIFF tag 50000; nothing installed reads the
@@ -78,8 +73,6 @@ Open:
     locked and the job stuck in `running`.
   - No Origin or Host check: any web page can POST to start or cancel a
     scan, and DNS rebinding could read scan files.
-  - Job ids restart at 1 on every launch, so `companion_scan_0001.tiff` is
-    overwritten across sessions.
   - `/api/devices` runs `scanimage -L` on the accept thread and blocks the
     server; the Scan tab calls it every time it is opened, even mid-scan.
   - Terminal job status is set before the final status line is appended, and

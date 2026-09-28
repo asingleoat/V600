@@ -347,6 +347,23 @@ pub fn generateUniquePath(allocator: std.mem.Allocator, io: std.Io, base_path: [
     return error.NoUniquePath;
 }
 
+pub fn nextScanNumber(io: std.Io, directory: []const u8, prefix: []const u8) !usize {
+    var dir = std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true }) catch return 1;
+    defer dir.close(io);
+
+    var highest: usize = 0;
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!isTiffFileName(entry.name) or !std.mem.startsWith(u8, entry.name, prefix)) continue;
+        const rest = entry.name[prefix.len..];
+        const digits_end = std.mem.indexOfNone(u8, rest, "0123456789") orelse rest.len;
+        const number = std.fmt.parseInt(usize, rest[0..digits_end], 10) catch continue;
+        highest = @max(highest, number);
+    }
+    return highest + 1;
+}
+
 pub fn isTiffFileName(name: []const u8) bool {
     return std.ascii.endsWithIgnoreCase(name, ".tif") or std.ascii.endsWithIgnoreCase(name, ".tiff");
 }
@@ -797,6 +814,25 @@ test "generates Python-style unique paths with three-digit suffixes" {
     const next = try generateUniquePath(allocator, std.testing.io, base_path);
     defer allocator.free(next);
     try std.testing.expect(std.mem.endsWith(u8, next, "/scan_003.tiff"));
+}
+
+test "continues scan numbering after the highest existing numbered TIFF" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(dir_path);
+    try std.testing.expectEqual(@as(usize, 1), try nextScanNumber(std.testing.io, dir_path, "scan_"));
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan_0003_rgb_800dpi.tiff", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan_0012_rgbir_3200dpi.tiff", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan_0040_rgb_800dpi.tiff.json", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan_preview.tiff", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "companion_scan_0099.tiff", .data = "" });
+    try std.testing.expectEqual(@as(usize, 13), try nextScanNumber(std.testing.io, dir_path, "scan_"));
+    try std.testing.expectEqual(@as(usize, 100), try nextScanNumber(std.testing.io, dir_path, "companion_scan_"));
+    try std.testing.expectEqual(@as(usize, 1), try nextScanNumber(std.testing.io, ".zig-cache/tmp/does-not-exist-v600", "scan_"));
 }
 
 const Rational = struct {

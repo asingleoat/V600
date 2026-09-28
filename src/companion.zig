@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const scanner = @import("scanner.zig");
+const tiff = @import("tiff.zig");
 
 pub const api_schema = "v600.companion.api.v1";
 pub const event_schema = "v600.companion.event.v1";
@@ -357,6 +358,9 @@ fn startScan(server: *Server, request: *std.http.Server.Request) !void {
         return respondError(request, .bad_request, @errorName(err));
     };
 
+    try std.Io.Dir.cwd().createDirPath(server.io, server.options.out_dir);
+    const next_file_number = try tiff.nextScanNumber(server.io, server.options.out_dir, "companion_scan_");
+
     server.job.mutex.lock();
     if (server.job.status == .running) {
         server.job.mutex.unlock();
@@ -367,11 +371,10 @@ fn startScan(server: *Server, request: *std.http.Server.Request) !void {
         server.job.thread = null;
     }
     server.job.reset();
-    server.job.id += 1;
+    server.job.id = @max(server.job.id + 1, @as(u64, next_file_number));
     server.job.status = .running;
     const job_id = server.job.id;
 
-    try std.Io.Dir.cwd().createDirPath(server.io, server.options.out_dir);
     const output_path = try std.fmt.allocPrint(job_allocator, "{s}/companion_scan_{d:0>4}.tiff", .{ server.options.out_dir, job_id });
     const metadata_path = try std.fmt.allocPrint(job_allocator, "{s}.json", .{output_path});
     const cancel_path = try std.fmt.allocPrint(job_allocator, "{s}.cancel", .{output_path});

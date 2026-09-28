@@ -39,7 +39,9 @@ stream and wraps responses in the `v600.companion.api.v1` schema.
 | other `GET` | Static file from `--webapp-dir`; `/` serves `index.html`; `..` components are rejected. |
 
 Outputs go to `--out-dir` as `companion_scan_<id>.tiff` plus a `.json`
-sidecar; the cancel file is `companion_scan_<id>.tiff.cancel`.
+sidecar; the cancel file is `companion_scan_<id>.tiff.cancel`. Job ids
+continue after the highest `companion_scan_NNNN.tiff` already in the
+directory, so earlier scans are never overwritten.
 
 ## Webapp Scan tab
 
@@ -65,8 +67,6 @@ a running job, the `409` on concurrent scans, or the Scan tab DOM code.
   starts or cancels a scan, and DNS rebinding could read scan files.
 - `startScan` can return an error while holding the job mutex, leaving the
   server wedged with the job stuck in `running`.
-- Job ids restart at 1 on every launch, so earlier `companion_scan_0001.tiff`
-  files are overwritten.
 - The job thread publishes its terminal status before appending the final
   status line, and `startScan` joins the previous job thread while holding
   the mutex that thread needs to append that line.

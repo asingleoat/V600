@@ -510,6 +510,11 @@ pub const State = struct {
         self.scanner.scan_status = message;
     }
 
+    pub fn syncScanCounter(self: *State, io: std.Io) void {
+        const next = tiff.nextScanNumber(io, self.scanner.output_dir, "scan_") catch return;
+        self.scanner.scan_counter = @max(self.scanner.scan_counter, next);
+    }
+
     pub fn finishScan(self: *State) void {
         self.scanner.scanning = false;
         self.scanner.scan_status = "";
@@ -2637,6 +2642,31 @@ test "native UI processing and gallery transitions are headless state changes" {
     state.show(.gallery);
     try std.testing.expectEqual(View.gallery, state.active_view);
     try std.testing.expectEqualStrings("Gallery", state.activeTitle());
+}
+
+test "native Scan numbering resumes after existing scans and never moves backwards" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan_0001_rgb_800dpi.tiff", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan_0007_rgbir_3200dpi.tiff", .data = "" });
+
+    const dir_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(dir_path);
+    var state = State.init(dir_path, "frames", 0);
+    defer state.deinit(allocator);
+
+    state.syncScanCounter(std.testing.io);
+    try std.testing.expectEqual(@as(usize, 8), state.scanner.scan_counter);
+
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try scan_workflow.scanOutputPath(&path_buffer, state.scanner.output_dir, state.scan_controls, state.scanner.scan_counter);
+    try std.testing.expect(std.mem.indexOf(u8, path, "/scan_0008_") != null);
+
+    state.scanner.scan_counter = 20;
+    state.syncScanCounter(std.testing.io);
+    try std.testing.expectEqual(@as(usize, 20), state.scanner.scan_counter);
 }
 
 test "native UI rescans process images with process_handlers /images semantics" {
