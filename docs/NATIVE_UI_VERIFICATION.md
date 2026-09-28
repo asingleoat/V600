@@ -24,6 +24,9 @@ Other flags: `--preview-render-smoke`, `--scan-interaction-smoke`,
 `--gallery-shortcut-smoke`, `--gallery-confirm-smoke`,
 `--gallery-trash-prompt-smoke`, `--gallery-delete-prompt-smoke`.
 
+Add `--screenshot PATH` to any smoke to save the last rendered frame as a
+BMP, for looking at a change without a display.
+
 These show that the UI builds, a frame renders through the SDL dummy driver
 with non-background pixels, preview and gallery textures load from fixture
 data, and interaction handlers run. They do not show readability, pointer

@@ -18,6 +18,7 @@ const chrome = @import("chrome.zig");
 const selection_geometry = @import("selection_geometry.zig");
 const render_layer = @import("render.zig");
 const sound = @import("sound.zig");
+const cursor = @import("cursor.zig");
 
 const layoutRow = chrome.layoutRow;
 const layoutRowStatic = chrome.layoutRowStatic;
@@ -206,6 +207,7 @@ pub fn main(init: std.process.Init) !void {
     var preview_worker_output: []const u8 = "/tmp/v600-native-preview-worker-smoke.tiff";
     var scan_worker_output: []const u8 = "/tmp/v600-native-scan-worker-smoke.tiff";
     var timing_report_path: ?[]const u8 = null;
+    var screenshot_path: ?[:0]const u8 = null;
     var smoke_hold_ms: u64 = 0;
     var smoke_resize_to: ?SmokeWindowSize = null;
     var initial_window_size: ?SmokeWindowSize = null;
@@ -291,6 +293,8 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--ui-scale")) {
             const value = args.next() orelse return error.MissingUiScale;
             chrome.runtime_ui_config.scale = try ui_theme.parseScale(value);
+        } else if (std.mem.eql(u8, arg, "--screenshot")) {
+            screenshot_path = args.next() orelse return error.MissingScreenshotPath;
         } else if (std.mem.eql(u8, arg, "--timing-report")) {
             timing_report_path = args.next() orelse return error.MissingTimingReportPath;
         } else if (std.mem.eql(u8, arg, "--smoke-hold-ms")) {
@@ -449,6 +453,7 @@ pub fn main(init: std.process.Init) !void {
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return error.SdlInitFailed;
     defer c.SDL_Quit();
     defer sound.deinit();
+    defer cursor.deinit();
 
     const runtime_metrics = chrome.runtime_ui_config.metrics();
     const initial_width = if (initial_window_size) |size| size.width else runtime_metrics.initialWindowWidth();
@@ -572,6 +577,15 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         c.nk_input_end(&ctx);
+        if (canvasCursorShape(
+            &model,
+            renderer,
+            preview_worker.last_preview,
+            &scan_transform,
+            &scan_selection_interaction,
+            &process_selection_interaction,
+            &process_transform,
+        )) |shape| cursor.set(shape);
         if (model.quit_requested) running = false;
 
         if (c.nk_begin(
@@ -787,6 +801,7 @@ pub fn main(init: std.process.Init) !void {
             );
             gallery_confirmation_checked = true;
         }
+        if (screenshot_path) |path| saveScreenshot(renderer, path);
         _ = c.SDL_RenderPresent(renderer);
         c.nk_clear(&ctx);
 
@@ -811,6 +826,12 @@ pub fn main(init: std.process.Init) !void {
     }
     if (scan_interaction_smoke and !scan_interaction_checked) return error.ScanInteractionSmokeFailed;
     if (process_interaction_smoke and !process_interaction_checked) return error.ProcessInteractionSmokeFailed;
+}
+
+fn saveScreenshot(renderer: *c.SDL_Renderer, path: [:0]const u8) void {
+    const surface = c.SDL_RenderReadPixels(renderer, null) orelse return;
+    defer c.SDL_DestroySurface(surface);
+    _ = c.SDL_SaveBMP(surface, path.ptr);
 }
 
 fn assertNuklearChromeRendered(renderer: *c.SDL_Renderer) !void {
@@ -1160,6 +1181,46 @@ fn handleScanSelectionEvent(
             interaction.end();
         },
         else => {},
+    }
+}
+
+/// Cursor for the image under the mouse, or null to keep the current one while
+/// a selection is being dragged.
+fn canvasCursorShape(
+    model: *const v600.native_ui.State,
+    renderer: *c.SDL_Renderer,
+    preview: ?PreviewBuffer,
+    scan_transform: *v600.native_ui.ProcessViewTransform,
+    scan_interaction: *const ScanSelectionInteraction,
+    process_interaction: *const ProcessSelectionInteraction,
+    process_transform: *v600.native_ui.ProcessViewTransform,
+) ?cursor.Shape {
+    var mouse_x: f32 = 0.0;
+    var mouse_y: f32 = 0.0;
+    _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+    const x: f64 = mouse_x;
+    const y: f64 = mouse_y;
+    if (pointInUiChrome(x, y)) return .default;
+    switch (model.active_view) {
+        .scan => {
+            if (scan_interaction.active) return null;
+            if (scan_transform.panning) return .move;
+            const rect = scanImageRect(renderer, preview, scan_transform) orelse return .default;
+            const point = screenToScanPreviewUnclamped(rect, x, y);
+            if (hitScanSelection(model.scan_controls.selection, rect, x, y, point.x, point.y)) |mode| return cursor.forScanEdit(mode);
+            return if (screenToScanPreview(rect, x, y) != null) .crosshair else .default;
+        },
+        .process => {
+            if (process_interaction.active_target != null) return null;
+            if (process_transform.panning) return .move;
+            if (!model.processPreviewInteractionReady()) return .default;
+            const rect = processImageRect(renderer, model, process_transform) orelse return .default;
+            if (process_interaction.pending_draw != null) return .crosshair;
+            const point = screenToPreviewUnclamped(rect, x, y);
+            if (hitProcessSelection(model, process_interaction, rect, x, y, point.x, point.y)) |hit| return cursor.forProcessEdit(hit.mode);
+            return if (screenToPreview(rect, x, y) != null) .crosshair else .default;
+        },
+        .gallery => return .default,
     }
 }
 

@@ -94,8 +94,7 @@ Native UI (scanning):
 
 Native UI (processing), smaller:
 
-- No frame labels, rebate label, fills, or cursor changes on the canvas; no
-  tooltips on controls.
+- No tooltips on controls.
 
 CLI (`v600-zig processing`):
 

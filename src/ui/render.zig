@@ -6,6 +6,7 @@ const std = @import("std");
 const v600 = @import("v600");
 const c = @import("sdl_nuklear.zig").c;
 const selection_geometry = @import("selection_geometry.zig");
+const chrome = @import("chrome.zig");
 
 const ProcessSelectionInteraction = selection_geometry.ProcessSelectionInteraction;
 const ProcessScreenPoint = selection_geometry.ProcessScreenPoint;
@@ -862,12 +863,57 @@ pub fn renderProcessSelections(
             sdlColor(34, 221, 102, 255)
         else
             sdlColor(34, 160, 221, 220);
-        renderProcessSelectionRect(renderer, image_rect, selection, active, color);
+        renderProcessSelectionRect(renderer, image_rect, selection, active, color, 0.08);
+        if (active) {
+            var label_buffer: [48]u8 = undefined;
+            const scale = @max(model.processing.preview_scale, 0.000001);
+            const label = std.fmt.bufPrintZ(&label_buffer, "#{d}: {d}x{d}", .{
+                index + 1,
+                @as(i64, @intFromFloat(@round(selection.w / scale))),
+                @as(i64, @intFromFloat(@round(selection.h / scale))),
+            }) catch continue;
+            renderSelectionLabel(renderer, image_rect, selection, label, color);
+        }
     }
     if (model.process_rebate_rect) |rebate| {
         const color = sdlColor(255, 184, 77, 255);
-        renderProcessSelectionRect(renderer, image_rect, rebate, interaction.rebate_active, color);
+        renderProcessSelectionRect(renderer, image_rect, rebate, interaction.rebate_active, color, 0.15);
+        renderSelectionLabel(renderer, image_rect, rebate, "rebate (Dmin)", color);
     }
+}
+
+/// Draws a label centered above the topmost corner of a (possibly rotated)
+/// selection, clear of its handles, or below it when there is no room above.
+fn renderSelectionLabel(
+    renderer: *c.SDL_Renderer,
+    image_rect: v600.native_ui.PreviewScreenRect,
+    selection: v600.native_ui.ProcessSelection,
+    label: [:0]const u8,
+    color: c.SDL_FColor,
+) void {
+    const corners = processSelectionScreenCorners(image_rect, selection);
+    var top = corners[0];
+    var bottom = corners[0];
+    for (corners[1..]) |corner| {
+        if (corner.y < top.y) top = corner;
+        if (corner.y > bottom.y) bottom = corner;
+    }
+    const margin = 28.0;
+    if (top.y - margin >= 0.0) {
+        renderCanvasLabel(renderer, label, top.x, top.y - margin, color, true);
+    } else {
+        renderCanvasLabel(renderer, label, bottom.x, bottom.y + margin / 2.0, color, true);
+    }
+}
+
+fn renderCanvasLabel(renderer: *c.SDL_Renderer, text: [:0]const u8, x: f64, y: f64, color: c.SDL_FColor, centered: bool) void {
+    const text_scale = @max(1.0, @round(chrome.runtime_ui_config.metrics().scale * 1.5));
+    const width = @as(f64, @floatFromInt(text.len)) * c.SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * text_scale;
+    const left = if (centered) x - width / 2.0 else x;
+    _ = c.SDL_SetRenderScale(renderer, text_scale, text_scale);
+    defer _ = c.SDL_SetRenderScale(renderer, 1.0, 1.0);
+    _ = c.SDL_SetRenderDrawColorFloat(renderer, color.r, color.g, color.b, color.a);
+    _ = c.SDL_RenderDebugText(renderer, @floatCast(left / text_scale), @floatCast(y / text_scale), text.ptr);
 }
 
 pub fn renderProcessSelectionRect(
@@ -876,9 +922,20 @@ pub fn renderProcessSelectionRect(
     selection: v600.native_ui.ProcessSelection,
     show_handles: bool,
     color: c.SDL_FColor,
+    fill_alpha: f32,
 ) void {
     if (selection.w <= 0.0 or selection.h <= 0.0) return;
     const corners = processSelectionScreenCorners(image_rect, selection);
+    var fill = color;
+    fill.a = fill_alpha;
+    const fill_vertices = [_]c.SDL_Vertex{
+        sdlVertex(corners[0].x, corners[0].y, fill),
+        sdlVertex(corners[1].x, corners[1].y, fill),
+        sdlVertex(corners[2].x, corners[2].y, fill),
+        sdlVertex(corners[3].x, corners[3].y, fill),
+    };
+    const fill_indices = [_]c_int{ 0, 1, 2, 0, 2, 3 };
+    _ = c.SDL_RenderGeometry(renderer, null, &fill_vertices, fill_vertices.len, &fill_indices, fill_indices.len);
     for (0..corners.len) |index| {
         const next = (index + 1) % corners.len;
         renderAntialiasedLine(
