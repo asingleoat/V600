@@ -723,18 +723,10 @@ pub fn renderPreviewTexture(
     cache: *PreviewTextureCache,
     preview: ?PreviewBuffer,
     model: *const v600.native_ui.State,
+    transform: *v600.native_ui.ProcessViewTransform,
 ) void {
     const image = preview orelse return;
-    var out_w: c_int = 0;
-    var out_h: c_int = 0;
-    if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return;
-    const rect = v600.native_ui.fitPreviewImage(
-        image.width,
-        image.height,
-        @intCast(out_w),
-        @intCast(out_h),
-        20.0,
-    ) orelse return;
+    const rect = selection_geometry.scanImageRect(renderer, preview, transform) orelse return;
     const texture = cache.textureFor(renderer, image) catch return;
     const dst = c.SDL_FRect{
         .x = @floatCast(rect.x),

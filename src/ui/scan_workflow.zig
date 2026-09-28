@@ -117,31 +117,6 @@ pub const DetectFilmAreaOptions = struct {
     pad: f64 = 0.0125,
 };
 
-pub fn fitPreviewImage(
-    image_width: usize,
-    image_height: usize,
-    canvas_width: usize,
-    canvas_height: usize,
-    pad: f64,
-) ?PreviewScreenRect {
-    if (image_width == 0 or image_height == 0 or canvas_width == 0 or canvas_height == 0) return null;
-    const available_width = @as(f64, @floatFromInt(canvas_width)) - pad * 2.0;
-    const available_height = @as(f64, @floatFromInt(canvas_height)) - pad * 2.0;
-    if (available_width <= 0.0 or available_height <= 0.0) return null;
-    const img_w = @as(f64, @floatFromInt(image_width));
-    const img_h = @as(f64, @floatFromInt(image_height));
-    const scale = @min(available_width / img_w, available_height / img_h);
-    const w = img_w * scale;
-    const h = img_h * scale;
-    return .{
-        .x = (@as(f64, @floatFromInt(canvas_width)) - w) / 2.0,
-        .y = (@as(f64, @floatFromInt(canvas_height)) - h) / 2.0,
-        .w = w,
-        .h = h,
-        .scale = scale,
-    };
-}
-
 pub fn previewSelectionFromDraw(
     start_x: f64,
     start_y: f64,
@@ -930,17 +905,6 @@ test "scan controls restore saved and auto-detected selections" {
     try std.testing.expectApproxEqAbs(20.0, selection.y, 0.0);
     try std.testing.expectApproxEqAbs(30.0, selection.w, 0.0);
     try std.testing.expectApproxEqAbs(40.0, selection.h, 0.0);
-}
-
-test "preview image fit mirrors browser canvas fitImage math" {
-    const rect = fitPreviewImage(1000, 500, 1200, 800, 20.0).?;
-    try std.testing.expectApproxEqAbs(20.0, rect.x, 0.000001);
-    try std.testing.expectApproxEqAbs(110.0, rect.y, 0.000001);
-    try std.testing.expectApproxEqAbs(1160.0, rect.w, 0.000001);
-    try std.testing.expectApproxEqAbs(580.0, rect.h, 0.000001);
-    try std.testing.expectApproxEqAbs(1.16, rect.scale, 0.000001);
-    try std.testing.expect(fitPreviewImage(0, 500, 1200, 800, 20.0) == null);
-    try std.testing.expect(fitPreviewImage(1000, 500, 20, 800, 20.0) == null);
 }
 
 test "scan preview selection draw move and resize mirror browser canvas math" {

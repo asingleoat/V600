@@ -91,7 +91,6 @@ Open:
 
 Native UI (scanning):
 
-- The scan preview cannot be zoomed.
 
 Native UI (processing), smaller:
 

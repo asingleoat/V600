@@ -153,18 +153,17 @@ pub const ScanPreviewPoint = struct {
     y: f64,
 };
 
-pub fn scanImageRect(renderer: *c.SDL_Renderer, preview: ?PreviewBuffer) ?v600.native_ui.PreviewScreenRect {
+pub fn scanImageRect(
+    renderer: *c.SDL_Renderer,
+    preview: ?PreviewBuffer,
+    transform: *v600.native_ui.ProcessViewTransform,
+) ?v600.native_ui.PreviewScreenRect {
     const image = preview orelse return null;
     var out_w: c_int = 0;
     var out_h: c_int = 0;
     if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return null;
-    return v600.native_ui.fitPreviewImage(
-        image.width,
-        image.height,
-        @intCast(out_w),
-        @intCast(out_h),
-        20.0,
-    );
+    transform.ensureFit("scan-preview", @intCast(@max(out_w, 1)), @intCast(@max(out_h, 1)), image.width, image.height);
+    return transform.imageRect(image.width, image.height);
 }
 
 pub fn scanPreviewBounds(preview: ?PreviewBuffer) ?ScanPreviewBounds {

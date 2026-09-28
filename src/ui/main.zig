@@ -473,6 +473,7 @@ pub fn main(init: std.process.Init) !void {
     defer process_texture.deinit(std.heap.page_allocator);
     var process_selection_interaction = ProcessSelectionInteraction{};
     var process_transform = v600.native_ui.ProcessViewTransform{};
+    var scan_transform = v600.native_ui.ProcessViewTransform{};
     var process_confirmation = ProcessConfirmation{};
     defer process_confirmation.deinit(std.heap.page_allocator);
     var process_selector_checked = false;
@@ -541,6 +542,7 @@ pub fn main(init: std.process.Init) !void {
                 &model,
                 renderer,
                 preview_worker.last_preview,
+                &scan_transform,
                 event,
             );
             handleScanShortcutEvent(&scan_selection_interaction, &model, event);
@@ -642,7 +644,7 @@ pub fn main(init: std.process.Init) !void {
             break :blk false;
         };
         _ = connect_worker.poll(&model);
-        _ = preview_worker.poll(&model);
+        if (preview_worker.poll(&model)) scan_transform.requestFit();
         _ = scan_worker.poll(&model);
         model.updateScanProgressStatus(c.SDL_GetTicks());
         if (model.takeScanFinished()) sound.playScanFinished();
@@ -690,7 +692,7 @@ pub fn main(init: std.process.Init) !void {
         } else if (model.active_view == .process) {
             renderProcessTexture(renderer, init.io, &process_texture, &inverted_preview_worker, &model, &process_selection_interaction, &process_transform);
         } else {
-            renderPreviewTexture(renderer, &preview_texture, preview_worker.last_preview, &model);
+            renderPreviewTexture(renderer, &preview_texture, preview_worker.last_preview, &model, &scan_transform);
         }
         try nuklear_renderer.render(&ctx);
         if ((preview_render_smoke or process_render_smoke or gallery_render_smoke) and !nuklear_render_probe_done) {
@@ -715,6 +717,7 @@ pub fn main(init: std.process.Init) !void {
                 &model,
                 renderer,
                 preview_worker.last_preview,
+                &scan_transform,
                 std.heap.page_allocator,
                 init.io,
             );
@@ -806,6 +809,8 @@ pub fn main(init: std.process.Init) !void {
         }
         c.SDL_Delay(16);
     }
+    if (scan_interaction_smoke and !scan_interaction_checked) return error.ScanInteractionSmokeFailed;
+    if (process_interaction_smoke and !process_interaction_checked) return error.ProcessInteractionSmokeFailed;
 }
 
 fn assertNuklearChromeRendered(renderer: *c.SDL_Renderer) !void {
@@ -1065,23 +1070,37 @@ fn handleScanSelectionEvent(
     model: *v600.native_ui.State,
     renderer: *c.SDL_Renderer,
     preview: ?PreviewBuffer,
+    transform: *v600.native_ui.ProcessViewTransform,
     event: c.SDL_Event,
 ) void {
     if (model.active_view != .scan) {
         interaction.end();
+        transform.panning = false;
         return;
     }
-    const image_rect = scanImageRect(renderer, preview) orelse {
+    const image_rect = scanImageRect(renderer, preview, transform) orelse {
         interaction.end();
         return;
     };
     const bounds = scanPreviewBounds(preview) orelse return;
     switch (event.type) {
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            const screen_x = @as(f64, @floatCast(event.wheel.mouse_x));
+            const screen_y = @as(f64, @floatCast(event.wheel.mouse_y));
+            if (pointInUiChrome(screen_x, screen_y)) return;
+            var wheel_y = event.wheel.y;
+            if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) wheel_y = -wheel_y;
+            transform.zoomAt(screen_x, screen_y, if (wheel_y > 0) 1.15 else 1.0 / 1.15);
+        },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-            if (event.button.button != c.SDL_BUTTON_LEFT) return;
             const screen_x = @as(f64, @floatCast(event.button.x));
             const screen_y = @as(f64, @floatCast(event.button.y));
             if (pointInUiChrome(screen_x, screen_y)) return;
+            if (event.button.button == c.SDL_BUTTON_MIDDLE) {
+                transform.beginPan(screen_x, screen_y, event.button.button);
+                return;
+            }
+            if (event.button.button != c.SDL_BUTTON_LEFT) return;
             const preview_point = screenToScanPreviewUnclamped(image_rect, screen_x, screen_y);
             if (hitScanSelection(model.scan_controls.selection, image_rect, screen_x, screen_y, preview_point.x, preview_point.y)) |mode| {
                 const selection = model.scan_controls.selection orelse return;
@@ -1097,6 +1116,7 @@ fn handleScanSelectionEvent(
             }
         },
         c.SDL_EVENT_MOUSE_MOTION => {
+            transform.updatePan(@as(f64, @floatCast(event.motion.x)), @as(f64, @floatCast(event.motion.y)));
             if (!interaction.active) return;
             const preview_point = screenToScanPreviewUnclamped(
                 image_rect,
@@ -1124,6 +1144,7 @@ fn handleScanSelectionEvent(
             }
         },
         c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            if (event.button.button == c.SDL_BUTTON_MIDDLE) transform.endPan(event.button.button);
             if (event.button.button != c.SDL_BUTTON_LEFT or !interaction.active) return;
             if (interaction.drawing()) {
                 const selection = model.scan_controls.selection;
@@ -1629,10 +1650,11 @@ fn runScanSelectionInteractionSmokeEvents(
     model: *v600.native_ui.State,
     renderer: *c.SDL_Renderer,
     preview: ?PreviewBuffer,
+    transform: *v600.native_ui.ProcessViewTransform,
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    const image_rect = scanImageRect(renderer, preview) orelse return error.ScanInteractionSmokeFailed;
+    const image_rect = scanImageRect(renderer, preview, transform) orelse return error.ScanInteractionSmokeFailed;
     model.scan_controls.selection = null;
     model.scan_controls.auto_selection = .{ .x = 10.0, .y = 10.0, .w = 20.0, .h = 20.0 };
 
@@ -1641,18 +1663,18 @@ fn runScanSelectionInteractionSmokeEvents(
     event.button.button = c.SDL_BUTTON_LEFT;
     event.button.x = @floatCast(image_rect.x + image_rect.w * 0.64);
     event.button.y = @floatCast(image_rect.y + image_rect.h * 0.66);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_MOTION;
     event.motion.x = @floatCast(image_rect.x + image_rect.w * 0.82);
     event.motion.y = @floatCast(image_rect.y + image_rect.h * 0.84);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
     event.button.button = c.SDL_BUTTON_LEFT;
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
     const drawn = model.scan_controls.selection orelse return error.ScanInteractionSmokeFailed;
     if (!drawn.isDrawable() or model.scan_controls.auto_selection == null) return error.ScanInteractionSmokeFailed;
     if (model.scanStartPlan("scans/smoke.tiff", null) == null) return error.ScanInteractionSmokeFailed;
@@ -1676,18 +1698,18 @@ fn runScanSelectionInteractionSmokeEvents(
     event.button.button = c.SDL_BUTTON_LEFT;
     event.button.x = @floatCast(center_x);
     event.button.y = @floatCast(center_y);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_MOTION;
     event.motion.x = @floatCast(center_x + 36.0);
     event.motion.y = @floatCast(center_y + 24.0);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
     event.button.button = c.SDL_BUTTON_LEFT;
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
     const moved = model.scan_controls.selection orelse return error.ScanInteractionSmokeFailed;
     if (moved.x <= drawn.x or moved.y <= drawn.y) return error.ScanInteractionSmokeFailed;
 
@@ -1698,18 +1720,18 @@ fn runScanSelectionInteractionSmokeEvents(
     event.button.button = c.SDL_BUTTON_LEFT;
     event.button.x = @floatCast(handle_x);
     event.button.y = @floatCast(handle_y);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_MOTION;
     event.motion.x = @floatCast(handle_x + 48.0);
     event.motion.y = @floatCast(handle_y + 32.0);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
     event.button.button = c.SDL_BUTTON_LEFT;
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
     const resized = model.scan_controls.selection orelse return error.ScanInteractionSmokeFailed;
     if (resized.w <= moved.w or resized.h <= moved.h) return error.ScanInteractionSmokeFailed;
 
@@ -1736,19 +1758,56 @@ fn runScanSelectionInteractionSmokeEvents(
     event.button.button = c.SDL_BUTTON_LEFT;
     event.button.x = @floatCast(image_rect.x + image_rect.w * 0.92);
     event.button.y = @floatCast(image_rect.y + image_rect.h * 0.90);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_MOTION;
     event.motion.x = @floatCast(image_rect.x + image_rect.w * 0.921);
     event.motion.y = @floatCast(image_rect.y + image_rect.h * 0.901);
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
 
     event = undefined;
     event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
     event.button.button = c.SDL_BUTTON_LEFT;
-    handleScanSelectionEvent(interaction, model, renderer, preview, event);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
     if (model.scan_controls.selection != null) return error.ScanInteractionSmokeFailed;
+
+    // Wheel zoom keeps the preview point under the cursor; middle-drag pans.
+    const zoom_x = image_rect.x + image_rect.w * 0.8;
+    const zoom_y = image_rect.y + image_rect.h * 0.5;
+    const fitted = scanImageRect(renderer, preview, transform) orelse return error.ScanInteractionSmokeFailed;
+    const anchor = screenToScanPreviewUnclamped(fitted, zoom_x, zoom_y);
+    event = undefined;
+    event.type = c.SDL_EVENT_MOUSE_WHEEL;
+    event.wheel.mouse_x = @floatCast(zoom_x);
+    event.wheel.mouse_y = @floatCast(zoom_y);
+    event.wheel.y = 1.0;
+    event.wheel.direction = c.SDL_MOUSEWHEEL_NORMAL;
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
+    const zoomed = scanImageRect(renderer, preview, transform) orelse return error.ScanInteractionSmokeFailed;
+    if (zoomed.scale <= fitted.scale * 1.1) return error.ScanInteractionSmokeFailed;
+    const anchor_after = screenToScanPreviewUnclamped(zoomed, zoom_x, zoom_y);
+    if (@abs(anchor_after.x - anchor.x) > 0.01 or @abs(anchor_after.y - anchor.y) > 0.01) return error.ScanInteractionSmokeFailed;
+
+    event = undefined;
+    event.type = c.SDL_EVENT_MOUSE_BUTTON_DOWN;
+    event.button.button = c.SDL_BUTTON_MIDDLE;
+    event.button.x = @floatCast(zoom_x);
+    event.button.y = @floatCast(zoom_y);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
+    event = undefined;
+    event.type = c.SDL_EVENT_MOUSE_MOTION;
+    event.motion.x = @floatCast(zoom_x + 40.0);
+    event.motion.y = @floatCast(zoom_y + 30.0);
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
+    event = undefined;
+    event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
+    event.button.button = c.SDL_BUTTON_MIDDLE;
+    handleScanSelectionEvent(interaction, model, renderer, preview, transform, event);
+    const panned = scanImageRect(renderer, preview, transform) orelse return error.ScanInteractionSmokeFailed;
+    if (@abs(panned.x - zoomed.x - 40.0) > 0.01 or @abs(panned.y - zoomed.y - 30.0) > 0.01) return error.ScanInteractionSmokeFailed;
+    if (transform.panning) return error.ScanInteractionSmokeFailed;
+    transform.requestFit();
 }
 
 fn runGalleryInteractionSmokeEvents(transform: *GalleryViewTransform, model: *const v600.native_ui.State) !void {

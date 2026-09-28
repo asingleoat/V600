@@ -23,7 +23,6 @@ pub const PreviewScreenRect = scan_workflow.PreviewScreenRect;
 pub const ScanAreaInches = scan_workflow.AreaInches;
 pub const PreviewScanPlan = scan_workflow.PreviewScanPlan;
 pub const ScanStartPlan = scan_workflow.ScanStartPlan;
-pub const fitPreviewImage = scan_workflow.fitPreviewImage;
 pub const previewSelectionFromDraw = scan_workflow.previewSelectionFromDraw;
 pub const adjustedPreviewSelection = scan_workflow.adjustedPreviewSelection;
 pub const scanSelectionEstimate = scan_workflow.scanSelectionEstimate;
