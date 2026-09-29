@@ -339,7 +339,10 @@ pub fn main(init: std.process.Init) !void {
     const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const processing_config_path = v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
+    const processing_config_path = if (roll_smoke or roll_strip_smoke)
+        roll_smoke_root ++ "/" ++ v600.processing.config.config_file
+    else
+        v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
     model.loadProcessingConfig(std.heap.page_allocator, init.io, processing_config_path) catch {};
     model.setProcessingGpuRequest(
         std.heap.page_allocator,
@@ -360,7 +363,7 @@ pub fn main(init: std.process.Init) !void {
     defer process_export_worker.deinit();
     var inverted_preview_worker = InvertedPreviewWorker.init(std.heap.page_allocator);
     defer inverted_preview_worker.deinit();
-    var rolls = roll_panel.RollPanel.init(init.io, &model, scanner_config_path);
+    var rolls = roll_panel.RollPanel.init(init.io, &model, scanner_config_path, processing_config_path);
     defer rolls.deinit(&model);
     // Smoke runs never reopen a real roll or export its strips.
     const interactive = !smoke and !preview_render_smoke and !scan_interaction_smoke and !process_render_smoke and
@@ -1021,6 +1024,7 @@ fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State) !
     if (!std.mem.endsWith(u8, model.processing.input_dir, "/smoke-roll")) return error.RollSmokeFailed;
     if (!std.mem.endsWith(u8, model.processing.output_dir, "frames/smoke-roll")) return error.RollSmokeFailed;
     if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
+    if (!std.mem.eql(u8, model.processing_config.activeStock() orelse "", "kodak_portra")) return error.RollSmokeFailed;
 }
 
 fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {

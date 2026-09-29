@@ -241,10 +241,12 @@ fn handleProcessing(
     while (args.next()) |arg| {
         try remaining.append(arg);
     }
-    const command = v600.processing.cli.parseArgs(remaining.items) catch |err| {
+    var command = v600.processing.cli.parseArgs(remaining.items) catch |err| {
         try printProcessingUsage();
         return err;
     };
+    var roll = try applyRollDefaults(allocator, io, &command, remaining.items);
+    defer if (roll) |*open_roll| open_roll.deinit();
     const processing_gpu_request = try v600.processing.inversion.invertNegativeRequestFromEnvironment(environ_map);
     v600.processing.cli.runCommand(allocator, io, command, stdout, processing_gpu_request) catch |err| {
         v600.processing.events.emitProcessingError(.{
@@ -253,6 +255,44 @@ fn handleProcessing(
         });
         try stdout.print("{{\"error\":\"{s}\"}}\n", .{@errorName(err)});
     };
+}
+
+/// A strip inside a roll directory takes the roll's film stock and format
+/// unless the command names them. Returns the roll, which backs the strings.
+fn applyRollDefaults(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    command: *v600.processing.cli.ProcessingCommand,
+    argv: []const []const u8,
+) !?v600.roll.Roll {
+    const input = switch (command.*) {
+        .detect => |options| options.input,
+        .export_frames => |options| options.input,
+        else => return null,
+    };
+    const dir = std.fs.path.dirname(input) orelse return null;
+    const scans_root = std.fs.path.dirname(dir) orelse ".";
+    var roll = v600.roll.Roll.open(allocator, io, scans_root, roll_cli.frames_root, std.fs.path.basename(dir)) catch return null;
+    errdefer roll.deinit();
+    const has_format = hasArg(argv, "--format");
+    switch (command.*) {
+        .detect => |*options| {
+            if (!has_format) options.format = roll.format;
+        },
+        .export_frames => |*options| {
+            if (!has_format) options.format = roll.format;
+            if (!hasArg(argv, "--stock")) options.film_stock = roll.stock;
+        },
+        else => {},
+    }
+    return roll;
+}
+
+fn hasArg(argv: []const []const u8, flag: []const u8) bool {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, flag)) return true;
+    }
+    return false;
 }
 
 const ScannerCommonArgs = struct {

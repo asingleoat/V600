@@ -26,6 +26,7 @@ pub const RollPanel = struct {
     scans_root: []const u8,
     frames_root: []const u8,
     config_path: []const u8,
+    processing_config_path: []const u8,
     default_input_dir: []const u8,
     default_output_dir: []const u8,
     active: ?Roll = null,
@@ -50,12 +51,13 @@ pub const RollPanel = struct {
     completed: std.atomic.Value(usize) = .init(0),
     seen_completed: usize = 0,
 
-    pub fn init(io: std.Io, model: *const v600.native_ui.State, config_path: []const u8) RollPanel {
+    pub fn init(io: std.Io, model: *const v600.native_ui.State, config_path: []const u8, processing_config_path: []const u8) RollPanel {
         var panel = RollPanel{
             .io = io,
             .scans_root = model.scanner.output_dir,
             .frames_root = model.processing.output_dir,
             .config_path = config_path,
+            .processing_config_path = processing_config_path,
             .default_input_dir = model.processing.input_dir,
             .default_output_dir = model.processing.output_dir,
         };
@@ -211,6 +213,11 @@ pub const RollPanel = struct {
         model.setProcessingDirectories(allocator, self.io, active.dir, active.frames_dir);
         applyRollControls(model, active);
         self.saveCurrent(active.name);
+        // The Process view works on this roll's strips with its film stock.
+        if (v600.processing.config.FixedString.from(active.stock)) |stock| {
+            const updates = [_]v600.processing.config.Override{.{ .name = "stock", .value = .{ .string = stock } }};
+            model.saveProcessingSettings(allocator, self.io, self.processing_config_path, &updates) catch {};
+        } else |_| {}
 
         // Export strips an earlier session scanned but did not finish.
         var strips = active.listStrips(self.io) catch return;
