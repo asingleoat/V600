@@ -418,9 +418,21 @@ pub const Roll = struct {
         var strips = try self.listStrips(io);
         defer strips.deinit(allocator);
 
+        const has_image = try allocator.alloc(bool, strips.paths.len);
+        defer allocator.free(has_image);
+        var waiting = strips.paths.len == 0;
+        for (strips.paths, has_image) |strip_path, *exists| {
+            const image_path = try self.reviewImagePath(strip_path);
+            defer allocator.free(image_path);
+            exists.* = fileExists(io, image_path);
+            if (!exists.*) waiting = true;
+        }
+
         var out = std.array_list.Managed(u8).init(allocator);
         defer out.deinit();
-        try out.print(review_head, .{ self.name, self.name, self.stock, self.format, self.dpi, kindName(self.kind) });
+        // Reload while strips are still to come, so an open page catches up.
+        const refresh = if (waiting) "<meta http-equiv=refresh content=30>" else "";
+        try out.print(review_head, .{ refresh, self.name, self.name, self.stock, self.format, self.dpi, kindName(self.kind) });
         if (self.dmin) |dmin| {
             try out.print("<p class=meta>Roll Dmin {d:.3} / {d:.3} / {d:.3}</p>\n", .{ dmin[0], dmin[1], dmin[2] });
         }
@@ -429,9 +441,16 @@ pub const Roll = struct {
             try out.print(" <span class=swatch style=\"background:rgb({d},{d},{d})\"></span>{d}", .{ color[0], color[1], color[2], index + 1 });
         }
         try out.print(" <span class=swatch style=\"background:rgb({d},{d},{d})\"></span>rebate (Dmin)</p>\n<div class=strips>\n", .{ rebate_color[0], rebate_color[1], rebate_color[2] });
-        for (strips.paths) |strip_path| {
+        if (strips.paths.len == 0) {
+            try out.appendSlice("<p class=meta>No strips yet. A strip appears here when its scan finishes.</p>\n");
+        }
+        for (strips.paths, has_image) |strip_path, exists| {
             const stem = std.fs.path.stem(std.fs.path.basename(strip_path));
-            try out.print("<figure><img src=\"{s}.jpg\" alt=\"\"><figcaption><b>{s}</b><br>", .{ stem, stem });
+            if (exists) {
+                try out.print("<figure><img src=\"{s}.jpg\" alt=\"\"><figcaption><b>{s}</b><br>", .{ stem, stem });
+            } else {
+                try out.print("<figure><figcaption><b>{s}</b><br>", .{stem});
+            }
             const marker = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, processed_suffix });
             defer allocator.free(marker);
             const text = std.Io.Dir.cwd().readFileAlloc(io, marker, allocator, .limited(64 * 1024)) catch null;
@@ -449,7 +468,7 @@ pub const Roll = struct {
                     try out.appendSlice("unreadable result");
                 }
             } else {
-                try out.appendSlice("not processed yet");
+                try out.appendSlice("scanned; the picture appears when its export finishes");
             }
             try out.appendSlice("</figcaption></figure>\n");
         }
@@ -826,7 +845,7 @@ fn setPixel(image: *Rgb8Image, x: f64, y: f64, color: [3]u8) void {
 
 const review_head =
     \\<!doctype html>
-    \\<html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1">
+    \\<html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1">{s}
     \\<title>Roll {s}</title>
     \\<style>
     \\:root {{ --bg:#f7f7f5; --fg:#1d1d1f; --muted:#6b6b70; --line:#dcdcd8; }}
@@ -873,6 +892,12 @@ test "creates, reopens, and numbers the strips of a roll" {
     try std.testing.expectError(Error.RollExists, Roll.create(allocator, io, scans, frames_root, "gold-a", .{}));
     try std.testing.expectError(Error.InvalidRollSettings, Roll.create(allocator, io, scans, frames_root, "bad", .{ .format = "110" }));
     try std.testing.expectError(Error.RollNotFound, Roll.open(allocator, io, scans, frames_root, "missing"));
+    {
+        const html = try testReviewHtml(&roll);
+        defer allocator.free(html);
+        try std.testing.expect(std.mem.indexOf(u8, html, "No strips yet") != null);
+        try std.testing.expect(std.mem.indexOf(u8, html, "http-equiv=refresh") != null);
+    }
 
     const first = try roll.nextStripPath(io);
     defer allocator.free(first);
@@ -898,6 +923,20 @@ test "creates, reopens, and numbers the strips of a roll" {
     defer strips.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), strips.paths.len);
     try std.testing.expect(!reopened.isProcessed(io, strips.paths[0]));
+
+    // A scanned strip without its review picture yet gets no broken image.
+    const html = try testReviewHtml(&reopened);
+    defer allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<img") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "strip_01_rgb_1600dpi</b><br>scanned; the picture appears") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "http-equiv=refresh") != null);
+}
+
+fn testReviewHtml(roll: *const Roll) ![]u8 {
+    try roll.writeReviewIndex(std.testing.io);
+    const review = try roll.path(std.testing.allocator, "review/index.html");
+    defer std.testing.allocator.free(review);
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, review, std.testing.allocator, .limited(64 * 1024));
 }
 
 test "lists the rolls under a scans directory" {
@@ -1001,6 +1040,8 @@ test "processes a real strip scan into exports, a marker, and a review page" {
     const html = try std.Io.Dir.cwd().readFileAlloc(io, review, allocator, .limited(64 * 1024));
     defer allocator.free(html);
     try std.testing.expect(std.mem.indexOf(u8, html, "5 frames, Dmin from rebate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<img src=\"strip_01_rgbir_800dpi.jpg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "http-equiv=refresh") == null);
 
     // Reprocessing replaces the strip's exports instead of adding copies.
     const again = try roll.processStrip(io, strip, .{
