@@ -499,7 +499,10 @@ pub fn scanSelectionEstimate(controls: ScanControls, info: app_state.ScannerInfo
         .ir => @as(f64, @floatFromInt(output_width)) *
             @as(f64, @floatFromInt(output_height)) / 1024.0 / 1024.0,
     };
-    const passes: f64 = if (controls.mode == .rgb_ir) 2.0 else 1.0;
+    const seconds = switch (controls.mode) {
+        .rgb_ir => passSeconds(h_in, controls.dpi) + passSeconds(h_in, @min(controls.dpi, 3200)),
+        .rgb, .ir => passSeconds(h_in, controls.dpi),
+    };
     return .{
         .w_in = w_in,
         .h_in = h_in,
@@ -509,10 +512,18 @@ pub fn scanSelectionEstimate(controls: ScanControls, info: app_state.ScannerInfo
         .output_height = output_height,
         .mode = controls.mode,
         .data_mb = roundToPlaces(data_mb, 1),
-        // Measured on a V600 over macOS USB: about 1.8 MB/s plus 40 s per
-        // pass (a 35 mm strip took 1m45s at 800 dpi and 9m20s at 3200).
-        .estimated_seconds = roundToU64(data_mb / 1.8 + passes * 40.0),
+        .estimated_seconds = roundToU64(seconds),
     };
+}
+
+/// One scan pass: about 40 s of setup, then the carriage reads the
+/// selection's height line by line at a per-resolution rate; the width
+/// hardly matters. Measured on a V600 over macOS USB with 7.5 inch 35 mm
+/// strips, RGB+IR: 1m45s at 800 dpi, 9m20s at 3200, and 15m32s at 6400
+/// (IR at 3200). IR lines take as long as RGB lines. 1600 is interpolated.
+fn passSeconds(h_in: f64, dpi: u32) f64 {
+    const line_seconds: f64 = if (dpi <= 800) 0.00207 else if (dpi <= 1600) 0.00454 else if (dpi <= 3200) 0.00995 else 0.0124;
+    return 40.0 + h_in * @as(f64, @floatFromInt(dpi)) * line_seconds;
 }
 
 pub fn formatScanSelectionEstimate(
@@ -821,7 +832,7 @@ test "scan controls convert preview selections to config and mirrored scan area"
     try std.testing.expectApproxEqAbs(1.0, scan_area.h, 0.0);
 }
 
-test "scan selection estimate counts 8-bit IR at up to 3200 dpi and the measured scan rate" {
+test "scan selection estimate counts 8-bit IR at up to 3200 dpi and the measured line times" {
     const info = app_state.ScannerInfo{
         .preview_width = 1000,
         .preview_height = 500,
@@ -836,21 +847,21 @@ test "scan selection estimate counts 8-bit IR at up to 3200 dpi and the measured
     controls.mode = .rgb_ir;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB+IR (488.3 MB, ~5m51s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB+IR (488.3 MB, ~3m11s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
     controls.mode = .rgb;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB (468.8 MB, ~5m00s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB (468.8 MB, ~1m59s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
     controls.mode = .ir;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px IR (78.1 MB, ~1m23s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px IR (78.1 MB, ~1m59s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
@@ -858,9 +869,15 @@ test "scan selection estimate counts 8-bit IR at up to 3200 dpi and the measured
     controls.setDpi(6400);
     try std.testing.expectEqual(@as(u32, 3200), controls.dpi);
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 6400x3200px IR (19.5 MB, ~51s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 6400x3200px IR (19.5 MB, ~1m12s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
+}
+
+test "scan time model reproduces the measured 35 mm strips" {
+    try std.testing.expectApproxEqAbs(105.0, 2.0 * passSeconds(7.54, 800), 3.0);
+    try std.testing.expectApproxEqAbs(560.0, 2.0 * passSeconds(7.54, 3200), 5.0);
+    try std.testing.expectApproxEqAbs(932.0, passSeconds(7.65, 6400) + passSeconds(7.65, 3200), 10.0);
 }
 
 test "scan selection estimate updates with selection mode and dpi" {

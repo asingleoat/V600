@@ -27,7 +27,7 @@ companion.
 
 Built and tested on Apple Silicon (macOS 26) from `nix develop`: the CLI,
 the native UI, and `zig build test`. Scanning works on a V600: identity
-probe, preview with film-area detection, RGB+IR at 800 and 3200 dpi, scans
+probe, preview with film-area detection, RGB+IR at 800, 3200, and 6400 dpi, scans
 with film gamma LUTs, and the native UI's preview and scan workers.
 
 How it works (`src/scanner/interpreter_runtime.zig`, `usb.zig`, `macos.zig`,
@@ -86,8 +86,11 @@ V600_MACOS_HARDWARE_SMOKE=1 ./zig-out/bin/v600-zig scanner macos-smoke   # ident
 ```
 
 Measured: a 400 dpi preview takes 30 s; RGB+IR of a 35 mm strip takes 1 min
-45 s at 800 dpi and 9 min 20 s at 3200 dpi (0.9 GB peak memory). Opening the
-connection takes well under a second.
+45 s at 800 dpi, 9 min 20 s at 3200 dpi (0.9 GB peak memory), and 15 min 30 s
+at 6400 dpi with IR at 3200 (a 3.3 GB file). Time follows the strip's length
+in scan lines, not its data size; see `passSeconds` in
+`src/ui/scan_workflow.zig`. Opening the connection takes well under a
+second.
 
 ## Windows
 
