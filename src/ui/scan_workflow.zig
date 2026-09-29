@@ -1,7 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const app_state = @import("../app_state.zig");
 const scanner_contracts = @import("../scanner/contracts.zig");
+const scanner_host = @import("../scanner.zig").host;
 
 pub const ScanMode = enum {
     rgb_ir,
@@ -26,9 +28,12 @@ pub const ScanMode = enum {
 
     // Linux TPU scans run only at 400, 800, 1600, and 3200 dpi
     // (scanner/sane.zig); anything else would be delivered at a different dpi.
+    /// RGB modes go as high as this host's scanner backend allows (6400 on
+    /// macOS); IR alone stops at 3200.
     pub fn validDpis(self: ScanMode) []const u32 {
         return switch (self) {
-            .rgb_ir, .rgb, .ir => &.{ 800, 1600, 3200 },
+            .rgb_ir, .rgb => &scanner_host.film_dpis,
+            .ir => &.{ 800, 1600, 3200 },
         };
     }
 
@@ -486,14 +491,13 @@ pub fn scanSelectionEstimate(controls: ScanControls, info: app_state.ScannerInfo
             const ir_h = roundToU64(h_in * @as(f64, @floatFromInt(ir_dpi)));
             const rgb_bytes = @as(f64, @floatFromInt(output_width)) *
                 @as(f64, @floatFromInt(output_height)) * 3.0 * bytes_per_sample;
-            const ir_bytes = @as(f64, @floatFromInt(ir_w)) *
-                @as(f64, @floatFromInt(ir_h)) * bytes_per_sample;
+            const ir_bytes = @as(f64, @floatFromInt(ir_w)) * @as(f64, @floatFromInt(ir_h));
             break :blk (rgb_bytes + ir_bytes) / 1024.0 / 1024.0;
         },
         .rgb => @as(f64, @floatFromInt(output_width)) *
             @as(f64, @floatFromInt(output_height)) * 3.0 * bytes_per_sample / 1024.0 / 1024.0,
         .ir => @as(f64, @floatFromInt(output_width)) *
-            @as(f64, @floatFromInt(output_height)) * bytes_per_sample / 1024.0 / 1024.0,
+            @as(f64, @floatFromInt(output_height)) / 1024.0 / 1024.0,
     };
     const passes: f64 = if (controls.mode == .rgb_ir) 2.0 else 1.0;
     return .{
@@ -505,7 +509,9 @@ pub fn scanSelectionEstimate(controls: ScanControls, info: app_state.ScannerInfo
         .output_height = output_height,
         .mode = controls.mode,
         .data_mb = roundToPlaces(data_mb, 1),
-        .estimated_seconds = roundToU64(data_mb / 5.0 + passes * 8.0),
+        // Measured on a V600 over macOS USB: about 1.8 MB/s plus 40 s per
+        // pass (a 35 mm strip took 1m45s at 800 dpi and 9m20s at 3200).
+        .estimated_seconds = roundToU64(data_mb / 1.8 + passes * 40.0),
     };
 }
 
@@ -784,6 +790,9 @@ test "scan controls preserve browser mode dpi choices" {
     try std.testing.expectEqual(@as(u32, 800), controls.dpi);
 
     controls.setDpi(6400);
+    // RGB goes to 6400 where the backend allows it (the macOS interpreter).
+    const rgb_max: u32 = if (builtin.os.tag == .macos) 6400 else 3200;
+    try std.testing.expectEqual(rgb_max, controls.dpi);
     controls.setMode(.ir);
     try std.testing.expectEqual(@as(u32, 3200), controls.dpi);
 }
@@ -812,7 +821,7 @@ test "scan controls convert preview selections to config and mirrored scan area"
     try std.testing.expectApproxEqAbs(1.0, scan_area.h, 0.0);
 }
 
-test "scan selection estimate mirrors browser updateInfo formula" {
+test "scan selection estimate counts 8-bit IR at up to 3200 dpi and the measured scan rate" {
     const info = app_state.ScannerInfo{
         .preview_width = 1000,
         .preview_height = 500,
@@ -827,21 +836,21 @@ test "scan selection estimate mirrors browser updateInfo formula" {
     controls.mode = .rgb_ir;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB+IR (507.8 MB, ~1m58s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB+IR (488.3 MB, ~5m51s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
     controls.mode = .rgb;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB (468.8 MB, ~1m42s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB (468.8 MB, ~5m00s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
     controls.mode = .ir;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px IR (156.3 MB, ~39s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px IR (78.1 MB, ~1m23s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
@@ -849,7 +858,7 @@ test "scan selection estimate mirrors browser updateInfo formula" {
     controls.setDpi(6400);
     try std.testing.expectEqual(@as(u32, 3200), controls.dpi);
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 6400x3200px IR (39.1 MB, ~16s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 6400x3200px IR (19.5 MB, ~51s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 }

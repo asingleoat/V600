@@ -15,7 +15,7 @@ pub const usb = @import("scanner/usb.zig");
 
 /// The scanner runtime for this host: SANE subprocesses on Linux, the Epson
 /// interpreter over libusb on macOS. Both expose `Runtime`, `ScanOptions`,
-/// `Device`, and `freeDevices`.
+/// `Device`, `freeDevices`, `film_dpis`, and `effectiveDpiForRequest`.
 pub const host = if (builtin.os.tag == .macos) interpreter_runtime else linux;
 
 pub const BackendKind = enum {

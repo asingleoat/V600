@@ -16,7 +16,6 @@ const interpreter = @import("interpreter.zig");
 const linux = @import("linux.zig");
 const lut = @import("lut.zig");
 const macos = @import("macos.zig");
-const sane = @import("sane.zig");
 const tiff = @import("../tiff.zig");
 const usb = @import("usb.zig");
 
@@ -31,6 +30,31 @@ pub const tiff_software = "epdaughter";
 pub const device_name = "epson-interpreter";
 
 const thumbnail_max_height: u32 = 256;
+
+/// Film (TPU) resolutions this backend offers for RGB scans. IR tops out at
+/// 3200, so RGB + IR at 6400 scans its IR pass at 3200.
+pub const film_dpis = [_]u32{ 800, 1600, 3200, 6400 };
+const tpu_resolutions = [_]u32{ 400, 800, 1600, 3200, 6400 };
+const ir_resolutions = [_]u32{ 800, 1600, 3200 };
+
+/// The resolution a request actually scans at: film scans snap to
+/// `tpu_resolutions`, IR to `ir_resolutions`; flatbed requests pass through
+/// to planScan's own snapping.
+pub fn effectiveDpiForRequest(request: contracts.ScanRequest) u32 {
+    if (request.kind == .ir) return nearest(request.dpi, &ir_resolutions);
+    if (request.source == .tpu) return nearest(request.dpi, &tpu_resolutions);
+    return request.dpi;
+}
+
+fn nearest(dpi: u32, candidates: []const u32) u32 {
+    var best = candidates[0];
+    for (candidates[1..]) |candidate| {
+        const best_delta = if (best > dpi) best - dpi else dpi - best;
+        const delta = if (candidate > dpi) candidate - dpi else dpi - candidate;
+        if (delta < best_delta) best = candidate;
+    }
+    return best;
+}
 
 /// Shown when another program holds the scanner's USB interface.
 pub const busy_hint =
@@ -252,9 +276,7 @@ pub const Runtime = struct {
         luts: ?*const [lut.serialized_len]u8,
     ) !Pass {
         var planned = request;
-        // Snap to the same resolutions as the Linux backend, so previews and
-        // scans come out at the DPI the UI expects on either host.
-        planned.dpi = sane.effectiveDpiForRequest(request);
+        planned.dpi = effectiveDpiForRequest(request);
         planned.area = clampArea(request.area, request.source, caps);
         // Python always scanned IR at 8 bits.
         if (request.kind == .ir) planned.depth = .eight;
@@ -983,4 +1005,55 @@ test "a cancel file stops the scan, sends CAN, and drops the connection" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tiff", .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tiff.partial", .{}));
     try std.testing.expectEqual(@as(usize, 1), fake.close_count);
+}
+
+test "film scans snap up to 6400 dpi and IR to at most 3200" {
+    try std.testing.expectEqual(@as(u32, 6400), effectiveDpiForRequest(.{ .dpi = 6400, .kind = .rgb, .source = .tpu }));
+    try std.testing.expectEqual(@as(u32, 6400), effectiveDpiForRequest(.{ .dpi = 5000, .kind = .rgb, .source = .tpu }));
+    try std.testing.expectEqual(@as(u32, 3200), effectiveDpiForRequest(.{ .dpi = 6400, .kind = .ir, .source = .tpu }));
+    try std.testing.expectEqual(@as(u32, 400), effectiveDpiForRequest(.{ .dpi = 200, .kind = .rgb, .source = .tpu }));
+}
+
+test "an RGB+IR scan at 6400 dpi scans its IR pass at 3200" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scan.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(output);
+
+    // 1/64 x 1/128 in: RGB at 6400 dpi is 100 x 50 px (30000 bytes of RGB16),
+    // IR at 3200 dpi is 50 x 25 px (1250 bytes).
+    var fake = FakeScanner{ .starts = &.{
+        .{ .status = 0, .block_size = 10000, .block_count = 3, .last_block_size = 0 },
+        .{ .status = 0, .block_size = 1250, .block_count = 1, .last_block_size = 0 },
+    } };
+    var ack_usb = AckUsb{};
+    const conn = try std.heap.page_allocator.create(Connection);
+    conn.* = .{
+        .hardware = null,
+        .usb_io = ack_usb.io(),
+        .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
+        .model = macos.scannerModelForProductId(0x013a),
+    };
+    shared_connection = conn;
+    defer {
+        if (shared_connection) |leftover| std.heap.page_allocator.destroy(leftover);
+        shared_connection = null;
+    }
+
+    var env = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer env.deinit();
+    const runtime = Runtime{ .allocator = allocator, .io = std.testing.io, .environ_map = &env };
+    try runtime.scan(.{
+        .request = .{ .dpi = 6400, .source = .tpu, .kind = .rgb_ir, .area = .{ .width = 1.0 / 64.0, .height = 1.0 / 128.0 } },
+        .output_path = output,
+    });
+
+    var pages = try tiff.loadRgbIrPages(allocator, output);
+    defer pages.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 100), pages.rgb.width);
+    try std.testing.expectEqual(@as(u32, 50), pages.rgb.height);
+    try std.testing.expectEqual(@as(u32, 50), pages.ir.?.width);
+    try std.testing.expectEqual(@as(u32, 25), pages.ir.?.height);
+    try std.testing.expectEqual(@as(?u32, 6400), try tiff.readDpi(allocator, output));
 }

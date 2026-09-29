@@ -331,7 +331,7 @@ fn autoScanOutputPath(buffer: []u8, io: std.Io, request: v600.scanner.contracts.
         .ir => "ir",
         .gray => "gray",
     };
-    const dpi = v600.scanner.sane.effectiveDpiForRequest(request);
+    const dpi = v600.scanner.host.effectiveDpiForRequest(request);
     return std.fmt.bufPrint(buffer, "{s}/scan_{d:0>4}_{s}_{d}dpi.tiff", .{ dir, number, tag, dpi });
 }
 

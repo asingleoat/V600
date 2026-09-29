@@ -187,7 +187,7 @@ pub const RollPanel = struct {
             self.setNotice("Could not start roll: {s}", .{switch (err) {
                 error.InvalidRollName => "use letters, digits, '.', '_', or '-'",
                 error.RollExists => "a roll with that name exists; open it instead",
-                error.InvalidRollSettings => "choose 800, 1600, or 3200 dpi and RGB or RGB + IR",
+                error.InvalidRollSettings => "choose RGB or RGB + IR at one of the listed DPIs",
                 else => @errorName(err),
             }});
             return;

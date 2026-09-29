@@ -18,6 +18,7 @@ const frames = @import("processing/frames.zig");
 const webgpu = @import("processing/webgpu.zig");
 const workflow = @import("processing/workflow.zig");
 const tiff = @import("tiff.zig");
+const scanner_host = @import("scanner.zig").host;
 
 pub const manifest_name = "roll.json";
 pub const lut_name = "roll.lut.bin";
@@ -686,7 +687,7 @@ pub fn validateName(name: []const u8) Error!void {
 
 fn validateSettings(settings: Settings) Error!void {
     if (settings.kind != .rgb and settings.kind != .rgb_ir) return Error.InvalidRollSettings;
-    if (settings.dpi != 800 and settings.dpi != 1600 and settings.dpi != 3200) return Error.InvalidRollSettings;
+    if (std.mem.indexOfScalar(u32, &scanner_host.film_dpis, settings.dpi) == null) return Error.InvalidRollSettings;
     if (film_formats.formatByName(settings.format) == null) return Error.InvalidRollSettings;
     if (settings.stock.len == 0) return Error.InvalidRollSettings;
 }

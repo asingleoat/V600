@@ -14,6 +14,10 @@ pub const v600_product_id_int: u16 = 0x013a;
 pub const usbdevfs_reset: u32 = 0x5514;
 pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
 
+/// Film (TPU) resolutions the patched epkowa backend lists for RGB scans.
+pub const film_dpis = [_]u32{ 800, 1600, 3200 };
+pub const effectiveDpiForRequest = sane.effectiveDpiForRequest;
+
 pub const Device = struct {
     name: []const u8,
     vendor: []const u8 = "",

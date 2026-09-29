@@ -176,8 +176,9 @@ deliberately, not by accident.
   selection must use an `epkowa` / `epkowa:interpreter` device, never a
   cached `epson2` one.
 - Sources are `Transparency Unit` and `Flatbed`. TPU resolutions: 400, 800,
-  1600, 3200 dpi. IR resolutions: 800, 1600, 3200 dpi; IR is grayscale.
-  Non-IR 16-bit scans pass `--depth 16`.
+  1600, 3200 dpi, plus 6400 dpi on the macOS interpreter path. IR
+  resolutions: 800, 1600, 3200 dpi; IR is grayscale, and RGB+IR at 6400
+  scans its IR pass at 3200. Non-IR 16-bit scans pass `--depth 16`.
 - SANE scan areas are in millimetres (`-l -t -x -y`), clamped to the source
   geometry with a 0.1 mm margin.
 - TPU scans are mirrored horizontally after capture; keep the final

@@ -53,7 +53,9 @@ How it works (`src/scanner/interpreter_runtime.zig`, `usb.zig`, `macos.zig`,
   `plan.md`.
 - RGB+IR runs a 16-bit RGB pass and an 8-bit IR pass (at most 3200 dpi) and
   writes RGB, thumbnail, and IR pages in-process with libtiff; no `magick` or
-  `tiffcp`. Resolutions snap as on Linux (400/800/1600/3200 on the TPU).
+  `tiffcp`. TPU resolutions snap to 400/800/1600/3200/6400; 6400 is
+  macOS-only (Linux stops at 3200). IR stays at 800/1600/3200, so RGB+IR at
+  6400 scans its IR pass at 3200.
 - `scanner usb-reset` is Linux-only.
 
 Constraints:

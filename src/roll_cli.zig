@@ -68,9 +68,10 @@ pub fn printUsage() void {
         \\usage: v600-zig roll <command>
         \\
         \\commands:
-        \\  start NAME [--stock NAME] [--format 35mm|645|6x6|6x7|6x9] [--dpi 800|1600|3200] [--kind rgb+ir|rgb]
+        \\  start NAME [--stock NAME] [--format 35mm|645|6x6|6x7|6x9] [--dpi 800|1600|3200|6400] [--kind rgb+ir|rgb]
         \\                                 create scans/NAME/ and make it the current roll
-        \\                                 (defaults: kodak_gold, 35mm, 3200 dpi, rgb+ir)
+        \\                                 (defaults: kodak_gold, 35mm, 3200 dpi, rgb+ir; 6400 dpi
+        \\                                 is macOS only, with IR at 3200)
         \\  use NAME                       make an existing roll current
         \\  status [--roll NAME]           settings, strips, and which are processed
         \\  scan [--roll NAME] [--once] [--no-process]
