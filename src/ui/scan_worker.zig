@@ -527,7 +527,7 @@ fn fakeScanEmitLiveEventsWaitForCancel(context: *Context) !void {
     return error.CancelFileNotObserved;
 }
 
-fn previewBufferWithPythonLutOracleImage(allocator: std.mem.Allocator) !preview_worker.PreviewBuffer {
+fn previewBufferWithFilmLutImage(allocator: std.mem.Allocator) !preview_worker.PreviewBuffer {
     const data = try allocator.alloc(u8, 24 * 24 * 3);
     errdefer allocator.free(data);
     @memset(data, 230);
@@ -548,7 +548,7 @@ fn previewBufferWithPythonLutOracleImage(allocator: std.mem.Allocator) !preview_
             data[offset + 2] = 245;
         }
     }
-    const output_path = try allocator.dupe(u8, "python-lut-oracle-preview");
+    const output_path = try allocator.dupe(u8, "film-lut-preview");
     errdefer allocator.free(output_path);
     return .{
         .output_path = output_path,
@@ -631,14 +631,14 @@ test "scan worker writes temporary LUT file from preview pixels" {
     const scan_dir = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer std.testing.allocator.free(scan_dir);
 
-    var preview = try previewBufferWithPythonLutOracleImage(std.testing.allocator);
+    var preview = try previewBufferWithFilmLutImage(std.testing.allocator);
     defer preview.deinit(std.testing.allocator);
 
     var model = ui_state.State.init(scan_dir, "frames", 0);
     model.scannerConnected(24, 24, 1.0, 1.0);
-    model.scan_controls.exposure = .linear;
     model.scan_controls.setSelection(.{ .x = 0.0, .y = 0.0, .w = 24.0, .h = 24.0 });
     try std.testing.expect(model.queueScanStart(null));
+    const expected = try film_lut.computeFilmLuts(std.testing.allocator, preview.data, 24, 24, 3, .{ .x = 0, .y = 0, .w = 24, .h = 24 }, .{});
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakeScanSuccess);
     defer worker.deinit();
@@ -650,9 +650,9 @@ test "scan worker writes temporary LUT file from preview pixels" {
     const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, lut_path, std.testing.allocator, .limited(scanner_lut.serialized_len + 1));
     defer std.testing.allocator.free(data);
     try std.testing.expectEqual(@as(usize, scanner_lut.serialized_len), data.len);
-    try std.testing.expectEqual(@as(u8, 123), data[48]);
-    try std.testing.expectEqual(@as(u8, 136), data[256 + 48]);
-    try std.testing.expectEqual(@as(u8, 147), data[512 + 48]);
+    try std.testing.expectEqualSlices(u8, &expected.red.?, data[0..256]);
+    try std.testing.expectEqualSlices(u8, &expected.green.?, data[256..512]);
+    try std.testing.expectEqualSlices(u8, &expected.blue.?, data[512..768]);
 
     var completed = false;
     for (0..1000) |_| {
@@ -677,7 +677,7 @@ test "scan worker keeps IR-only scans on identity LUT policy" {
     const scan_dir = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer std.testing.allocator.free(scan_dir);
 
-    var preview = try previewBufferWithPythonLutOracleImage(std.testing.allocator);
+    var preview = try previewBufferWithFilmLutImage(std.testing.allocator);
     defer preview.deinit(std.testing.allocator);
 
     var model = ui_state.State.init(scan_dir, "frames", 0);

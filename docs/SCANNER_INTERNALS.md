@@ -495,6 +495,13 @@ sensor has higher resolution than 8 bits, so the scanner interpolates between
 LUT entries, producing genuine intermediate 16-bit values (not just multiples
 of 256).
 
+Measured on a V600 on 2026-09-28 (800 dpi, identity scan against a scan with
+integer-gain LUTs of the same strip): the output follows knot k at sensor
+value `256 k` and output `257 lut[k]`, linear between knots, to within 1-2%
+in mid-tones. All 256 low-byte values occur, so the precision is genuinely
+16-bit, and clipped pixels read 65534. The ratio rises by about 3.5% at the
+densest 0.1% of blue and green, which is below the noise there.
+
 **Identity LUT** (default, for preview scans):
 ```
 [0, 1, 2, 3, ..., 255]
@@ -504,7 +511,7 @@ of 256).
 Given a black point `B` and white point `W` from the film content:
 ```python
 scale = 255.0 / (W - B)
-lut = bytes(min(255, max(0, int((i - B) * scale))) for i in range(256))
+lut = bytes(min(255, max(0, round((i - B) * scale))) for i in range(256))
 ```
 This maps sensor values below B to 0, B-W to 0-255, and above W to 255
 (clipping the bright background, which we don't care about for film).
@@ -569,19 +576,32 @@ These sentinel patterns are clearly visible in the capture at packets
 
 ### Computing Optimal Film LUTs
 
-For film scanning, LUTs are computed from the 8-bit preview scan:
+For film scanning, LUTs are computed from the 8-bit preview scan
+(`src/scanner/film_lut.zig`); both points come from the film strip only:
 
-1. **Select** the film area in the preview
+1. **Select** the film area in the preview. Auto-select adds a 2 mm clear
+   margin on every side so frame detection sees film against clear light.
 2. **Threshold** using Otsu's method to separate dark film pixels from
-   bright background (clear TPU areas, sprocket holes, film borders)
-3. **Per channel**, find the 0.5th percentile (black point) and 99.5th
-   percentile (white point) of the film-only pixels
-4. **Build affine LUT**: `output = clamp((input - black) / (white - black) * 255, 0, 255)`
+   bright background (clear TPU areas, sprocket holes, film borders), then
+   erode the film mask by one pixel so blurred hole and strip edges do not
+   count as film.
+3. **Per channel**, black point = 0.75 x the 0.1st percentile and white
+   point = 1.05 x the 99.9th percentile of the film pixels. On a Gold 200
+   strip the film base lands at about 80-85% of full scale and no film pixel
+   clips at 3200 dpi.
+4. **Build affine LUT**: `output = round((input - black) / (white - black) * 255)`,
+   clamped to 0-255.
 
-This stretches the film's actual value range to fill the full 0-255 LUT
-output, maximizing the scanner's effective dynamic range for the film
-content. Background pixels that were bright (above the white point) clip
-to 255, which is expected and harmless.
+Clear areas clip to white, by design. Processing then needs two things:
+
+- **Linearization.** The applied LUT is stored in private BYTE tag 50001 on
+  the RGB page; `src/tiff.zig` and `web/tiff.mjs` invert it on load
+  (`linearizeRgb16`), scaling each channel so the white point is 65535. The
+  result is the sensor signal times a per-channel constant, a density offset
+  that Dmin subtraction removes when Dmin comes from the same scan.
+- **Film/clear detection.** With clear light clipped, the film base sits
+  close below white. Frame detection counts every unclipped pixel as film
+  when at least 2% of the image is clipped.
 
 ### When to Use Custom vs Identity LUTs
 

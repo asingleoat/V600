@@ -288,8 +288,9 @@ fn autoScanOutputPath(buffer: []u8, io: std.Io, request: v600.scanner.contracts.
     return std.fmt.bufPrint(buffer, "{s}/scan_{d:0>4}_{s}_{d}dpi.tiff", .{ dir, number, tag, dpi });
 }
 
-/// Scans the whole transparency unit at 400 dpi, 8-bit, and reports the film
-/// area in the inch coordinates `scanner scan --x --y --width --height` takes.
+/// Scans the whole transparency unit at 400 dpi, 8-bit, reports the film area
+/// in the inch coordinates `scanner scan --x --y --width --height` takes, and
+/// writes the film's gamma LUTs to `<preview>.lut.bin` for `--lut-file`.
 fn runScannerPreview(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -329,10 +330,44 @@ fn runScannerPreview(
     const controls = v600.native_ui.ScanControls{ .selection = selection };
     try stdout.print("{{\"ok\":true,\"preview\":\"{s}\",\"film_area\":", .{options.output_path});
     if (controls.selectionForScanStart(info)) |area| {
-        try stdout.print("{{\"x\":{d:.3},\"y\":{d:.3},\"width\":{d:.3},\"height\":{d:.3}}}}}\n", .{ area.x, area.y, area.w, area.h });
+        try stdout.print("{{\"x\":{d:.3},\"y\":{d:.3},\"width\":{d:.3},\"height\":{d:.3}}}", .{ area.x, area.y, area.w, area.h });
     } else {
-        try stdout.print("null}}\n", .{});
+        try stdout.print("null", .{});
     }
+
+    // Per-channel gamma LUTs stretching the film strip's own black and white
+    // points to the full output range, for `scanner scan --lut-file`.
+    const film = selection orelse {
+        try stdout.print(",\"lut_file\":null}}\n", .{});
+        return;
+    };
+    const luts = try v600.scanner.film_lut.computeFilmLuts(
+        allocator,
+        image.data,
+        image.width,
+        image.height,
+        image.samples_per_pixel,
+        .{ .x = film.x, .y = film.y, .w = film.w, .h = film.h },
+        .{},
+    );
+    if (luts.red == null and luts.green == null and luts.blue == null) {
+        try stdout.print(",\"lut_file\":null}}\n", .{});
+        return;
+    }
+    const lut_path = try std.fmt.allocPrint(allocator, "{s}.lut.bin", .{options.output_path});
+    defer allocator.free(lut_path);
+    try v600.scanner.lut.writeRgbFile(
+        io,
+        lut_path,
+        if (luts.red) |*table| table else null,
+        if (luts.green) |*table| table else null,
+        if (luts.blue) |*table| table else null,
+    );
+    try stdout.print(",\"lut_file\":\"{s}\",\"lut_black\":[{d:.2},{d:.2},{d:.2}],\"lut_white\":[{d:.2},{d:.2},{d:.2}]}}\n", .{
+        lut_path,
+        luts.black[0] orelse 0, luts.black[1] orelse 0, luts.black[2] orelse 0,
+        luts.white[0] orelse 0, luts.white[1] orelse 0, luts.white[2] orelse 0,
+    });
 }
 
 fn parseScanOptions(args: []const []const u8) !v600.scanner.host.ScanOptions {
@@ -537,15 +572,16 @@ fn printScannerUsage() !void {
         \\usage: v600-zig scanner <command>
         \\
         \\commands:
-        \\  devices                       list SANE devices
+        \\  devices                       list scanners
         \\  probe                         report selected V600 capabilities
         \\  preview [--out PATH]           400 dpi TPU preview; prints the film area for scan
+        \\                                 and writes the film's LUTs to PATH.lut.bin
         \\  scan [--out PATH] [options]    run a real scanner pass; default output is
         \\                                 scans/scan_NNNN_<mode>_<dpi>dpi.tiff
-        \\  usb-reset --yes                explicitly reset the V600 USB device
+        \\  usb-reset --yes                explicitly reset the V600 USB device (Linux)
         \\  smoke [--out PATH] [options]   gated hardware smoke scan
         \\  processing-smoke [options]     gated scan then processing load smoke
-        \\  macos-smoke                    gated future macOS interpreter smoke
+        \\  macos-smoke                    gated macOS scanner identity probe
         \\
         \\scan options:
         \\  --device NAME
@@ -555,7 +591,7 @@ fn printScannerUsage() !void {
         \\  --depth 8|16
         \\  --x IN --y IN --width IN --height IN
         \\  --metadata PATH
-        \\  --lut-file PATH
+        \\  --lut-file PATH                per-channel gamma LUTs (macOS; from preview)
         \\  --cancel-file PATH
         \\  --timing-report PATH
         \\

@@ -36,3 +36,18 @@ The expected observations are recorded in `rgb-thumb-ir.json`. Python
 metadata. Its private ASCII tag `65000` is recorded in
 `export-metadata.json` and should remain byte-for-byte compatible with
 Python's `json.dumps` output.
+
+`scanner-lut.tiff` is a 36 x 1 RGB16 page carrying a scanner gamma LUT in
+private BYTE tag `50001`, written with Python `tifffile` from
+`scanner-lut-linearize.json`:
+
+```python
+tifffile.imwrite(path, rgb, photometric="rgb", resolution=(800, 800),
+                 resolutionunit="inch",
+                 extratags=[(50001, "B", 768, bytes(fixture["lut"]), True)])
+```
+
+`scanner-lut-linearize.json` holds the LUT, raw samples per channel, and the
+linearized values computed with `numpy.interp` over the LUT's rising knots
+(knot k at sensor value 256 k and output 257 lut[k], scaled so the white knot
+is 65535). Both `src/tiff.zig` and `web/tiff.mjs` must match it to within 1.

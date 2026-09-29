@@ -2571,7 +2571,16 @@ fn otsuThresholdU8(raw_gray: []const u8) u8 {
     return otsuThresholdFromHist(hist);
 }
 
+/// Gray level at or below which a pixel counts as film. Scans exposed for
+/// the film alone (scanner gamma LUTs) clip every clear pixel to white while
+/// the film base sits not far below, where Otsu would split the film itself.
+/// When at least 2% of pixels are clipped, everything short of clipping is
+/// film.
 fn otsuThresholdFromHist(hist: [256]usize) u8 {
+    var pixel_count: usize = 0;
+    for (hist) |count| pixel_count += count;
+    if (pixel_count != 0 and hist[255] * 50 >= pixel_count) return 254;
+
     var total_sum: f64 = 0.0;
     var total_count: usize = 0;
     for (hist, 0..) |count, index| {

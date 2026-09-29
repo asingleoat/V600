@@ -90,8 +90,9 @@ Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
       companion.zig         scanner companion HTTP server (`serve`)
       tiff.zig              libtiff wrapper: page layout, metadata tags
       scanner/              Linux SANE runtime (linux.zig, sane.zig), macOS
-                            interpreter protocol (macos.zig, interpreter.zig),
-                            events, config, LUTs
+                            interpreter runtime (interpreter_runtime.zig,
+                            usb.zig, macos.zig, interpreter.zig), events,
+                            config, LUTs
       processing/           frame detection, inversion, IR cleaning, render,
                             export, workflow, config; C/C++ helpers for
                             OpenCV, libjpeg, SuperLU; optional WebGPU
@@ -161,7 +162,8 @@ deliberately, not by accident.
 
 - Linux and macOS scanner paths are separate. Linux drives SANE through
   `scanimage` subprocesses; macOS loads Epson's interpreter library and
-  supplies USB callbacks (protocol builders exist, no USB transport yet).
+  supplies USB callbacks over libusb (`scanner/interpreter_runtime.zig`).
+  `scanner.host` picks the runtime for the build target.
 - Linux RGB TPU scans use the `scanimage-v600` wrapper; IR scans require
   `scanimage-v600-ir` (installed by `nixos/`). Plain `scanimage` with
   `SCAN_IR_MODE=1` is not a supported fallback. IR and RGB+IR device
@@ -220,7 +222,11 @@ deliberately, not by accident.
   TOML reads.
 - Scans go to `scans/`, exports to `frames/`; both are gitignored.
 - TIFF metadata: make, model, software, resolution, datetime. Custom tag
-  50000 marks scanner custom LUTs; tag 65000 holds export metadata JSON.
+  50000 marks scanner custom LUTs; BYTE tag 50001 holds the applied LUT,
+  which the RGB loaders invert; tag 65000 holds export metadata JSON.
+- macOS gamma LUTs clip clear areas by design (both points come from the
+  film strip), so scans need clear margins for frame detection; auto-select
+  adds 2 mm per side.
 
 ## Conventions
 

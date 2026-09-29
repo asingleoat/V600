@@ -66,8 +66,20 @@ Open:
   `custom_luts_applied=true` and TIFF tag 50000; nothing installed reads the
   variable (only the unbuilt `lut_dispatcher.c` shim does). Decide whether to
   package the shim in `nixos/` or stop setting the marker, then verify on
-  hardware with a non-identity LUT. The frozen Python has a related break:
-  `v600/core/backends/sane.py` looks for `lut_dispatcher.c` next to itself.
+  hardware with a non-identity LUT. Applying them also means writing tag
+  50001 so loaders linearize (the macOS backend does). The frozen Python has
+  a related break: `v600/core/backends/sane.py` looks for `lut_dispatcher.c`
+  next to itself.
+- Linux scans come out with about gamma 1.8 applied, macOS scans linear:
+  film-base Dmin of one Gold 200 strip was 0.28/0.42/0.60 on Linux and
+  0.50/0.76/1.09 on macOS, a ratio of 1.8. The epkowa backend's default
+  gamma is the likely cause; `sane.zig` passes no gamma option. Processing
+  treats both as linear, so Linux densities are compressed. Decide which to
+  standardize on (the film profiles are hand-tuned either way).
+- A saved Dmin does not carry across LUT scans: linearization scales each
+  channel so its white point is 65535, a per-scan density offset. Dmin from
+  the same scan's rebate is exact; a Dmin saved from another scan is off by
+  the difference in LUT gains.
 - Companion (`src/companion.zig`):
   - `startScan` returns on error while holding the job mutex, leaving it
     locked and the job stuck in `running`.
@@ -182,6 +194,8 @@ Open:
 ### Needs the scanner
 
 - Verify custom LUT application on Linux (after the LUT fix).
+- Run the native UI's full preview, auto-select, LUT, scan sequence on the
+  Mac; the hardware smokes cover the workers without a preview LUT.
 - A live scan through the webapp Scan tab and the companion.
 
 ### Parked

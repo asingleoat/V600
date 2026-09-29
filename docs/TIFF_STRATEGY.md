@@ -20,10 +20,16 @@ the scanner `_tiff_metadata` helpers.
   DateTime (`writeScannerMetadata`). Tag 50000 marks custom scanner LUTs; on
   Linux it is currently set even though the LUTs are not applied (see
   `plan.md`).
+- Scanner gamma LUT: private BYTE tag 50001 on the RGB page holds the
+  768-byte LUT (R, G, B) the scanner applied, written by the macOS backend.
+  The RGB page loaders invert it (`linearizeRgb16`, mirrored in
+  `web/tiff.mjs`), so processing always sees linear data. Without the tag
+  the data is used as is.
 - Export metadata is JSON in private ASCII tag 65000
   (`readExportMetadataJson`).
 - Writes are uncompressed. `writeImage` can write BigTIFF, but no caller
-  enables it, so outputs over 4 GiB would fail.
+  enables it, so exports over 4 GiB would fail. `writeScanPages` (macOS
+  scans) switches to BigTIFF past about 3.75 GiB and writes 4 MiB strips.
 - `findImages` and `generateUniquePath` handle directory listing and
   collision-free export names.
 

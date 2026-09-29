@@ -200,9 +200,9 @@ pub const Runtime = struct {
             defer self.allocator.free(thumbnail.data);
 
             try tiff.writeScanPages(self.allocator, options.output_path, &.{
-                .{ .image = rgb.image, .metadata = self.pageMetadata(conn, rgb.effective_dpi, luts != null) },
+                .{ .image = rgb.image, .metadata = self.pageMetadata(conn, rgb.effective_dpi, luts) },
                 .{ .image = thumbnail },
-                .{ .image = ir.image, .metadata = self.pageMetadata(conn, ir.effective_dpi, false) },
+                .{ .image = ir.image, .metadata = self.pageMetadata(conn, ir.effective_dpi, null) },
             });
             const metadata_path = try self.writeSidecar(conn, options, rgb.effective_dpi, ir.effective_dpi, luts != null);
             defer self.allocator.free(metadata_path);
@@ -212,9 +212,10 @@ pub const Runtime = struct {
 
         const pass = try self.scanPass(conn, caps, options.request, options, luts);
         defer pass.deinit(self.allocator);
-        const luts_applied = luts != null and options.request.kind == .rgb;
+        const applied = if (options.request.kind == .rgb) luts else null;
+        const luts_applied = applied != null;
         try tiff.writeScanPages(self.allocator, options.output_path, &.{
-            .{ .image = pass.image, .metadata = self.pageMetadata(conn, pass.effective_dpi, luts_applied) },
+            .{ .image = pass.image, .metadata = self.pageMetadata(conn, pass.effective_dpi, applied) },
         });
         const metadata_path = try self.writeSidecar(conn, options, pass.effective_dpi, null, luts_applied);
         defer self.allocator.free(metadata_path);
@@ -349,12 +350,15 @@ pub const Runtime = struct {
         return buffer;
     }
 
-    fn pageMetadata(_: Runtime, conn: *const Connection, dpi: u32, luts_applied: bool) tiff.ScannerMetadata {
+    /// `luts` is the gamma LUT the scanner applied to this page, if any;
+    /// it is stored so loaders can linearize the data.
+    fn pageMetadata(_: Runtime, conn: *const Connection, dpi: u32, luts: ?*const [lut.serialized_len]u8) tiff.ScannerMetadata {
         return .{
             .model = conn.modelName(),
             .software = tiff_software,
             .dpi = dpi,
-            .custom_luts_applied = luts_applied,
+            .custom_luts_applied = luts != null,
+            .gamma_lut = luts,
         };
     }
 

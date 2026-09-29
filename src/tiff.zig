@@ -8,6 +8,11 @@ const c = @cImport({
 pub const scanner_custom_lut_tag: u32 = 50000;
 pub const scanner_custom_lut_name: [:0]const u8 = "CustomFilmLUTs";
 pub const scanner_custom_lut_marker = "Custom film LUTs applied";
+/// The 768-byte gamma LUT (R, G, B x 256) the scanner applied to page 0,
+/// stored as BYTE values; loaders invert it. See `linearizeRgb16`.
+pub const scanner_lut_tag: u32 = 50001;
+pub const scanner_lut_name: [:0]const u8 = "ScannerGammaLUT";
+pub const scanner_lut_len: usize = 768;
 pub const export_metadata_tag: u32 = 65000;
 pub const export_metadata_name: [:0]const u8 = "ScratchNDentMetadata";
 
@@ -16,6 +21,7 @@ var previous_tag_extender: c.TIFFExtendProc = null;
 var custom_field_infos = [_]c.TIFFFieldInfo{
     asciiFieldInfo(scanner_custom_lut_tag, scanner_custom_lut_name),
     asciiFieldInfo(export_metadata_tag, export_metadata_name),
+    byteArrayFieldInfo(scanner_lut_tag, scanner_lut_name),
 };
 
 pub const Image = struct {
@@ -92,6 +98,7 @@ pub const ScannerMetadata = struct {
     dpi: ?u32 = null,
     datetime: ?[]const u8 = null,
     custom_luts_applied: bool = false,
+    gamma_lut: ?*const [scanner_lut_len]u8 = null,
 };
 
 pub const WriteImageOptions = struct {
@@ -125,7 +132,7 @@ pub fn writeScannerMetadata(allocator: std.mem.Allocator, path: []const u8, meta
 }
 
 pub fn writeScannerPageMetadata(allocator: std.mem.Allocator, path: []const u8, page: u16, metadata: ScannerMetadata) !void {
-    if (metadata.custom_luts_applied) ensureCustomTagsRegistered();
+    if (metadata.custom_luts_applied or metadata.gamma_lut != null) ensureCustomTagsRegistered();
 
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
@@ -169,18 +176,23 @@ fn setScannerMetadataFields(allocator: std.mem.Allocator, tiff: *c.TIFF, metadat
         defer allocator.free(marker_z);
         try setAsciiField(tiff, scanner_custom_lut_tag, marker_z.ptr);
     }
+    if (metadata.gamma_lut) |lut| {
+        if (c.TIFFSetField(tiff, scanner_lut_tag, @as(u32, scanner_lut_len), lut) == 0) return error.TiffMetadataFailed;
+    }
 }
 
 pub fn loadRgbIrPages(allocator: std.mem.Allocator, path: []const u8) !RgbIrPages {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
+    ensureCustomTagsRegistered();
     const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
     const rgb = try readCurrentPage(allocator, tiff);
     errdefer rgb.deinit(allocator);
+    try applyScannerLut(allocator, tiff, rgb);
 
     var ir: ?Image = null;
     errdefer if (ir) |page| page.deinit(allocator);
@@ -224,11 +236,15 @@ pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
+    ensureCustomTagsRegistered();
     const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
-    return readCurrentPage(allocator, tiff);
+    const rgb = try readCurrentPage(allocator, tiff);
+    errdefer rgb.deinit(allocator);
+    try applyScannerLut(allocator, tiff, rgb);
+    return rgb;
 }
 
 pub fn loadRgbPageWithMetadata(allocator: std.mem.Allocator, path: []const u8) !RgbPageWithMetadata {
@@ -244,6 +260,7 @@ pub fn loadRgbPageWithMetadataTimed(
     defer allocator.free(path_z);
 
     const open_started = monotonicNowNs();
+    ensureCustomTagsRegistered();
     const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
@@ -255,6 +272,7 @@ pub fn loadRgbPageWithMetadataTimed(
     const rgb_started = monotonicNowNs();
     const rgb = try readCurrentPageWithInfo(allocator, tiff, rgb_info);
     errdefer rgb.deinit(allocator);
+    try applyScannerLut(allocator, tiff, rgb);
     if (timings) |target| target.rgb_read_ns = monotonicNowNs() - rgb_started;
 
     const ir_started = monotonicNowNs();
@@ -297,7 +315,7 @@ pub fn writeScanPages(allocator: std.mem.Allocator, path: []const u8, pages: []c
     for (pages) |page| {
         total_bytes += page.image.data.len;
         if (page.metadata) |metadata| {
-            if (metadata.custom_luts_applied) ensureCustomTagsRegistered();
+            if (metadata.custom_luts_applied or metadata.gamma_lut != null) ensureCustomTagsRegistered();
         }
     }
     const classic_limit: u64 = 0xF000_0000;
@@ -457,12 +475,86 @@ fn writeImageData(tiff: *c.TIFF, image: ImageView, rows_per_strip: u32) !void {
     if (c.TIFFWriteDirectory(tiff) == 0) return error.TiffWriteFailed;
 }
 
+/// Undoes the scanner LUT recorded on the current page, if any.
+fn applyScannerLut(allocator: std.mem.Allocator, tiff: *c.TIFF, image: Image) !void {
+    if (image.samples_per_pixel != 3 or image.bits_per_sample != 16) return;
+    var count: u32 = 0;
+    var raw: ?*const u8 = null;
+    if (c.TIFFGetField(tiff, scanner_lut_tag, &count, &raw) == 0) return;
+    if (count != scanner_lut_len) return;
+    const lut: *const [scanner_lut_len]u8 = @ptrCast(raw orelse return);
+    try linearizeRgb16(allocator, image.data, lut);
+}
+
+/// Maps 16-bit RGB samples scanned through a gamma LUT back to values
+/// proportional to the sensor signal, in place.
+///
+/// The scanner looks up sensor value `s` at `lut[s / 256]`, interpolates
+/// linearly between entries using the low bits, and outputs about
+/// `257 * lut`, so the output keeps 16-bit precision. The inverse maps each
+/// output onto the sensor scale and multiplies by one per-channel factor that
+/// puts the LUT's white point at 65535. That factor is a constant density
+/// offset per channel, which Dmin subtraction removes. Outputs clipped at
+/// the black or white end map to the black or white point.
+pub fn linearizeRgb16(allocator: std.mem.Allocator, data: []u8, lut: *const [scanner_lut_len]u8) !void {
+    const tables = try allocator.alloc(u16, 3 * 65536);
+    defer allocator.free(tables);
+    for (0..3) |channel| {
+        const table = tables[channel * 65536 ..][0..65536];
+        if (!buildInverseLut(lut[channel * 256 ..][0..256], table)) {
+            for (table, 0..) |*value, index| value.* = @intCast(index);
+        }
+    }
+    const samples = data.len / 2;
+    for (0..samples) |index| {
+        const bytes = data[index * 2 ..][0..2];
+        const value = std.mem.readInt(u16, bytes, .native);
+        std.mem.writeInt(u16, bytes, tables[(index % 3) * 65536 + value], .native);
+    }
+}
+
+/// Fills `out[y]` with the linearized value for LUT output `y`. Returns
+/// false for a LUT that decreases anywhere or is flat, which is left as is.
+fn buildInverseLut(lut: *const [256]u8, out: *[65536]u16) bool {
+    for (lut[1..], lut[0..255]) |next, previous| {
+        if (next < previous) return false;
+    }
+    // Knot k sits at sensor value 256 k and output 257 lut[k]. The rising
+    // part runs from the last knot of the flat bottom to the first knot of
+    // the flat top.
+    var black: usize = 0;
+    while (black < 255 and lut[black + 1] == lut[black]) black += 1;
+    var white: usize = 255;
+    while (white > 0 and lut[white - 1] == lut[white]) white -= 1;
+    if (white <= black) return false;
+
+    const scale = 65535.0 / @as(f64, @floatFromInt(white * 256));
+    const black_value: u16 = @intFromFloat(@round(@as(f64, @floatFromInt(black * 256)) * scale));
+    const black_out = @as(usize, lut[black]) * 257;
+    const white_out = @as(usize, lut[white]) * 257;
+    @memset(out[0 .. black_out + 1], black_value);
+    @memset(out[white_out..], 65535);
+    var knot = black;
+    while (knot < white) : (knot += 1) {
+        const out0 = @as(usize, lut[knot]) * 257;
+        const out1 = @as(usize, lut[knot + 1]) * 257;
+        if (out1 == out0) continue;
+        var y = out0;
+        while (y <= out1) : (y += 1) {
+            const sensor = @as(f64, @floatFromInt(knot * 256)) +
+                @as(f64, @floatFromInt(y - out0)) * 256.0 / @as(f64, @floatFromInt(out1 - out0));
+            out[y] = @intFromFloat(@min(65535.0, @round(sensor * scale)));
+        }
+    }
+    return true;
+}
+
 fn isPrivateTag(tag: u32) bool {
     return tag >= 32768;
 }
 
 fn isKnownPrivateTag(tag: u32) bool {
-    return tag == scanner_custom_lut_tag or tag == export_metadata_tag;
+    return tag == scanner_custom_lut_tag or tag == scanner_lut_tag or tag == export_metadata_tag;
 }
 
 fn asciiFieldInfo(tag: u32, name: [:0]const u8) c.TIFFFieldInfo {
@@ -474,6 +566,19 @@ fn asciiFieldInfo(tag: u32, name: [:0]const u8) c.TIFFFieldInfo {
         .field_bit = c.FIELD_CUSTOM,
         .field_oktochange = 1,
         .field_passcount = 0,
+        .field_name = @constCast(name.ptr),
+    };
+}
+
+fn byteArrayFieldInfo(tag: u32, name: [:0]const u8) c.TIFFFieldInfo {
+    return .{
+        .field_tag = tag,
+        .field_readcount = c.TIFF_VARIABLE2,
+        .field_writecount = c.TIFF_VARIABLE2,
+        .field_type = c.TIFF_BYTE,
+        .field_bit = c.FIELD_CUSTOM,
+        .field_oktochange = 1,
+        .field_passcount = 1,
         .field_name = @constCast(name.ptr),
     };
 }
@@ -842,6 +947,102 @@ test "writes RGB, thumbnail, and IR scan pages with per-page metadata" {
     try std.testing.expect(c.TIFFNumberOfStrips(handle) > 1);
     try std.testing.expect(c.TIFFSetDirectory(handle, 2) != 0);
     try std.testing.expectEqual(@as(?u32, 800), readCurrentDpi(handle));
+}
+
+const LutFixture = struct {
+    lut: []const u8,
+    samples_per_channel: usize,
+    samples: []const u16,
+    expected: []const u16,
+};
+
+fn loadLutFixture(allocator: std.mem.Allocator) !std.json.Parsed(LutFixture) {
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "test/fixtures/tiff/scanner-lut-linearize.json", allocator, .limited(64 * 1024));
+    defer allocator.free(text);
+    return std.json.parseFromSlice(LutFixture, allocator, text, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+}
+
+/// Interleaves the fixture's per-channel samples into native-endian RGB16.
+fn lutFixturePixels(allocator: std.mem.Allocator, fixture: LutFixture, values: []const u16) ![]u8 {
+    const n = fixture.samples_per_channel;
+    const data = try allocator.alloc(u8, n * 6);
+    for (0..n) |pixel| {
+        for (0..3) |channel| {
+            std.mem.writeInt(u16, data[(pixel * 3 + channel) * 2 ..][0..2], values[channel * n + pixel], .native);
+        }
+    }
+    return data;
+}
+
+fn expectLutFixturePixels(fixture: LutFixture, data: []const u8) !void {
+    const n = fixture.samples_per_channel;
+    for (0..n) |pixel| {
+        for (0..3) |channel| {
+            const actual = std.mem.readInt(u16, data[(pixel * 3 + channel) * 2 ..][0..2], .native);
+            const expected = fixture.expected[channel * n + pixel];
+            try std.testing.expect(@abs(@as(i32, actual) - @as(i32, expected)) <= 1);
+        }
+    }
+}
+
+test "linearizes scanner LUT output like the shared fixture" {
+    const allocator = std.testing.allocator;
+    var parsed = try loadLutFixture(allocator);
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    const data = try lutFixturePixels(allocator, fixture, fixture.samples);
+    defer allocator.free(data);
+    try linearizeRgb16(allocator, data, fixture.lut[0..scanner_lut_len]);
+    try expectLutFixturePixels(fixture, data);
+}
+
+test "leaves identity LUT data unchanged" {
+    const allocator = std.testing.allocator;
+    var lut: [scanner_lut_len]u8 = undefined;
+    for (&lut, 0..) |*value, index| value.* = @intCast(index % 256);
+    var data: [12]u8 = undefined;
+    for ([_]u16{ 0, 1, 257, 4000, 65280, 65535 }, 0..) |value, index| std.mem.writeInt(u16, data[index * 2 ..][0..2], value, .native);
+    const original = data;
+    try linearizeRgb16(allocator, &data, &lut);
+    try std.testing.expectEqualSlices(u8, &original, &data);
+}
+
+test "loads the tifffile LUT fixture linearized" {
+    const allocator = std.testing.allocator;
+    var parsed = try loadLutFixture(allocator);
+    defer parsed.deinit();
+    const rgb = try loadRgbPage(allocator, "test/fixtures/tiff/scanner-lut.tiff");
+    defer rgb.deinit(allocator);
+    try expectLutFixturePixels(parsed.value, rgb.data);
+}
+
+test "scan pages carrying a gamma LUT load linearized" {
+    const allocator = std.testing.allocator;
+    var parsed = try loadLutFixture(allocator);
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/lut-scan.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(path);
+
+    const data = try lutFixturePixels(allocator, fixture, fixture.samples);
+    defer allocator.free(data);
+    const width: u32 = @intCast(fixture.samples_per_channel);
+    try writeScanPages(allocator, path, &.{.{
+        .image = .{ .width = width, .height = 1, .samples_per_pixel = 3, .bits_per_sample = 16, .data = data },
+        .metadata = .{ .dpi = 800, .custom_luts_applied = true, .gamma_lut = fixture.lut[0..scanner_lut_len] },
+    }});
+
+    const rgb = try loadRgbPage(allocator, path);
+    defer rgb.deinit(allocator);
+    try expectLutFixturePixels(fixture, rgb.data);
+    var pages = try loadRgbIrPages(allocator, path);
+    defer pages.deinit(allocator);
+    try expectLutFixturePixels(fixture, pages.rgb.data);
+    var with_metadata = try loadRgbPageWithMetadata(allocator, path);
+    defer with_metadata.deinit(allocator);
+    try expectLutFixturePixels(fixture, with_metadata.rgb.data);
 }
 
 test "writes export TIFF with private JSON metadata tag" {

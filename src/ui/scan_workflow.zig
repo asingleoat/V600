@@ -114,7 +114,10 @@ pub const ScanSelectionEstimate = struct {
 };
 
 pub const DetectFilmAreaOptions = struct {
-    pad: f64 = 0.0125,
+    /// Clear margin added on every side, so each scan includes clear light
+    /// around the strip for frame detection. Medium format strips have no
+    /// sprocket holes, so this margin is their only clear area.
+    margin_in: f64 = 2.0 / 25.4,
 };
 
 pub fn previewSelectionFromDraw(
@@ -314,11 +317,12 @@ pub fn detectFilmAreaSelection(
     var w_in = @as(f64, @floatFromInt(largest_max_x - largest_min_x)) / preview_dpi_f;
     var h_in = @as(f64, @floatFromInt(largest_max_y - largest_min_y)) / preview_dpi_f;
 
-    const pad_amt = @min(w_in, h_in) * options.pad;
-    x_in = @max(0.0, x_in - pad_amt);
-    y_in = @max(0.0, y_in - pad_amt);
-    w_in = @min(tpu_width_in - x_in, w_in + 2.0 * pad_amt);
-    h_in = @min(tpu_height_in - y_in, h_in + 2.0 * pad_amt);
+    const right_in = @min(tpu_width_in, x_in + w_in + options.margin_in);
+    const bottom_in = @min(tpu_height_in, y_in + h_in + options.margin_in);
+    x_in = @max(0.0, x_in - options.margin_in);
+    y_in = @max(0.0, y_in - options.margin_in);
+    w_in = right_in - x_in;
+    h_in = bottom_in - y_in;
 
     const width_f: f64 = @floatFromInt(width);
     const height_f: f64 = @floatFromInt(height);
@@ -333,7 +337,7 @@ pub fn detectFilmAreaSelection(
 pub const ScanControls = struct {
     dpi: u32 = 3200,
     mode: ScanMode = .rgb_ir,
-    exposure: ExposureMode = .linear,
+    exposure: ExposureMode = .affine,
     autoselect: bool = true,
     selection: ?PreviewSelection = null,
     auto_selection: ?PreviewSelection = null,
@@ -408,7 +412,7 @@ pub const ScanStartPlan = struct {
     output_path: []const u8,
     cancel_file_path: ?[]const u8 = null,
     preview_selection: ?PreviewSelection = null,
-    exposure: ExposureMode = .linear,
+    exposure: ExposureMode = .affine,
     mode: ScanMode = .rgb_ir,
 };
 
@@ -766,7 +770,7 @@ test "scan controls preserve browser mode dpi choices" {
     try std.testing.expectEqual(@as(u32, 3200), controls.dpi);
     try std.testing.expectEqual(ScanMode.rgb_ir, controls.mode);
     try std.testing.expectEqualStrings("rgb+ir", controls.mode.wireValue());
-    try std.testing.expectEqualStrings("linear", controls.exposure.wireValue());
+    try std.testing.expectEqualStrings("affine", controls.exposure.wireValue());
     try std.testing.expect(controls.autoselect);
 
     controls.setDpi(1200);
@@ -943,7 +947,7 @@ test "scan preview selection draw move and resize mirror browser canvas math" {
     try std.testing.expect(!tiny.isDrawable());
 }
 
-test "scan preview film-area detection mirrors python largest dark region" {
+test "scan preview film-area detection selects the largest dark region plus a clear margin" {
     var preview = [_]u8{200} ** (10 * 6 * 3);
     var y: usize = 1;
     while (y <= 4) : (y += 1) {
@@ -965,12 +969,14 @@ test "scan preview film-area detection mirrors python largest dark region" {
         10,
         1.0,
         0.6,
-        .{},
+        .{ .margin_in = 0.08 },
     )).?;
-    try std.testing.expectApproxEqAbs(1.9625, selection.x, 0.000001);
-    try std.testing.expectApproxEqAbs(0.9625, selection.y, 0.000001);
-    try std.testing.expectApproxEqAbs(4.075, selection.w, 0.000001);
-    try std.testing.expectApproxEqAbs(3.075, selection.h, 0.000001);
+    // The dark block spans 0.2-0.6 in across and 0.1-0.4 in down at 10 dpi;
+    // the margin adds 0.08 in per side, clamped to the bed (0.6 in tall).
+    try std.testing.expectApproxEqAbs(1.2, selection.x, 0.000001);
+    try std.testing.expectApproxEqAbs(0.2, selection.y, 0.000001);
+    try std.testing.expectApproxEqAbs(5.6, selection.w, 0.000001);
+    try std.testing.expectApproxEqAbs(4.6, selection.h, 0.000001);
 }
 
 test "scan preview film-area detection rejects tiny dark components" {
@@ -1055,7 +1061,7 @@ test "scan start plan mirrors browser scan-start request shape" {
     try std.testing.expectEqualStrings(path, plan.output_path);
     try std.testing.expectEqualStrings(path, plan.request.output_path.?);
     try std.testing.expectEqualStrings(".zig-cache/v600-scan.cancel", plan.cancel_file_path.?);
-    try std.testing.expectEqual(ExposureMode.linear, plan.exposure);
+    try std.testing.expectEqual(ExposureMode.affine, plan.exposure);
     try std.testing.expectApproxEqAbs(100.0, plan.preview_selection.?.x, 0.0);
 
     controls.setMode(.ir);

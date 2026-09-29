@@ -26,8 +26,9 @@ companion.
 ## macOS
 
 Built and tested on Apple Silicon (macOS 26) from `nix develop`: the CLI,
-the native UI, and `zig build test`. The scanner backend is written but has
-not yet run against hardware.
+the native UI, and `zig build test`. Scanning works on a V600: identity
+probe, preview with film-area detection, RGB+IR at 800 and 3200 dpi, scans
+with film gamma LUTs, and the native UI's preview and scan workers.
 
 How it works (`src/scanner/interpreter_runtime.zig`, `usb.zig`, `macos.zig`,
 `interpreter.zig`), following the Python driver:
@@ -43,6 +44,13 @@ How it works (`src/scanner/interpreter_runtime.zig`, `usb.zig`, `macos.zig`,
   (first TPU pass, or when the LUTs change, then an interpreter reinit), FS G,
   block reads with cancel and progress, and a horizontal mirror for the
   transparency unit.
+- Gamma LUTs stretch each RGB channel between the film strip's own black and
+  white points (computed from the preview), so the film fills the 16-bit
+  range. The LUT is stored in tag 50001 and inverted on load; see
+  `docs/SCANNER_INTERNALS.md`. IR passes use identity LUTs.
+- The interpreter's output is linear. The Linux epkowa path delivers data
+  with about gamma 1.8 applied (Dmin ratio 1.8 on the same strip); see
+  `plan.md`.
 - RGB+IR runs a 16-bit RGB pass and an 8-bit IR pass (at most 3200 dpi) and
   writes RGB, thumbnail, and IR pages in-process with libtiff; no `magick` or
   `tiffcp`. Resolutions snap as on Linux (400/800/1600/3200 on the TPU).
@@ -70,10 +78,14 @@ Hardware bring-up, with the scanner attached:
 zig build --summary all
 ./zig-out/bin/v600-zig scanner devices
 V600_MACOS_HARDWARE_SMOKE=1 ./zig-out/bin/v600-zig scanner macos-smoke   # identity probe
-./zig-out/bin/v600-zig scanner preview
-./zig-out/bin/v600-zig scanner scan --kind rgb --dpi 800 --x .. --y .. --width .. --height ..
-./zig-out/bin/v600-zig scanner scan --kind rgb+ir --dpi 800 ...
+./zig-out/bin/v600-zig scanner preview        # film area + scans/preview.tiff.lut.bin
+./zig-out/bin/v600-zig scanner scan --kind rgb+ir --dpi 3200 --x .. --y .. --width .. --height .. \
+    --lut-file scans/preview.tiff.lut.bin
 ```
+
+Measured: a 400 dpi preview takes 30 s; RGB+IR of a 35 mm strip takes 1 min
+45 s at 800 dpi and 9 min 20 s at 3200 dpi (0.9 GB peak memory). Opening the
+connection takes well under a second.
 
 ## Windows
 

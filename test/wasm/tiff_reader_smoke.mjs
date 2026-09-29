@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 import {
+  linearizeRgb16,
   loadIrPageFromTiff,
   loadRgb16PageFromTiff,
   loadTiffPages,
@@ -40,6 +41,30 @@ assert.equal(roundTrip.width, rgb.width);
 assert.equal(roundTrip.height, rgb.height);
 assert.equal(roundTrip.dpi, rgb.dpi);
 assert.deepEqual(Array.from(roundTrip.data), Array.from(rgb.data));
+
+// Scanner gamma LUT: the inverse must match the shared fixture (to within
+// rounding), both directly and when a TIFF carries the LUT in tag 50001.
+const lutFixture = JSON.parse(fs.readFileSync("test/fixtures/tiff/scanner-lut-linearize.json", "utf8"));
+const lutPixels = lutFixture.samples_per_channel;
+function interleave(values) {
+  const out = new Uint16Array(lutPixels * 3);
+  for (let pixel = 0; pixel < lutPixels; pixel += 1) {
+    for (let channel = 0; channel < 3; channel += 1) out[pixel * 3 + channel] = values[channel * lutPixels + pixel];
+  }
+  return out;
+}
+function assertLinearized(actual) {
+  const expected = interleave(lutFixture.expected);
+  for (let index = 0; index < expected.length; index += 1) {
+    assert.ok(Math.abs(actual[index] - expected[index]) <= 1, `sample ${index}: ${actual[index]} vs ${expected[index]}`);
+  }
+}
+const lutSamples = interleave(lutFixture.samples);
+linearizeRgb16(lutSamples, lutFixture.lut);
+assertLinearized(lutSamples);
+const lutBytes = fs.readFileSync("test/fixtures/tiff/scanner-lut.tiff");
+const lutPage = loadRgb16PageFromTiff(lutBytes.buffer.slice(lutBytes.byteOffset, lutBytes.byteOffset + lutBytes.byteLength));
+assertLinearized(lutPage.data);
 
 console.log(JSON.stringify({
   event: "tiff-reader-smoke",

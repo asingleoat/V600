@@ -36,9 +36,9 @@ to (see `docs/SCANNER_COMPANION.md`):
 
 - Linux: scanner through the patched epkowa SANE backend, processing CLI,
   and native UI. Scanning has been exercised on a V600.
-- macOS: CLI and native UI build and test on Apple Silicon. The scanner
-  backend (Epson's Interpreter bundle over libusb) awaits hardware
-  bring-up.
+- macOS: scanner through Epson's Interpreter bundle over libusb, with
+  per-channel gamma LUTs fitted to the film; CLI and native UI. Scanning
+  has been exercised on a V600 from Apple Silicon.
 - Browser: checked in Chrome and Chromium (older browsers without Wasm
   memory64 get a wasm32 build). Scanning from it needs the companion on a
   Linux host.
@@ -56,10 +56,12 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
     zig build -Dui=true --summary all   # build the native UI (zig-out/bin/v600-ui)
     zig build test --summary all        # unit and fixture tests
 
-    v600-zig scanner devices                          # list SANE devices
+    v600-zig scanner devices                          # list scanners
     v600-zig scanner preview                          # TPU preview; prints the film area
+                                                      # and writes its LUTs (macOS)
     v600-zig scanner scan --source tpu --kind rgb+ir --dpi 3200 \
-        --x IN --y IN --width IN --height IN          # scans/scan_NNNN_rgbir_3200dpi.tiff
+        --x IN --y IN --width IN --height IN \
+        [--lut-file scans/preview.tiff.lut.bin]       # scans/scan_NNNN_rgbir_3200dpi.tiff
     v600-zig processing detect --input scans/scan.tiff  # frames, rebate, and its Dmin (saved)
     v600-zig processing export --input scans/scan.tiff \
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs

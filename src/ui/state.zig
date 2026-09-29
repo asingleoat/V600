@@ -3633,7 +3633,7 @@ test "native Scan progress shows ETA, elapsed time, and the combined RGB+IR tota
     try std.testing.expect(!state.takeScanFinished());
 }
 
-test "native UI preview auto-select applies python film-area detector result" {
+test "native UI preview auto-select applies the film-area detector result" {
     var state = State.init("scans", "frames", 0);
     defer state.deinit(std.testing.allocator);
     state.scanner.preview_dpi = 10;
@@ -3666,10 +3666,13 @@ test "native UI preview auto-select applies python film-area detector result" {
     try state.applyPreviewAutoSelect(std.testing.allocator, &preview, 10, 6, 3);
     const selection = state.scan_controls.selection.?;
     try std.testing.expect(state.scanRestoreAutoAvailable());
-    try std.testing.expectApproxEqAbs(1.9625, selection.x, 0.000001);
-    try std.testing.expectApproxEqAbs(0.9625, selection.y, 0.000001);
-    try std.testing.expectApproxEqAbs(4.075, selection.w, 0.000001);
-    try std.testing.expectApproxEqAbs(3.075, selection.h, 0.000001);
+    // The dark block spans 0.2-0.6 in across and 0.1-0.4 in down at 10 dpi,
+    // plus the default 2 mm clear margin on every side.
+    const margin = 2.0 / 25.4;
+    try std.testing.expectApproxEqAbs((0.2 - margin) * 10.0, selection.x, 0.000001);
+    try std.testing.expectApproxEqAbs((0.1 - margin) * 10.0, selection.y, 0.000001);
+    try std.testing.expectApproxEqAbs((0.4 + 2.0 * margin) * 10.0, selection.w, 0.000001);
+    try std.testing.expectApproxEqAbs((0.3 + 2.0 * margin) * 10.0, selection.h, 0.000001);
     try std.testing.expectEqualStrings("Film area detected. Adjust selection if needed.", state.scanner.scan_status);
 
     state.beginPreviewRequest();

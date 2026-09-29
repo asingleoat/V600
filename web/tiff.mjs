@@ -13,7 +13,10 @@ const tag = Object.freeze({
   planarConfiguration: 284,
   resolutionUnit: 296,
   software: 305,
+  scannerLut: 50001,
 });
+
+const scannerLutLength = 768;
 
 const typeSize = Object.freeze({
   1: 1,
@@ -174,7 +177,52 @@ function pageFromTags(view, tags, littleEndian, index) {
   };
   if (bitsPerSample.every((bits) => bits === 16)) page.u16Data = bytesToU16(bytes, littleEndian);
   if (bitsPerSample.every((bits) => bits === 8)) page.u8Data = bytes;
+  const scannerLut = tags.get(tag.scannerLut);
+  if (page.u16Data && samplesPerPixel === 3 && Array.isArray(scannerLut) && scannerLut.length === scannerLutLength) {
+    linearizeRgb16(page.u16Data, scannerLut);
+  }
   return page;
+}
+
+// Maps RGB16 samples scanned through a scanner gamma LUT (tag 50001) back to
+// values proportional to the sensor signal, in place. Mirrors
+// `linearizeRgb16` in src/tiff.zig: knot k sits at sensor value 256k and
+// output 257 * lut[k], linear between knots, and each channel is scaled so
+// the LUT's white point is 65535.
+export function linearizeRgb16(samples, lut) {
+  const tables = [0, 1, 2].map((channel) => inverseLutTable(lut.slice(channel * 256, channel * 256 + 256)));
+  for (let index = 0; index < samples.length; index += 1) {
+    const table = tables[index % 3];
+    if (table) samples[index] = table[samples[index]];
+  }
+}
+
+function inverseLutTable(lut) {
+  for (let knot = 1; knot < 256; knot += 1) {
+    if (lut[knot] < lut[knot - 1]) return null;
+  }
+  let black = 0;
+  while (black < 255 && lut[black + 1] === lut[black]) black += 1;
+  let white = 255;
+  while (white > 0 && lut[white - 1] === lut[white]) white -= 1;
+  if (white <= black) return null;
+
+  const scale = 65535 / (white * 256);
+  const table = new Uint16Array(65536);
+  const blackOut = lut[black] * 257;
+  const whiteOut = lut[white] * 257;
+  table.fill(Math.round(black * 256 * scale), 0, blackOut + 1);
+  table.fill(65535, whiteOut);
+  for (let knot = black; knot < white; knot += 1) {
+    const out0 = lut[knot] * 257;
+    const out1 = lut[knot + 1] * 257;
+    if (out1 === out0) continue;
+    for (let y = out0; y <= out1; y += 1) {
+      const sensor = knot * 256 + (y - out0) * 256 / (out1 - out0);
+      table[y] = Math.min(65535, Math.round(sensor * scale));
+    }
+  }
+  return table;
 }
 
 function readValue(view, offset, type, count, littleEndian) {

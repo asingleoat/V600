@@ -6,8 +6,14 @@ pub const Mode = enum {
 };
 
 pub const Options = struct {
-    lo_pct: f64 = 0.5,
-    hi_pct: f64 = 99.5,
+    lo_pct: f64 = 0.1,
+    hi_pct: f64 = 99.9,
+    /// The black point is `footroom` times the low percentile and the white
+    /// point `headroom` times the high one, so full-resolution grain and the
+    /// 8-bit preview's rounding stay inside the stretched range. Measured on
+    /// a Gold 200 strip, the film base lands at about 80-85% of full scale.
+    footroom: f64 = 0.75,
+    headroom: f64 = 1.05,
     bg_threshold: f64 = 0.7,
     mode: Mode = .affine,
 };
@@ -75,11 +81,25 @@ pub fn computeFilmLuts(
     const threshold = otsuThreshold(&hist, total, options.bg_threshold);
     var result = ComputedLuts{ .threshold = threshold };
 
-    y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            if (grayAt(preview, width, channels, x, y) < threshold) result.film_pixels += 1;
+    // Film pixels are below the Otsu threshold, eroded by one pixel so the
+    // blurred edges of sprocket holes and of the strip do not count as film.
+    const crop_w = x1 - x0;
+    const crop_h = y1 - y0;
+    const below = try allocator.alloc(bool, crop_w * crop_h);
+    defer allocator.free(below);
+    for (0..crop_h) |row| {
+        for (0..crop_w) |col| {
+            below[row * crop_w + col] = grayAt(preview, width, channels, x0 + col, y0 + row) < threshold;
+        }
+    }
+    const film = try allocator.alloc(bool, crop_w * crop_h);
+    defer allocator.free(film);
+    for (0..crop_h) |row| {
+        for (0..crop_w) |col| {
+            const index = row * crop_w + col;
+            film[index] = below[index] and row > 0 and col > 0 and row + 1 < crop_h and col + 1 < crop_w and
+                below[index - 1] and below[index + 1] and below[index - crop_w] and below[index + crop_w];
+            if (film[index]) result.film_pixels += 1;
         }
     }
     if (result.film_pixels < 100) return result;
@@ -89,12 +109,10 @@ pub fn computeFilmLuts(
     defer for (channel_data) |data| allocator.free(data);
 
     var cursor: usize = 0;
-    y = y0;
-    while (y < y1) : (y += 1) {
-        var x = x0;
-        while (x < x1) : (x += 1) {
-            if (grayAt(preview, width, channels, x, y) >= threshold) continue;
-            const offset = (y * width + x) * channels;
+    for (0..crop_h) |row| {
+        for (0..crop_w) |col| {
+            if (!film[row * crop_w + col]) continue;
+            const offset = ((y0 + row) * width + x0 + col) * channels;
             channel_data[0][cursor] = @floatFromInt(preview[offset]);
             channel_data[1][cursor] = @floatFromInt(preview[offset + 1]);
             channel_data[2][cursor] = @floatFromInt(preview[offset + 2]);
@@ -104,8 +122,8 @@ pub fn computeFilmLuts(
 
     for (0..3) |channel| {
         std.mem.sort(f64, channel_data[channel], {}, lessThanF64);
-        const black = percentileSorted(channel_data[channel], options.lo_pct);
-        const white = percentileSorted(channel_data[channel], options.hi_pct);
+        const black = percentileSorted(channel_data[channel], options.lo_pct) * options.footroom;
+        const white = @min(255.0, percentileSorted(channel_data[channel], options.hi_pct) * options.headroom);
         result.black[channel] = black;
         result.white[channel] = white;
         if (white <= black + 1.0) continue;
@@ -191,23 +209,23 @@ fn buildChannelLut(black: f64, white: f64, mode: Mode) [256]u8 {
             .affine => (input - black) * scale,
             .linear => input * scale,
         };
-        value.* = clampPythonIntToU8(mapped);
+        value.* = clampToU8(mapped);
     }
     return lut;
 }
 
-fn clampPythonIntToU8(value: f64) u8 {
-    const truncated: i32 = @intFromFloat(value);
-    if (truncated <= 0) return 0;
-    if (truncated >= 255) return 255;
-    return @intCast(truncated);
+fn clampToU8(value: f64) u8 {
+    const rounded = @round(value);
+    if (rounded <= 0.0) return 0;
+    if (rounded >= 255.0) return 255;
+    return @intFromFloat(rounded);
 }
 
 fn lessThanF64(_: void, lhs: f64, rhs: f64) bool {
     return lhs < rhs;
 }
 
-fn synthesizePythonLutOracleImage() [24 * 24 * 3]u8 {
+fn synthesizeFilmLutImage() [24 * 24 * 3]u8 {
     var image = [_]u8{230} ** (24 * 24 * 3);
     var y: usize = 4;
     while (y < 20) : (y += 1) {
@@ -229,48 +247,45 @@ fn synthesizePythonLutOracleImage() [24 * 24 * 3]u8 {
     return image;
 }
 
-fn expectSamples(lut: [256]u8, expected: []const u8) !void {
-    const indices = [_]usize{ 0, 1, 27, 28, 38, 47, 48, 82, 83, 90, 98, 99, 100, 128, 255 };
-    try std.testing.expectEqual(indices.len, expected.len);
-    for (indices, expected) |index, value| {
-        try std.testing.expectEqual(value, lut[index]);
-    }
-}
-
-test "compute film LUTs matches Python affine oracle" {
-    const image = synthesizePythonLutOracleImage();
+test "affine film LUTs take both points from eroded film pixels" {
+    const image = synthesizeFilmLutImage();
     const result = try computeFilmLuts(std.testing.allocator, &image, 24, 24, 3, .{
         .x = 0,
         .y = 0,
         .w = 24,
         .h = 24,
-    }, .{ .mode = .affine });
-    try std.testing.expectApproxEqAbs(93.134765625, result.threshold, 0.0);
-    try std.testing.expectEqual(@as(usize, 224), result.film_pixels);
-    try std.testing.expectApproxEqAbs(47.1150016784668, result.black[0].?, 0.00001);
-    try std.testing.expectApproxEqAbs(98.88499450683594, result.white[0].?, 0.00001);
-    try std.testing.expectApproxEqAbs(38.0, result.black[1].?, 0.0);
-    try std.testing.expectApproxEqAbs(90.0, result.white[1].?, 0.0);
-    try std.testing.expectApproxEqAbs(27.114999771118164, result.black[2].?, 0.00001);
-    try std.testing.expectApproxEqAbs(82.88499450683594, result.white[2].?, 0.00001);
-    try expectSamples(result.red.?, &.{ 0, 0, 0, 0, 0, 0, 4, 171, 176, 211, 250, 255, 255, 255, 255 });
-    try expectSamples(result.green.?, &.{ 0, 0, 0, 0, 0, 44, 49, 215, 220, 255, 255, 255, 255, 255, 255 });
-    try expectSamples(result.blue.?, &.{ 0, 0, 0, 4, 49, 90, 95, 250, 255, 255, 255, 255, 255, 255, 255 });
+    }, .{});
+    // The film block spans columns 4-17 and rows 4-19 (columns 18-19 are a
+    // bright hole); one pixel of erosion leaves columns 5-16 and rows 5-18.
+    try std.testing.expectEqual(@as(usize, 12 * 14), result.film_pixels);
+    // Red there is 30 + 3x + y: 50 at the densest pixel, 96 at the thinnest.
+    try std.testing.expectApproxEqAbs(0.75 * 50.0, result.black[0].?, 0.2);
+    try std.testing.expectApproxEqAbs(1.05 * 96.0, result.white[0].?, 0.2);
+
+    const red = result.red.?;
+    const black = result.black[0].?;
+    const white = result.white[0].?;
+    try std.testing.expectEqual(@as(u8, 0), red[@intFromFloat(@floor(black))]);
+    try std.testing.expectEqual(@as(u8, 255), red[@intFromFloat(@ceil(white))]);
+    try std.testing.expectEqual(@as(u8, @intFromFloat(@round((70.0 - black) * 255.0 / (white - black)))), red[70]);
+    for (red[1..], red[0..255]) |next, previous| try std.testing.expect(next >= previous);
+    // The bright hole and the background never set a white point.
+    for ([_]usize{ 1, 2 }) |channel| try std.testing.expect(result.white[channel].? < 100.0);
 }
 
-test "compute film LUTs matches Python linear oracle" {
-    const image = synthesizePythonLutOracleImage();
+test "linear film LUTs keep zero and stretch to the film white point" {
+    const image = synthesizeFilmLutImage();
     const result = try computeFilmLuts(std.testing.allocator, &image, 24, 24, 3, .{
         .x = 0,
         .y = 0,
         .w = 24,
         .h = 24,
     }, .{ .mode = .linear });
-    try std.testing.expectApproxEqAbs(93.134765625, result.threshold, 0.0);
-    try std.testing.expectEqual(@as(usize, 224), result.film_pixels);
-    try expectSamples(result.red.?, &.{ 0, 2, 69, 72, 97, 121, 123, 211, 214, 232, 252, 255, 255, 255, 255 });
-    try expectSamples(result.green.?, &.{ 0, 2, 76, 79, 107, 133, 136, 232, 235, 255, 255, 255, 255, 255, 255 });
-    try expectSamples(result.blue.?, &.{ 0, 3, 83, 86, 116, 144, 147, 252, 255, 255, 255, 255, 255, 255, 255 });
+    const blue = result.blue.?;
+    const white = result.white[2].?;
+    try std.testing.expectEqual(@as(u8, 0), blue[0]);
+    try std.testing.expectEqual(@as(u8, @intFromFloat(@round(40.0 * 255.0 / white))), blue[40]);
+    try std.testing.expectEqual(@as(u8, 255), blue[@intFromFloat(@ceil(white))]);
 }
 
 test "compute film LUTs returns identity fallback for insufficient film pixels" {
@@ -291,7 +306,8 @@ test "compute film LUTs returns identity fallback for insufficient film pixels" 
         .w = 12,
         .h = 12,
     }, .{ .mode = .linear });
-    try std.testing.expectEqual(@as(usize, 36), result.film_pixels);
+    // A 6 x 6 block erodes to 4 x 4, too few pixels to trust.
+    try std.testing.expectEqual(@as(usize, 16), result.film_pixels);
     try std.testing.expect(result.red == null);
     try std.testing.expect(result.green == null);
     try std.testing.expect(result.blue == null);
