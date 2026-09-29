@@ -105,6 +105,11 @@ Open:
 - With no film stock selected, exports still invert with `kodak_gold`
   (`film_stock orelse "kodak_gold"` in `src/processing/export.zig`). Python
   had no inversion without a stock. Decide which is intended.
+- The 645 entry in `src/processing/film_formats.zig` treats its 56 mm side
+  as running along the strip (60 mm pitch; detection takes the gap as pitch
+  minus the long side), but 645 frames are 41.5 mm along a 120 strip at
+  about 45 mm pitch. Check against a real 645 strip before trusting 645
+  detection. Roll rotation already treats 645 frames as landscape.
 - The image list ignores symlinked TIFFs (`tiff.findImages` accepts only
   regular files), so a scan folder of symlinks shows "No scan TIFFs found".
 - Passing test runs print about 130 JSON scanner timing events on stderr,
@@ -203,8 +208,6 @@ Open:
 - A full 3200 dpi roll through `roll scan` or Scan Strip; the hardware runs
   so far used 800 dpi strips.
 - A live scan through the webapp Scan tab and the companion.
-- 6400 dpi RGB: a real macOS strip scan and roll export (only fake-scanner
-  tested; expect about 3.2 GB per 35 mm strip and a large export).
 - 6400 dpi RGB on Linux. The hardware supports it and the `scanimage-v600`
   wrapper and patched epkowa backend claim 16-bit up to 6400, but the Zig
   SANE path stops at 3200 (`sane.zig` TPU list, `linux.zig` `film_dpis`).

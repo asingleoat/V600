@@ -913,6 +913,8 @@ pub fn processExportFromTiff(
     if (options.timings) |timings| timings.load_full_image_ns += monotonicNowNs() - load_started;
     defer full.deinit(allocator);
     const current_dpi = options.current_dpi orelse full.dpi;
+    const scan_datetime = try tiff.readDateTime(allocator, options.input_path);
+    defer if (scan_datetime) |datetime| allocator.free(datetime);
 
     var dmin = options.dmin;
     if (options.active_stock != null and dmin == null) {
@@ -1048,6 +1050,8 @@ pub fn processExportFromTiff(
                         .source = std.fs.path.basename(options.input_path),
                         .rebate_rect = options.rebate_rect,
                         .crop = job.rect,
+                        .dpi = current_dpi,
+                        .datetime = scan_datetime,
                     },
                     .film_stock = film_stock,
                     .stock_coeffs = stock_coeffs,
@@ -1080,6 +1084,8 @@ pub fn processExportFromTiff(
             .ir_scale_x = ir_scale_x,
             .ir_scale_y = ir_scale_y,
             .source = std.fs.path.basename(options.input_path),
+            .dpi = current_dpi,
+            .datetime = scan_datetime,
             .rebate_rect = options.rebate_rect,
             .outputs = options.outputs,
             .film_stock = film_stock,
@@ -1212,6 +1218,8 @@ fn processExportDirectRgbCropFromLoadedPage(
     const dmin = options.dmin.?;
 
     const current_dpi = options.current_dpi orelse loaded.dpi;
+    const scan_datetime = try tiff.readDateTime(allocator, options.input_path);
+    defer if (scan_datetime) |datetime| allocator.free(datetime);
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input_path));
     const film_stock = options.active_stock;
@@ -1287,6 +1295,8 @@ fn processExportDirectRgbCropFromLoadedPage(
     const shared = DirectRgbFrameExportShared{
         .rgb_page = loaded.rgb,
         .source = std.fs.path.basename(options.input_path),
+        .dpi = current_dpi,
+        .datetime = scan_datetime,
         .rebate_rect = options.rebate_rect,
         .outputs = options.outputs,
         .film_stock = film_stock,
@@ -1610,6 +1620,8 @@ const FrameExportShared = struct {
     ir_scale_x: f64,
     ir_scale_y: f64,
     source: []const u8,
+    dpi: ?u32,
+    datetime: ?[]const u8,
     rebate_rect: ?frames.RebateOriginRect,
     outputs: export_pipeline.OutputSelection,
     film_stock: ?[]const u8,
@@ -1624,6 +1636,8 @@ const FrameExportShared = struct {
 const DirectRgbFrameExportShared = struct {
     rgb_page: tiff.Image,
     source: []const u8,
+    dpi: ?u32,
+    datetime: ?[]const u8,
     rebate_rect: ?frames.RebateOriginRect,
     outputs: export_pipeline.OutputSelection,
     film_stock: ?[]const u8,
@@ -1712,6 +1726,8 @@ fn processDirectRgbFrameJob(
                     .source = shared.source,
                     .rebate_rect = shared.rebate_rect,
                     .crop = job.rect,
+                    .dpi = shared.dpi,
+                    .datetime = shared.datetime,
                 },
                 .film_stock = shared.film_stock,
                 .stock_coeffs = shared.stock_coeffs,
@@ -1745,6 +1761,8 @@ fn processDirectRgbFrameJob(
                 .source = shared.source,
                 .rebate_rect = shared.rebate_rect,
                 .crop = job.rect,
+                .dpi = shared.dpi,
+                .datetime = shared.datetime,
             },
             .film_stock = shared.film_stock,
             .stock_coeffs = shared.stock_coeffs,
@@ -1934,6 +1952,8 @@ fn frameExportWorker(queue: *FrameExportQueue) void {
                     .source = queue.shared.source,
                     .rebate_rect = queue.shared.rebate_rect,
                     .crop = job.rect,
+                    .dpi = queue.shared.dpi,
+                    .datetime = queue.shared.datetime,
                 },
                 .film_stock = queue.shared.film_stock,
                 .stock_coeffs = queue.shared.stock_coeffs,

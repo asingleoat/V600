@@ -69,9 +69,12 @@ pub fn printUsage() void {
         \\
         \\commands:
         \\  start NAME [--stock NAME] [--format 35mm|645|6x6|6x7|6x9] [--dpi 800|1600|3200|6400] [--kind rgb+ir|rgb]
+        \\        [--rotation 0|90|180|270]
         \\                                 create scans/NAME/ and make it the current roll
         \\                                 (defaults: kodak_gold, 35mm, 3200 dpi, rgb+ir; 6400 dpi
-        \\                                 is macOS only, with IR at 3200)
+        \\                                 is macOS only, with IR at 3200). Rotation turns exported
+        \\                                 frames clockwise; by default 35mm, 6x7, and 6x9 turn 270
+        \\                                 (landscape), others 0. Change it later in roll.json.
         \\  use NAME                       make an existing roll current
         \\  status [--roll NAME]           settings, strips, and which are processed
         \\  scan [--roll NAME] [--once] [--no-process]
@@ -102,6 +105,8 @@ fn runStart(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, 
             settings.dpi = try std.fmt.parseInt(u32, value, 10);
         } else if (std.mem.eql(u8, arg, "--kind")) {
             settings.kind = v600.roll.kindFromName(value) orelse return error.InvalidRollSettings;
+        } else if (std.mem.eql(u8, arg, "--rotation")) {
+            settings.rotation = try std.fmt.parseInt(i32, value, 10);
         } else {
             return error.UnknownRollOption;
         }
@@ -120,12 +125,13 @@ fn runStart(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, 
     var roll = try Roll.create(allocator, io, scans_root, frames_root, argv[0], settings);
     defer roll.deinit();
     try setCurrentRoll(allocator, io, roll.name);
-    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}. Scans go to {s}/, exports to {s}/.\n", .{
+    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}, frames rotated {d}. Scans go to {s}/, exports to {s}/.\n", .{
         roll.name,
         roll.stock,
         roll.format,
         roll.dpi,
         v600.roll.kindName(roll.kind),
+        roll.rotation,
         roll.dir,
         roll.frames_dir,
     });
@@ -133,7 +139,7 @@ fn runStart(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, 
 }
 
 fn printStatus(allocator: std.mem.Allocator, io: std.Io, roll: *const Roll, stdout: anytype) !void {
-    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}\n", .{ roll.name, roll.stock, roll.format, roll.dpi, v600.roll.kindName(roll.kind) });
+    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}, frames rotated {d}\n", .{ roll.name, roll.stock, roll.format, roll.dpi, v600.roll.kindName(roll.kind), roll.rotation });
     try stdout.print("LUT: {s}\n", .{if (roll.lut_white != null) "fixed by the first strip" else "not set yet"});
     if (roll.dmin) |dmin| try stdout.print("Dmin: {d:.3} / {d:.3} / {d:.3}\n", .{ dmin[0], dmin[1], dmin[2] });
     var strips = try roll.listStrips(io);

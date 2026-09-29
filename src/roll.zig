@@ -40,7 +40,26 @@ pub const Settings = struct {
     format: []const u8 = "35mm",
     dpi: u32 = 3200,
     kind: contracts.ScanKind = .rgb_ir,
+    /// Clockwise degrees applied to every exported frame; null takes the
+    /// format's default (`defaultRotation`).
+    rotation: ?i32 = null,
 };
+
+/// Turns frames to landscape. 35mm, 6x7, and 6x9 frames have their long side
+/// along the strip, so they are portrait in the scan; with strips loaded as
+/// on the V600 holder so far, picture tops face the scan's right edge, and a
+/// quarter turn counter-clockwise (270) puts them upright. 645 frames are
+/// already landscape and 6x6 is square.
+pub fn defaultRotation(format: []const u8) i32 {
+    for ([_][]const u8{ "35mm", "6x7", "6x9" }) |portrait| {
+        if (std.mem.eql(u8, format, portrait)) return 270;
+    }
+    return 0;
+}
+
+fn validRotation(rotation: i32) bool {
+    return rotation == 0 or rotation == 90 or rotation == 180 or rotation == 270;
+}
 
 pub const Error = error{
     InvalidRollName,
@@ -59,6 +78,8 @@ pub const Roll = struct {
     format: []u8,
     dpi: u32,
     kind: contracts.ScanKind,
+    /// Clockwise degrees applied to exported frames.
+    rotation: i32,
     /// Dmin from the first strip with a detected rebate; the fallback for
     /// strips without one.
     dmin: ?[3]f64 = null,
@@ -108,11 +129,15 @@ pub const Roll = struct {
         const m = parsed.value;
         if (!std.mem.eql(u8, m.schema, schema)) return Error.InvalidRollManifest;
         const kind = kindFromName(m.kind) orelse return Error.InvalidRollManifest;
+        if (m.rotation) |rotation| {
+            if (!validRotation(rotation)) return Error.InvalidRollManifest;
+        }
         var roll = try init(allocator, scans_root, frames_root, name, .{
             .stock = m.stock,
             .format = m.format,
             .dpi = m.dpi,
             .kind = kind,
+            .rotation = m.rotation,
         });
         roll.dmin = m.dmin;
         roll.lut_black = m.lut_black;
@@ -145,6 +170,7 @@ pub const Roll = struct {
             .format = format,
             .dpi = settings.dpi,
             .kind = settings.kind,
+            .rotation = settings.rotation orelse defaultRotation(settings.format),
         };
     }
 
@@ -165,13 +191,14 @@ pub const Roll = struct {
     pub fn save(self: *const Roll, io: std.Io) !void {
         var out = std.array_list.Managed(u8).init(self.allocator);
         defer out.deinit();
-        try out.print("{{\n  \"schema\": \"{s}\",\n  \"name\": \"{s}\",\n  \"stock\": \"{s}\",\n  \"format\": \"{s}\",\n  \"dpi\": {d},\n  \"kind\": \"{s}\"", .{
+        try out.print("{{\n  \"schema\": \"{s}\",\n  \"name\": \"{s}\",\n  \"stock\": \"{s}\",\n  \"format\": \"{s}\",\n  \"dpi\": {d},\n  \"kind\": \"{s}\",\n  \"rotation\": {d}", .{
             schema,
             self.name,
             self.stock,
             self.format,
             self.dpi,
             kindName(self.kind),
+            self.rotation,
         });
         try appendTriple(&out, "dmin", self.dmin);
         try appendTriple(&out, "lut_black", self.lut_black);
@@ -288,6 +315,7 @@ pub const Roll = struct {
                 .w = frame.w * to_full,
                 .h = frame.h * to_full,
                 .angle = std.math.radiansToDegrees(frame.angle),
+                .rotation = self.rotation,
             };
         }
         const rebate_rect = if (detected.rebate) |rebate| try workflow.fullResolutionRebate(rebate, preview.info.preview_scale) else null;
@@ -660,6 +688,7 @@ const ManifestJson = struct {
     format: []const u8,
     dpi: u32,
     kind: []const u8,
+    rotation: ?i32 = null,
     dmin: ?[3]f64 = null,
     lut_black: ?[3]f64 = null,
     lut_white: ?[3]f64 = null,
@@ -709,6 +738,9 @@ fn validateSettings(settings: Settings) Error!void {
     if (std.mem.indexOfScalar(u32, &scanner_host.film_dpis, settings.dpi) == null) return Error.InvalidRollSettings;
     if (film_formats.formatByName(settings.format) == null) return Error.InvalidRollSettings;
     if (settings.stock.len == 0) return Error.InvalidRollSettings;
+    if (settings.rotation) |rotation| {
+        if (!validRotation(rotation)) return Error.InvalidRollSettings;
+    }
 }
 
 pub fn kindName(kind: contracts.ScanKind) []const u8 {
@@ -916,6 +948,7 @@ test "creates, reopens, and numbers the strips of a roll" {
     try std.testing.expectEqualStrings("645", reopened.format);
     try std.testing.expectEqual(@as(u32, 1600), reopened.dpi);
     try std.testing.expectEqual(contracts.ScanKind.rgb, reopened.kind);
+    try std.testing.expectEqual(@as(i32, 0), reopened.rotation);
     try std.testing.expectEqual(@as(f64, 0.2), reopened.dmin.?[1]);
     try std.testing.expect(std.mem.endsWith(u8, reopened.frames_dir, "frames/gold-a"));
 
@@ -937,6 +970,43 @@ fn testReviewHtml(roll: *const Roll) ![]u8 {
     const review = try roll.path(std.testing.allocator, "review/index.html");
     defer std.testing.allocator.free(review);
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, review, std.testing.allocator, .limited(64 * 1024));
+}
+
+test "exported frames default to landscape for formats that are portrait in the scan" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+
+    try std.testing.expectEqual(@as(i32, 270), defaultRotation("35mm"));
+    try std.testing.expectEqual(@as(i32, 270), defaultRotation("6x9"));
+    try std.testing.expectEqual(@as(i32, 0), defaultRotation("645"));
+    try std.testing.expectEqual(@as(i32, 0), defaultRotation("6x6"));
+    try std.testing.expectError(Error.InvalidRollSettings, Roll.create(allocator, io, root, root, "bad", .{ .rotation = 45 }));
+
+    var turned = try Roll.create(allocator, io, root, root, "turned", .{ .rotation = 90 });
+    turned.deinit();
+    var reopened = try Roll.open(allocator, io, root, root, "turned");
+    defer reopened.deinit();
+    try std.testing.expectEqual(@as(i32, 90), reopened.rotation);
+
+    // Rolls saved before rotation existed take the format's default.
+    const old_dir = try std.fs.path.join(allocator, &.{ root, "old" });
+    defer allocator.free(old_dir);
+    try std.Io.Dir.cwd().createDirPath(io, old_dir);
+    const old_manifest = try std.fs.path.join(allocator, &.{ old_dir, manifest_name });
+    defer allocator.free(old_manifest);
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = old_manifest,
+        .data =
+        \\{"schema": "v600.roll.v1", "name": "old", "stock": "kodak_gold", "format": "35mm", "dpi": 3200, "kind": "rgb+ir"}
+        ,
+    });
+    var old = try Roll.open(allocator, io, root, root, "old");
+    defer old.deinit();
+    try std.testing.expectEqual(@as(i32, 270), old.rotation);
 }
 
 test "lists the rolls under a scans directory" {
@@ -1034,6 +1104,19 @@ test "processes a real strip scan into exports, a marker, and a review page" {
     try std.testing.expect(std.mem.endsWith(u8, outcome.files[0], "real_s01_01_inv.tif"));
     try std.testing.expect(std.mem.endsWith(u8, outcome.files[4], "real_s01_05_inv.tif"));
     try std.testing.expect(roll.isProcessed(io, strip));
+    {
+        // 35mm frames come out landscape, with the scan's DPI and date.
+        const first = try std.fs.path.join(allocator, &.{ roll.frames_dir, outcome.files[0] });
+        defer allocator.free(first);
+        const info = try tiff.readRgbIrPageInfo(allocator, first);
+        try std.testing.expect(info.rgb.width > info.rgb.height);
+        try std.testing.expectEqual(@as(?u32, 800), try tiff.readDpi(allocator, first));
+        const scan_date = (try tiff.readDateTime(allocator, strip)).?;
+        defer allocator.free(scan_date);
+        const frame_date = (try tiff.readDateTime(allocator, first)).?;
+        defer allocator.free(frame_date);
+        try std.testing.expectEqualStrings(scan_date, frame_date);
+    }
     try std.testing.expect(roll.dmin != null);
     const review = try roll.path(allocator, "review/index.html");
     defer allocator.free(review);

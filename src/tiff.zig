@@ -107,6 +107,10 @@ pub const WriteImageOptions = struct {
     metadata_json: ?[]const u8 = null,
     big_tiff: bool = false,
     compression: Compression = .none,
+    /// Written as XResolution/YResolution in pixels per inch.
+    dpi: ?u32 = null,
+    /// TIFF DateTime, "YYYY:MM:DD HH:MM:SS".
+    datetime: ?[]const u8 = null,
 };
 
 pub fn readDpi(allocator: std.mem.Allocator, path: []const u8) !?u32 {
@@ -303,7 +307,7 @@ pub fn writeImage(
     const tiff = c.TIFFOpen(path_z.ptr, mode) orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
-    try writeImageDirectory(allocator, tiff, image, options.metadata_json, options.compression);
+    try writeImageDirectory(allocator, tiff, image, options);
 }
 
 pub const ScanPage = struct {
@@ -373,6 +377,11 @@ pub fn readCompression(allocator: std.mem.Allocator, path: []const u8) !?Compres
         c.COMPRESSION_ADOBE_DEFLATE => .deflate,
         else => null,
     };
+}
+
+/// The first page's DateTime tag, if any.
+pub fn readDateTime(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    return readAsciiTag(allocator, path, c.TIFFTAG_DATETIME, "DateTime");
 }
 
 pub fn readExportMetadataJson(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
@@ -450,22 +459,32 @@ fn writeImageDirectory(
     allocator: std.mem.Allocator,
     tiff: *c.TIFF,
     image: ImageView,
-    metadata_json: ?[]const u8,
-    compression: Compression,
+    options: WriteImageOptions,
 ) !void {
-    const rows_per_strip: u32 = switch (compression) {
+    const rows_per_strip: u32 = switch (options.compression) {
         .none => image.height,
         .deflate => blk: {
             const scanline = try expectedScanlineSize(image.width, image.samples_per_pixel, image.bits_per_sample);
             break :blk @intCast(@max(1, @min(image.height, scan_strip_bytes / @max(scanline, 1))));
         },
     };
-    try setImageFields(tiff, image, rows_per_strip, compression);
+    try setImageFields(tiff, image, rows_per_strip, options.compression);
 
-    if (metadata_json) |json| {
+    if (options.metadata_json) |json| {
         const json_z = try allocator.dupeZ(u8, json);
         defer allocator.free(json_z);
         try setAsciiField(tiff, export_metadata_tag, json_z.ptr);
+    }
+    if (options.dpi) |dpi| {
+        const dpi_f: f32 = @floatFromInt(dpi);
+        try setFloatField(tiff, c.TIFFTAG_XRESOLUTION, dpi_f);
+        try setFloatField(tiff, c.TIFFTAG_YRESOLUTION, dpi_f);
+        try setShortField(tiff, c.TIFFTAG_RESOLUTIONUNIT, c.RESUNIT_INCH);
+    }
+    if (options.datetime) |datetime| {
+        const datetime_z = try allocator.dupeZ(u8, datetime);
+        defer allocator.free(datetime_z);
+        try setAsciiField(tiff, c.TIFFTAG_DATETIME, datetime_z.ptr);
     }
 
     try writeImageData(tiff, image, rows_per_strip);
@@ -1113,7 +1132,7 @@ test "writes export TIFF with private JSON metadata tag" {
     try std.testing.expectEqualStrings(json, written_json);
 }
 
-test "deflate TIFFs round-trip 16-bit RGB across strips with metadata" {
+test "deflate TIFFs round-trip 16-bit RGB across strips with metadata, DPI, and date" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1139,9 +1158,13 @@ test "deflate TIFFs round-trip 16-bit RGB across strips with metadata" {
         .samples_per_pixel = 3,
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(samples),
-    }, .{ .metadata_json = json, .compression = .deflate });
+    }, .{ .metadata_json = json, .compression = .deflate, .dpi = 6400, .datetime = "2026:09:29 11:18:56" });
 
     try std.testing.expectEqual(Compression.deflate, (try readCompression(allocator, path)).?);
+    try std.testing.expectEqual(@as(?u32, 6400), try readDpi(allocator, path));
+    const datetime = (try readDateTime(allocator, path)).?;
+    defer allocator.free(datetime);
+    try std.testing.expectEqualStrings("2026:09:29 11:18:56", datetime);
     const image = try loadRgbPage(allocator, path);
     defer image.deinit(allocator);
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(samples), image.data);
@@ -1289,7 +1312,7 @@ fn writePageFixture(allocator: std.mem.Allocator, path: []const u8, pages: []con
             .samples_per_pixel = page.samples_per_pixel,
             .bits_per_sample = page.bits_per_sample,
             .data = page.data,
-        }, null, .none);
+        }, .{});
     }
 }
 

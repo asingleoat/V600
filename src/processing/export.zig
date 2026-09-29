@@ -101,6 +101,10 @@ pub const BaseMetadata = struct {
     source: []const u8,
     rebate_rect: ?frames.RebateOriginRect = null,
     crop: FrameRect,
+    /// The scan's resolution and DateTime, written as the export's DPI and
+    /// date tags.
+    dpi: ?u32 = null,
+    datetime: ?[]const u8 = null,
 };
 
 pub const ProcessFrameOptions = struct {
@@ -859,7 +863,7 @@ pub fn processFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.ir_neg);
         const write_started = monotonicNowNs();
-        try writeU16Tiff(allocator, path, out, metadata);
+        try writeU16Tiff(allocator, path, out, metadata, options.base_meta);
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
@@ -883,7 +887,7 @@ pub fn processFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.ir_inv);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
@@ -906,7 +910,7 @@ pub fn processFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
@@ -959,7 +963,7 @@ pub fn processCroppedFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
@@ -1012,7 +1016,7 @@ pub fn processInvertedSceneF32Frame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
     }
@@ -1035,6 +1039,7 @@ fn writeU16Tiff(
     path: []const u8,
     image: Image,
     metadata_json: []const u8,
+    base_meta: BaseMetadata,
 ) !void {
     const samples = try allocator.alloc(u16, image.pixels.len);
     defer allocator.free(samples);
@@ -1048,7 +1053,7 @@ fn writeU16Tiff(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(samples),
-    }, .{ .metadata_json = metadata_json, .compression = .deflate });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime });
 }
 
 fn writeU16TiffSamples(
@@ -1056,6 +1061,7 @@ fn writeU16TiffSamples(
     path: []const u8,
     image: ImageU16,
     metadata_json: []const u8,
+    base_meta: BaseMetadata,
 ) !void {
     try tiff.writeImage(allocator, path, .{
         .width = @intCast(image.width),
@@ -1063,7 +1069,7 @@ fn writeU16TiffSamples(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(image.pixels),
-    }, .{ .metadata_json = metadata_json, .compression = .deflate });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime });
 }
 
 fn exportMetadataJson(

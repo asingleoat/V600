@@ -76,6 +76,9 @@ for the whole roll, full scan; finished strips export in the background):
 
 Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
 `scans/<roll>/review/index.html` shows each strip with its detected frames.
+Each export is the IR-cleaned positive with the scan's DPI and date. 35mm,
+6x7, and 6x9 frames are turned to landscape (the `rotation` in `roll.json`,
+clockwise degrees; `roll start --rotation` sets it).
 The native UI's Scan view does the same: start or open a roll, then press
 Scan Strip for each strip. Build with `-Doptimize=ReleaseFast` for real
 sessions; Debug export is several times slower.

@@ -424,6 +424,8 @@ fn runExport(
     var pages = try workflow.loadFullImageAsF64(allocator, options.input, need_ir);
     defer pages.deinit(allocator);
     const current_dpi = options.current_dpi orelse pages.dpi;
+    const scan_datetime = try tiff.readDateTime(allocator, options.input);
+    defer if (scan_datetime) |datetime| allocator.free(datetime);
 
     // One Dmin for the whole strip, so every frame gets the same base color:
     // the flag, else the rebate auto-detect finds on this scan, else the saved
@@ -514,6 +516,8 @@ fn runExport(
                 .base_meta = .{
                     .source = std.fs.path.basename(options.input),
                     .crop = rect,
+                    .dpi = current_dpi,
+                    .datetime = scan_datetime,
                 },
                 .film_stock = stock_name,
                 .stock_coeffs = stock.coeffs,
