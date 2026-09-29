@@ -27,9 +27,13 @@ the scanner `_tiff_metadata` helpers.
   the data is used as is.
 - Export metadata is JSON in private ASCII tag 65000
   (`readExportMetadataJson`).
-- Writes are uncompressed. `writeImage` can write BigTIFF, but no caller
-  enables it, so exports over 4 GiB would fail. `writeScanPages` (macOS
-  scans) switches to BigTIFF past about 3.75 GiB and writes 4 MiB strips.
+- Exported frames are lossless Deflate (level 6, horizontal predictor, 4 MiB
+  strips), about 20-30% smaller than raw. Scans and other writes are
+  uncompressed; the webapp's `tiff.mjs` reads only uncompressed files, so it
+  opens scans but not native exports. `writeImage` can write BigTIFF, but no
+  caller enables it, so exports over 4 GiB would fail. `writeScanPages`
+  (macOS scans) switches to BigTIFF past about 3.75 GiB and writes 4 MiB
+  strips.
 - `findImages` and `generateUniquePath` handle directory listing and
   collision-free export names.
 

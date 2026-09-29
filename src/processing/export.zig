@@ -1048,7 +1048,7 @@ fn writeU16Tiff(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(samples),
-    }, .{ .metadata_json = metadata_json });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate });
 }
 
 fn writeU16TiffSamples(
@@ -1063,7 +1063,7 @@ fn writeU16TiffSamples(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(image.pixels),
-    }, .{ .metadata_json = metadata_json });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate });
 }
 
 fn exportMetadataJson(
@@ -1438,6 +1438,7 @@ fn expectProcessFrameFile(
     try std.testing.expectEqual(@as(u16, @intCast(expected.shape[2])), image.samples_per_pixel);
     try std.testing.expectEqual(@as(u16, 16), image.bits_per_sample);
     try std.testing.expectEqual(expected.pixels.len * 2, image.data.len);
+    try std.testing.expectEqual(tiff.Compression.deflate, (try tiff.readCompression(allocator, path)).?);
 
     var expected_metadata = try std.json.parseFromSlice(ExportMetadataFixture, allocator, expected.metadata_json, .{
         .ignore_unknown_fields = true,
