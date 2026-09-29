@@ -164,7 +164,7 @@ fn waitForPoll(worker: *Worker, model: *ui_state.State) !void {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
 }

@@ -500,12 +500,13 @@ pub const Runtime = struct {
 
         const init_start = monotonicNowNs();
         conn.session.init() catch |err| {
-            var detail_buffer: [64]u8 = undefined;
-            const detail = std.fmt.bufPrint(&detail_buffer, "usb={d} interpreter={d}", .{
+            // Event strings outlive this frame (the UI drains them later),
+            // so the error codes go to stderr and the event says only that.
+            std.debug.print("interpreter init failed: usb={d} interpreter={d}\n", .{
                 conn.session.usbError(),
                 conn.session.interpreterError(),
-            }) catch "init failed";
-            self.emitTimingSince("macos.open.interpreter_init", init_start, detail);
+            });
+            self.emitTimingSince("macos.open.interpreter_init", init_start, "failed");
             return err;
         };
         self.emitTimingSince("macos.open.interpreter_init", init_start, "ok");

@@ -394,6 +394,7 @@ pub const State = struct {
     scan_ir_pass: bool = false,
     scan_eta_seconds: ?f64 = null,
     scan_finished_pending: bool = false,
+    reconnect_requested: bool = false,
     scanner_timing_stage: []const u8 = "",
     scanner_timing_elapsed_us: u64 = 0,
     scanner_timing_detail: ?[]const u8 = null,
@@ -445,6 +446,17 @@ pub const State = struct {
 
     pub fn show(self: *State, view: View) void {
         self.active_view = view;
+    }
+
+    /// Asks the main loop to run the scanner connect worker again.
+    pub fn requestReconnect(self: *State) void {
+        self.reconnect_requested = true;
+    }
+
+    pub fn takeReconnectRequest(self: *State) bool {
+        const requested = self.reconnect_requested;
+        self.reconnect_requested = false;
+        return requested;
     }
 
     pub fn requestQuit(self: *State) void {
@@ -728,13 +740,17 @@ pub const State = struct {
             },
             .scan_cancelled => |failure| {
                 self.scanner.scanning = false;
+                self.scanner.cancel_requested = false;
                 self.scanner_progress_percent = null;
                 self.preview_requested = false;
+                self.active_scan_mode = null;
+                self.active_scan_dpi = 0;
                 self.scanner.scan_status = failure.detail;
                 self.status = failure.detail;
             },
             .scan_error => |failure| {
                 self.scanner.scanning = false;
+                self.scanner.cancel_requested = false;
                 self.scanner_progress_percent = null;
                 self.preview_requested = false;
                 const detail = scannerErrorText(failure.detail);
@@ -785,6 +801,8 @@ pub const State = struct {
             self.applyPendingScannerConfigSelection();
         }
         self.scanner.scanning = false;
+        // A preview cannot be cancelled; drop a cancel pressed during it.
+        self.scanner.cancel_requested = false;
         self.scanner_progress_percent = null;
         self.preview_requested = false;
         self.preview_ready = true;

@@ -201,17 +201,21 @@ pub fn feedNuklearInput(ctx: *c.struct_nk_context, event: c.SDL_Event) void {
         },
         c.SDL_EVENT_MOUSE_WHEEL => {
             if (!controlPanelShouldReceiveWheel(event)) return;
-            var x = event.wheel.x;
-            var y = event.wheel.y;
-            if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) {
-                x = -x;
-                y = -y;
-            }
-            c.nk_input_scroll(ctx, c.nk_vec2(x, y));
+            // Use SDL's values as they come: with macOS natural scrolling
+            // they are already flipped, so the panel scrolls like other apps.
+            c.nk_input_scroll(ctx, c.nk_vec2(event.wheel.x, event.wheel.y));
         },
         c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => {
+            const down = event.type == c.SDL_EVENT_KEY_DOWN;
+            // Cmd (macOS) or Ctrl chords; a key's release always clears the
+            // chord it could have started, whatever modifiers remain held.
+            const chord = (event.key.mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL)) != 0;
+            if (nkChordFromSdl(event.key.key, (event.key.mod & c.SDL_KMOD_SHIFT) != 0)) |key| {
+                if (chord or !down) c.nk_input_key(ctx, key, nkBool(down and chord));
+                if (chord) return;
+            }
             if (nkKeyFromSdl(event.key.key)) |key| {
-                c.nk_input_key(ctx, key, nkBool(event.type == c.SDL_EVENT_KEY_DOWN));
+                c.nk_input_key(ctx, key, nkBool(down));
             }
         },
         c.SDL_EVENT_TEXT_INPUT => {
@@ -230,13 +234,58 @@ pub fn feedNuklearText(ctx: *c.struct_nk_context, text: []const u8) void {
     while (codepoints.nextCodepoint()) |codepoint| c.nk_input_unicode(ctx, codepoint);
 }
 
+/// NK_PROPERTY_EDIT from `enum nk_property_status`, which nuklear.h 4.12
+/// declares only in its implementation section.
+const nk_property_edit: c_int = 1;
+
+/// Whether a text field or a number field in edit mode has keyboard focus.
+/// Nuklear keeps this per window (`ctx.text_edit` is shared scratch space
+/// that every field overwrites) and drops focus from fields that stop being
+/// drawn.
+pub fn textEditing(ctx: *const c.struct_nk_context) bool {
+    var window = ctx.begin;
+    while (window) |win| : (window = win.*.next) {
+        if (win.*.edit.active != 0) return true;
+        if (win.*.property.active != 0 and win.*.property.state == nk_property_edit) return true;
+    }
+    return false;
+}
+
 /// SDL3 sends text events only between SDL_StartTextInput and
-/// SDL_StopTextInput; run them while a Nuklear text field has focus.
-pub fn syncTextInput(ctx: *c.struct_nk_context, window: *c.SDL_Window, active: *bool) void {
-    const editing = ctx.text_edit.active != 0;
+/// SDL_StopTextInput; run them while a Nuklear field is being edited.
+pub fn syncTextInput(window: *c.SDL_Window, editing: bool, active: *bool) void {
     if (editing == active.*) return;
     _ = if (editing) c.SDL_StartTextInput(window) else c.SDL_StopTextInput(window);
     active.* = editing;
+}
+
+/// Lets text fields copy, cut, and paste through the system clipboard.
+pub fn installClipboard(ctx: *c.struct_nk_context) void {
+    ctx.clip.copy = clipboardCopy;
+    ctx.clip.paste = clipboardPaste;
+}
+
+fn clipboardCopy(_: c.nk_handle, text: [*c]const u8, len: c_int) callconv(.c) void {
+    if (text == null or len <= 0) return;
+    const allocator = std.heap.c_allocator;
+    const copy = allocator.allocSentinel(u8, @intCast(len), 0) catch return;
+    defer allocator.free(copy);
+    @memcpy(copy, text[0..@intCast(len)]);
+    _ = c.SDL_SetClipboardText(copy.ptr);
+}
+
+fn clipboardPaste(_: c.nk_handle, edit: [*c]c.struct_nk_text_edit) callconv(.c) void {
+    const text: [*c]u8 = @ptrCast(c.SDL_GetClipboardText() orelse return);
+    defer c.SDL_free(text);
+    const len = std.mem.len(text);
+    if (len != 0) _ = c.nk_textedit_paste(edit, text, @intCast(len));
+}
+
+/// A radio option that reports only the click selecting it. Nuklear's
+/// nk_option_* return the option's state, which is also true on every frame
+/// an already selected option is drawn.
+pub fn optionClicked(ctx: *c.struct_nk_context, label: []const u8, active: bool) bool {
+    return c.nk_option_text(ctx, label.ptr, @intCast(label.len), nkBool(active)) != 0 and !active;
 }
 
 pub fn nkButtonFromSdl(button: u8) ?c_uint {
@@ -248,8 +297,21 @@ pub fn nkButtonFromSdl(button: u8) ?c_uint {
     };
 }
 
+/// Text-editing chords on Cmd (macOS) or Ctrl.
+pub fn nkChordFromSdl(key: c.SDL_Keycode, shift: bool) ?c_uint {
+    return switch (key) {
+        c.SDLK_A => c.NK_KEY_TEXT_SELECT_ALL,
+        c.SDLK_C => c.NK_KEY_COPY,
+        c.SDLK_X => c.NK_KEY_CUT,
+        c.SDLK_V => c.NK_KEY_PASTE,
+        c.SDLK_Z => if (shift) c.NK_KEY_TEXT_REDO else c.NK_KEY_TEXT_UNDO,
+        else => null,
+    };
+}
+
 pub fn nkKeyFromSdl(key: c.SDL_Keycode) ?c_uint {
     return switch (key) {
+        c.SDLK_LSHIFT, c.SDLK_RSHIFT => c.NK_KEY_SHIFT,
         c.SDLK_DELETE => c.NK_KEY_DEL,
         c.SDLK_BACKSPACE => c.NK_KEY_BACKSPACE,
         c.SDLK_LEFT => c.NK_KEY_LEFT,

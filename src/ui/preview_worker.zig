@@ -678,7 +678,7 @@ test "preview worker consumes queued command without blocking UI state" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!worker.isRunning());
@@ -717,7 +717,7 @@ test "preview worker reuses connected scanner capabilities" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(model.preview_ready);
@@ -767,7 +767,7 @@ test "preview worker surfaces execution failure to UI state" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!model.preview_ready);

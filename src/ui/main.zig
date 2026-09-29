@@ -386,6 +386,9 @@ pub fn main(init: std.process.Init) !void {
     }
     var roll_strip_started = false;
     var text_input_active = false;
+    // From the previous frame's draw; keyboard shortcuts stand aside while
+    // a field is being edited.
+    var text_editing = false;
     const roll_strip_deadline_ms: u64 = c.SDL_GetTicks() + 15 * std.time.ms_per_min;
     if (timing_report_path) |path| {
         timing_report = try v600.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
@@ -493,6 +496,12 @@ pub fn main(init: std.process.Init) !void {
 
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return error.SdlInitFailed;
     defer c.SDL_Quit();
+    // The typing smoke copies and pastes; give the person their clipboard back.
+    const saved_clipboard: ?*anyopaque = if (roll_name_input_smoke) c.SDL_GetClipboardText() else null;
+    defer if (saved_clipboard) |text| {
+        _ = c.SDL_SetClipboardText(@ptrCast(text));
+        c.SDL_free(text);
+    };
     defer sound.deinit();
     defer cursor.deinit();
 
@@ -553,6 +562,7 @@ pub fn main(init: std.process.Init) !void {
 
     var ctx: c.struct_nk_context = undefined;
     if (c.nk_init_default(&ctx, &font.*.handle) == 0) return error.NuklearInitFailed;
+    chrome.installClipboard(&ctx);
     defer c.nk_free(&ctx);
     applyNuklearStyle(&ctx, chrome.runtime_ui_config);
 
@@ -591,7 +601,7 @@ pub fn main(init: std.process.Init) !void {
                 &scan_transform,
                 event,
             );
-            handleScanShortcutEvent(&scan_selection_interaction, &model, event, ctx.text_edit.active != 0);
+            handleScanShortcutEvent(&scan_selection_interaction, &model, event, text_editing);
             handleGalleryImageEvent(&gallery_transform, &model, event);
             handleProcessSelectionEvent(
                 &process_selection_interaction,
@@ -603,7 +613,7 @@ pub fn main(init: std.process.Init) !void {
                 processing_config_path,
                 event,
             );
-            handleProcessShortcutEvent(&process_selection_interaction, &model, event, ctx.text_edit.active != 0);
+            handleProcessShortcutEvent(&process_selection_interaction, &model, event, text_editing);
             handleGalleryShortcutEvent(
                 &model,
                 &gallery_transform,
@@ -679,7 +689,9 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         c.nk_end(&ctx);
-        chrome.syncTextInput(&ctx, window, &text_input_active);
+        text_editing = chrome.textEditing(&ctx);
+        chrome.syncTextInput(window, text_editing, &text_input_active);
+        if (model.takeReconnectRequest()) _ = connect_worker.start(&model) catch false;
         if (!scanControlsEqual(scan_controls_before, model.scan_controls)) {
             _ = model.saveScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch false;
         }
@@ -883,8 +895,13 @@ pub fn main(init: std.process.Init) !void {
             if (frames == 3) pushTextEvent("gold-45");
             if (frames == 4) pushKey(c.SDLK_BACKSPACE);
             if (frames == 5) pushTextEvent("00");
+            // Select all, copy, go to the end, paste: the text doubles.
+            if (frames == 6) pushKeyWithMod(c.SDLK_A, c.SDL_KMOD_GUI);
+            if (frames == 7) pushKeyWithMod(c.SDLK_C, c.SDL_KMOD_GUI);
+            if (frames == 8) pushKey(c.SDLK_END);
+            if (frames == 9) pushKeyWithMod(c.SDLK_V, c.SDL_KMOD_GUI);
         }
-        const smoke_min_frames: usize = if (roll_name_input_smoke) 8 else if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
+        const smoke_min_frames: usize = if (roll_name_input_smoke) 12 else if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
         const smoke_max_frames: usize = if (process_render_smoke) 120 else smoke_min_frames;
         const smoke_elapsed_ms = c.SDL_GetTicks() - smoke_started_ms;
         if (smoke and frames >= smoke_min_frames and (!process_render_smoke or process_inverted_render_checked) and smoke_elapsed_ms >= smoke_hold_ms) running = false;
@@ -898,7 +915,7 @@ pub fn main(init: std.process.Init) !void {
     if (roll_smoke) try assertRollSmoke(&rolls, &model);
     if (roll_name_input_smoke) {
         const typed = rolls.new_name[0..@intCast(rolls.new_name_len)];
-        if (!std.mem.eql(u8, typed, "gold-400")) {
+        if (!std.mem.eql(u8, typed, "gold-400gold-400")) {
             std.debug.print("roll name input smoke typed \"{s}\"\n", .{typed});
             return error.RollNameInputSmokeFailed;
         }
@@ -1044,10 +1061,15 @@ fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io
 
 /// A key press and release, as one keystroke.
 fn pushKey(key: c.SDL_Keycode) void {
+    pushKeyWithMod(key, 0);
+}
+
+fn pushKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     for ([_]u32{ c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP }) |kind| {
         var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
         event.type = kind;
         event.key.key = key;
+        event.key.mod = mod;
         event.key.down = kind == c.SDL_EVENT_KEY_DOWN;
         _ = c.SDL_PushEvent(&event);
     }
@@ -1097,6 +1119,13 @@ fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {
         if (exported.paths.len == 1) "" else "s",
         roll.frames_dir,
     });
+}
+
+/// Zoom for one wheel event, in proportion to how far it scrolled: a mouse
+/// notch (1.0) zooms by `base`, a trackpad sends many small fractions, and a
+/// sideways swipe (0) does not zoom.
+fn wheelZoomFactor(wheel_y: f32, base: f64) f64 {
+    return std.math.pow(f64, base, std.math.clamp(@as(f64, wheel_y), -3.0, 3.0));
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
@@ -1259,7 +1288,7 @@ fn handleScanSelectionEvent(
             if (pointInUiChrome(screen_x, screen_y)) return;
             var wheel_y = event.wheel.y;
             if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) wheel_y = -wheel_y;
-            transform.zoomAt(screen_x, screen_y, if (wheel_y > 0) 1.15 else 1.0 / 1.15);
+            transform.zoomAt(screen_x, screen_y, wheelZoomFactor(wheel_y, 1.15));
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
             const screen_x = @as(f64, @floatCast(event.button.x));
@@ -1402,7 +1431,7 @@ fn handleGalleryImageEvent(
             if (pointInUiChrome(x, y)) return;
             var wheel_y = event.wheel.y;
             if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) wheel_y = -wheel_y;
-            transform.zoomAt(x, y, if (wheel_y > 0) 1.1 else 0.9);
+            transform.zoomAt(x, y, wheelZoomFactor(wheel_y, 1.1));
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
             const x = @as(f64, @floatCast(event.button.x));
@@ -1498,7 +1527,7 @@ fn handleProcessSelectionEvent(
             if (pointInUiChrome(screen_x, screen_y)) return;
             var wheel_y = event.wheel.y;
             if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) wheel_y = -wheel_y;
-            transform.zoomAt(screen_x, screen_y, if (wheel_y > 0) 1.1 else 0.9);
+            transform.zoomAt(screen_x, screen_y, wheelZoomFactor(wheel_y, 1.1));
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
             const screen_x = @as(f64, @floatCast(event.button.x));
@@ -2714,9 +2743,9 @@ fn assertFooterStatusPolicy(process_worker: *ProcessWorker, export_worker: *Proc
 
 fn drawNavigation(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void {
     layoutRow(ctx, 28.0, 3);
-    if (c.nk_option_label(ctx, "Scan", nkBool(model.active_view == .scan)) != 0) model.show(.scan);
-    if (c.nk_option_label(ctx, "Process", nkBool(model.active_view == .process)) != 0) model.show(.process);
-    if (c.nk_option_label(ctx, "Gallery", nkBool(model.active_view == .gallery)) != 0) model.show(.gallery);
+    if (chrome.optionClicked(ctx, "Scan", model.active_view == .scan)) model.show(.scan);
+    if (chrome.optionClicked(ctx, "Process", model.active_view == .process)) model.show(.process);
+    if (chrome.optionClicked(ctx, "Gallery", model.active_view == .gallery)) model.show(.gallery);
 }
 
 fn drawScanView(
@@ -2727,6 +2756,11 @@ fn drawScanView(
     preview: ?v600.native_ui_preview_worker.PreviewBuffer,
 ) void {
     const scanner_busy = model.scannerWorkActive();
+    if (model.scanner.connection == .error_state or model.scanner.connection == .disconnected) {
+        layoutRow(ctx, 30.0, 1);
+        tooltip(ctx, "Connect to the scanner again, for example after turning it on or quitting another program that held it");
+        if (c.nk_button_label(ctx, "Reconnect Scanner") != 0) model.requestReconnect();
+    }
     rolls.draw(ctx, model, preview);
     layoutRow(ctx, 28.0, 3);
     if (scanner_busy) c.nk_widget_disable_begin(ctx);
@@ -2755,16 +2789,16 @@ fn drawScanView(
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Mode", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 3);
-    if (c.nk_option_label(ctx, "RGB + IR", nkBool(model.scan_controls.mode == .rgb_ir)) != 0) model.scan_controls.setMode(.rgb_ir);
-    if (c.nk_option_label(ctx, "RGB", nkBool(model.scan_controls.mode == .rgb)) != 0) model.scan_controls.setMode(.rgb);
-    if (c.nk_option_label(ctx, "IR", nkBool(model.scan_controls.mode == .ir)) != 0) model.scan_controls.setMode(.ir);
+    if (chrome.optionClicked(ctx, "RGB + IR", model.scan_controls.mode == .rgb_ir)) model.scan_controls.setMode(.rgb_ir);
+    if (chrome.optionClicked(ctx, "RGB", model.scan_controls.mode == .rgb)) model.scan_controls.setMode(.rgb);
+    if (chrome.optionClicked(ctx, "IR", model.scan_controls.mode == .ir)) model.scan_controls.setMode(.ir);
 
     const dpis = model.scan_controls.mode.validDpis();
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "DPI", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, @as(c_int, @intCast(dpis.len)));
     for (dpis) |dpi| {
-        if (c.nk_option_label(ctx, dpiLabelZ(dpi), nkBool(model.scan_controls.dpi == dpi)) != 0) {
+        if (chrome.optionClicked(ctx, std.mem.span(dpiLabelZ(dpi)), model.scan_controls.dpi == dpi)) {
             model.scan_controls.setDpi(dpi);
         }
     }
@@ -2774,8 +2808,8 @@ fn drawScanView(
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Exposure", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 2);
-    if (c.nk_option_label(ctx, "Linear", nkBool(model.scan_controls.exposure == .linear)) != 0) model.scan_controls.exposure = .linear;
-    if (c.nk_option_label(ctx, "Affine", nkBool(model.scan_controls.exposure == .affine)) != 0) model.scan_controls.exposure = .affine;
+    if (chrome.optionClicked(ctx, "Linear", model.scan_controls.exposure == .linear)) model.scan_controls.exposure = .linear;
+    if (chrome.optionClicked(ctx, "Affine", model.scan_controls.exposure == .affine)) model.scan_controls.exposure = .affine;
 
     layoutRow(ctx, 30.0, 2);
     if (!scanner_busy) {
@@ -3082,7 +3116,7 @@ fn drawProcessView(
     c.nk_label(ctx, "Aspect", c.NK_TEXT_LEFT);
     layoutRow(ctx, 24.0, 3);
     for (process_aspect_options, 0..) |option, index| {
-        if (c.nk_option_text(ctx, option.label.ptr, @intCast(option.label.len), nkBool(ui.aspect_index == index)) != 0) {
+        if (chrome.optionClicked(ctx, option.label, ui.aspect_index == index)) {
             ui.aspect_index = index;
             saveProcessStringSetting(model, allocator, io, config_path, "aspect", option.value) catch |err| setProcessUiError(model, err);
         }
@@ -3090,7 +3124,7 @@ fn drawProcessView(
     layoutRow(ctx, 28.0, @intCast(process_format_labels.len));
     for (process_format_labels, 0..) |label, index| {
         tooltip(ctx, "Film format for auto-detection");
-        if (c.nk_option_label(ctx, label, nkBool(ui.format_index == index)) != 0) {
+        if (chrome.optionClicked(ctx, std.mem.span(label), ui.format_index == index)) {
             ui.format_index = index;
         }
     }
@@ -3250,7 +3284,7 @@ fn drawProcessSelectionControls(
         const rotations = [_]i32{ 0, 90, 180, 270 };
         const labels = [_][*:0]const u8{ "0", "90", "180", "270" };
         for (rotations, labels) |rotation, rotation_label| {
-            if (c.nk_option_label(ctx, rotation_label, nkBool(selection.rotation == rotation)) != 0) {
+            if (chrome.optionClicked(ctx, std.mem.span(rotation_label), selection.rotation == rotation)) {
                 model.process_selections[index].rotation = rotation;
                 ui.last_rotation = rotation;
             }
@@ -3319,14 +3353,14 @@ fn drawProcessStockControls(
     const info = model.processingStocksInfo(&stock_buffer) catch return;
     const active = info.active orelse "";
     layoutRow(ctx, 24.0, 1);
-    if (c.nk_option_label(ctx, "(none)", nkBool(active.len == 0)) != 0) {
+    if (chrome.optionClicked(ctx, "(none)", active.len == 0)) {
         selectProcessStock(model, allocator, io, config_path, ui, "") catch |err| setProcessUiError(model, err);
     }
     for (info.stocks) |stock| {
         layoutRow(ctx, 24.0, 1);
         const selected = std.mem.eql(u8, active, stock.name);
         tooltip(ctx, if (stock.description.len != 0) stock.description else stock.name);
-        if (c.nk_option_text(ctx, stock.name.ptr, @intCast(stock.name.len), nkBool(selected)) != 0) {
+        if (chrome.optionClicked(ctx, stock.name, selected)) {
             selectProcessStock(model, allocator, io, config_path, ui, stock.name) catch |err| setProcessUiError(model, err);
         }
     }

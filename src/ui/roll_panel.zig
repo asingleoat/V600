@@ -138,7 +138,7 @@ pub const RollPanel = struct {
             c.nk_label(ctx, "Open a roll:", c.NK_TEXT_LEFT);
             for (self.names) |name| {
                 layoutRow(ctx, 24.0, 1);
-                if (c.nk_option_text(ctx, name.ptr, @intCast(name.len), 0) != 0) {
+                if (chrome.optionClicked(ctx, name, false)) {
                     self.activate(model, name) catch |err| self.setNotice("Could not open roll {s}: {s}", .{ name, @errorName(err) });
                     return;
                 }
@@ -155,7 +155,7 @@ pub const RollPanel = struct {
                 if (index % 3 == 0) layoutRow(ctx, 24.0, @intCast(@min(3, info.stocks.len - index)));
                 const selected = std.mem.eql(u8, self.new_stock[0..self.new_stock_len], stock.name);
                 tooltip(ctx, if (stock.description.len != 0) stock.description else stock.name);
-                if (c.nk_option_text(ctx, stock.name.ptr, @intCast(stock.name.len), nkBool(selected)) != 0 and stock.name.len <= self.new_stock.len) {
+                if (chrome.optionClicked(ctx, stock.name, selected) and stock.name.len <= self.new_stock.len) {
                     @memcpy(self.new_stock[0..stock.name.len], stock.name);
                     self.new_stock_len = stock.name.len;
                 }
@@ -163,7 +163,7 @@ pub const RollPanel = struct {
         } else |_| {}
         layoutRow(ctx, 26.0, formats.len);
         for (formats, 0..) |format, index| {
-            if (c.nk_option_text(ctx, format.ptr, @intCast(format.len), nkBool(self.new_format == index)) != 0) self.new_format = index;
+            if (chrome.optionClicked(ctx, format, self.new_format == index)) self.new_format = index;
         }
         layoutRow(ctx, 30.0, 1);
         if (c.nk_button_label(ctx, "Start Roll") != 0) self.startRoll(model);
@@ -307,7 +307,7 @@ pub const RollPanel = struct {
             if (preview) |buffer| {
                 if (buffer.bits_per_sample == 8 and buffer.samples_per_pixel >= 3) {
                     lut_path = self.rollLut(roll, buffer, selection) catch |err| blk: {
-                        self.setNotice("Roll LUT unavailable ({s}); scanning without one.", .{@errorName(err)});
+                        self.setNotice("No roll LUT yet ({s}); this strip gets its own LUT from the preview.", .{@errorName(err)});
                         break :blk null;
                     };
                 }
@@ -341,14 +341,15 @@ pub const RollPanel = struct {
         const height: usize = @intCast(buffer.height);
         const channels: usize = @intCast(buffer.samples_per_pixel);
         const first_strip = roll.lut_white == null;
-        const computed = try film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, v600.roll.lut_options);
-        _ = try roll.adoptLut(self.io, computed) orelse return error.NoFilmForLut;
-        if (!first_strip) {
-            const own = try film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, v600.roll.fit_options);
+        if (first_strip) {
+            const computed = try film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, v600.roll.lut_options);
+            _ = try roll.adoptLut(self.io, computed) orelse return error.NoFilmForLut;
+        } else if (film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, v600.roll.fit_options)) |own| {
+            // Advisory only: the roll LUT applies either way.
             if (!roll.checkLutFit(own).ok()) {
                 self.notice = "This strip's film falls outside the roll LUT and will clip a little; a different film may need its own roll.";
             }
-        }
+        } else |_| {}
         return roll.path(allocator, v600.roll.lut_name);
     }
 
@@ -369,8 +370,18 @@ pub const RollPanel = struct {
         self.freeStripLutPath();
     }
 
-    /// Refreshes the gallery after background exports finish.
+    /// Refreshes the gallery after background exports finish, and ends a
+    /// Scan Strip click whose preview was cancelled or never ran.
     pub fn poll(self: *RollPanel, model: *v600.native_ui.State) void {
+        if (self.strip_pending) {
+            if (model.scanner.cancel_requested) {
+                self.strip_pending = false;
+                self.notice = "Cancelled; the strip will not be scanned after the preview.";
+            } else if (!model.scannerWorkActive()) {
+                self.strip_pending = false;
+                if (self.notice.len == 0) self.notice = "The preview did not run; the strip was not scanned.";
+            }
+        }
         const completed = self.completed.load(.acquire);
         if (completed == self.seen_completed) return;
         self.seen_completed = completed;

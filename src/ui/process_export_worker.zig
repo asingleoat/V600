@@ -552,7 +552,7 @@ fn fakeExportWaitForRelease(context: *Context) !void {
     defer context.allocator.free(release_path);
     for (0..10_000) |_| {
         std.Io.Dir.cwd().access(context.io, release_path, .{}) catch {
-            try std.Thread.yield();
+            std.Io.sleep(context.io, .fromMilliseconds(1), .awake) catch {};
             continue;
         };
         break;
@@ -676,7 +676,7 @@ test "process export worker keeps UI state live and rejects duplicate starts" {
             observed_progress = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(observed_progress);
     try std.testing.expect(model.process_exporting);
@@ -688,7 +688,7 @@ test "process export worker keeps UI state live and rejects duplicate starts" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!model.process_exporting);
@@ -731,7 +731,7 @@ test "process export worker rejects successful result when reported file is abse
     }));
     for (0..1000) |_| {
         if (worker.poll(&model)) break;
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     } else return error.ExportWorkerDidNotFinish;
 
     try std.testing.expect(!model.process_exporting);
@@ -781,7 +781,7 @@ test "process export worker copies resident RGB page into workflow context" {
     }));
     for (0..1000) |_| {
         if (worker.poll(&model)) break;
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     } else return error.ExportWorkerDidNotFinish;
     try std.testing.expectEqualStrings("cached RGB page observed", model.status);
 }
@@ -824,7 +824,7 @@ test "process export worker copies native processing GPU request into workflow c
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expectEqualStrings("GPU request observed", model.status);
@@ -869,7 +869,7 @@ test "process export worker resolves selected builtin stock despite incomplete c
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expectEqualStrings("builtin stock coeffs observed", model.status);

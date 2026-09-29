@@ -138,7 +138,10 @@ pub const Worker = struct {
         errdefer key.deinit(self.allocator);
 
         const context = try self.allocator.create(Context);
-        errdefer self.allocator.destroy(context);
+        // Until the context owns the key and preview copy, free only the
+        // struct; afterwards destroyContext frees everything.
+        var context_initialized = false;
+        errdefer if (!context_initialized) self.allocator.destroy(context);
         context.* = .{
             .allocator = self.allocator,
             .key = key,
@@ -149,6 +152,7 @@ pub const Worker = struct {
         };
         key = Key.empty();
         preview_copy = null;
+        context_initialized = true;
         errdefer self.destroyContext(context);
 
         self.done.store(false, .release);
@@ -276,7 +280,7 @@ pub fn webgpuRequestEqual(a: processing_webgpu.Request, b: processing_webgpu.Req
 fn waitForPoll(worker: *Worker) !Result {
     for (0..100_000) |_| {
         if (worker.poll()) |result| return result;
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     return error.InvertedPreviewWorkerDidNotFinish;
 }

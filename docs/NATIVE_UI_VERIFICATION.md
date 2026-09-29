@@ -8,8 +8,8 @@ renders; they do not replace looking at the real window.
 Build steps (run with `-Dui=true`): `ui-smoke`, `native-scanner-connect-smoke`,
 `native-process-worker-smoke`, `native-process-dump-smoke`,
 `native-process-export-smoke`, `native-roll-smoke` (opening a roll points
-the Scan and Process views at it), `native-roll-name-input-smoke` (clicking
-and typing into a text field through SDL events), and the hardware-skip
+the Scan and Process views at it), `native-roll-name-input-smoke` (clicking,
+typing, Backspace, and Cmd+A/C/V through SDL events and the clipboard), and the hardware-skip
 checks
 `native-preview-worker-smoke-skip`, `native-scan-worker-smoke-skip`,
 `native-roll-strip-smoke-skip`.

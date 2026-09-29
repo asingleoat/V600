@@ -278,11 +278,9 @@ pub const Worker = struct {
 
     pub fn poll(self: *Worker, model: *ui_state.State) bool {
         self.requestCancelIfNeeded(model) catch {
-            model.applyScannerBackendEvent(.{ .scan_error = .{
-                .kind = .backend_failure,
-                .detail = "failed to write scanner cancel file",
-            } });
-            return false;
+            // The scan keeps running; say so instead of reporting it failed.
+            model.scanner.cancel_requested = false;
+            model.setStatus("Could not cancel: the cancel file could not be written. The scan continues.");
         };
 
         const drain_start = monotonicNowNs();
@@ -501,7 +499,7 @@ fn fakeScanWaitForCancel(context: *Context) !void {
     const path = context.cancel_file_path orelse return error.MissingCancelFile;
     for (0..10_000) |_| {
         if (fileExists(context.io, path)) return error.ScanCancelled;
-        try std.Thread.yield();
+        std.Io.sleep(context.io, .fromMilliseconds(1), .awake) catch {};
     }
     return error.CancelFileNotObserved;
 }
@@ -529,7 +527,7 @@ fn fakeScanEmitLiveEventsWaitForCancel(context: *Context) !void {
     const path = context.cancel_file_path orelse return error.MissingCancelFile;
     for (0..10_000) |_| {
         if (fileExists(context.io, path)) return error.ScanCancelled;
-        try std.Thread.yield();
+        std.Io.sleep(context.io, .fromMilliseconds(1), .awake) catch {};
     }
     return error.CancelFileNotObserved;
 }
@@ -587,7 +585,7 @@ test "scan worker consumes queued scan command without blocking UI state" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!worker.isRunning());
@@ -622,7 +620,7 @@ test "scan worker passes connected scanner capabilities to runtime context" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!model.scanner.scanning);
@@ -667,7 +665,7 @@ test "scan worker writes temporary LUT file from preview pixels" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, lut_path, .{}));
@@ -708,7 +706,7 @@ test "scan worker uses a roll LUT as given and leaves it in place" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try tmp.dir.access(std.testing.io, "roll.lut.bin", .{});
@@ -785,7 +783,7 @@ test "scan worker writes cancel file and reports cancellation" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!model.scanner.scanning);
@@ -823,7 +821,7 @@ test "scan worker drains live backend scan events while running" {
             observed_live = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(observed_live);
     try std.testing.expect(model.scanner.scanning);
@@ -837,7 +835,7 @@ test "scan worker drains live backend scan events while running" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!model.scanner.scanning);
@@ -865,7 +863,7 @@ test "scan worker surfaces execution failure to UI state" {
             completed = true;
             break;
         }
-        try std.Thread.yield();
+        std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(completed);
     try std.testing.expect(!model.scanner.scanning);
