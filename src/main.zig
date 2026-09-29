@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const v600 = @import("v600");
+const roll_cli = @import("roll_cli.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -34,6 +35,12 @@ pub fn main(init: std.process.Init) !void {
         try stdout.flush();
     } else if (std.mem.eql(u8, command, "serve")) {
         try handleServe(init.gpa, io, init.environ_map, &args, stdout);
+    } else if (std.mem.eql(u8, command, "roll")) {
+        roll_cli.handle(init.gpa, io, init.environ_map, &args, stdout) catch |err| {
+            try stdout.flush();
+            return err;
+        };
+        try stdout.flush();
     } else if (std.mem.eql(u8, command, "processing")) {
         handleProcessing(init.gpa, io, init.environ_map, &args, stdout) catch |err| {
             try stdout.flush();
@@ -306,30 +313,12 @@ fn runScannerPreview(
     }
     try runtime.scan(options);
 
-    const image = try v600.tiff.loadRgbPage(allocator, options.output_path);
-    defer image.deinit(allocator);
-    const dpi: f64 = @floatFromInt(v600.scanner.sane.effectiveDpiForRequest(options.request));
-    const info = v600.app_state.ScannerInfo{
-        .preview_width = image.width,
-        .preview_height = image.height,
-        .tpu_width_in = @as(f64, @floatFromInt(image.width)) / dpi,
-        .tpu_height_in = @as(f64, @floatFromInt(image.height)) / dpi,
-        .scan_counter = 0,
-    };
-    const selection = try v600.native_ui.detectFilmAreaSelection(
-        allocator,
-        image.data,
-        image.width,
-        image.height,
-        image.samples_per_pixel,
-        @intFromFloat(dpi),
-        info.tpu_width_in,
-        info.tpu_height_in,
-        .{},
-    );
-    const controls = v600.native_ui.ScanControls{ .selection = selection };
+    var preview = try roll_cli.loadPreview(allocator, options.output_path);
+    defer preview.deinit(allocator);
+    const image = preview.image;
+    const selection = preview.selection;
     try stdout.print("{{\"ok\":true,\"preview\":\"{s}\",\"film_area\":", .{options.output_path});
-    if (controls.selectionForScanStart(info)) |area| {
+    if (preview.area) |area| {
         try stdout.print("{{\"x\":{d:.3},\"y\":{d:.3},\"width\":{d:.3},\"height\":{d:.3}}}", .{ area.x, area.y, area.w, area.h });
     } else {
         try stdout.print("null", .{});
@@ -562,6 +551,7 @@ fn printUsage() !void {
         \\  scanner-contract  print scanner contract constants
         \\  scanner <command> run scanner discovery, probe, or scan commands
         \\  processing <cmd>  run processing workflow commands
+        \\  roll <command>    scan and process a film roll strip by strip
         \\  serve             run the local browser companion server
         \\
     , .{});

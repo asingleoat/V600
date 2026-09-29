@@ -19,3 +19,6 @@ sel_w_in = 1.25  # Selection width (inches)
 
 [server]
 # port = 8432  # Web GUI server port
+
+[roll]
+# roll = ""  # Current roll: strips scan into <scans>/<roll>/

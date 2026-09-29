@@ -14,6 +14,7 @@ pub const native_ui_process_cache = @import("ui/process_cache.zig");
 pub const native_ui_theme = @import("ui/theme.zig");
 pub const tiff = @import("tiff.zig");
 pub const companion = @import("companion.zig");
+pub const roll = @import("roll.zig");
 
 test {
     std.testing.refAllDecls(@This());

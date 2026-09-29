@@ -28,3 +28,6 @@ with tempfile.TemporaryDirectory() as td:
     print(path.read_text())
 PY
 ```
+
+The Zig app has since added a `[roll]` section (the current roll's name),
+appended to all three fixtures by hand; the Python settings never had it.

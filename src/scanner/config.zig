@@ -36,6 +36,7 @@ pub const ScannerConfig = struct {
     detect_min_area: f64 = 0.05,
     preview_dpi: u32 = 200,
     port: u16 = 8432,
+    roll: FixedString = .{},
 };
 
 pub const ActiveKeys = struct {
@@ -50,6 +51,7 @@ pub const ActiveKeys = struct {
     detect_min_area: bool = false,
     preview_dpi: bool = false,
     port: bool = false,
+    roll: bool = false,
 };
 
 pub const LoadedConfig = struct {
@@ -101,6 +103,10 @@ pub const LoadedConfig = struct {
             self.values.port = updates.values.port;
             self.active.port = true;
         }
+        if (updates.active.roll) {
+            self.values.roll = updates.values.roll;
+            self.active.roll = true;
+        }
     }
 };
 
@@ -116,6 +122,7 @@ const Param = enum {
     detect_min_area,
     preview_dpi,
     port,
+    roll,
 };
 
 pub fn parseText(text: []const u8) LoadedConfig {
@@ -176,6 +183,7 @@ pub fn serialize(allocator: std.mem.Allocator, loaded: LoadedConfig) ![]u8 {
     try appendSection(&out, "detection", loaded, &.{ .detect_pad, .detect_min_area });
     try appendSection(&out, "preview", loaded, &.{.preview_dpi});
     try appendSection(&out, "server", loaded, &.{.port});
+    try appendSection(&out, "roll", loaded, &.{.roll});
 
     return out.toOwnedSlice();
 }
@@ -209,6 +217,7 @@ fn appendTomlValue(out: *std.array_list.Managed(u8), values: ScannerConfig, para
         .detect_min_area => try appendFloat(out, values.detect_min_area),
         .preview_dpi => try out.print("{d}", .{values.preview_dpi}),
         .port => try out.print("{d}", .{values.port}),
+        .roll => try out.print("\"{s}\"", .{values.roll.slice()}),
     }
 }
 
@@ -266,6 +275,10 @@ fn applyValue(loaded: *LoadedConfig, param: Param, value: []const u8) !void {
             loaded.values.port = try std.fmt.parseInt(u16, value, 10);
             loaded.active.port = true;
         },
+        .roll => {
+            try loaded.values.roll.set(try parseTomlString(value));
+            loaded.active.roll = true;
+        },
     }
 }
 
@@ -315,6 +328,7 @@ fn paramByKey(key: []const u8) ?Param {
     if (std.mem.eql(u8, key, "detect_min_area")) return .detect_min_area;
     if (std.mem.eql(u8, key, "preview_dpi")) return .preview_dpi;
     if (std.mem.eql(u8, key, "port")) return .port;
+    if (std.mem.eql(u8, key, "roll")) return .roll;
     return null;
 }
 
@@ -331,6 +345,7 @@ fn keyName(param: Param) []const u8 {
         .detect_min_area => "detect_min_area",
         .preview_dpi => "preview_dpi",
         .port => "port",
+        .roll => "roll",
     };
 }
 
@@ -347,6 +362,7 @@ fn comment(param: Param) []const u8 {
         .detect_min_area => "Minimum region size for detection (fraction of image)",
         .preview_dpi => "Preview scan resolution (minimum 200 for TPU)",
         .port => "Web GUI server port",
+        .roll => "Current roll: strips scan into <scans>/<roll>/",
     };
 }
 
@@ -363,6 +379,7 @@ fn isActive(active: ActiveKeys, param: Param) bool {
         .detect_min_area => active.detect_min_area,
         .preview_dpi => active.preview_dpi,
         .port => active.port,
+        .roll => active.roll,
     };
 }
 

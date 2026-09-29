@@ -67,6 +67,16 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs
     v600-zig serve                                    # scanner companion for the webapp
 
+Scanning a roll strip by strip (each strip: preview, film area, one LUT
+for the whole roll, full scan; finished strips export in the background):
+
+    v600-zig roll start gold200-a --stock kodak_gold  # scans/gold200-a/, current roll
+    v600-zig roll scan                                # Enter per strip, q to finish
+    v600-zig roll status | export [--force] | review [--open]
+
+Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
+`scans/<roll>/review/index.html` shows each strip with its detected frames.
+
 Scans go to `scans/`, processed frames to `frames/`, relative to the
 directory the app starts in. The native UI takes `--scan-dir DIR` and
 `--output-dir DIR` to use other directories. Hardware smoke steps are

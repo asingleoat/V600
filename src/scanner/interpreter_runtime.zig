@@ -32,6 +32,15 @@ pub const device_name = "epson-interpreter";
 
 const thumbnail_max_height: u32 = 256;
 
+/// Shown when another program holds the scanner's USB interface.
+pub const busy_hint =
+    \\Another program has the scanner. On macOS that is usually Epson Scanner Monitor or
+    \\Epson Event Manager; stop them until the next login with
+    \\  launchctl bootout gui/$(id -u)/com.epson.scannermonitor
+    \\  launchctl bootout gui/$(id -u)/com.epson.eventmanager.agent
+    \\or keep them from starting with `launchctl disable` on the same labels.
+;
+
 const Hardware = struct {
     device: usb.Device,
     library: macos.LoadedInterpreter,
@@ -199,7 +208,7 @@ pub const Runtime = struct {
             const thumbnail = try makeThumbnail(self.allocator, rgb.image);
             defer self.allocator.free(thumbnail.data);
 
-            try tiff.writeScanPages(self.allocator, options.output_path, &.{
+            try self.writePagesAtomic(options.output_path, &.{
                 .{ .image = rgb.image, .metadata = self.pageMetadata(conn, rgb.effective_dpi, luts) },
                 .{ .image = thumbnail },
                 .{ .image = ir.image, .metadata = self.pageMetadata(conn, ir.effective_dpi, null) },
@@ -214,12 +223,23 @@ pub const Runtime = struct {
         defer pass.deinit(self.allocator);
         const applied = if (options.request.kind == .rgb) luts else null;
         const luts_applied = applied != null;
-        try tiff.writeScanPages(self.allocator, options.output_path, &.{
+        try self.writePagesAtomic(options.output_path, &.{
             .{ .image = pass.image, .metadata = self.pageMetadata(conn, pass.effective_dpi, applied) },
         });
         const metadata_path = try self.writeSidecar(conn, options, pass.effective_dpi, null, luts_applied);
         defer self.allocator.free(metadata_path);
         self.emitScanComplete(.{ .output = options.output_path, .metadata = metadata_path });
+    }
+
+    /// Writes `<path>.partial` and renames it into place, so an interrupted
+    /// write never leaves a truncated TIFF under the scan's name.
+    fn writePagesAtomic(self: Runtime, output_path: []const u8, pages: []const tiff.ScanPage) !void {
+        const partial = try std.fmt.allocPrint(self.allocator, "{s}.partial", .{output_path});
+        defer self.allocator.free(partial);
+        const cwd = std.Io.Dir.cwd();
+        errdefer cwd.deleteFile(self.io, partial) catch {};
+        try tiff.writeScanPages(self.allocator, partial, pages);
+        try cwd.rename(partial, cwd, output_path, self.io);
     }
 
     /// One scanner pass, ported from Python `EpsonScanner.scan`.
@@ -890,6 +910,7 @@ test "runs an RGB+IR scan through the interpreter conversation into a three-page
 
     try std.testing.expectEqual(@as(usize, 2), fake.start_index);
     try std.testing.expectEqual(@as(usize, 2), fake.fs_w_count);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tiff.partial", .{}));
     try std.testing.expectEqual(@as(usize, 1), fake.ir_enable_count);
     // TPU calibration runs once, then the interpreter is reinitialized.
     try std.testing.expect(ack_usb.writes > 0);
@@ -956,7 +977,9 @@ test "a cancel file stops the scan, sends CAN, and drops the connection" {
         .output_path = output,
         .cancel_file = cancel_path,
     }));
-    // The failed connection was closed and freed.
+    // The failed connection was closed and freed, and nothing was written.
     try std.testing.expect(shared_connection == null);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tiff", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tiff.partial", .{}));
     try std.testing.expectEqual(@as(usize, 1), fake.close_count);
 }
