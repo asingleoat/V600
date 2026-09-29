@@ -865,10 +865,10 @@ pub fn analyzeStrip(
     }
 
     const px_per_mm = strip_narrow_px / format.strip_width_mm;
-    const narrow_mm = format.narrowMm();
-    const wide_mm = format.wideMm();
-    const frame_w_px = if (is_vertical) narrow_mm * px_per_mm else wide_mm * px_per_mm;
-    const frame_h_px = if (is_vertical) wide_mm * px_per_mm else narrow_mm * px_per_mm;
+    const across_mm = format.acrossMm();
+    const along_mm = format.alongMm();
+    const frame_w_px = if (is_vertical) across_mm * px_per_mm else along_mm * px_per_mm;
+    const frame_h_px = if (is_vertical) along_mm * px_per_mm else across_mm * px_per_mm;
     const pitch_px = format.pitch_mm * px_per_mm;
     const n_float = format.pitchRatio() * strip_long_px / strip_narrow_px;
     const n_frames = @max(@as(usize, 1), @as(usize, @intFromFloat(n_float)));
@@ -1137,7 +1137,7 @@ pub fn alignPitchDtw(
     const total_mm = @as(f64, @floatFromInt(frame_count)) * format.pitch_mm;
     const template_len_target = @min(obs.len, @as(usize, 1000));
     const samples_per_mm = @as(f64, @floatFromInt(template_len_target)) / total_mm;
-    const effective_frame_dim = @max(@as(usize, 1), @as(usize, @intFromFloat(format.wideMm() * samples_per_mm)));
+    const effective_frame_dim = @max(@as(usize, 1), @as(usize, @intFromFloat(format.alongMm() * samples_per_mm)));
     const effective_gap = @max(@as(usize, 1), @as(usize, @intFromFloat(format.gapMm() * samples_per_mm)));
 
     const template = try buildDtwTemplate(allocator, frame_count, effective_frame_dim, effective_gap);
@@ -2269,15 +2269,15 @@ fn framesFromStripEdges(
         @as(f64, @floatFromInt(width)) / 2.0
     else
         @as(f64, @floatFromInt(height)) / 2.0;
-    const narrow_mm = format.narrowMm();
-    const wide_mm = format.wideMm();
+    const across_mm = format.acrossMm();
+    const along_mm = format.alongMm();
     for (frames, 0..) |*frame, frame_index| {
         const e_start = edge_positions[2 * frame_index];
         const e_end = edge_positions[2 * frame_index + 1];
         if (e_end <= e_start) return error.InvalidDetectFramesInput;
         const strip_center = (@as(f64, @floatFromInt(e_start)) + @as(f64, @floatFromInt(e_end))) / 2.0;
         const strip_dim = @as(f64, @floatFromInt(e_end - e_start));
-        const cross_dim = strip_dim * narrow_mm / wide_mm;
+        const cross_dim = strip_dim * across_mm / along_mm;
         frame.* = if (strip_info.is_vertical)
             .{ .cx = cross_center, .cy = strip_center, .w = cross_dim, .h = strip_dim, .angle = angle }
         else
@@ -2299,8 +2299,8 @@ fn refineCrossStripAxisAligned(
     const line_len = if (strip_info.is_vertical) width else height;
     if (line_len < 3) return error.InvalidDetectFramesInput;
 
-    const narrow_mm = format.narrowMm();
-    const wide_mm = format.wideMm();
+    const across_mm = format.acrossMm();
+    const along_mm = format.alongMm();
     const cross_search_r = @max(@as(usize, 3), @as(usize, @intFromFloat(@as(f64, @floatFromInt(line_len)) * 0.04)));
     const sample_count: usize = 15;
     const margin_frac = 0.2;
@@ -2320,7 +2320,7 @@ fn refineCrossStripAxisAligned(
         const sin_a = std.math.sin(angle);
         const strip_dim = if (strip_info.is_vertical) frame.h else frame.w;
         if (!std.math.isFinite(strip_dim) or strip_dim <= 0.0) continue;
-        const cross_dim_est = strip_dim * narrow_mm / wide_mm;
+        const cross_dim_est = strip_dim * across_mm / along_mm;
         const start_offset = -strip_dim / 2.0 * (1.0 - margin_frac);
         const end_offset = strip_dim / 2.0 * (1.0 - margin_frac);
         var edge_count: usize = 0;
@@ -5107,10 +5107,10 @@ fn expectFormat(
     try std.testing.expectEqualStrings(description, actual.description);
 }
 
-test "ports Python frame format constants" {
+test "frame format table" {
     try std.testing.expectEqual(@as(usize, 5), formats.len);
-    try expectFormat(formats[0], "35mm", .{ 36.0, 24.0 }, 38.0, 35.0, "35mm (135 film)");
-    try expectFormat(formats[1], "645", .{ 56.0, 41.5 }, 60.0, 61.5, "645 medium format");
+    try expectFormat(formats[0], "35mm", .{ 24.0, 36.0 }, 38.0, 35.0, "35mm (135 film)");
+    try expectFormat(formats[1], "645", .{ 56.0, 41.5 }, 45.0, 61.5, "645 medium format");
     try expectFormat(formats[2], "6x6", .{ 56.0, 56.0 }, 60.0, 61.5, "6x6 medium format");
     try expectFormat(formats[3], "6x7", .{ 56.0, 69.0 }, 73.0, 61.5, "6x7 medium format");
     try expectFormat(formats[4], "6x9", .{ 56.0, 84.0 }, 88.0, 61.5, "6x9 medium format");
@@ -5124,21 +5124,26 @@ test "looks up frame formats by Python key" {
 
 test "computes strip-analysis format ratios" {
     const f35 = formatByName("35mm").?;
-    try std.testing.expectEqual(@as(f64, 24.0), f35.narrowMm());
-    try std.testing.expectEqual(@as(f64, 36.0), f35.wideMm());
+    try std.testing.expectEqual(@as(f64, 24.0), f35.acrossMm());
+    try std.testing.expectEqual(@as(f64, 36.0), f35.alongMm());
     try std.testing.expectEqual(@as(f64, 2.0), f35.gapMm());
     try std.testing.expectApproxEqAbs(@as(f64, 35.0 / 36.0), f35.pitchRatio(), 1e-12);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.5), f35.physicalAspect(), 1e-12);
 
+    // 645 is the one format whose long side runs across the strip.
     const f645 = formatByName("645").?;
-    try std.testing.expectEqual(@as(f64, 41.5), f645.narrowMm());
-    try std.testing.expectEqual(@as(f64, 56.0), f645.wideMm());
-    try std.testing.expectEqual(@as(f64, 4.0), f645.gapMm());
-    try std.testing.expectApproxEqAbs(@as(f64, 61.5 / 56.0), f645.pitchRatio(), 1e-12);
+    try std.testing.expectEqual(@as(f64, 56.0), f645.acrossMm());
+    try std.testing.expectEqual(@as(f64, 41.5), f645.alongMm());
+    try std.testing.expectEqual(@as(f64, 3.5), f645.gapMm());
+    try std.testing.expectApproxEqAbs(@as(f64, 61.5 / 41.5), f645.pitchRatio(), 1e-12);
+
+    const f6x7 = formatByName("6x7").?;
+    try std.testing.expectEqual(@as(f64, 56.0), f6x7.acrossMm());
+    try std.testing.expectEqual(@as(f64, 69.0), f6x7.alongMm());
+    try std.testing.expectEqual(@as(f64, 4.0), f6x7.gapMm());
 
     const f6x9 = formatByName("6x9").?;
-    try std.testing.expectEqual(@as(f64, 56.0), f6x9.narrowMm());
-    try std.testing.expectEqual(@as(f64, 84.0), f6x9.wideMm());
+    try std.testing.expectEqual(@as(f64, 56.0), f6x9.acrossMm());
+    try std.testing.expectEqual(@as(f64, 84.0), f6x9.alongMm());
     try std.testing.expectEqual(@as(f64, 4.0), f6x9.gapMm());
     try std.testing.expectApproxEqAbs(@as(f64, 61.5 / 84.0), f6x9.pitchRatio(), 1e-12);
 }
@@ -5221,8 +5226,8 @@ test "pins frozen detect_frames work scale as no-op" {
 test "formats detect_frames aspect string like Python result" {
     try std.testing.expectEqualStrings("24:36", detectFramesAspect(format_35mm, true));
     try std.testing.expectEqualStrings("36:24", detectFramesAspect(format_35mm, false));
-    try std.testing.expectEqualStrings("41.5:56", detectFramesAspect(format_645, true));
-    try std.testing.expectEqualStrings("56:41.5", detectFramesAspect(format_645, false));
+    try std.testing.expectEqualStrings("56:41.5", detectFramesAspect(format_645, true));
+    try std.testing.expectEqualStrings("41.5:56", detectFramesAspect(format_645, false));
     try std.testing.expectEqualStrings("56:56", detectFramesAspect(format_6x6, true));
     try std.testing.expectEqualStrings("56:56", detectFramesAspect(format_6x6, false));
     try std.testing.expectEqualStrings("56:69", detectFramesAspect(format_6x7, true));
@@ -5408,3 +5413,4 @@ test "rejects invalid strip analysis and initial placement inputs" {
         .is_vertical = true,
     }, 0.0));
 }
+

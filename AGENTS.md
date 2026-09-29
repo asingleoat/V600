@@ -198,9 +198,10 @@ deliberately, not by accident.
 - Detection runs on a downscaled preview; frame rects `(cx, cy, w, h, angle)`
   are in preview coordinates. Full-resolution coordinates scale by
   `1 / preview_scale`.
-- Formats: 35mm 24x36 mm, 38 mm pitch; 645 56x41.5 mm, 60 mm pitch; 6x6
-  56x56 mm, 60 mm pitch; 6x7 56x69 mm, 73 mm pitch; 6x9 56x84 mm, 88 mm
-  pitch.
+- Formats, frame across x along the strip: 35mm 24x36 mm, 38 mm pitch; 645
+  56x41.5 mm, 45 mm pitch; 6x6 56x56 mm, 60 mm pitch; 6x7 56x69 mm, 73 mm
+  pitch; 6x9 56x84 mm, 88 mm pitch. 645 is the one format whose long side
+  runs across the strip.
 - Pipeline: 1D strip profile, DTW pitch alignment, gradient edge snapping,
   size-consistency correction, first/last frame repair, cross-strip
   positioning, Theil-Sen angle per frame.

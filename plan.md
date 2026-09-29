@@ -105,11 +105,6 @@ Open:
 - With no film stock selected, exports still invert with `kodak_gold`
   (`film_stock orelse "kodak_gold"` in `src/processing/export.zig`). Python
   had no inversion without a stock. Decide which is intended.
-- The 645 entry in `src/processing/film_formats.zig` treats its 56 mm side
-  as running along the strip (60 mm pitch; detection takes the gap as pitch
-  minus the long side), but 645 frames are 41.5 mm along a 120 strip at
-  about 45 mm pitch. Check against a real 645 strip before trusting 645
-  detection. Roll rotation already treats 645 frames as landscape.
 - The image list ignores symlinked TIFFs (`tiff.findImages` accepts only
   regular files), so a scan folder of symlinks shows "No scan TIFFs found".
 - Passing test runs print about 130 JSON scanner timing events on stderr,
@@ -204,6 +199,13 @@ Open:
 
 ### Needs the scanner
 
+- Medium format detection has never run on a real 120 strip. The 645 pitch
+  (45 mm) is nominal and camera gaps vary. On synthetic strips, the DTW pitch
+  alignment (free to skip the strip's ends) started a 3-frame 6x7 strip's
+  first frame mid-frame and dropped a 2-frame 6x9 strip's last edge. Charging
+  for skipped ends fixed those but broke the Linux scan_0001 and scan_0003
+  ground-truth tests, so it was not kept. Check 6x7 and 6x9 on real scans
+  before changing detection.
 - Verify custom LUT application on Linux (after the LUT fix).
 - A full 3200 dpi roll through `roll scan` or Scan Strip; the hardware runs
   so far used 800 dpi strips.

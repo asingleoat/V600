@@ -5,43 +5,34 @@ const std = @import("std");
 
 pub const FilmFormat = struct {
     name: []const u8,
+    /// Frame size across the strip (the film's width), then along it. The
+    /// long side is along the strip except for 645.
     frame_mm: [2]f64,
+    /// Frame start to frame start along the strip.
     pitch_mm: f64,
     strip_width_mm: f64,
     description: []const u8,
 
-    pub fn frameWidthMm(self: FilmFormat) f64 {
+    pub fn acrossMm(self: FilmFormat) f64 {
         return self.frame_mm[0];
     }
 
-    pub fn frameHeightMm(self: FilmFormat) f64 {
+    pub fn alongMm(self: FilmFormat) f64 {
         return self.frame_mm[1];
     }
 
-    pub fn narrowMm(self: FilmFormat) f64 {
-        return @min(self.frame_mm[0], self.frame_mm[1]);
-    }
-
-    pub fn wideMm(self: FilmFormat) f64 {
-        return @max(self.frame_mm[0], self.frame_mm[1]);
-    }
-
     pub fn gapMm(self: FilmFormat) f64 {
-        return self.pitch_mm - self.wideMm();
+        return self.pitch_mm - self.alongMm();
     }
 
     pub fn pitchRatio(self: FilmFormat) f64 {
-        return self.strip_width_mm / self.wideMm();
-    }
-
-    pub fn physicalAspect(self: FilmFormat) f64 {
-        return self.frame_mm[0] / self.frame_mm[1];
+        return self.strip_width_mm / self.alongMm();
     }
 };
 
 pub const format_35mm: FilmFormat = .{
     .name = "35mm",
-    .frame_mm = .{ 36.0, 24.0 },
+    .frame_mm = .{ 24.0, 36.0 },
     .pitch_mm = 38.0,
     .strip_width_mm = 35.0,
     .description = "35mm (135 film)",
@@ -50,7 +41,8 @@ pub const format_35mm: FilmFormat = .{
 pub const format_645: FilmFormat = .{
     .name = "645",
     .frame_mm = .{ 56.0, 41.5 },
-    .pitch_mm = 60.0,
+    // Cameras leave 3-4 mm between frames (15-16 frames per 120 roll).
+    .pitch_mm = 45.0,
     .strip_width_mm = 61.5,
     .description = "645 medium format",
 };
@@ -96,7 +88,7 @@ pub fn formatByName(name: []const u8) ?FilmFormat {
 
 pub fn detectFramesAspect(format: FilmFormat, is_vertical: bool) []const u8 {
     if (std.mem.eql(u8, format.name, "35mm")) return if (is_vertical) "24:36" else "36:24";
-    if (std.mem.eql(u8, format.name, "645")) return if (is_vertical) "41.5:56" else "56:41.5";
+    if (std.mem.eql(u8, format.name, "645")) return if (is_vertical) "56:41.5" else "41.5:56";
     if (std.mem.eql(u8, format.name, "6x6")) return "56:56";
     if (std.mem.eql(u8, format.name, "6x7")) return if (is_vertical) "56:69" else "69:56";
     if (std.mem.eql(u8, format.name, "6x9")) return if (is_vertical) "56:84" else "84:56";
