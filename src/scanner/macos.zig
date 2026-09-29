@@ -253,12 +253,24 @@ pub const LoadedInterpreter = struct {
     }
 };
 
+/// Callback context used instead of the callback handle while a detached
+/// session is open. The Python driver passed a NULL handle to INTInit and
+/// never relied on the interpreter handing it back, so the live runtime does
+/// the same.
+var detached_callback_context: ?*CallbackContext = null;
+
 pub const InterpreterSession = struct {
     api: InterpreterApi,
     callback_context: CallbackContext,
+    /// Pass a NULL handle to INTInit and route callbacks through
+    /// `detached_callback_context`. Only one detached session may be open.
+    detached: bool = false,
 
     pub fn init(self: *InterpreterSession) !void {
-        if (!self.api.initFn(self.api.context, usbReadCallback, usbWriteCallback, &self.callback_context)) {
+        const handle: ?*anyopaque = if (self.detached) null else &self.callback_context;
+        if (self.detached) detached_callback_context = &self.callback_context;
+        if (!self.api.initFn(self.api.context, usbReadCallback, usbWriteCallback, handle)) {
+            self.clearDetached();
             return error.InterpreterInitFailed;
         }
     }
@@ -270,6 +282,11 @@ pub const InterpreterSession = struct {
 
     pub fn close(self: *InterpreterSession) void {
         self.api.closeFn(self.api.context);
+        self.clearDetached();
+    }
+
+    fn clearDetached(self: *InterpreterSession) void {
+        if (detached_callback_context == &self.callback_context) detached_callback_context = null;
     }
 
     pub fn write(self: *InterpreterSession, data: []const u8) !void {
@@ -764,6 +781,7 @@ fn callbackSlice(buffer: ?[*]u8, length: u32) UsbTransferError![]u8 {
 }
 
 fn callbackContext(handle: ?*anyopaque) UsbTransferError!*CallbackContext {
+    if (detached_callback_context) |context| return context;
     const raw = handle orelse return UsbTransferError.InvalidCallbackContext;
     return @ptrCast(@alignCast(raw));
 }
@@ -1233,6 +1251,28 @@ test "initializes and reinitializes interpreter session with persistent callback
     try session.reinit();
     try std.testing.expectEqual(@as(usize, 1), fake_interpreter.close_count);
     try std.testing.expectEqual(@as(usize, 2), fake_interpreter.init_count);
+}
+
+test "detached session passes a NULL handle and routes callbacks to its context" {
+    var fake_usb = FakeUsb{ .read_bytes = &.{0x5a} };
+    var fake_interpreter = FakeInterpreter{};
+    var session = InterpreterSession{
+        .api = fake_interpreter.api(),
+        .callback_context = .{ .usb = fake_usb.io() },
+        .detached = true,
+    };
+
+    try session.init();
+    try std.testing.expect(fake_interpreter.usb_handle == null);
+
+    var buf = [_]u8{0};
+    var err: i16 = 99;
+    try std.testing.expectEqual(callback_success, fake_interpreter.read_cb.?(&buf, buf.len, null, &err));
+    try std.testing.expectEqual(@as(u8, 0x5a), buf[0]);
+    try std.testing.expectEqual(callback_ok, err);
+
+    session.close();
+    try std.testing.expectEqual(callback_failure, usbReadCallback(&buf, buf.len, null, &err));
 }
 
 test "read_scan_data reads full and final blocks with ACKs between blocks" {

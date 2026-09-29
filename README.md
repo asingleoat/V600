@@ -36,7 +36,9 @@ to (see `docs/SCANNER_COMPANION.md`):
 
 - Linux: scanner through the patched epkowa SANE backend, processing CLI,
   and native UI. Scanning has been exercised on a V600.
-- macOS: paused. The scanner protocol code is replay-tested only.
+- macOS: CLI and native UI build and test on Apple Silicon. The scanner
+  backend (Epson's Interpreter bundle over libusb) awaits hardware
+  bring-up.
 - Browser: checked in Chrome and Chromium (older browsers without Wasm
   memory64 get a wasm32 build). Scanning from it needs the companion on a
   Linux host.
@@ -74,7 +76,7 @@ opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
     src/
       main.zig              CLI entry point
       companion.zig         scanner companion server for the webapp
-      scanner/              Linux SANE backend; macOS interpreter protocol
+      scanner/              Linux SANE backend; macOS interpreter backend
       processing/           frame detection, inversion, IR cleaning, render, export
       ui/                   SDL3/Nuklear native UI, workers, process cache
       wasm/                 browser WebAssembly processing core

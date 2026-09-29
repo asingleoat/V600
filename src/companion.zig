@@ -106,7 +106,7 @@ pub const Server = struct {
     options: ServeOptions,
     job: JobState = .{},
 
-    fn scanRuntime(self: *Server, sink: ?scanner.events.Sink) scanner.linux.Runtime {
+    fn scanRuntime(self: *Server, sink: ?scanner.events.Sink) scanner.host.Runtime {
         return .{
             .allocator = job_allocator,
             .io = self.io,
@@ -267,7 +267,7 @@ fn respondDevices(server: *Server, request: *std.http.Server.Request) !void {
     try writer.print("{{\"schema\":\"{s}\",\"devices\":[", .{api_schema});
     const runtime = server.scanRuntime(null);
     if (runtime.discoverDevices()) |devices| {
-        defer scanner.linux.freeDevices(job_allocator, devices);
+        defer scanner.host.freeDevices(job_allocator, devices);
         for (devices, 0..) |device, index| {
             if (index != 0) try writer.print(",", .{});
             try writer.print("{{\"name\":", .{});

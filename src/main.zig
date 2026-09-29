@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const v600 = @import("v600");
 
 pub fn main(init: std.process.Init) !void {
@@ -58,20 +59,17 @@ fn handleScanner(
     };
 
     if (std.mem.eql(u8, subcommand, "macos-smoke")) {
-        try handleMacosScannerSmoke(environ_map, stdout);
+        try handleMacosScannerSmoke(allocator, io, environ_map, stdout);
         return;
     }
-
-    switch (v600.scanner.backendKindForCurrentHost()) {
-        .sane => try handleScannerSane(allocator, io, environ_map, args, stdout, subcommand),
-        .interpreter => {
-            try stdout.print("scanner backend unsupported on this host until macOS interpreter runtime wiring is complete\n", .{});
-            return error.UnsupportedScannerBackend;
-        },
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) {
+        try stdout.print("scanner backend unsupported on this host\n", .{});
+        return error.UnsupportedScannerBackend;
     }
+    try handleScannerHost(allocator, io, environ_map, args, stdout, subcommand);
 }
 
-fn handleScannerSane(
+fn handleScannerHost(
     allocator: std.mem.Allocator,
     io: std.Io,
     environ_map: *std.process.Environ.Map,
@@ -89,7 +87,7 @@ fn handleScannerSane(
     }
     const event_sink: ?v600.scanner.events.Sink = if (timing_report) |*report| report.sink() else null;
 
-    const runtime = v600.scanner.linux.Runtime{
+    const runtime = v600.scanner.host.Runtime{
         .allocator = allocator,
         .io = io,
         .environ_map = environ_map,
@@ -103,7 +101,7 @@ fn handleScannerSane(
             writeReportStatus(&timing_report, "scanner devices", "error", @errorName(err), null);
             return err;
         };
-        defer v600.scanner.linux.freeDevices(allocator, devices);
+        defer v600.scanner.host.freeDevices(allocator, devices);
         for (devices) |device| {
             try stdout.print("{s}\n", .{device.raw_line});
         }
@@ -191,17 +189,27 @@ fn handleScannerSane(
     }
 }
 
-fn handleMacosScannerSmoke(environ_map: *std.process.Environ.Map, stdout: anytype) !void {
+/// Gated identity probe of a scanner attached to this Mac.
+fn handleMacosScannerSmoke(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *std.process.Environ.Map,
+    stdout: anytype,
+) !void {
     if (!macosHardwareSmokeEnabled(environ_map)) {
         try stdout.print("macOS scanner smoke skipped: set V600_MACOS_HARDWARE_SMOKE=1 to run\n", .{});
         return;
     }
-    if (v600.scanner.backendKindForCurrentHost() != .interpreter) {
-        try stdout.print("macOS scanner smoke requires a macOS interpreter host\n", .{});
+    if (builtin.os.tag != .macos) {
+        try stdout.print("macOS scanner smoke requires a macOS host\n", .{});
         return error.UnsupportedPlatform;
     }
-    try stdout.print("macOS scanner smoke not implemented until interpreter USB runtime is wired\n", .{});
-    return error.UnsupportedScannerBackend;
+    const runtime = v600.scanner.host.Runtime{
+        .allocator = allocator,
+        .io = io,
+        .environ_map = environ_map,
+    };
+    _ = try runtime.probe(stdout);
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
@@ -285,7 +293,7 @@ fn autoScanOutputPath(buffer: []u8, io: std.Io, request: v600.scanner.contracts.
 fn runScannerPreview(
     allocator: std.mem.Allocator,
     io: std.Io,
-    runtime: v600.scanner.linux.Runtime,
+    runtime: v600.scanner.host.Runtime,
     args: []const []const u8,
     stdout: anytype,
 ) !void {
@@ -327,7 +335,7 @@ fn runScannerPreview(
     }
 }
 
-fn parseScanOptions(args: []const []const u8) !v600.scanner.linux.ScanOptions {
+fn parseScanOptions(args: []const []const u8) !v600.scanner.host.ScanOptions {
     var request = v600.scanner.contracts.ScanRequest{
         .dpi = 400,
         .source = .tpu,
@@ -423,7 +431,7 @@ fn parseUsbResetOptions(args: []const []const u8) !bool {
 fn writeScanReportContext(
     report: *?v600.scanner.events.TimingReport,
     command: []const u8,
-    options: v600.scanner.linux.ScanOptions,
+    options: v600.scanner.host.ScanOptions,
 ) !void {
     try writeReportContext(report, .{
         .command = command,

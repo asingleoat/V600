@@ -3,7 +3,7 @@ const std = @import("std");
 const film_lut = @import("../scanner/film_lut.zig");
 const scanner_contracts = @import("../scanner/contracts.zig");
 const scanner_events = @import("../scanner/events.zig");
-const scanner_linux = @import("../scanner/linux.zig");
+const scanner_host = @import("../scanner.zig").host;
 const scanner_lut = @import("../scanner/lut.zig");
 const preview_worker = @import("preview_worker.zig");
 const ui_state = @import("state.zig");
@@ -380,7 +380,7 @@ fn threadMain(context: *Context) void {
 
 fn runScannerScan(context: *Context) !void {
     const setup_start = monotonicNowNs();
-    const runtime = scanner_linux.Runtime{
+    const runtime = scanner_host.Runtime{
         .allocator = context.allocator,
         .io = context.io,
         .environ_map = context.environ_map,

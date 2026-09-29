@@ -134,7 +134,11 @@ pub fn writeScannerPageMetadata(allocator: std.mem.Allocator, path: []const u8, 
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, page) == 0) return error.MissingTiffPage;
+    try setScannerMetadataFields(allocator, tiff, metadata);
+    if (c.TIFFRewriteDirectory(tiff) == 0) return error.TiffMetadataFailed;
+}
 
+fn setScannerMetadataFields(allocator: std.mem.Allocator, tiff: *c.TIFF, metadata: ScannerMetadata) !void {
     const make_z = try allocator.dupeZ(u8, metadata.make);
     defer allocator.free(make_z);
     const model_z = try allocator.dupeZ(u8, metadata.model);
@@ -165,8 +169,6 @@ pub fn writeScannerPageMetadata(allocator: std.mem.Allocator, path: []const u8, 
         defer allocator.free(marker_z);
         try setAsciiField(tiff, scanner_custom_lut_tag, marker_z.ptr);
     }
-
-    if (c.TIFFRewriteDirectory(tiff) == 0) return error.TiffMetadataFailed;
 }
 
 pub fn loadRgbIrPages(allocator: std.mem.Allocator, path: []const u8) !RgbIrPages {
@@ -283,6 +285,39 @@ pub fn writeImage(
     try writeImageDirectory(allocator, tiff, image, options.metadata_json);
 }
 
+pub const ScanPage = struct {
+    image: ImageView,
+    metadata: ?ScannerMetadata = null,
+};
+
+/// Writes scanner pages (for example RGB, thumbnail, IR) into one TIFF,
+/// switching to BigTIFF when the pixel data would not fit a classic TIFF.
+pub fn writeScanPages(allocator: std.mem.Allocator, path: []const u8, pages: []const ScanPage) !void {
+    var total_bytes: u64 = 0;
+    for (pages) |page| {
+        total_bytes += page.image.data.len;
+        if (page.metadata) |metadata| {
+            if (metadata.custom_luts_applied) ensureCustomTagsRegistered();
+        }
+    }
+    const classic_limit: u64 = 0xF000_0000;
+
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+    const tiff = c.TIFFOpen(path_z.ptr, if (total_bytes > classic_limit) "w8" else "w") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+
+    for (pages) |page| {
+        const scanline = try expectedScanlineSize(page.image.width, page.image.samples_per_pixel, page.image.bits_per_sample);
+        const rows_per_strip: u32 = @intCast(@max(1, @min(page.image.height, scan_strip_bytes / @max(scanline, 1))));
+        try setImageFields(tiff, page.image, rows_per_strip);
+        if (page.metadata) |metadata| try setScannerMetadataFields(allocator, tiff, metadata);
+        try writeImageData(tiff, page.image, rows_per_strip);
+    }
+}
+
+const scan_strip_bytes: usize = 4 * 1024 * 1024;
+
 pub fn readAsciiTag(allocator: std.mem.Allocator, path: []const u8, tag: u32, name: []const u8) !?[]u8 {
     _ = name;
     if (isPrivateTag(tag) and !isKnownPrivateTag(tag)) return null;
@@ -378,6 +413,18 @@ fn writeImageDirectory(
     image: ImageView,
     metadata_json: ?[]const u8,
 ) !void {
+    try setImageFields(tiff, image, image.height);
+
+    if (metadata_json) |json| {
+        const json_z = try allocator.dupeZ(u8, json);
+        defer allocator.free(json_z);
+        try setAsciiField(tiff, export_metadata_tag, json_z.ptr);
+    }
+
+    try writeImageData(tiff, image, image.height);
+}
+
+fn setImageFields(tiff: *c.TIFF, image: ImageView, rows_per_strip: u32) !void {
     const expected_len = try std.math.mul(
         usize,
         image.height,
@@ -391,18 +438,21 @@ fn writeImageDirectory(
     _ = c.TIFFSetField(tiff, c.TIFFTAG_BITSPERSAMPLE, @as(u16, image.bits_per_sample));
     _ = c.TIFFSetField(tiff, c.TIFFTAG_COMPRESSION, @as(u16, c.COMPRESSION_NONE));
     _ = c.TIFFSetField(tiff, c.TIFFTAG_PLANARCONFIG, @as(u16, c.PLANARCONFIG_CONTIG));
-    _ = c.TIFFSetField(tiff, c.TIFFTAG_ROWSPERSTRIP, @as(u32, image.height));
+    _ = c.TIFFSetField(tiff, c.TIFFTAG_ROWSPERSTRIP, rows_per_strip);
     const photometric: u16 = if (image.samples_per_pixel == 3) c.PHOTOMETRIC_RGB else c.PHOTOMETRIC_MINISBLACK;
     _ = c.TIFFSetField(tiff, c.TIFFTAG_PHOTOMETRIC, photometric);
+}
 
-    if (metadata_json) |json| {
-        const json_z = try allocator.dupeZ(u8, json);
-        defer allocator.free(json_z);
-        try setAsciiField(tiff, export_metadata_tag, json_z.ptr);
-    }
-
-    if (c.TIFFWriteEncodedStrip(tiff, 0, @constCast(image.data.ptr), @intCast(image.data.len)) < 0) {
-        return error.TiffWriteFailed;
+fn writeImageData(tiff: *c.TIFF, image: ImageView, rows_per_strip: u32) !void {
+    const strip_bytes = @as(usize, rows_per_strip) * (image.data.len / @max(image.height, 1));
+    var strip: u32 = 0;
+    var offset: usize = 0;
+    while (offset < image.data.len) : (strip += 1) {
+        const len = @min(strip_bytes, image.data.len - offset);
+        if (c.TIFFWriteEncodedStrip(tiff, strip, @constCast(image.data[offset..].ptr), @intCast(len)) < 0) {
+            return error.TiffWriteFailed;
+        }
+        offset += len;
     }
     if (c.TIFFWriteDirectory(tiff) == 0) return error.TiffWriteFailed;
 }
@@ -744,6 +794,54 @@ test "writes scanner metadata on the IR page of a combined RGB+IR file" {
     try std.testing.expectEqualStrings("2026:09:28 10:00:00", std.mem.span(datetime));
     try std.testing.expectEqual(@as(?u32, 3200), readCurrentDpi(handle));
     try std.testing.expectEqual(@as(?u32, 6400), try readDpi(allocator, path));
+}
+
+test "writes RGB, thumbnail, and IR scan pages with per-page metadata" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scan-pages.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(path);
+
+    // Tall enough that the 4 MiB strip size splits the RGB page.
+    const width: u32 = 512;
+    const height: u32 = 1400;
+    const rgb = try allocator.alloc(u8, @as(usize, width) * height * 6);
+    defer allocator.free(rgb);
+    for (rgb, 0..) |*byte, i| byte.* = @truncate(i *% 7);
+    const ir = try allocator.alloc(u8, @as(usize, width) * height);
+    defer allocator.free(ir);
+    for (ir, 0..) |*byte, i| byte.* = @truncate(i *% 3);
+
+    try writeScanPages(allocator, path, &.{
+        .{
+            .image = .{ .width = width, .height = height, .samples_per_pixel = 3, .bits_per_sample = 16, .data = rgb },
+            .metadata = .{ .model = "Perfection V600", .dpi = 1600, .datetime = "2026:09:28 10:00:00", .custom_luts_applied = true },
+        },
+        .{ .image = .{ .width = 1, .height = 1, .samples_per_pixel = 3, .bits_per_sample = 8, .data = &.{ 1, 2, 3 } } },
+        .{
+            .image = .{ .width = width, .height = height, .samples_per_pixel = 1, .bits_per_sample = 8, .data = ir },
+            .metadata = .{ .model = "Perfection V600", .dpi = 800, .datetime = "2026:09:28 10:00:00" },
+        },
+    });
+
+    var pages = try loadRgbIrPages(allocator, path);
+    defer pages.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, rgb, pages.rgb.data);
+    try std.testing.expectEqualSlices(u8, ir, pages.ir.?.data);
+    try std.testing.expectEqual(@as(?u32, 1600), try readDpi(allocator, path));
+    const marker = (try readAsciiTag(allocator, path, scanner_custom_lut_tag, scanner_custom_lut_name)).?;
+    defer allocator.free(marker);
+    try std.testing.expectEqualStrings(scanner_custom_lut_marker, marker);
+
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+    const handle = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(handle);
+    try std.testing.expect(c.TIFFNumberOfStrips(handle) > 1);
+    try std.testing.expect(c.TIFFSetDirectory(handle, 2) != 0);
+    try std.testing.expectEqual(@as(?u32, 800), readCurrentDpi(handle));
 }
 
 test "writes export TIFF with private JSON metadata tag" {

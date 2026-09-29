@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const scanner_contracts = @import("../scanner/contracts.zig");
-const scanner_linux = @import("../scanner/linux.zig");
+const scanner_host = @import("../scanner.zig").host;
 const ui_state = @import("state.zig");
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
@@ -128,7 +128,7 @@ fn threadMain(context: *Context) void {
 }
 
 fn runScannerProbe(context: *Context) !void {
-    const runtime = scanner_linux.Runtime{
+    const runtime = scanner_host.Runtime{
         .allocator = context.allocator,
         .io = context.io,
         .environ_map = context.environ_map,

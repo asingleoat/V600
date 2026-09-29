@@ -110,6 +110,10 @@ pub fn build(b: *std.Build) void {
         // namespace; OpenCV itself links the system /usr/lib/libc++.
         root_module.linkSystemLibrary("c++", .{ .use_pkg_config = .no });
     }
+    if (target.result.os.tag == .macos) {
+        // USB transport for the Epson interpreter scanner backend.
+        root_module.linkSystemLibrary("libusb-1.0", .{ .use_pkg_config = .force });
+    }
 
     if (enable_webgpu) {
         const include_dir = requiredEnvPath(b, "WGPU_NATIVE_INCLUDE_DIR");

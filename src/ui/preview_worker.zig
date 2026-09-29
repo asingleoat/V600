@@ -2,7 +2,7 @@ const std = @import("std");
 
 const scanner_contracts = @import("../scanner/contracts.zig");
 const scanner_events = @import("../scanner/events.zig");
-const scanner_linux = @import("../scanner/linux.zig");
+const scanner_host = @import("../scanner.zig").host;
 const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
 
@@ -274,7 +274,7 @@ fn runScannerPreview(context: *Context) !void {
     var total_detail: []const u8 = "error";
     defer context.pushTimingSince("native.preview.total", total_start, total_detail);
 
-    const runtime = scanner_linux.Runtime{
+    const runtime = scanner_host.Runtime{
         .allocator = context.allocator,
         .io = context.io,
         .environ_map = context.environ_map,

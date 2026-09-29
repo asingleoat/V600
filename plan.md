@@ -15,8 +15,9 @@ As of 2026-09-28, on branch `zig-rewrite`:
 - Zig CLI and native SDL3/Nuklear UI cover scanning, frame detection,
   inversion, IR dust removal, export, and the gallery. Linux scanning was
   exercised on a V600 in May 2026.
-- macOS: scanner protocol code exists and is replay-tested; there is no USB
-  transport and the CLI refuses the backend. Paused.
+- macOS: CLI, native UI, and tests build on Apple Silicon. The scanner
+  backend (Epson Interpreter bundle over libusb) is fake-tested; hardware
+  bring-up is in progress.
 - Windows: not wired.
 - Browser webapp: processing and export in WebAssembly, built from the same
   Zig processing code. Node smokes plus a manual headless Chrome/Chromium
@@ -47,8 +48,7 @@ Recorded in the May-July log; correct anything that is wrong:
 - 2026-05-18: use the ambient Nix shell; no Nix evaluations in ordinary
   build/test loops.
 - 2026-05-19: the f32 `invert_negative` preview hotspot is deferred.
-- 2026-05-23: macOS build, test, and scanner work is paused until it is
-  reopened on macOS hardware.
+- 2026-05-23: macOS work paused; reopened 2026-09-28 to scan from a Mac.
 - GPU processing stays opt-in and off by default; measured whole-workflow
   runs were slower than the CPU path.
 
@@ -186,8 +186,6 @@ Open:
 
 ### Parked
 
-- macOS scanner runtime: USB transport, interpreter bundle loading, live
-  tests. See `docs/CROSS_PLATFORM.md`.
 - Windows builds and scanner support.
 - Browser WebGPU; a WebUSB scanner driver (research only).
 - Tiled or streaming processing for very large browser scans.

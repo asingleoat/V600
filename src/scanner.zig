@@ -10,6 +10,13 @@ pub const linux = @import("scanner/linux.zig");
 pub const macos = @import("scanner/macos.zig");
 pub const sane = @import("scanner/sane.zig");
 pub const interpreter = @import("scanner/interpreter.zig");
+pub const interpreter_runtime = @import("scanner/interpreter_runtime.zig");
+pub const usb = @import("scanner/usb.zig");
+
+/// The scanner runtime for this host: SANE subprocesses on Linux, the Epson
+/// interpreter over libusb on macOS. Both expose `Runtime`, `ScanOptions`,
+/// `Device`, and `freeDevices`.
+pub const host = if (builtin.os.tag == .macos) interpreter_runtime else linux;
 
 pub const BackendKind = enum {
     sane,
@@ -37,6 +44,8 @@ test {
     _ = macos;
     _ = sane;
     _ = interpreter;
+    // Links libusb, which only macOS builds provide.
+    if (comptime builtin.os.tag == .macos) _ = interpreter_runtime;
 }
 
 test "scanner backend dispatch matches Python EpsonScanner init platform split" {
