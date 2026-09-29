@@ -192,6 +192,7 @@ pub fn main(init: std.process.Init) !void {
     var preview_render_smoke = false;
     var scan_interaction_smoke = false;
     var roll_smoke = false;
+    var roll_name_input_smoke = false;
     var roll_strip_smoke = false;
     var process_render_smoke = false;
     var process_interaction_smoke = false;
@@ -238,6 +239,9 @@ pub fn main(init: std.process.Init) !void {
             smoke = true;
         } else if (std.mem.eql(u8, arg, "--roll-strip-smoke")) {
             roll_strip_smoke = true;
+        } else if (std.mem.eql(u8, arg, "--roll-name-input-smoke")) {
+            roll_name_input_smoke = true;
+            smoke = true;
         } else if (std.mem.eql(u8, arg, "--roll-smoke")) {
             preview_render_smoke = true;
             roll_smoke = true;
@@ -327,7 +331,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
-    if (roll_smoke or roll_strip_smoke) {
+    if (roll_smoke or roll_strip_smoke or roll_name_input_smoke) {
         scan_dir = roll_smoke_root ++ "/scans";
         output_dir = roll_smoke_root ++ "/frames";
     }
@@ -339,7 +343,7 @@ pub fn main(init: std.process.Init) !void {
     const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const processing_config_path = if (roll_smoke or roll_strip_smoke)
+    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke)
         roll_smoke_root ++ "/" ++ v600.processing.config.config_file
     else
         v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
@@ -381,6 +385,7 @@ pub fn main(init: std.process.Init) !void {
         try rolls.openRoll(&model, "strip-smoke");
     }
     var roll_strip_started = false;
+    var text_input_active = false;
     const roll_strip_deadline_ms: u64 = c.SDL_GetTicks() + 15 * std.time.ms_per_min;
     if (timing_report_path) |path| {
         timing_report = try v600.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
@@ -586,7 +591,7 @@ pub fn main(init: std.process.Init) !void {
                 &scan_transform,
                 event,
             );
-            handleScanShortcutEvent(&scan_selection_interaction, &model, event);
+            handleScanShortcutEvent(&scan_selection_interaction, &model, event, ctx.text_edit.active != 0);
             handleGalleryImageEvent(&gallery_transform, &model, event);
             handleProcessSelectionEvent(
                 &process_selection_interaction,
@@ -674,6 +679,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         c.nk_end(&ctx);
+        chrome.syncTextInput(&ctx, window, &text_input_active);
         if (!scanControlsEqual(scan_controls_before, model.scan_controls)) {
             _ = model.saveScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch false;
         }
@@ -869,7 +875,16 @@ pub fn main(init: std.process.Init) !void {
                 return error.RollStripSmokeFailed;
             }
         }
-        const smoke_min_frames: usize = if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
+        // Click the roll name field, then type, the way SDL delivers both.
+        if (roll_name_input_smoke) {
+            const field = rolls.name_field_rect;
+            if (frames == 1) pushMouseButton(c.SDL_EVENT_MOUSE_BUTTON_DOWN, field.x + field.w / 2.0, field.y + field.h / 2.0);
+            if (frames == 2) pushMouseButton(c.SDL_EVENT_MOUSE_BUTTON_UP, field.x + field.w / 2.0, field.y + field.h / 2.0);
+            if (frames == 3) pushTextEvent("gold-45");
+            if (frames == 4) pushKey(c.SDLK_BACKSPACE);
+            if (frames == 5) pushTextEvent("00");
+        }
+        const smoke_min_frames: usize = if (roll_name_input_smoke) 8 else if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
         const smoke_max_frames: usize = if (process_render_smoke) 120 else smoke_min_frames;
         const smoke_elapsed_ms = c.SDL_GetTicks() - smoke_started_ms;
         if (smoke and frames >= smoke_min_frames and (!process_render_smoke or process_inverted_render_checked) and smoke_elapsed_ms >= smoke_hold_ms) running = false;
@@ -881,6 +896,14 @@ pub fn main(init: std.process.Init) !void {
     }
     if (scan_interaction_smoke and !scan_interaction_checked) return error.ScanInteractionSmokeFailed;
     if (roll_smoke) try assertRollSmoke(&rolls, &model);
+    if (roll_name_input_smoke) {
+        const typed = rolls.new_name[0..@intCast(rolls.new_name_len)];
+        if (!std.mem.eql(u8, typed, "gold-400")) {
+            std.debug.print("roll name input smoke typed \"{s}\"\n", .{typed});
+            return error.RollNameInputSmokeFailed;
+        }
+        if (!text_input_active) return error.RollNameInputSmokeFailed;
+    }
     if (roll_strip_smoke) try assertRollStripSmoke(&rolls, init.io);
     if (process_interaction_smoke and !process_interaction_checked) return error.ProcessInteractionSmokeFailed;
 }
@@ -1017,6 +1040,39 @@ fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io
     var roll = try v600.roll.Roll.create(std.heap.page_allocator, io, model.scanner.output_dir, model.processing.output_dir, "smoke-roll", .{ .stock = "kodak_portra", .format = "645", .dpi = 1600 });
     roll.deinit();
     try rolls.openRoll(model, "smoke-roll");
+}
+
+/// A key press and release, as one keystroke.
+fn pushKey(key: c.SDL_Keycode) void {
+    for ([_]u32{ c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP }) |kind| {
+        var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+        event.type = kind;
+        event.key.key = key;
+        event.key.down = kind == c.SDL_EVENT_KEY_DOWN;
+        _ = c.SDL_PushEvent(&event);
+    }
+}
+
+fn pushMouseButton(kind: u32, x: f32, y: f32) void {
+    var motion: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    motion.type = c.SDL_EVENT_MOUSE_MOTION;
+    motion.motion.x = x;
+    motion.motion.y = y;
+    _ = c.SDL_PushEvent(&motion);
+    var button: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    button.type = kind;
+    button.button.button = c.SDL_BUTTON_LEFT;
+    button.button.down = kind == c.SDL_EVENT_MOUSE_BUTTON_DOWN;
+    button.button.x = x;
+    button.button.y = y;
+    _ = c.SDL_PushEvent(&button);
+}
+
+fn pushTextEvent(text: [*:0]const u8) void {
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_TEXT_INPUT;
+    event.text.text = text;
+    _ = c.SDL_PushEvent(&event);
 }
 
 fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State) !void {
@@ -1320,8 +1376,9 @@ fn handleScanShortcutEvent(
     interaction: *ScanSelectionInteraction,
     model: *v600.native_ui.State,
     event: c.SDL_Event,
+    editing_widget_active: bool,
 ) void {
-    if (model.active_view != .scan or event.type != c.SDL_EVENT_KEY_DOWN) return;
+    if (model.active_view != .scan or event.type != c.SDL_EVENT_KEY_DOWN or editing_widget_active) return;
     switch (event.key.key) {
         c.SDLK_ESCAPE, c.SDLK_DELETE => {
             model.scan_controls.selection = null;
@@ -1891,7 +1948,7 @@ fn runScanSelectionInteractionSmokeEvents(
     event = undefined;
     event.type = c.SDL_EVENT_KEY_DOWN;
     event.key.key = c.SDLK_ESCAPE;
-    handleScanShortcutEvent(interaction, model, event);
+    handleScanShortcutEvent(interaction, model, event, false);
     if (model.scan_controls.selection != null or model.scan_controls.auto_selection == null) {
         return error.ScanInteractionSmokeFailed;
     }
@@ -1900,7 +1957,7 @@ fn runScanSelectionInteractionSmokeEvents(
     event = undefined;
     event.type = c.SDL_EVENT_KEY_DOWN;
     event.key.key = c.SDLK_DELETE;
-    handleScanShortcutEvent(interaction, model, event);
+    handleScanShortcutEvent(interaction, model, event, false);
     if (model.scan_controls.selection != null or model.scan_controls.auto_selection == null) {
         return error.ScanInteractionSmokeFailed;
     }

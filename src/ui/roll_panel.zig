@@ -35,6 +35,8 @@ pub const RollPanel = struct {
     strip_count: usize = 0,
     new_name: [64]u8 = undefined,
     new_name_len: c_int = 0,
+    /// Where the name field was last drawn, for the typing smoke's click.
+    name_field_rect: c.struct_nk_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     new_stock: [64]u8 = undefined,
     new_stock_len: usize = 0,
     new_format: usize = 0,
@@ -145,6 +147,7 @@ pub const RollPanel = struct {
         layoutRow(ctx, 22.0, 1);
         c.nk_label(ctx, "New roll name:", c.NK_TEXT_LEFT);
         layoutRow(ctx, 28.0, 1);
+        self.name_field_rect = c.nk_widget_bounds(ctx);
         _ = c.nk_edit_string(ctx, c.NK_EDIT_FIELD, &self.new_name, &self.new_name_len, @intCast(self.new_name.len), c.nk_filter_default);
         var stock_buffer: [16]v600.native_ui.ProcessStockChoice = undefined;
         if (model.processingStocksInfo(&stock_buffer)) |info| {

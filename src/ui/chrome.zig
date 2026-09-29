@@ -214,8 +214,29 @@ pub fn feedNuklearInput(ctx: *c.struct_nk_context, event: c.SDL_Event) void {
                 c.nk_input_key(ctx, key, nkBool(event.type == c.SDL_EVENT_KEY_DOWN));
             }
         },
+        c.SDL_EVENT_TEXT_INPUT => {
+            const text = event.text.text orelse return;
+            feedNuklearText(ctx, std.mem.span(text));
+        },
         else => {},
     }
+}
+
+/// Typed text, which SDL sends only while text input is started (see
+/// `syncTextInput`).
+pub fn feedNuklearText(ctx: *c.struct_nk_context, text: []const u8) void {
+    const view = std.unicode.Utf8View.init(text) catch return;
+    var codepoints = view.iterator();
+    while (codepoints.nextCodepoint()) |codepoint| c.nk_input_unicode(ctx, codepoint);
+}
+
+/// SDL3 sends text events only between SDL_StartTextInput and
+/// SDL_StopTextInput; run them while a Nuklear text field has focus.
+pub fn syncTextInput(ctx: *c.struct_nk_context, window: *c.SDL_Window, active: *bool) void {
+    const editing = ctx.text_edit.active != 0;
+    if (editing == active.*) return;
+    _ = if (editing) c.SDL_StartTextInput(window) else c.SDL_StopTextInput(window);
+    active.* = editing;
 }
 
 pub fn nkButtonFromSdl(button: u8) ?c_uint {
@@ -234,6 +255,9 @@ pub fn nkKeyFromSdl(key: c.SDL_Keycode) ?c_uint {
         c.SDLK_LEFT => c.NK_KEY_LEFT,
         c.SDLK_RIGHT => c.NK_KEY_RIGHT,
         c.SDLK_ESCAPE => c.NK_KEY_TEXT_RESET_MODE,
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => c.NK_KEY_ENTER,
+        c.SDLK_HOME => c.NK_KEY_TEXT_LINE_START,
+        c.SDLK_END => c.NK_KEY_TEXT_LINE_END,
         else => null,
     };
 }
