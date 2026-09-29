@@ -40,6 +40,7 @@ pub const RebateOptions = struct {
     y: f64 = 0.0,
     w: f64 = 0.0,
     h: f64 = 0.0,
+    /// Radians; `--angle` takes degrees like every CLI angle.
     angle: f64 = 0.0,
     config_path: []const u8 = config.config_file,
     save: bool = true,
@@ -192,7 +193,7 @@ fn parseRebateArgs(argv: []const []const u8) !RebateOptions {
         } else if (std.mem.eql(u8, arg, "--angle")) {
             index += 1;
             if (index >= argv.len) return error.MissingRebateCoordinate;
-            options.angle = try std.fmt.parseFloat(f64, argv[index]);
+            options.angle = std.math.degreesToRadians(try std.fmt.parseFloat(f64, argv[index]));
         } else if (std.mem.eql(u8, arg, "--config")) {
             index += 1;
             if (index >= argv.len) return error.MissingConfigPath;
@@ -593,23 +594,25 @@ fn outputPathsForFrame(
     return result;
 }
 
+// Frames and rebates carry radians internally; the CLI prints degrees, the
+// unit `export --frame` and `rebate --angle` take.
 fn writeFrameJson(stdout: anytype, frame: frames.FrameRect) !void {
-    try stdout.print("{{\"cx\":{d},\"cy\":{d},\"w\":{d},\"h\":{d},\"angle\":{d}}}", .{
+    try stdout.print("{{\"cx\":{d},\"cy\":{d},\"w\":{d},\"h\":{d},\"angle_deg\":{d}}}", .{
         frame.cx,
         frame.cy,
         frame.w,
         frame.h,
-        frame.angle,
+        std.math.radiansToDegrees(frame.angle),
     });
 }
 
 fn writeRebateJson(stdout: anytype, rebate: frames.RebateRect) !void {
-    try stdout.print("{{\"cx\":{d},\"cy\":{d},\"w\":{d},\"h\":{d},\"angle\":{d}}}", .{
+    try stdout.print("{{\"cx\":{d},\"cy\":{d},\"w\":{d},\"h\":{d},\"angle_deg\":{d}}}", .{
         rebate.cx,
         rebate.cy,
         rebate.w,
         rebate.h,
-        rebate.angle,
+        std.math.radiansToDegrees(rebate.angle),
     });
 }
 
@@ -643,6 +646,16 @@ test "processing CLI parses frame and Dmin specs" {
     try std.testing.expectApproxEqAbs(0.3, dmin[2], 0.0);
 }
 
+test "processing CLI prints frame and rebate angles in degrees" {
+    var buffer: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    try writeFrameJson(&writer, .{ .cx = 1, .cy = 2, .w = 3, .h = 4, .angle = std.math.pi / 180.0 * 1.5 });
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"angle_deg\":1.5") != null);
+    writer = std.Io.Writer.fixed(&buffer);
+    try writeRebateJson(&writer, .{ .cx = 1, .cy = 2, .w = 3, .h = 4, .angle = -std.math.pi / 2.0 });
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\"angle_deg\":-90") != null);
+}
+
 test "processing CLI parses command options" {
     const info = try parseArgs(&.{ "info", "--input", "scan.tiff" });
     try std.testing.expectEqual(CommandTag.info, std.meta.activeTag(info));
@@ -657,10 +670,11 @@ test "processing CLI parses command options" {
     try std.testing.expect(!detect_no_save.detect.save);
     try std.testing.expectEqualStrings("roll.toml", detect_no_save.detect.config_path);
 
-    const rebate = try parseArgs(&.{ "rebate", "--input", "scan.tiff", "--x", "1", "--y", "2", "--width", "3", "--height", "4", "--no-save" });
+    const rebate = try parseArgs(&.{ "rebate", "--input", "scan.tiff", "--x", "1", "--y", "2", "--width", "3", "--height", "4", "--angle", "90", "--no-save" });
     try std.testing.expectEqual(CommandTag.rebate, std.meta.activeTag(rebate));
     try std.testing.expect(!rebate.rebate.save);
     try std.testing.expectApproxEqAbs(3.0, rebate.rebate.w, 0.0);
+    try std.testing.expectApproxEqAbs(std.math.pi / 2.0, rebate.rebate.angle, 1e-12);
 
     const export_cmd = try parseArgs(&.{ "export", "--input", "scan.tiff", "--out-dir", "frames", "--frame", "16,16,8,6,0,90", "--ir-neg", "--inv-only", "--dmin", "0.1,0.2,0.3", "--events", "--cancel-file", "cancel.flag" });
     try std.testing.expectEqual(CommandTag.export_frames, std.meta.activeTag(export_cmd));

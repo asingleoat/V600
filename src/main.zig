@@ -607,8 +607,9 @@ fn printProcessingUsage() !void {
         \\  detect --input PATH [--format 35mm|645|6x6|6x7|6x9] [--n-frames N] [--preview-size PX]
         \\         [--config PATH] [--no-save]
         \\         (detects on a preview, max side PX, default 8192; prints full-resolution frames
-        \\          and the rebate, and saves the rebate's Dmin to the config)
-        \\  rebate --input PATH --x PX --y PX --width PX --height PX [--angle RAD] [--config PATH] [--no-save]
+        \\          and the rebate as center, size, and angle_deg, and saves the rebate's Dmin)
+        \\  rebate --input PATH --x PX --y PX --width PX --height PX [--angle DEG] [--config PATH] [--no-save]
+        \\         (x and y are the top-left corner)
         \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]
         \\         [--stock NAME] [--dmin R,G,B] [--format FMT] [--dpi DPI] [--config PATH]
         \\         (stock and parameters come from scratchndent_config.toml, dpi from the TIFF; Dmin
