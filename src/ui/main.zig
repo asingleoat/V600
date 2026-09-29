@@ -335,6 +335,10 @@ pub fn main(init: std.process.Init) !void {
         scan_dir = roll_smoke_root ++ "/scans";
         output_dir = roll_smoke_root ++ "/frames";
     }
+    if (process_export_smoke) {
+        std.Io.Dir.cwd().deleteTree(init.io, export_smoke_root) catch {};
+        output_dir = export_smoke_root;
+    }
     var model = v600.native_ui.State.init(scan_dir, output_dir, 0);
     defer model.deinit(std.heap.page_allocator);
     std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
@@ -1058,6 +1062,7 @@ fn runScanWorkerSmoke(
 }
 
 const roll_smoke_root = ".zig-cache/tmp/v600-native-roll-smoke";
+const export_smoke_root = ".zig-cache/tmp/v600-native-export-smoke";
 
 /// Creates a roll with one unexported-looking strip entry missing, then opens
 /// it through the panel as a person would.
