@@ -203,6 +203,14 @@ Open:
 - A full 3200 dpi roll through `roll scan` or Scan Strip; the hardware runs
   so far used 800 dpi strips.
 - A live scan through the webapp Scan tab and the companion.
+- 6400 dpi RGB: a real macOS strip scan and roll export (only fake-scanner
+  tested; expect about 3.2 GB per 35 mm strip and a large export).
+- 6400 dpi RGB on Linux. The hardware supports it and the `scanimage-v600`
+  wrapper and patched epkowa backend claim 16-bit up to 6400, but the Zig
+  SANE path stops at 3200 (`sane.zig` TPU list, `linux.zig` `film_dpis`).
+  Try a 6400 `scanimage-v600` scan; if epkowa or the interpreter rejects or
+  degrades it, patch them in `nixos/` as was done for IR. Then add 6400 to
+  both lists; RGB+IR keeps IR at 3200 as on macOS.
 
 ### Parked
 

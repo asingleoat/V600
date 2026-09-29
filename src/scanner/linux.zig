@@ -14,7 +14,12 @@ pub const v600_product_id_int: u16 = 0x013a;
 pub const usbdevfs_reset: u32 = 0x5514;
 pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
 
-/// Film (TPU) resolutions the patched epkowa backend lists for RGB scans.
+/// Film (TPU) resolutions offered for Linux RGB scans. The V600 scans RGB at
+/// 6400 dpi (the macOS interpreter path offers it), and the `scanimage-v600`
+/// wrapper and patched epkowa backend are meant to allow 16-bit up to 6400,
+/// but 6400 has not been run on Linux. Planned: add 6400 here and to
+/// `sane.zig`'s TPU list once a scan confirms it, patching the backend or
+/// interpreter further as was done for IR if needed (see `plan.md`).
 pub const film_dpis = [_]u32{ 800, 1600, 3200 };
 pub const effectiveDpiForRequest = sane.effectiveDpiForRequest;
 
