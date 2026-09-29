@@ -191,6 +191,7 @@ pub fn main(init: std.process.Init) !void {
     var scan_worker_smoke = false;
     var preview_render_smoke = false;
     var scan_interaction_smoke = false;
+    var scan_sweep_smoke = false;
     var roll_smoke = false;
     var roll_name_input_smoke = false;
     var roll_strip_smoke = false;
@@ -249,6 +250,10 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--scan-interaction-smoke")) {
             preview_render_smoke = true;
             scan_interaction_smoke = true;
+            smoke = true;
+        } else if (std.mem.eql(u8, arg, "--scan-sweep-smoke")) {
+            preview_render_smoke = true;
+            scan_sweep_smoke = true;
             smoke = true;
         } else if (std.mem.eql(u8, arg, "--process-render-smoke")) {
             process_render_smoke = true;
@@ -464,6 +469,7 @@ pub fn main(init: std.process.Init) !void {
     if (preview_render_smoke) {
         try seedSyntheticPreview(&preview_worker, &model);
     }
+    if (scan_sweep_smoke) seedScanSweepSmoke(&model);
     if (process_interaction_smoke) {
         process_worker.execute = v600.native_ui_process_worker.fakeRebateSuccess;
     }
@@ -542,6 +548,7 @@ pub fn main(init: std.process.Init) !void {
     var process_selection_interaction = ProcessSelectionInteraction{};
     var process_transform = v600.native_ui.ProcessViewTransform{};
     var scan_transform = v600.native_ui.ProcessViewTransform{};
+    var scan_sweep = v600.native_ui_scan_sweep.Animator{};
     var process_confirmation = ProcessConfirmation{};
     defer process_confirmation.deinit(std.heap.page_allocator);
     var process_selector_checked = false;
@@ -779,7 +786,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (model.active_view == .process) {
             renderProcessTexture(renderer, init.io, &process_texture, &inverted_preview_worker, &model, &process_selection_interaction, &process_transform);
         } else {
-            renderPreviewTexture(renderer, &preview_texture, preview_worker.last_preview, &model, &scan_transform);
+            const now_ms = c.SDL_GetTicks();
+            renderPreviewTexture(renderer, &preview_texture, preview_worker.last_preview, &model, &scan_transform, currentScanSweep(&scan_sweep, &model, now_ms), now_ms);
+            if (scan_sweep_smoke and frames >= 1) try assertScanSweepRendered(renderer, &model, preview_worker.last_preview, &scan_transform);
         }
         try nuklear_renderer.render(&ctx);
         if ((preview_render_smoke or process_render_smoke or gallery_render_smoke) and !nuklear_render_probe_done) {
@@ -914,7 +923,7 @@ pub fn main(init: std.process.Init) !void {
             if (frames == 8) pushKey(c.SDLK_END);
             if (frames == 9) pushKeyWithMod(c.SDLK_V, c.SDL_KMOD_GUI);
         }
-        const smoke_min_frames: usize = if (roll_name_input_smoke) 12 else if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
+        const smoke_min_frames: usize = if (roll_name_input_smoke) 12 else if (scan_interaction_smoke or scan_sweep_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
         const smoke_max_frames: usize = if (process_render_smoke) 120 else smoke_min_frames;
         const smoke_elapsed_ms = c.SDL_GetTicks() - smoke_started_ms;
         if (smoke and frames >= smoke_min_frames and (!process_render_smoke or process_inverted_render_checked) and smoke_elapsed_ms >= smoke_hold_ms) running = false;
@@ -1176,6 +1185,60 @@ fn writeUiReportStatus(
             .output = output,
         }) catch {};
     }
+}
+
+/// The scan line for this frame: over the selection being scanned, or the
+/// whole preview during a preview scan.
+fn currentScanSweep(
+    animator: *v600.native_ui_scan_sweep.Animator,
+    model: *const v600.native_ui.State,
+    now_ms: u64,
+) ?v600.native_ui_scan_sweep.Sweep {
+    if (!model.scanner.scanning) {
+        animator.reset();
+        return null;
+    }
+    const area: ?v600.native_ui.PreviewSelection = if (model.preview_requested)
+        null
+    else
+        model.active_scan_selection orelse return null;
+    const ir_pass = !model.preview_requested and (model.scan_ir_pass or model.active_scan_mode == .ir);
+    const fraction = animator.update(model.scanner_progress_percent, ir_pass, now_ms);
+    return .{ .area = area, .fraction = fraction orelse 0.0, .ir_pass = ir_pass, .waiting = fraction == null };
+}
+
+/// An RGB+IR scan 40% through its RGB pass over a large selection.
+fn seedScanSweepSmoke(model: *v600.native_ui.State) void {
+    model.scan_controls.setSelection(.{ .x = 20.0, .y = 10.0, .w = 120.0, .h = 80.0 });
+    model.active_scan_selection = model.scan_controls.selection;
+    model.active_scan_mode = .rgb_ir;
+    model.active_scan_dpi = 3200;
+    model.scanner.scanning = true;
+    model.scanner_progress_percent = 40;
+}
+
+/// The line sits at the reported progress down the selection, blue in the
+/// RGB pass and red in the IR pass.
+fn assertScanSweepRendered(
+    renderer: *c.SDL_Renderer,
+    model: *const v600.native_ui.State,
+    preview: ?v600.native_ui_preview_worker.PreviewBuffer,
+    transform: *v600.native_ui.ProcessViewTransform,
+) !void {
+    const rect = selection_geometry.scanImageRect(renderer, preview, transform) orelse return error.ScanSweepSmokeFailed;
+    const sel = model.active_scan_selection orelse return error.ScanSweepSmokeFailed;
+    const x: c_int = @intFromFloat(rect.x + (sel.x + sel.w / 2.0) * rect.scale);
+    const fraction = @as(f64, @floatFromInt(model.scanner_progress_percent orelse 0)) / 100.0;
+    const y: c_int = @intFromFloat(rect.y + (sel.y + sel.h * fraction) * rect.scale);
+    const surface = c.SDL_RenderReadPixels(renderer, null) orelse return error.SdlRenderReadbackFailed;
+    defer c.SDL_DestroySurface(surface);
+    var r: u8 = 0;
+    var g: u8 = 0;
+    var b: u8 = 0;
+    var a: u8 = 0;
+    if (!c.SDL_ReadSurfacePixel(surface, x, y, &r, &g, &b, &a)) return error.SdlRenderReadbackFailed;
+    const lit = if (model.scan_ir_pass) r >= 190 and r >= b else b >= 190 and g >= 160 and b >= r;
+    if (!lit) return error.ScanSweepSmokeFailed;
 }
 
 fn seedSyntheticPreview(preview_worker: *PreviewWorker, model: *v600.native_ui.State) !void {

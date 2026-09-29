@@ -746,6 +746,8 @@ pub fn renderPreviewTexture(
     preview: ?PreviewBuffer,
     model: *const v600.native_ui.State,
     transform: *v600.native_ui.ProcessViewTransform,
+    sweep: ?v600.native_ui_scan_sweep.Sweep,
+    now_ms: u64,
 ) void {
     const image = preview orelse return;
     const rect = selection_geometry.scanImageRect(renderer, preview, transform) orelse return;
@@ -758,6 +760,77 @@ pub fn renderPreviewTexture(
     };
     _ = c.SDL_RenderTexture(renderer, texture, null, &dst);
     renderSelectionOverlay(renderer, rect, model.scan_controls.selection);
+    if (sweep) |line| renderScanSweep(renderer, rect, line, now_ms);
+}
+
+/// A glowing line where the scanner is reading, with a short trail behind
+/// it and the part not yet read dimmed. Cyan for RGB, red for the IR pass;
+/// before any lines arrive it pulses at the top of the area.
+pub fn renderScanSweep(
+    renderer: *c.SDL_Renderer,
+    image_rect: v600.native_ui.PreviewScreenRect,
+    sweep: v600.native_ui_scan_sweep.Sweep,
+    now_ms: u64,
+) void {
+    const area = if (sweep.area) |sel| v600.native_ui.PreviewScreenRect{
+        .x = image_rect.x + sel.x * image_rect.scale,
+        .y = image_rect.y + sel.y * image_rect.scale,
+        .w = sel.w * image_rect.scale,
+        .h = sel.h * image_rect.scale,
+        .scale = image_rect.scale,
+    } else image_rect;
+    if (area.w < 1.0 or area.h < 1.0) return;
+
+    const color: [3]u8 = if (sweep.ir_pass) .{ 255, 90, 70 } else .{ 80, 210, 255 };
+    const seconds = @as(f64, @floatFromInt(now_ms)) / 1000.0;
+    const pulse = 0.5 + 0.5 * @sin(seconds * std.math.tau * 0.8);
+    const line_y = area.y + area.h * std.math.clamp(sweep.fraction, 0.0, 1.0);
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+
+    _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 90);
+    const unread = c.SDL_FRect{
+        .x = @floatCast(area.x),
+        .y = @floatCast(line_y),
+        .w = @floatCast(area.w),
+        .h = @floatCast(area.y + area.h - line_y),
+    };
+    _ = c.SDL_RenderFillRect(renderer, &unread);
+
+    if (!sweep.waiting) {
+        const trail_px = 28.0;
+        const rows: usize = @intFromFloat(@max(0.0, @min(trail_px, line_y - 1.5 - area.y)));
+        for (0..rows) |row| {
+            const t = @as(f64, @floatFromInt(row)) / trail_px;
+            const alpha: u8 = @intFromFloat(110.0 * (1.0 - t) * (1.0 - t));
+            _ = c.SDL_SetRenderDrawColor(renderer, color[0], color[1], color[2], alpha);
+            const rect = c.SDL_FRect{
+                .x = @floatCast(area.x),
+                .y = @floatCast(line_y - 1.5 - @as(f64, @floatFromInt(row + 1))),
+                .w = @floatCast(area.w),
+                .h = 1.0,
+            };
+            _ = c.SDL_RenderFillRect(renderer, &rect);
+        }
+    }
+
+    const line_alpha: u8 = @intFromFloat(if (sweep.waiting) 80.0 + 150.0 * pulse else 200.0 + 55.0 * pulse);
+    _ = c.SDL_SetRenderDrawColor(renderer, color[0], color[1], color[2], line_alpha);
+    const line = c.SDL_FRect{
+        .x = @floatCast(area.x),
+        .y = @floatCast(line_y - 1.5),
+        .w = @floatCast(area.w),
+        .h = 3.0,
+    };
+    _ = c.SDL_RenderFillRect(renderer, &line);
+    const core: [3]u8 = if (sweep.ir_pass) .{ 255, 225, 215 } else .{ 225, 250, 255 };
+    _ = c.SDL_SetRenderDrawColor(renderer, core[0], core[1], core[2], line_alpha);
+    const core_line = c.SDL_FRect{
+        .x = @floatCast(area.x),
+        .y = @floatCast(line_y - 0.5),
+        .w = @floatCast(area.w),
+        .h = 1.0,
+    };
+    _ = c.SDL_RenderFillRect(renderer, &core_line);
 }
 
 pub fn renderProcessTexture(

@@ -427,6 +427,8 @@ pub const State = struct {
     scanner_timing_stage_buffer: [96]u8 = undefined,
     scanner_timing_detail_buffer: [128]u8 = undefined,
     active_scan_mode: ?ScanMode = null,
+    /// The selection being scanned, fixed when the scan starts.
+    active_scan_selection: ?PreviewSelection = null,
     active_scan_dpi: u32 = 0,
     pending_config_selection: ?ScanAreaInches = null,
     processing_preview_inversion_enabled: bool = false,
@@ -596,6 +598,7 @@ pub const State = struct {
         self.scanner.scan_status = "";
         self.scanner.scan_counter += 1;
         self.active_scan_mode = null;
+        self.active_scan_selection = null;
         self.active_scan_dpi = 0;
     }
 
@@ -726,6 +729,7 @@ pub const State = struct {
     fn queueScanPlan(self: *State, plan: ScanStartPlan) void {
         self.pending_command = .{ .scan_start = plan };
         self.beginHandleScan(plan);
+        self.active_scan_selection = self.scan_controls.selection;
     }
 
     pub fn takeCommand(self: *State) ?Command {
@@ -766,6 +770,7 @@ pub const State = struct {
                 self.scanner_progress_percent = null;
                 self.preview_requested = false;
                 self.active_scan_mode = null;
+                self.active_scan_selection = null;
                 self.active_scan_dpi = 0;
                 self.scanner.scan_status = failure.detail;
                 self.status = failure.detail;
@@ -2120,6 +2125,7 @@ pub const State = struct {
         self.scanner_progress_percent = null;
         self.scanner.scan_counter += 1;
         self.active_scan_mode = null;
+        self.active_scan_selection = null;
         self.active_scan_dpi = 0;
         const message = scan_workflow.handleScanSavedStatus(
             &self.scan_status_buffer,
@@ -2131,6 +2137,7 @@ pub const State = struct {
 
     fn setHandleScanErrorStatus(self: *State, detail: []const u8) void {
         self.active_scan_mode = null;
+        self.active_scan_selection = null;
         self.active_scan_dpi = 0;
         const message = scan_workflow.handleScanErrorStatus(
             &self.scan_status_buffer,

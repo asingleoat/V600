@@ -9,7 +9,9 @@ Build steps (run with `-Dui=true`): `ui-smoke`, `native-scanner-connect-smoke`,
 `native-process-worker-smoke`, `native-process-dump-smoke`,
 `native-process-export-smoke`, `native-roll-smoke` (opening a roll points
 the Scan and Process views at it), `native-roll-name-input-smoke` (clicking,
-typing, Backspace, and Cmd+A/C/V through SDL events and the clipboard), and the hardware-skip
+typing, Backspace, and Cmd+A/C/V through SDL events and the clipboard),
+`native-scan-sweep-smoke` (the scan progress line draws at the reported
+position over the scanned selection), and the hardware-skip
 checks
 `native-preview-worker-smoke-skip`, `native-scan-worker-smoke-skip`,
 `native-roll-strip-smoke-skip`.
