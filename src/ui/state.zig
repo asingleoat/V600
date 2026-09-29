@@ -117,6 +117,10 @@ pub const ProcessViewTransform = struct {
     key_len: usize = 0,
     output_width: usize = 0,
     output_height: usize = 0,
+    /// Top-left of the area the image is fitted into (the canvas beside the
+    /// control panel); `output_width` and `output_height` are its size.
+    area_x: f64 = 0.0,
+    area_y: f64 = 0.0,
 
     pub fn ensureFit(
         self: *ProcessViewTransform,
@@ -126,13 +130,31 @@ pub const ProcessViewTransform = struct {
         image_width: usize,
         image_height: usize,
     ) void {
+        self.ensureFitIn(key, 0.0, 0.0, output_width, output_height, image_width, image_height);
+    }
+
+    /// Fits the image into the area at (`area_x`, `area_y`) of the given size
+    /// when the key or the area changes.
+    pub fn ensureFitIn(
+        self: *ProcessViewTransform,
+        key: []const u8,
+        area_x: f64,
+        area_y: f64,
+        output_width: usize,
+        output_height: usize,
+        image_width: usize,
+        image_height: usize,
+    ) void {
         const current_key = self.key_buffer[0..self.key_len];
         const key_changed = !std.mem.eql(u8, current_key, key);
         if (!self.needs_fit and !key_changed and
-            self.output_width == output_width and self.output_height == output_height)
+            self.output_width == output_width and self.output_height == output_height and
+            self.area_x == area_x and self.area_y == area_y)
         {
             return;
         }
+        self.area_x = area_x;
+        self.area_y = area_y;
         if (key_changed) {
             const len = @min(key.len, self.key_buffer.len);
             @memcpy(self.key_buffer[0..len], key[0..len]);
@@ -154,8 +176,8 @@ pub const ProcessViewTransform = struct {
         const img_w = @as(f64, @floatFromInt(image_width));
         const img_h = @as(f64, @floatFromInt(image_height));
         self.scale = @min(out_w / img_w, out_h / img_h) * 0.95;
-        self.offset_x = (out_w - img_w * self.scale) / 2.0;
-        self.offset_y = (out_h - img_h * self.scale) / 2.0;
+        self.offset_x = self.area_x + (out_w - img_w * self.scale) / 2.0;
+        self.offset_y = self.area_y + (out_h - img_h * self.scale) / 2.0;
         self.output_width = output_width;
         self.output_height = output_height;
         self.needs_fit = false;
@@ -2402,6 +2424,12 @@ test "native Process preview transform mirrors extract_ui zoom pan and viewport 
     try std.testing.expectApproxEqAbs(1.9, transform.scale, 0.000001);
     try std.testing.expectApproxEqAbs(25.0, transform.offset_x, 0.000001);
     try std.testing.expectApproxEqAbs(20.0, transform.offset_y, 0.000001);
+
+    // Fitting into the canvas beside the panel offsets by the area origin.
+    transform.ensureFitIn("scan-b.tiff", 600.0, 16.0, 400, 800, 500, 400);
+    try std.testing.expectApproxEqAbs(0.76, transform.scale, 0.000001);
+    try std.testing.expectApproxEqAbs(610.0, transform.offset_x, 0.000001);
+    try std.testing.expectApproxEqAbs(264.0, transform.offset_y, 0.000001);
 }
 
 test "native UI state initializes without SDL or Nuklear bindings" {
@@ -3662,7 +3690,7 @@ test "native Scan progress shows ETA, elapsed time, and the combined RGB+IR tota
 
     state.applyScannerBackendEvent(.{ .progress = .{ .percent = 25 } });
     state.updateScanProgressStatus(21_000);
-    try std.testing.expectEqualStrings("RGB 25% — total 18%, ETA 2m00s, elapsed 20s", state.scanStatusDisplay());
+    try std.testing.expectEqualStrings("RGB 25%, total 18%, ETA 2m00s, elapsed 20s", state.scanStatusDisplay());
     try std.testing.expectApproxEqAbs(@as(f64, 120.0), state.scan_eta_seconds.?, 0.001);
 
     state.applyScannerBackendEvent(.{ .scan_start = .{
@@ -3677,7 +3705,7 @@ test "native Scan progress shows ETA, elapsed time, and the combined RGB+IR tota
     try std.testing.expectEqualStrings("Pass 2/2: Scanning IR at 3200 DPI...", state.scanStatusDisplay());
     state.applyScannerBackendEvent(.{ .progress = .{ .percent = 50 } });
     state.updateScanProgressStatus(71_000);
-    try std.testing.expectEqualStrings("IR 50% — total 87%, ETA 10s, elapsed 1m10s", state.scanStatusDisplay());
+    try std.testing.expectEqualStrings("IR 50%, total 87%, ETA 10s, elapsed 1m10s", state.scanStatusDisplay());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), state.scan_eta_seconds.?, 0.001);
 
     state.applyScannerBackendEvent(.{ .scan_complete = .{

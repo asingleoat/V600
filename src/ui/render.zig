@@ -314,6 +314,9 @@ pub const GalleryViewTransform = struct {
     key: ?[]u8 = null,
     output_width: c_int = 0,
     output_height: c_int = 0,
+    /// Top-left of the canvas area the image is fitted into.
+    area_x: f64 = 0.0,
+    area_y: f64 = 0.0,
 
     pub fn deinit(self: *GalleryViewTransform, allocator: std.mem.Allocator) void {
         if (self.key) |key| {
@@ -331,12 +334,30 @@ pub const GalleryViewTransform = struct {
         image_width: u32,
         image_height: u32,
     ) !void {
+        try self.ensureFitIn(allocator, key, 0.0, 0.0, output_width, output_height, image_width, image_height);
+    }
+
+    /// Fits into the area at (`area_x`, `area_y`) of the given size.
+    pub fn ensureFitIn(
+        self: *GalleryViewTransform,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        area_x: f64,
+        area_y: f64,
+        output_width: c_int,
+        output_height: c_int,
+        image_width: u32,
+        image_height: u32,
+    ) !void {
         const key_changed = self.key == null or !std.mem.eql(u8, self.key.?, key);
-        if (!self.needs_fit and !key_changed and self.output_width == output_width and self.output_height == output_height) return;
+        if (!self.needs_fit and !key_changed and self.output_width == output_width and self.output_height == output_height and
+            self.area_x == area_x and self.area_y == area_y) return;
         if (key_changed) {
             if (self.key) |old_key| allocator.free(old_key);
             self.key = try allocator.dupe(u8, key);
         }
+        self.area_x = area_x;
+        self.area_y = area_y;
         self.fit(output_width, output_height, image_width, image_height);
     }
 
@@ -346,8 +367,8 @@ pub const GalleryViewTransform = struct {
         const img_w = @as(f64, @floatFromInt(image_width));
         const img_h = @as(f64, @floatFromInt(image_height));
         self.scale = @min(@min(out_w / img_w, out_h / img_h), 1.0);
-        self.offset_x = (out_w - img_w * self.scale) / 2.0;
-        self.offset_y = (out_h - img_h * self.scale) / 2.0;
+        self.offset_x = self.area_x + (out_w - img_w * self.scale) / 2.0;
+        self.offset_y = self.area_y + (out_h - img_h * self.scale) / 2.0;
         self.output_width = output_width;
         self.output_height = output_height;
         self.needs_fit = false;
@@ -776,7 +797,8 @@ pub fn renderGalleryTexture(
     var out_h: c_int = 0;
     if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return;
     const key = cache.key orelse return;
-    transform.ensureFit(allocator, key, out_w, out_h, cache.width, cache.height) catch |err| {
+    const area = chrome.canvasArea(out_w, out_h);
+    transform.ensureFitIn(allocator, key, area.x, area.y, area.w, area.h, cache.width, cache.height) catch |err| {
         setGalleryUiError(model, err);
         return;
     };

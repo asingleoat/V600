@@ -165,6 +165,8 @@ pub const RollPanel = struct {
         for (formats, 0..) |format, index| {
             if (chrome.optionClicked(ctx, format, self.new_format == index)) self.new_format = index;
         }
+        layoutRow(ctx, 22.0, 1);
+        c.nk_label(ctx, "Strips use the Mode and DPI below; change them any time.", c.NK_TEXT_LEFT);
         layoutRow(ctx, 30.0, 1);
         if (c.nk_button_label(ctx, "Start Roll") != 0) self.startRoll(model);
         if (self.notice.len != 0) {
@@ -249,6 +251,26 @@ pub const RollPanel = struct {
         self.scanning_strip = null;
         self.freeStripLutPath();
         self.strip_pending = false;
+    }
+
+    /// Mode and DPI chosen while a roll is open apply to its next strips.
+    /// A roll needs RGB, so IR alone reverts to the roll's mode.
+    pub fn syncControls(self: *RollPanel, model: *v600.native_ui.State) void {
+        const roll = &(self.active orelse return);
+        if (model.scan_controls.mode == .ir) {
+            applyRollControls(model, roll);
+            self.notice = "A roll scans RGB or RGB + IR; IR alone is for single scans.";
+            return;
+        }
+        const kind: v600.scanner.contracts.ScanKind = if (model.scan_controls.mode == .rgb) .rgb else .rgb_ir;
+        if (kind == roll.kind and model.scan_controls.dpi == roll.dpi) return;
+        roll.kind = kind;
+        roll.dpi = model.scan_controls.dpi;
+        roll.save(self.io) catch |err| {
+            self.setNotice("Could not save the roll's new settings: {s}", .{@errorName(err)});
+            return;
+        };
+        self.setNotice("Next strips scan at {d} dpi {s}.", .{ roll.dpi, if (kind == .rgb) "RGB" else "RGB + IR" });
     }
 
     /// True once no export is queued or running and at least one finished.

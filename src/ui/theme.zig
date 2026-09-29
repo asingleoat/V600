@@ -46,9 +46,12 @@ pub const Palette = struct {
     background: Rgba,
 };
 
+/// Default UI scale: 18 px text. V600_UI_SCALE overrides it.
+pub const default_scale: f32 = 1.4;
+
 pub const Config = struct {
     theme: ThemeName = .darkroom,
-    scale: f32 = 1.15,
+    scale: f32 = default_scale,
 
     pub fn fromEnvironment(environ_map: *std.process.Environ.Map) Config {
         var config = Config{};
@@ -215,7 +218,7 @@ pub fn parseScale(value: []const u8) !f32 {
 }
 
 pub fn clampScale(scale: f32) f32 {
-    if (!std.math.isFinite(scale)) return 1.15;
+    if (!std.math.isFinite(scale)) return default_scale;
     return @min(1.85, @max(0.85, scale));
 }
 

@@ -62,6 +62,34 @@ pub fn tooltip(ctx: *c.struct_nk_context, text: []const u8) void {
     c.nk_tooltip_end(ctx);
 }
 
+pub const CanvasArea = struct {
+    x: f64,
+    y: f64,
+    w: c_int,
+    h: c_int,
+};
+
+/// Where images are fitted: right of the control panel and above the
+/// footer, or the whole window above the footer when that leaves too little
+/// room (a narrow window).
+pub fn canvasArea(out_w: c_int, out_h: c_int) CanvasArea {
+    const margin: c_int = @intFromFloat(runtime_ui_config.metrics().margin);
+    const panel = controlPanelRect();
+    const footer = footerBarRect();
+    const bottom: c_int = @max(1, @min(out_h, @as(c_int, @intFromFloat(footer.y))));
+    const left: c_int = @intFromFloat(panel.x + panel.w);
+    const beside = out_w - left - 2 * margin;
+    if (beside < 240 or beside * 10 < out_w * 3) {
+        return .{ .x = 0.0, .y = 0.0, .w = @max(1, out_w), .h = bottom };
+    }
+    return .{
+        .x = @floatFromInt(left + margin),
+        .y = @floatFromInt(margin),
+        .w = beside,
+        .h = @max(1, bottom - 2 * margin),
+    };
+}
+
 pub fn footerBarHeight() f32 {
     return runtime_ui_config.metrics().row(46.0);
 }
@@ -91,7 +119,9 @@ pub fn controlPanelRectForSize(window_w: f32, window_h: f32, model: *const v600.
 
 pub fn controlPanelBaseHeight(model: *const v600.native_ui.State) f32 {
     return switch (model.active_view) {
-        .scan => 330.0,
+        // Tall enough for the roll section and every scan control; the
+        // panel is capped at the space above the footer.
+        .scan => 760.0,
         .gallery => 330.0,
         .process => 940.0 +
             @as(f32, @floatFromInt(@min(model.processing_images.paths.len, 16))) * 24.0 +

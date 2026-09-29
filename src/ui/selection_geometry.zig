@@ -162,7 +162,8 @@ pub fn scanImageRect(
     var out_w: c_int = 0;
     var out_h: c_int = 0;
     if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return null;
-    transform.ensureFit("scan-preview", @intCast(@max(out_w, 1)), @intCast(@max(out_h, 1)), image.width, image.height);
+    const area = chrome.canvasArea(out_w, out_h);
+    transform.ensureFitIn("scan-preview", area.x, area.y, @intCast(area.w), @intCast(area.h), image.width, image.height);
     return transform.imageRect(image.width, image.height);
 }
 
@@ -279,10 +280,13 @@ pub fn processImageRect(
     var out_w: c_int = 0;
     var out_h: c_int = 0;
     if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return null;
-    transform.ensureFit(
+    const area = chrome.canvasArea(out_w, out_h);
+    transform.ensureFitIn(
         model.processing.input_path,
-        @intCast(@max(out_w, 1)),
-        @intCast(@max(out_h, 1)),
+        area.x,
+        area.y,
+        @intCast(area.w),
+        @intCast(area.h),
         preview.preview_width,
         preview.preview_height,
     );

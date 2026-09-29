@@ -519,7 +519,7 @@ pub fn formatScanSelectionEstimate(
     const time = try formatEstimateSeconds(&time_buffer, estimate.estimated_seconds);
     return try std.fmt.bufPrint(
         buffer,
-        "{d:.2}\" x {d:.2}\" ({d:.1} x {d:.1} mm) → {d}x{d}px {s} ({d:.1} MB, {s})",
+        "{d:.2}\" x {d:.2}\" ({d:.1} x {d:.1} mm) -> {d}x{d}px {s} ({d:.1} MB, {s})",
         .{
             estimate.w_in,
             estimate.h_in,
@@ -596,7 +596,7 @@ pub fn handleScanRgbProgressStatus(
     const elapsed = try handleScanFormatElapsed(&elapsed_buffer, elapsed_seconds);
     return std.fmt.bufPrint(
         buffer,
-        "RGB {d}% — total {d}%, ETA {s}, elapsed {s}",
+        "RGB {d}%, total {d}%, ETA {s}, elapsed {s}",
         .{ percent, total_pct, eta, elapsed },
     );
 }
@@ -616,7 +616,7 @@ pub fn handleScanIrProgressStatus(
     const elapsed = try handleScanFormatElapsed(&elapsed_buffer, elapsed_seconds);
     return std.fmt.bufPrint(
         buffer,
-        "IR {d}% — total {d}%, ETA {s}, elapsed {s}",
+        "IR {d}%, total {d}%, ETA {s}, elapsed {s}",
         .{ percent, total_pct, eta, elapsed },
     );
 }
@@ -638,7 +638,7 @@ pub fn handleScanSingleProgressStatus(
     const elapsed = try handleScanFormatElapsed(&elapsed_buffer, elapsed_seconds);
     return std.fmt.bufPrint(
         buffer,
-        "{s} {d}% — ETA {s}, elapsed {s}",
+        "{s} {d}%, ETA {s}, elapsed {s}",
         .{ mode_tag, percent, eta, elapsed },
     );
 }
@@ -827,21 +827,21 @@ test "scan selection estimate mirrors browser updateInfo formula" {
     controls.mode = .rgb_ir;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) → 12800x6400px RGB+IR (507.8 MB, ~1m58s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB+IR (507.8 MB, ~1m58s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
     controls.mode = .rgb;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) → 12800x6400px RGB (468.8 MB, ~1m42s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px RGB (468.8 MB, ~1m42s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
     controls.mode = .ir;
     controls.dpi = 6400;
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) → 12800x6400px IR (156.3 MB, ~39s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 12800x6400px IR (156.3 MB, ~39s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 
@@ -849,7 +849,7 @@ test "scan selection estimate mirrors browser updateInfo formula" {
     controls.setDpi(6400);
     try std.testing.expectEqual(@as(u32, 3200), controls.dpi);
     try std.testing.expectEqualStrings(
-        "2.00\" x 1.00\" (50.8 x 25.4 mm) → 6400x3200px IR (39.1 MB, ~16s)",
+        "2.00\" x 1.00\" (50.8 x 25.4 mm) -> 6400x3200px IR (39.1 MB, ~16s)",
         (try formatScanSelectionEstimate(&buffer, controls, info)).?,
     );
 }
@@ -1113,19 +1113,19 @@ test "handle scan status helpers mirror python nested functions" {
     try std.testing.expectApproxEqAbs(0.07692307692307693, weights.ir_weight, 0.000000000001);
 
     try std.testing.expectEqualStrings(
-        "RGB 37% — total 34%, ETA 2m32s, elapsed 1m05s",
+        "RGB 37%, total 34%, ETA 2m32s, elapsed 1m05s",
         try handleScanRgbProgressStatus(&buffer, 6400, 37, 125.9, 65.2),
     );
     try std.testing.expectEqualStrings(
-        "IR 37% — total 95%, ETA 2m05s, elapsed 1m05s",
+        "IR 37%, total 95%, ETA 2m05s, elapsed 1m05s",
         try handleScanIrProgressStatus(&buffer, 6400, 37, 125.9, 65.2),
     );
     try std.testing.expectEqualStrings(
-        "RGB 37% — ETA 2m05s, elapsed 1m05s",
+        "RGB 37%, ETA 2m05s, elapsed 1m05s",
         try handleScanSingleProgressStatus(&buffer, .rgb, 37, 125.9, 65.2),
     );
     try std.testing.expectEqualStrings(
-        "IR 37% — ETA 2m05s, elapsed 1m05s",
+        "IR 37%, ETA 2m05s, elapsed 1m05s",
         try handleScanSingleProgressStatus(&buffer, .ir, 37, 125.9, 65.2),
     );
     try std.testing.expectEqualStrings(

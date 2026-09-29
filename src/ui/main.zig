@@ -506,8 +506,17 @@ pub fn main(init: std.process.Init) !void {
     defer cursor.deinit();
 
     const runtime_metrics = chrome.runtime_ui_config.metrics();
-    const initial_width = if (initial_window_size) |size| size.width else runtime_metrics.initialWindowWidth();
-    const initial_height = if (initial_window_size) |size| size.height else runtime_metrics.initialWindowHeight();
+    var initial_width = if (initial_window_size) |size| size.width else runtime_metrics.initialWindowWidth();
+    var initial_height = if (initial_window_size) |size| size.height else runtime_metrics.initialWindowHeight();
+    if (initial_window_size == null) {
+        // Fit the default size to the screen (a laptop may be under 1000
+        // points tall), keeping a margin for the menu bar and dock.
+        var usable: c.SDL_Rect = undefined;
+        if (c.SDL_GetDisplayUsableBounds(c.SDL_GetPrimaryDisplay(), &usable)) {
+            initial_width = @min(initial_width, @max(640, @divTrunc(usable.w * 95, 100)));
+            initial_height = @min(initial_height, @max(480, @divTrunc(usable.h * 95, 100)));
+        }
+    }
     const window = c.SDL_CreateWindow(
         "V600",
         initial_width,
@@ -1057,6 +1066,9 @@ fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io
     var roll = try v600.roll.Roll.create(std.heap.page_allocator, io, model.scanner.output_dir, model.processing.output_dir, "smoke-roll", .{ .stock = "kodak_portra", .format = "645", .dpi = 1600 });
     roll.deinit();
     try rolls.openRoll(model, "smoke-roll");
+    if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
+    // Picking another resolution with the roll open applies to its next strips.
+    model.scan_controls.setDpi(3200);
 }
 
 /// A key press and release, as one keystroke.
@@ -1101,8 +1113,12 @@ fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State) !
     if (!rolls.isActive()) return error.RollSmokeFailed;
     if (!std.mem.endsWith(u8, model.processing.input_dir, "/smoke-roll")) return error.RollSmokeFailed;
     if (!std.mem.endsWith(u8, model.processing.output_dir, "frames/smoke-roll")) return error.RollSmokeFailed;
-    if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
     if (!std.mem.eql(u8, model.processing_config.activeStock() orelse "", "kodak_portra")) return error.RollSmokeFailed;
+    const roll = &(rolls.active orelse return error.RollSmokeFailed);
+    if (roll.dpi != 3200) return error.RollSmokeFailed;
+    var saved = try v600.roll.Roll.open(std.heap.page_allocator, rolls.io, rolls.scans_root, rolls.frames_root, "smoke-roll");
+    defer saved.deinit();
+    if (saved.dpi != 3200) return error.RollSmokeFailed;
 }
 
 fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {
@@ -2783,9 +2799,8 @@ fn drawScanView(
         c.nk_label(ctx, "", c.NK_TEXT_LEFT);
     }
 
-    // An open roll fixes the mode and resolution.
+    // With a roll open, mode and resolution changes apply to its next strips.
     const roll_open = rolls.isActive();
-    if (roll_open) c.nk_widget_disable_begin(ctx);
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Mode", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 3);
@@ -2803,7 +2818,7 @@ fn drawScanView(
         }
     }
 
-    if (roll_open) c.nk_widget_disable_end(ctx);
+    if (roll_open) rolls.syncControls(model);
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Exposure", c.NK_TEXT_LEFT);
