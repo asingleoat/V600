@@ -4,10 +4,11 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 const ir_pure = @import("ir_pure.zig");
 
-pub const available = !builtin.cpu.arch.isWasm() and builtin.link_libc;
+pub const available = !builtin.cpu.arch.isWasm() and build_options.native_libs;
 
 pub extern fn v600_align_ir_find_ecc_translation(
     rgb: [*]const f64,

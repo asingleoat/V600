@@ -311,6 +311,17 @@ pub fn interpreterSearchPaths(
     base_dir: []const u8,
     interp_id: []const u8,
 ) ![]const []u8 {
+    return interpreterSearchPathsUnderRoot(allocator, base_dir, interp_id, "");
+}
+
+/// Like `interpreterSearchPaths`, with the system `/Library` locations moved
+/// under `system_root`, so tests do not depend on what the host has installed.
+fn interpreterSearchPathsUnderRoot(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    interp_id: []const u8,
+    system_root: []const u8,
+) ![]const []u8 {
     const name = try std.fmt.allocPrint(allocator, "Interpreter {s}", .{interp_id});
     defer allocator.free(name);
     const model_dir = try std.fmt.allocPrint(allocator, "ES00{s}", .{interp_id});
@@ -327,14 +338,14 @@ pub fn interpreterSearchPaths(
     initialized += 1;
     paths[1] = try std.fmt.allocPrint(
         allocator,
-        "/Library/Image Capture/Devices/EPSON Scanner.app/Contents/PlugIns/{s}.bundle/Contents/MacOS/{s}",
-        .{ name, name },
+        "{s}/Library/Image Capture/Devices/EPSON Scanner.app/Contents/PlugIns/{s}.bundle/Contents/MacOS/{s}",
+        .{ system_root, name, name },
     );
     initialized += 1;
     paths[2] = try std.fmt.allocPrint(
         allocator,
-        "/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/{s}/{s}.bundle/Contents/MacOS/{s}",
-        .{ model_dir, name, name },
+        "{s}/Library/Image Capture/Support/EPSON/Epson Scan 2/Models/{s}/{s}.bundle/Contents/MacOS/{s}",
+        .{ system_root, model_dir, name, name },
     );
     initialized += 1;
 
@@ -370,9 +381,20 @@ pub fn findInterpreterForHost(
     interp_id: []const u8,
     host: InterpreterHost,
 ) !?[]u8 {
+    return findInterpreterUnderRoot(allocator, io, base_dir, interp_id, host, "");
+}
+
+fn findInterpreterUnderRoot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_dir: []const u8,
+    interp_id: []const u8,
+    host: InterpreterHost,
+    system_root: []const u8,
+) !?[]u8 {
     if (host == .linux) return null;
 
-    const paths = try interpreterSearchPaths(allocator, base_dir, interp_id);
+    const paths = try interpreterSearchPathsUnderRoot(allocator, base_dir, interp_id, system_root);
     defer freeInterpreterSearchPaths(allocator, paths);
     for (paths) |path| {
         if (pathExists(io, path)) return try allocator.dupe(u8, path);
@@ -396,13 +418,24 @@ pub fn ensureInterpreterManualForHost(
     interp_id: []const u8,
     host: InterpreterHost,
 ) !InterpreterRequirement {
+    return ensureInterpreterManualUnderRoot(allocator, io, base_dir, interp_id, host, "");
+}
+
+fn ensureInterpreterManualUnderRoot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_dir: []const u8,
+    interp_id: []const u8,
+    host: InterpreterHost,
+    system_root: []const u8,
+) !InterpreterRequirement {
     if (host == .linux) {
         return .{
             .status = .unsupported_linux,
             .interp_id = interp_id,
         };
     }
-    if (try findInterpreterForHost(allocator, io, base_dir, interp_id, host)) |path| {
+    if (try findInterpreterUnderRoot(allocator, io, base_dir, interp_id, host, system_root)) |path| {
         return .{
             .status = .ready,
             .path = path,
@@ -1119,7 +1152,8 @@ test "find_interpreter returns null when no non-Linux search path exists" {
     const base_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer allocator.free(base_dir);
 
-    const found = try findInterpreterForHost(allocator, std.testing.io, base_dir, "A1", .macos);
+    const found = try findInterpreterUnderRoot(allocator, std.testing.io, base_dir, "A1", .macos, base_dir);
+    defer if (found) |path| allocator.free(path);
     try std.testing.expectEqual(@as(?[]u8, null), found);
 }
 
@@ -1167,7 +1201,7 @@ test "ensure_interpreter manual helper reports missing without automatic downloa
     const base_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer allocator.free(base_dir);
 
-    var requirement = try ensureInterpreterManualForHost(allocator, std.testing.io, base_dir, "A1", .macos);
+    var requirement = try ensureInterpreterManualUnderRoot(allocator, std.testing.io, base_dir, "A1", .macos, base_dir);
     defer requirement.deinit(allocator);
     try std.testing.expectEqual(InterpreterRequirementStatus.missing_manual_install_required, requirement.status);
     try std.testing.expect(requirement.path == null);

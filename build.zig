@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "webgpu", enable_webgpu);
+    build_options.addOption(bool, "native_libs", true);
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -104,6 +105,11 @@ pub fn build(b: *std.Build) void {
     root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("opencv4", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("superlu", .{ .use_pkg_config = .no });
+    if (target.result.os.tag.isDarwin()) {
+        // The OpenCV objects need libc++ named directly under the two-level
+        // namespace; OpenCV itself links the system /usr/lib/libc++.
+        root_module.linkSystemLibrary("c++", .{ .use_pkg_config = .no });
+    }
 
     if (enable_webgpu) {
         const include_dir = requiredEnvPath(b, "WGPU_NATIVE_INCLUDE_DIR");
@@ -177,6 +183,7 @@ pub fn build(b: *std.Build) void {
 
     const wasm_build_options = b.addOptions();
     wasm_build_options.addOption(bool, "webgpu", false);
+    wasm_build_options.addOption(bool, "native_libs", false);
     const wasm_optimize: std.builtin.OptimizeMode = switch (optimize) {
         .Debug => .ReleaseFast,
         else => optimize,

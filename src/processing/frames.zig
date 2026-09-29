@@ -34,7 +34,7 @@ const sampleToU16 = rotation.sampleToU16;
 const sampleToPythonGray8 = rotation.sampleToPythonGray8;
 const writeRoundedSample = rotation.writeRoundedSample;
 const reflect101Index = clahe_ops.reflect101Index;
-const tiff_available = builtin.is_test and builtin.link_libc;
+const tiff_available = builtin.is_test and @import("build_options").native_libs;
 const tiff = if (tiff_available) @import("../tiff.zig") else struct {};
 
 const angle_gradient_parallel_min_work: usize = 1_000_000;

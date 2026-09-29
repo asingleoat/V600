@@ -4141,7 +4141,12 @@ fn expectAlignmentFixture(path: []const u8) !void {
         try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 1e-5);
         try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 1e-5);
         try std.testing.expect(result.shifted);
-        try numeric.assertCloseSlices(fixture.expected, output, fixture.tolerance);
+        // The fixture comes from OpenCV on x86_64. Its float32 ECC lands about
+        // 3e-6 px away on arm64 (NEON), which moves these samples by up to
+        // ~0.01, so other architectures get a 0.02 sample tolerance.
+        var tolerance = fixture.tolerance;
+        if (builtin.cpu.arch != .x86_64) tolerance.abs = @max(tolerance.abs, 0.02);
+        try numeric.assertCloseSlices(fixture.expected, output, tolerance);
     } else {
         // The pure-Zig translation ECC is not OpenCV-bit-exact. Hold it to the
         // 0.05 px offset envelope accepted for the browser estimate path.
