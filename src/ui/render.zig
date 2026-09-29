@@ -638,12 +638,18 @@ pub const UiVertex = extern struct {
 
 pub const NuklearRenderer = struct {
     renderer: *c.SDL_Renderer,
-    font_texture: *c.SDL_Texture,
-    null_texture: c.struct_nk_draw_null_texture,
+    font_texture: ?*c.SDL_Texture = null,
+    null_texture: c.struct_nk_draw_null_texture = undefined,
 
-    pub fn init(renderer: *c.SDL_Renderer, atlas_pixels: *const anyopaque, width: c_int, height: c_int) !NuklearRenderer {
+    pub fn init(renderer: *c.SDL_Renderer) NuklearRenderer {
+        return .{ .renderer = renderer };
+    }
+
+    /// Replaces the font atlas texture. It is sampled nearest: the pixel
+    /// font is baked to land 1:1 on device pixels.
+    pub fn setFontTexture(self: *NuklearRenderer, atlas_pixels: *const anyopaque, width: c_int, height: c_int) !void {
         const texture = c.SDL_CreateTexture(
-            renderer,
+            self.renderer,
             c.SDL_PIXELFORMAT_RGBA32,
             c.SDL_TEXTUREACCESS_STATIC,
             width,
@@ -654,15 +660,13 @@ pub const NuklearRenderer = struct {
             return error.NuklearFontTextureUpdateFailed;
         }
         _ = c.SDL_SetTextureBlendMode(texture, c.SDL_BLENDMODE_BLEND);
-        return .{
-            .renderer = renderer,
-            .font_texture = texture,
-            .null_texture = undefined,
-        };
+        _ = c.SDL_SetTextureScaleMode(texture, c.SDL_SCALEMODE_NEAREST);
+        if (self.font_texture) |old| c.SDL_DestroyTexture(old);
+        self.font_texture = texture;
     }
 
     pub fn deinit(self: *NuklearRenderer) void {
-        c.SDL_DestroyTexture(self.font_texture);
+        if (self.font_texture) |texture| c.SDL_DestroyTexture(texture);
     }
 
     pub fn render(self: *NuklearRenderer, ctx: *c.struct_nk_context) !void {
@@ -866,11 +870,9 @@ pub fn renderGalleryTexture(
         setGalleryUiError(model, err);
         return;
     } orelse return;
-    var out_w: c_int = 0;
-    var out_h: c_int = 0;
-    if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return;
+    const out = chrome.renderLogicalSize(renderer) orelse return;
     const key = cache.key orelse return;
-    const area = chrome.canvasArea(out_w, out_h);
+    const area = chrome.canvasArea(out.w, out.h);
     transform.ensureFitIn(allocator, key, area.x, area.y, area.w, area.h, cache.width, cache.height) catch |err| {
         setGalleryUiError(model, err);
         return;
@@ -1004,8 +1006,11 @@ fn renderCanvasLabel(renderer: *c.SDL_Renderer, text: [:0]const u8, x: f64, y: f
     const text_scale = @max(1.0, @round(chrome.runtime_ui_config.metrics().scale * 1.5));
     const width = @as(f64, @floatFromInt(text.len)) * c.SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * text_scale;
     const left = if (centered) x - width / 2.0 else x;
-    _ = c.SDL_SetRenderScale(renderer, text_scale, text_scale);
-    defer _ = c.SDL_SetRenderScale(renderer, 1.0, 1.0);
+    var base_x: f32 = 1.0;
+    var base_y: f32 = 1.0;
+    _ = c.SDL_GetRenderScale(renderer, &base_x, &base_y);
+    _ = c.SDL_SetRenderScale(renderer, base_x * text_scale, base_y * text_scale);
+    defer _ = c.SDL_SetRenderScale(renderer, base_x, base_y);
     _ = c.SDL_SetRenderDrawColorFloat(renderer, color.r, color.g, color.b, color.a);
     _ = c.SDL_RenderDebugText(renderer, @floatCast(left / text_scale), @floatCast(y / text_scale), text.ptr);
 }

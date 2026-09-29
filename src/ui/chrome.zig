@@ -72,6 +72,21 @@ pub const CanvasArea = struct {
 /// Where images are fitted: right of the control panel and above the
 /// footer, or the whole window above the footer when that leaves too little
 /// room (a narrow window).
+/// The render output in drawing coordinates: window points, since the
+/// render scale is the window's pixel density.
+pub fn renderLogicalSize(renderer: *c.SDL_Renderer) ?struct { w: c_int, h: c_int } {
+    var out_w: c_int = 0;
+    var out_h: c_int = 0;
+    if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return null;
+    var scale_x: f32 = 1.0;
+    var scale_y: f32 = 1.0;
+    if (!c.SDL_GetRenderScale(renderer, &scale_x, &scale_y) or scale_x <= 0.0 or scale_y <= 0.0) return null;
+    return .{
+        .w = @intFromFloat(@round(@as(f32, @floatFromInt(out_w)) / scale_x)),
+        .h = @intFromFloat(@round(@as(f32, @floatFromInt(out_h)) / scale_y)),
+    };
+}
+
 pub fn canvasArea(out_w: c_int, out_h: c_int) CanvasArea {
     const margin: c_int = @intFromFloat(runtime_ui_config.metrics().margin);
     const panel = controlPanelRect();

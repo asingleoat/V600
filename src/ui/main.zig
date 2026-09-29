@@ -531,7 +531,7 @@ pub fn main(init: std.process.Init) !void {
         "V600",
         initial_width,
         initial_height,
-        c.SDL_WINDOW_RESIZABLE,
+        c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
     ) orelse return error.SdlCreateWindowFailed;
     defer c.SDL_DestroyWindow(window);
     updateUiChromeRects(window, &model);
@@ -568,20 +568,14 @@ pub fn main(init: std.process.Init) !void {
         try requestGalleryConfirmation(&model, &gallery_confirmation, std.heap.page_allocator, .delete);
     }
 
-    var atlas: c.struct_nk_font_atlas = undefined;
-    c.nk_font_atlas_init_default(&atlas);
-    defer c.nk_font_atlas_clear(&atlas);
-    c.nk_font_atlas_begin(&atlas);
-    const font = c.nk_font_atlas_add_default(&atlas, runtime_metrics.font_size, null) orelse return error.NuklearFontFailed;
-    var atlas_width: c_int = 0;
-    var atlas_height: c_int = 0;
-    const atlas_pixels = c.nk_font_atlas_bake(&atlas, &atlas_width, &atlas_height, c.NK_FONT_ATLAS_RGBA32) orelse return error.NuklearFontBakeFailed;
-    var nuklear_renderer = try NuklearRenderer.init(renderer, atlas_pixels, atlas_width, atlas_height);
+    var nuklear_renderer = NuklearRenderer.init(renderer);
     defer nuklear_renderer.deinit();
-    c.nk_font_atlas_end(&atlas, c.nk_handle_ptr(nuklear_renderer.font_texture), &nuklear_renderer.null_texture);
+    var ui_font = UiFont{ .requested_scale = chrome.runtime_ui_config.normalized().scale };
+    defer ui_font.deinit();
+    try ui_font.bake(window, &nuklear_renderer);
 
     var ctx: c.struct_nk_context = undefined;
-    if (c.nk_init_default(&ctx, &font.*.handle) == 0) return error.NuklearInitFailed;
+    if (c.nk_init_default(&ctx, &ui_font.font.*.handle) == 0) return error.NuklearInitFailed;
     chrome.installClipboard(&ctx);
     defer c.nk_free(&ctx);
     applyNuklearStyle(&ctx, chrome.runtime_ui_config);
@@ -611,6 +605,14 @@ pub fn main(init: std.process.Init) !void {
         while (c.SDL_PollEvent(&event)) {
             if (event.type == c.SDL_EVENT_WINDOW_RESIZED or event.type == c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
                 updateUiChromeRects(window, &model);
+            }
+            if (event.type == c.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED or event.type == c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+                if (ui_font.densityChanged(window)) {
+                    try ui_font.bake(window, &nuklear_renderer);
+                    c.nk_style_set_font(&ctx, &ui_font.font.*.handle);
+                    applyNuklearStyle(&ctx, chrome.runtime_ui_config);
+                    updateUiChromeRects(window, &model);
+                }
             }
             feedNuklearInput(&ctx, event);
             handleScanSelectionEvent(
@@ -1186,6 +1188,63 @@ fn writeUiReportStatus(
         }) catch {};
     }
 }
+
+/// Nuklear's built-in 13 px pixel font, baked at a whole number of device
+/// pixels per font pixel for the window's pixel density. Drawing stays in
+/// window points (the render scale is the density), so glyphs land 1:1 on
+/// device pixels instead of being stretched to a fractional size.
+const UiFont = struct {
+    requested_scale: f32,
+    density: f32 = 0.0,
+    atlas: ?c.struct_nk_font_atlas = null,
+    font: *c.struct_nk_font = undefined,
+
+    fn windowDensity(window: *c.SDL_Window) f32 {
+        const density = c.SDL_GetWindowPixelDensity(window);
+        return if (std.math.isFinite(density) and density >= 1.0) density else 1.0;
+    }
+
+    fn densityChanged(self: *const UiFont, window: *c.SDL_Window) bool {
+        return windowDensity(window) != self.density;
+    }
+
+    /// Sets the render scale and the UI scale for the window's density and
+    /// bakes the font into the renderer's font texture. The caller points
+    /// the Nuklear context at `font` afterwards.
+    fn bake(self: *UiFont, window: *c.SDL_Window, nuklear_renderer: *NuklearRenderer) !void {
+        const density = windowDensity(window);
+        const multiple = ui_theme.fontPixelMultiple(self.requested_scale, density);
+        const device_px = 13.0 * multiple;
+
+        var atlas: c.struct_nk_font_atlas = undefined;
+        c.nk_font_atlas_init_default(&atlas);
+        errdefer c.nk_font_atlas_clear(&atlas);
+        c.nk_font_atlas_begin(&atlas);
+        var config = c.nk_font_config(device_px);
+        config.pixel_snap = 1;
+        config.oversample_h = 1;
+        config.oversample_v = 1;
+        const font = c.nk_font_atlas_add_default(&atlas, device_px, &config) orelse return error.NuklearFontFailed;
+        var width: c_int = 0;
+        var height: c_int = 0;
+        const pixels = c.nk_font_atlas_bake(&atlas, &width, &height, c.NK_FONT_ATLAS_RGBA32) orelse return error.NuklearFontBakeFailed;
+        try nuklear_renderer.setFontTexture(pixels, width, height);
+        c.nk_font_atlas_end(&atlas, c.nk_handle_ptr(nuklear_renderer.font_texture), &nuklear_renderer.null_texture);
+        // Glyphs are baked in device pixels; layout measures in points.
+        font.*.handle.height = device_px / density;
+
+        _ = c.SDL_SetRenderScale(nuklear_renderer.renderer, density, density);
+        chrome.runtime_ui_config.scale = multiple / density;
+        if (self.atlas) |*old| c.nk_font_atlas_clear(old);
+        self.atlas = atlas;
+        self.font = font;
+        self.density = density;
+    }
+
+    fn deinit(self: *UiFont) void {
+        if (self.atlas) |*atlas| c.nk_font_atlas_clear(atlas);
+    }
+};
 
 /// The scan line for this frame: over the selection being scanned, or the
 /// whole preview during a preview scan.

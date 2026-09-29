@@ -52,6 +52,14 @@ zig build -Dui=true run-ui -- --ui-theme graphite --ui-scale 1.45
 
 Themes: `darkroom`, `lighttable`, `graphite`.
 
+The window renders at the display's full pixel density (Retina included)
+while the UI draws in window points. The requested scale (default 1.4,
+0.85 to 2.0) is snapped up so each pixel of the 13 px built-in font covers a
+whole number of device pixels: on a 2x display 1.4 becomes 1.5 (a 39 px
+font), on a 1x display 2.0 (26 px; use `1.0` for 13 px). Moving the window
+to a display of another density rebakes the font. Headless smokes run at
+density 1, so only a real window shows the high-density path.
+
 Look at:
 
 - Scan, Process, and Gallery at the default size, at scale `1.0` and `1.45`,

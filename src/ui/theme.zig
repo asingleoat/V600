@@ -217,9 +217,16 @@ pub fn parseScale(value: []const u8) !f32 {
     return clampScale(try std.fmt.parseFloat(f32, value));
 }
 
+/// Device pixels per pixel of the 13 px built-in font: the UI scale times
+/// the display's pixel density, rounded up to a whole number so every glyph
+/// pixel covers whole device pixels (a little slack keeps 2.02 at 2).
+pub fn fontPixelMultiple(scale: f32, pixel_density: f32) f32 {
+    return @max(1.0, @ceil(clampScale(scale) * pixel_density - 0.05));
+}
+
 pub fn clampScale(scale: f32) f32 {
     if (!std.math.isFinite(scale)) return default_scale;
-    return @min(1.85, @max(0.85, scale));
+    return @min(2.0, @max(0.85, scale));
 }
 
 fn rgb(r: u8, g: u8, b: u8) Rgba {
@@ -240,7 +247,7 @@ test "native UI theme names and scale config parse without C bindings" {
     try std.testing.expectEqual(ThemeName.graphite, ThemeName.parse("Graphite").?);
     try std.testing.expectEqual(@as(?ThemeName, null), ThemeName.parse("unknown"));
     try std.testing.expectEqual(@as(f32, 0.85), try parseScale("0.5"));
-    try std.testing.expectEqual(@as(f32, 1.85), try parseScale("3.0"));
+    try std.testing.expectEqual(@as(f32, 2.0), try parseScale("3.0"));
 }
 
 test "native UI metrics grow controls and constrain panel to the window" {
@@ -250,4 +257,15 @@ test "native UI metrics grow controls and constrain panel to the window" {
     try std.testing.expect(metrics.panelWidth(1000.0) <= 1000.0 * metrics.max_panel_width_fraction + 0.01);
     try std.testing.expectEqual(metrics.row(900.0), metrics.panelHeight(900.0, 1400.0));
     try std.testing.expect(metrics.panelHeight(900.0, 480.0) <= 480.0 - metrics.margin * 2.0 + 0.01);
+}
+
+test "the pixel font snaps up to whole device pixels" {
+    // Retina at the default scale: 2.8 device pixels per font pixel -> 3,
+    // a 39 px font drawn as 19.5 points.
+    try std.testing.expectEqual(@as(f32, 3.0), fontPixelMultiple(1.4, 2.0));
+    try std.testing.expectEqual(@as(f32, 2.0), fontPixelMultiple(1.0, 2.0));
+    try std.testing.expectEqual(@as(f32, 2.0), fontPixelMultiple(1.01, 2.0));
+    try std.testing.expectEqual(@as(f32, 2.0), fontPixelMultiple(1.4, 1.0));
+    try std.testing.expectEqual(@as(f32, 1.0), fontPixelMultiple(1.0, 1.0));
+    try std.testing.expectEqual(@as(f32, 3.0), fontPixelMultiple(1.4, 1.5));
 }

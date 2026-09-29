@@ -159,10 +159,8 @@ pub fn scanImageRect(
     transform: *v600.native_ui.ProcessViewTransform,
 ) ?v600.native_ui.PreviewScreenRect {
     const image = preview orelse return null;
-    var out_w: c_int = 0;
-    var out_h: c_int = 0;
-    if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return null;
-    const area = chrome.canvasArea(out_w, out_h);
+    const out = chrome.renderLogicalSize(renderer) orelse return null;
+    const area = chrome.canvasArea(out.w, out.h);
     transform.ensureFitIn("scan-preview", area.x, area.y, @intCast(area.w), @intCast(area.h), image.width, image.height);
     return transform.imageRect(image.width, image.height);
 }
@@ -277,10 +275,8 @@ pub fn processImageRect(
     transform: *v600.native_ui.ProcessViewTransform,
 ) ?v600.native_ui.PreviewScreenRect {
     const preview = model.processing_preview orelse return null;
-    var out_w: c_int = 0;
-    var out_h: c_int = 0;
-    if (!c.SDL_GetCurrentRenderOutputSize(renderer, &out_w, &out_h)) return null;
-    const area = chrome.canvasArea(out_w, out_h);
+    const out = chrome.renderLogicalSize(renderer) orelse return null;
+    const area = chrome.canvasArea(out.w, out.h);
     transform.ensureFitIn(
         model.processing.input_path,
         area.x,
