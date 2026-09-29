@@ -28,10 +28,12 @@ const ui_smoke_steps = [_]UiSmokeSpec{
     .{ .arg = "--smoke", .name = "ui-smoke", .description = "Run one native UI frame and exit" },
     .{ .arg = "--scanner-connect-smoke", .name = "native-scanner-connect-smoke", .description = "Verify native scanner startup begins in connecting state" },
     .{ .arg = "--process-worker-smoke", .name = "native-process-worker-smoke", .description = "Verify native Process worker keeps the UI responsive for a frame" },
+    .{ .arg = "--roll-smoke", .name = "native-roll-smoke", .description = "Verify opening a roll points the Scan and Process views at it" },
     .{ .arg = "--process-dump-smoke", .name = "native-process-dump-smoke", .description = "Verify native Process selection dump diagnostics" },
     .{ .arg = "--process-export-smoke", .name = "native-process-export-smoke", .description = "Verify native Process export flow starts from the UI" },
     .{ .arg = "--preview-worker-smoke", .name = "native-preview-worker-smoke-skip", .description = "Verify native preview hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
     .{ .arg = "--scan-worker-smoke", .name = "native-scan-worker-smoke-skip", .description = "Verify native scan hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .arg = "--roll-strip-smoke", .name = "native-roll-strip-smoke-skip", .description = "Verify the native Scan Strip hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
 };
 
 const ScannerSmokeSpec = struct {

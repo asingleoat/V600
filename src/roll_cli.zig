@@ -203,8 +203,11 @@ fn runScan(
         .event_sink = progress.sink(),
     };
 
-    const processor: ?*Processor = if (process) try Processor.start(io, roll.name) else null;
-    defer if (processor) |worker| worker.finish(stdout);
+    const processor: ?*v600.roll.Processor = if (process)
+        try v600.roll.Processor.start(io, scans_root, frames_root, roll.name, .{}, printDone, null)
+    else
+        null;
+    defer if (processor) |worker| finishProcessing(worker, &roll, stdout);
 
     try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}.\n", .{ roll.name, roll.stock, roll.format, roll.dpi, v600.roll.kindName(roll.kind) });
     try stdout.flush();
@@ -240,11 +243,10 @@ fn runScan(
         });
         try stdout.flush();
         notify(allocator, io, number);
-        if (processor) |worker| {
-            worker.enqueue(allocator, strip_path);
-        } else {
-            allocator.free(strip_path);
-        }
+        defer allocator.free(strip_path);
+        if (processor) |worker| worker.enqueue(strip_path) catch |err| {
+            try stdout.print("Could not queue strip {d} for processing: {s}\n", .{ number, @errorName(err) });
+        };
         if (once) break;
     }
 }
@@ -398,107 +400,32 @@ const ProgressLine = struct {
     }
 };
 
-/// Processes finished strips one at a time on a background thread.
-const Processor = struct {
-    const allocator = std.heap.smp_allocator;
-
-    io: std.Io,
-    roll_name: []u8,
-    mutex: std.Io.Mutex = .init,
-    condition: std.Io.Condition = .init,
-    queue: std.array_list.Managed([]u8),
-    closing: bool = false,
-    busy: bool = false,
-    thread: std.Thread = undefined,
-
-    fn start(io: std.Io, roll_name: []const u8) !*Processor {
-        const self = try allocator.create(Processor);
-        errdefer allocator.destroy(self);
-        self.* = .{
-            .io = io,
-            .roll_name = try allocator.dupe(u8, roll_name),
-            .queue = std.array_list.Managed([]u8).init(allocator),
-        };
-        self.thread = try std.Thread.spawn(.{}, run, .{self});
-        return self;
-    }
-
-    /// Queues a copy of `strip_path` and frees the original with
-    /// `path_allocator`, which made it.
-    fn enqueue(self: *Processor, path_allocator: std.mem.Allocator, strip_path: []u8) void {
-        defer path_allocator.free(strip_path);
-        const owned = allocator.dupe(u8, strip_path) catch return;
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.queue.append(owned) catch {
-            allocator.free(owned);
-            return;
-        };
-        self.condition.signal(self.io);
-    }
-
-    /// Waits for queued strips, then stops the thread.
-    fn finish(self: *Processor, stdout: anytype) void {
-        self.mutex.lockUncancelable(self.io);
-        const pending = self.queue.items.len + @intFromBool(self.busy);
-        self.closing = true;
-        self.condition.signal(self.io);
-        self.mutex.unlock(self.io);
-        if (pending != 0) {
-            stdout.print("Waiting for {d} strip{s} to finish processing...\n", .{ pending, if (pending == 1) "" else "s" }) catch {};
-            stdout.flush() catch {};
-        }
-        self.thread.join();
-        stdout.print("Review: {s}/{s}/{s}/index.html\n", .{ scans_root, self.roll_name, v600.roll.review_dir_name }) catch {};
-        stdout.flush() catch {};
-        self.queue.deinit();
-        allocator.free(self.roll_name);
-        allocator.destroy(self);
-    }
-
-    fn run(self: *Processor) void {
-        while (true) {
-            self.mutex.lockUncancelable(self.io);
-            while (self.queue.items.len == 0 and !self.closing) self.condition.waitUncancelable(self.io, &self.mutex);
-            if (self.queue.items.len == 0) {
-                self.mutex.unlock(self.io);
-                return;
-            }
-            const strip = self.queue.orderedRemove(0);
-            self.busy = true;
-            self.mutex.unlock(self.io);
-
-            self.process(strip);
-            allocator.free(strip);
-
-            self.mutex.lockUncancelable(self.io);
-            self.busy = false;
-            self.mutex.unlock(self.io);
-        }
-    }
-
-    fn process(self: *Processor, strip: []const u8) void {
-        // A fresh Roll per strip picks up the Dmin earlier strips recorded.
-        var roll = Roll.open(allocator, self.io, scans_root, frames_root, self.roll_name) catch |err| {
-            std.debug.print("\n[processing] {s}: cannot open roll ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
-            return;
-        };
-        defer roll.deinit();
-        const started = nowSeconds(self.io);
-        const outcome = roll.processStrip(self.io, strip, .{}) catch |err| {
-            std.debug.print("\n[processing] {s}: failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
-            return;
-        };
-        defer outcome.deinit(allocator);
+/// Prints each background result as it finishes.
+fn printDone(_: ?*anyopaque, done: v600.roll.Processor.Done) void {
+    const name = std.fs.path.basename(done.strip);
+    if (done.outcome) |outcome| {
         std.debug.print("\n[processing] {s}: {d} frame{s} exported, Dmin from {s} ({d}s)\n", .{
-            std.fs.path.basename(strip),
+            name,
             outcome.files.len,
             if (outcome.files.len == 1) "" else "s",
             outcome.dmin_source,
-            nowSeconds(self.io) - started,
+            done.seconds,
         });
+    } else {
+        std.debug.print("\n[processing] {s}: failed ({s})\n", .{ name, @errorName(done.err orelse error.Unknown) });
     }
-};
+}
+
+fn finishProcessing(processor: *v600.roll.Processor, roll: *const Roll, stdout: anytype) void {
+    const pending = processor.pending();
+    if (pending != 0) {
+        stdout.print("Waiting for {d} strip{s} to finish processing...\n", .{ pending, if (pending == 1) "" else "s" }) catch {};
+        stdout.flush() catch {};
+    }
+    processor.finish();
+    stdout.print("Review: {s}/{s}/index.html\n", .{ roll.dir, v600.roll.review_dir_name }) catch {};
+    stdout.flush() catch {};
+}
 
 fn openRoll(allocator: std.mem.Allocator, io: std.Io, name: ?[]const u8) !Roll {
     if (name) |roll_name| return Roll.open(allocator, io, scans_root, frames_root, roll_name);

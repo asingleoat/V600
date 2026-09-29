@@ -15,9 +15,13 @@ As of 2026-09-28, on branch `zig-rewrite`:
 - Zig CLI and native SDL3/Nuklear UI cover scanning, frame detection,
   inversion, IR dust removal, export, and the gallery. Linux scanning was
   exercised on a V600 in May 2026.
-- macOS: CLI, native UI, and tests build on Apple Silicon. The scanner
-  backend (Epson Interpreter bundle over libusb) is fake-tested; hardware
-  bring-up is in progress.
+- macOS: scanning works on a V600 from Apple Silicon through Epson's
+  Interpreter bundle over libusb, with per-channel gamma LUTs fitted to the
+  film. CLI, native UI, and tests build there.
+- Rolls: `v600-zig roll ...` and the Scan view's roll controls scan a film
+  roll strip by strip (preview, film area, one LUT per roll, full scan) and
+  export each strip in the background with a review page. Exercised on the
+  V600 from the CLI and the UI's Scan Strip at 800 dpi.
 - Windows: not wired.
 - Browser webapp: processing and export in WebAssembly, built from the same
   Zig processing code. Node smokes plus a manual headless Chrome/Chromium
@@ -76,10 +80,14 @@ Open:
   gamma is the likely cause; `sane.zig` passes no gamma option. Processing
   treats both as linear, so Linux densities are compressed. Decide which to
   standardize on (the film profiles are hand-tuned either way).
-- A saved Dmin does not carry across LUT scans: linearization scales each
-  channel so its white point is 65535, a per-scan density offset. Dmin from
-  the same scan's rebate is exact; a Dmin saved from another scan is off by
-  the difference in LUT gains.
+- A saved Dmin does not carry across LUT scans outside a roll: linearization
+  scales each channel so its white point is 65535, a per-LUT density offset.
+  Within a roll every strip shares one LUT, so the roll's Dmin fallback
+  holds; a Dmin saved from another roll or plain scan is off by the
+  difference in LUT gains.
+- Linux scans are not written atomically (scanimage and tiffcp write the
+  final path directly); the macOS backend writes `<name>.partial` and
+  renames.
 - Companion (`src/companion.zig`):
   - `startScan` returns on error while holding the job mutex, leaving it
     locked and the job stuck in `running`.
@@ -194,8 +202,8 @@ Open:
 ### Needs the scanner
 
 - Verify custom LUT application on Linux (after the LUT fix).
-- Run the native UI's full preview, auto-select, LUT, scan sequence on the
-  Mac; the hardware smokes cover the workers without a preview LUT.
+- A full 3200 dpi roll through `roll scan` or Scan Strip; the hardware runs
+  so far used 800 dpi strips.
 - A live scan through the webapp Scan tab and the companion.
 
 ### Parked

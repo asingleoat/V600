@@ -7,8 +7,14 @@ renders; they do not replace looking at the real window.
 
 Build steps (run with `-Dui=true`): `ui-smoke`, `native-scanner-connect-smoke`,
 `native-process-worker-smoke`, `native-process-dump-smoke`,
-`native-process-export-smoke`, and the hardware-skip checks
-`native-preview-worker-smoke-skip`, `native-scan-worker-smoke-skip`.
+`native-process-export-smoke`, `native-roll-smoke` (opening a roll points
+the Scan and Process views at it), and the hardware-skip checks
+`native-preview-worker-smoke-skip`, `native-scan-worker-smoke-skip`,
+`native-roll-strip-smoke-skip`.
+
+With the scanner connected, `V600_HARDWARE_SMOKE=1 v600-ui --roll-strip-smoke`
+clicks Scan Strip in a temporary 800 dpi roll and waits until the strip is
+exported.
 
 More smoke modes exist as `v600-ui` flags but are not build steps:
 

@@ -54,8 +54,10 @@ diffs for this before committing.
     zig build run -- serve                    # companion: serves zig-out/webapp on 127.0.0.1:8433
 
 CLI: `version`, `scanner-contract`,
-`scanner devices|probe|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
-`processing info|detect|rebate|export`, `serve`.
+`scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
+`processing info|detect|rebate|export`, `roll start|use|status|scan|export|review`,
+`serve`. Build with `-Doptimize=ReleaseFast` for real scanning sessions;
+Debug export is several times slower.
 
 Browser and companion tests are separate Node-driven steps, not part of
 `zig build test`: `wasm-core-smoke`, `wasm32-core-smoke`,
@@ -88,6 +90,8 @@ Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
       main.zig              CLI entry
       root.zig              the `v600` module: scanner, processing, tiff, UI state
       companion.zig         scanner companion HTTP server (`serve`)
+      roll.zig, roll_cli.zig rolls: strips of one film roll, roll LUT,
+                            background export, review page; `roll` CLI
       tiff.zig              libtiff wrapper: page layout, metadata tags
       scanner/              Linux SANE runtime (linux.zig, sane.zig), macOS
                             interpreter runtime (interpreter_runtime.zig,
@@ -97,7 +101,8 @@ Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
                             export, workflow, config; C/C++ helpers for
                             OpenCV, libjpeg, SuperLU; optional WebGPU
       ui/                   headless UI state and workers; SDL3/Nuklear
-                            front end in main.zig, render.zig, chrome.zig
+                            front end in main.zig, render.zig, chrome.zig,
+                            roll_panel.zig
       wasm/, wasm_core.zig  browser core: C-ABI exports over src/processing
       benchmarks/, tools/   benchmark and WebGPU tool executables
     web/                    browser app: ES modules, no bundler
@@ -109,9 +114,10 @@ Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
     scanner.py, scan.py, v600/, scratchndent/, test_detect.py
                             original Python implementation (reference only)
 
-Dependency direction: `ui` imports `processing`, `scanner`, and `tiff`;
-`processing` and `scanner` import only `tiff`; `companion` imports `scanner`.
-Keep it that way. `processing` and `scanner` must not import each other or UI
+Dependency direction: `ui` imports `roll`, `processing`, `scanner`, and
+`tiff`; `roll` imports `processing`, `scanner`, and `tiff`; `processing` and
+`scanner` import only `tiff`; `companion` imports `scanner`. Keep it that
+way. `processing` and `scanner` must not import each other or UI
 code.
 
 ## Behavior changes and the Python code
@@ -220,7 +226,10 @@ deliberately, not by accident.
   `scratchndent_config.toml`. Both are gitignored and generated at runtime.
   Saves merge into the existing file; go through the config layer, not raw
   TOML reads.
-- Scans go to `scans/`, exports to `frames/`; both are gitignored.
+- Scans go to `scans/`, exports to `frames/`; both are gitignored. A roll
+  uses `scans/<roll>/` (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`,
+  `review/`) and `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the
+  `[roll]` key in the scanner config.
 - TIFF metadata: make, model, software, resolution, datetime. Custom tag
   50000 marks scanner custom LUTs; BYTE tag 50001 holds the applied LUT,
   which the RGB loaders invert; tag 65000 holds export metadata JSON.

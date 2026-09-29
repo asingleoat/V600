@@ -414,6 +414,9 @@ pub const ScanStartPlan = struct {
     preview_selection: ?PreviewSelection = null,
     exposure: ExposureMode = .affine,
     mode: ScanMode = .rgb_ir,
+    /// A roll's gamma LUT file, used as is instead of one computed from the
+    /// preview; the scan worker does not delete it.
+    roll_lut_path: ?[]const u8 = null,
 };
 
 pub fn previewScanPlan(info: app_state.ScannerInfo, preview_dpi: u32, output_path: []const u8) ?PreviewScanPlan {

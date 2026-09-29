@@ -76,6 +76,9 @@ for the whole roll, full scan; finished strips export in the background):
 
 Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
 `scans/<roll>/review/index.html` shows each strip with its detected frames.
+The native UI's Scan view does the same: start or open a roll, then press
+Scan Strip for each strip. Build with `-Doptimize=ReleaseFast` for real
+sessions; Debug export is several times slower.
 
 Scans go to `scans/`, processed frames to `frames/`, relative to the
 directory the app starts in. The native UI takes `--scan-dir DIR` and

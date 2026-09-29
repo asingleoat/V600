@@ -463,6 +463,141 @@ pub const Roll = struct {
     }
 };
 
+/// Processes finished strips of one roll, one at a time, on a background
+/// thread, so the next strip can scan meanwhile. Uses the thread-safe
+/// `std.heap.smp_allocator` for everything it owns.
+pub const Processor = struct {
+    const allocator = std.heap.smp_allocator;
+
+    pub const Done = struct {
+        strip: []const u8,
+        outcome: ?StripOutcome,
+        err: ?anyerror,
+        seconds: i64,
+    };
+
+    io: std.Io,
+    scans_root: []u8,
+    frames_root: []u8,
+    roll_name: []u8,
+    options: ProcessOptions,
+    on_done: ?*const fn (context: ?*anyopaque, done: Done) void,
+    context: ?*anyopaque,
+    mutex: std.Io.Mutex = .init,
+    condition: std.Io.Condition = .init,
+    queue: std.array_list.Managed([]u8),
+    closing: bool = false,
+    busy: bool = false,
+    thread: std.Thread = undefined,
+
+    pub fn start(
+        io: std.Io,
+        scans_root: []const u8,
+        frames_root: []const u8,
+        roll_name: []const u8,
+        options: ProcessOptions,
+        on_done: ?*const fn (context: ?*anyopaque, done: Done) void,
+        context: ?*anyopaque,
+    ) !*Processor {
+        const self = try allocator.create(Processor);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .io = io,
+            .scans_root = try allocator.dupe(u8, scans_root),
+            .frames_root = try allocator.dupe(u8, frames_root),
+            .roll_name = try allocator.dupe(u8, roll_name),
+            .options = options,
+            .on_done = on_done,
+            .context = context,
+            .queue = std.array_list.Managed([]u8).init(allocator),
+        };
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        return self;
+    }
+
+    pub fn enqueue(self: *Processor, strip_path: []const u8) !void {
+        const owned = try allocator.dupe(u8, strip_path);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.queue.append(owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+        self.condition.signal(self.io);
+    }
+
+    /// Strips queued or in progress.
+    pub fn pending(self: *Processor) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.queue.items.len + @intFromBool(self.busy);
+    }
+
+    /// Drops strips not yet started; the one in progress still finishes.
+    pub fn dropPending(self: *Processor) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (self.queue.items) |strip| allocator.free(strip);
+        self.queue.clearRetainingCapacity();
+    }
+
+    /// Finishes the queued strips, then stops the thread and frees `self`.
+    pub fn finish(self: *Processor) void {
+        self.mutex.lockUncancelable(self.io);
+        self.closing = true;
+        self.condition.signal(self.io);
+        self.mutex.unlock(self.io);
+        self.thread.join();
+        for (self.queue.items) |strip| allocator.free(strip);
+        self.queue.deinit();
+        allocator.free(self.scans_root);
+        allocator.free(self.frames_root);
+        allocator.free(self.roll_name);
+        allocator.destroy(self);
+    }
+
+    fn run(self: *Processor) void {
+        while (true) {
+            self.mutex.lockUncancelable(self.io);
+            while (self.queue.items.len == 0 and !self.closing) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.queue.items.len == 0) {
+                self.mutex.unlock(self.io);
+                return;
+            }
+            const strip = self.queue.orderedRemove(0);
+            self.busy = true;
+            self.mutex.unlock(self.io);
+
+            self.process(strip);
+            allocator.free(strip);
+
+            self.mutex.lockUncancelable(self.io);
+            self.busy = false;
+            self.mutex.unlock(self.io);
+        }
+    }
+
+    fn process(self: *Processor, strip: []const u8) void {
+        const started = std.Io.Clock.real.now(self.io).toSeconds();
+        // A fresh Roll per strip picks up the Dmin earlier strips recorded.
+        var roll = Roll.open(allocator, self.io, self.scans_root, self.frames_root, self.roll_name) catch |err| {
+            self.report(.{ .strip = strip, .outcome = null, .err = err, .seconds = 0 });
+            return;
+        };
+        defer roll.deinit();
+        const outcome = roll.processStrip(self.io, strip, self.options) catch |err| {
+            self.report(.{ .strip = strip, .outcome = null, .err = err, .seconds = std.Io.Clock.real.now(self.io).toSeconds() - started });
+            return;
+        };
+        defer outcome.deinit(allocator);
+        self.report(.{ .strip = strip, .outcome = outcome, .err = null, .seconds = std.Io.Clock.real.now(self.io).toSeconds() - started });
+    }
+
+    fn report(self: *Processor, done: Done) void {
+        if (self.on_done) |callback| callback(self.context, done);
+    }
+};
+
 pub const LutFit = struct {
     dense_clipped: [3]bool = .{ false, false, false },
     base_clipped: [3]bool = .{ false, false, false },
@@ -516,6 +651,29 @@ const MarkerJson = struct {
     dmin: ?[3]f64 = null,
     files: []const []const u8 = &.{},
 };
+
+/// Names of the rolls under `scans_root` (directories with a `roll.json`),
+/// sorted. The caller frees each name and the slice.
+pub fn listRolls(allocator: std.mem.Allocator, io: std.Io, scans_root: []const u8) ![][]u8 {
+    var names = std.array_list.Managed([]u8).init(allocator);
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit();
+    }
+    var dir = std.Io.Dir.cwd().openDir(io, scans_root, .{ .iterate = true }) catch return names.toOwnedSlice();
+    defer dir.close(io);
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        validateName(entry.name) catch continue;
+        const manifest = try std.fs.path.join(allocator, &.{ scans_root, entry.name, manifest_name });
+        defer allocator.free(manifest);
+        if (!fileExists(io, manifest)) continue;
+        try names.append(try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]u8, names.items, {}, lessThanString);
+    return names.toOwnedSlice();
+}
 
 /// Roll names become directory and file names: letters, digits, `.`, `_`,
 /// and `-`, not starting with `.`.
@@ -741,6 +899,28 @@ test "creates, reopens, and numbers the strips of a roll" {
     try std.testing.expect(!reopened.isProcessed(io, strips.paths[0]));
 }
 
+test "lists the rolls under a scans directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var b = try Roll.create(allocator, io, root, root, "b-roll", .{});
+    b.deinit();
+    var a = try Roll.create(allocator, io, root, root, "a-roll", .{});
+    a.deinit();
+    try tmp.dir.createDir(io, "not-a-roll", .default_dir);
+    const names = try listRolls(allocator, io, root);
+    defer {
+        for (names) |name| allocator.free(name);
+        allocator.free(names);
+    }
+    try std.testing.expectEqual(@as(usize, 2), names.len);
+    try std.testing.expectEqualStrings("a-roll", names[0]);
+    try std.testing.expectEqualStrings("b-roll", names[1]);
+}
+
 test "the first strip's LUT becomes the roll's and later strips are checked against it" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -831,4 +1011,30 @@ test "processes a real strip scan into exports, a marker, and a review page" {
     var exported = try tiff.findImages(allocator, io, roll.frames_dir);
     defer exported.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 5), exported.paths.len);
+}
+
+test "the background processor reports every queued strip before it stops" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "queue", .{});
+    defer roll.deinit();
+
+    const Counter = struct {
+        failed: std.atomic.Value(usize) = .init(0),
+        fn done(context: ?*anyopaque, result: Processor.Done) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (result.err != null) _ = self.failed.fetchAdd(1, .monotonic);
+        }
+    };
+    var counter = Counter{};
+    const processor = try Processor.start(io, root, root, "queue", .{}, Counter.done, &counter);
+    // Neither strip exists, so both report an error.
+    try processor.enqueue("missing/strip_01_rgbir_3200dpi.tiff");
+    try processor.enqueue("missing/strip_02_rgbir_3200dpi.tiff");
+    processor.finish();
+    try std.testing.expectEqual(@as(usize, 2), counter.failed.load(.monotonic));
 }

@@ -86,6 +86,8 @@ pub const Context = struct {
     output_path: []u8,
     cancel_file_path: ?[]u8,
     lut_file_path: ?[]u8 = null,
+    /// False for a roll LUT, which outlives the scan.
+    lut_file_owned: bool = true,
     metadata_path: ?[]u8 = null,
     capabilities: ?scanner_contracts.ScannerCapabilities = null,
     error_detail: []const u8 = "",
@@ -179,10 +181,14 @@ pub const Worker = struct {
         const cancel_file_path = if (plan.cancel_file_path) |path| try self.allocator.dupe(u8, path) else null;
         errdefer if (cancel_file_path) |path| self.allocator.free(path);
         const lut_start = monotonicNowNs();
-        const lut_file_path = try self.prepareLutFile(plan, output_path, preview_buffer, &self.event_queue);
-        self.event_queue.pushTimingSince("native.scan.lut_prepare", lut_start, if (lut_file_path == null) "skipped" else "ok");
+        const lut_file_owned = plan.roll_lut_path == null;
+        const lut_file_path = if (plan.roll_lut_path) |path|
+            try self.allocator.dupe(u8, path)
+        else
+            try self.prepareLutFile(plan, output_path, preview_buffer, &self.event_queue);
+        self.event_queue.pushTimingSince("native.scan.lut_prepare", lut_start, if (lut_file_path == null) "skipped" else if (lut_file_owned) "ok" else "roll");
         errdefer if (lut_file_path) |path| {
-            deleteIfExists(self.io, path);
+            if (lut_file_owned) deleteIfExists(self.io, path);
             self.allocator.free(path);
         };
 
@@ -208,6 +214,7 @@ pub const Worker = struct {
             .output_path = output_path,
             .cancel_file_path = cancel_file_path,
             .lut_file_path = lut_file_path,
+            .lut_file_owned = lut_file_owned,
             .capabilities = capabilities,
             .done = &self.done,
             .failed = &self.failed,
@@ -350,7 +357,7 @@ pub const Worker = struct {
                 self.allocator.free(path);
             }
             if (context.lut_file_path) |path| {
-                deleteIfExists(self.io, path);
+                if (context.lut_file_owned) deleteIfExists(self.io, path);
                 self.allocator.free(path);
             }
             if (context.metadata_path) |path| self.allocator.free(path);
@@ -666,6 +673,45 @@ test "scan worker writes temporary LUT file from preview pixels" {
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, lut_path, .{}));
     try std.testing.expect(model.scanner_timing_count >= 7);
     try std.testing.expectEqualStrings("native.scan.cleanup", model.scanner_timing_stage);
+}
+
+test "scan worker uses a roll LUT as given and leaves it in place" {
+    var env = try std.process.Environ.createMap(std.testing.environ, std.testing.allocator);
+    defer env.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const scan_dir = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer std.testing.allocator.free(scan_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "roll.lut.bin", .data = &([_]u8{7} ** scanner_lut.serialized_len) });
+    const roll_lut = try std.fmt.allocPrint(std.testing.allocator, "{s}/roll.lut.bin", .{scan_dir});
+    defer std.testing.allocator.free(roll_lut);
+
+    var preview = try previewBufferWithFilmLutImage(std.testing.allocator);
+    defer preview.deinit(std.testing.allocator);
+
+    var model = ui_state.State.init(scan_dir, "frames", 0);
+    model.scannerConnected(24, 24, 1.0, 1.0);
+    model.scan_controls.setSelection(.{ .x = 0.0, .y = 0.0, .w = 24.0, .h = 24.0 });
+    const strip = try std.fmt.allocPrint(std.testing.allocator, "{s}/strip_01_rgbir_3200dpi.tiff", .{scan_dir});
+    defer std.testing.allocator.free(strip);
+    try std.testing.expect(model.queueStripScan(strip, null, roll_lut));
+
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakeScanSuccess);
+    defer worker.deinit();
+    try std.testing.expect(try worker.startQueued(&model, preview));
+    try std.testing.expectEqualStrings(roll_lut, worker.context.?.request.request.lut_file_path.?);
+
+    var completed = false;
+    for (0..1000) |_| {
+        if (worker.poll(&model)) {
+            completed = true;
+            break;
+        }
+        try std.Thread.yield();
+    }
+    try std.testing.expect(completed);
+    try tmp.dir.access(std.testing.io, "roll.lut.bin", .{});
 }
 
 test "scan worker keeps IR-only scans on identity LUT policy" {

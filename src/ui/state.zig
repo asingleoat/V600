@@ -493,7 +493,8 @@ pub const State = struct {
         self.applyPendingScannerConfigSelection();
     }
 
-    pub fn scannerFailed(self: *State, message: []const u8) void {
+    pub fn scannerFailed(self: *State, raw_message: []const u8) void {
+        const message = scannerErrorText(raw_message);
         const stored_len = @min(message.len, self.scan_status_buffer.len);
         @memcpy(self.scan_status_buffer[0..stored_len], message[0..stored_len]);
         const stored = self.scan_status_buffer[0..stored_len];
@@ -633,6 +634,12 @@ pub const State = struct {
     }
 
     pub fn queueScanStartPath(self: *State, output_path: []const u8, cancel_file_path: ?[]const u8) bool {
+        return self.queueStripScan(output_path, cancel_file_path, null);
+    }
+
+    /// Queues a scan of the current selection to `output_path`, with a roll's
+    /// gamma LUT file when one is given.
+    pub fn queueStripScan(self: *State, output_path: []const u8, cancel_file_path: ?[]const u8, roll_lut_path: ?[]const u8) bool {
         if (self.scanner.connection == .connecting) {
             self.status = "Scanner connecting, please wait...";
             self.scanner.scan_status = self.status;
@@ -644,13 +651,33 @@ pub const State = struct {
             return false;
         }
         if (self.scannerWorkActive()) return self.rejectScannerBusy();
-        const plan = self.scanStartPlan(output_path, cancel_file_path) orelse {
+        var plan = self.scanStartPlan(output_path, cancel_file_path) orelse {
             self.status = "Draw a selection rectangle first.";
             self.scanner.scan_status = self.status;
             return false;
         };
+        plan.roll_lut_path = roll_lut_path;
         self.queueScanPlan(plan);
         return true;
+    }
+
+    /// Points the Process tab and the gallery at other directories (a
+    /// roll's strips and exports, or back to the defaults) and drops the
+    /// loaded image.
+    pub fn setProcessingDirectories(
+        self: *State,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        input_dir: []const u8,
+        output_dir: []const u8,
+    ) void {
+        self.clearProcessingPreview(allocator);
+        self.processing.input_dir = input_dir;
+        self.processing.output_dir = output_dir;
+        self.processing.input_path = "";
+        self.processing.image_idx = 0;
+        _ = self.refreshProcessingImageList(allocator, io) catch {};
+        _ = self.refreshGalleryFiles(allocator, io) catch {};
     }
 
     pub fn scannerWorkActive(self: State) bool {
@@ -710,11 +737,12 @@ pub const State = struct {
                 self.scanner.scanning = false;
                 self.scanner_progress_percent = null;
                 self.preview_requested = false;
+                const detail = scannerErrorText(failure.detail);
                 if (self.active_scan_mode != null) {
-                    self.setHandleScanErrorStatus(failure.detail);
+                    self.setHandleScanErrorStatus(detail);
                 } else {
-                    self.scanner.scan_status = failure.detail;
-                    self.status = failure.detail;
+                    self.scanner.scan_status = detail;
+                    self.status = detail;
                 }
             },
             .timing => |timing| {
@@ -2285,6 +2313,17 @@ fn selectionFromDetectedFrame(frame: processing_frames.FrameRect, scale: f64, ro
         .angle = frame.angle,
         .rotation = rotation,
     };
+}
+
+/// Plain words for the scanner errors a person can act on.
+pub fn scannerErrorText(detail: []const u8) []const u8 {
+    if (std.mem.eql(u8, detail, "ScannerBusy") or std.mem.eql(u8, detail, "ScannerAccessDenied")) {
+        return "Another program has the scanner (on macOS, Epson Scanner Monitor or Event Manager). Quit it, then reconnect.";
+    }
+    if (std.mem.eql(u8, detail, "ScannerNotFound")) return "No scanner found. Check the USB cable and power.";
+    if (std.mem.eql(u8, detail, "InterpreterNotInstalled")) return "Epson's scanner driver is not installed.";
+    if (std.mem.eql(u8, detail, "NoFilmFound")) return "No film found on the preview.";
+    return detail;
 }
 
 pub fn scannerConfigPath(buffer: []u8, output_dir: []const u8) ![]u8 {

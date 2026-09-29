@@ -19,6 +19,7 @@ const selection_geometry = @import("selection_geometry.zig");
 const render_layer = @import("render.zig");
 const sound = @import("sound.zig");
 const cursor = @import("cursor.zig");
+const roll_panel = @import("roll_panel.zig");
 
 const layoutRow = chrome.layoutRow;
 const layoutRowStatic = chrome.layoutRowStatic;
@@ -190,6 +191,8 @@ pub fn main(init: std.process.Init) !void {
     var scan_worker_smoke = false;
     var preview_render_smoke = false;
     var scan_interaction_smoke = false;
+    var roll_smoke = false;
+    var roll_strip_smoke = false;
     var process_render_smoke = false;
     var process_interaction_smoke = false;
     var process_worker_smoke = false;
@@ -232,6 +235,12 @@ pub fn main(init: std.process.Init) !void {
             scan_worker_smoke = true;
         } else if (std.mem.eql(u8, arg, "--preview-render-smoke")) {
             preview_render_smoke = true;
+            smoke = true;
+        } else if (std.mem.eql(u8, arg, "--roll-strip-smoke")) {
+            roll_strip_smoke = true;
+        } else if (std.mem.eql(u8, arg, "--roll-smoke")) {
+            preview_render_smoke = true;
+            roll_smoke = true;
             smoke = true;
         } else if (std.mem.eql(u8, arg, "--scan-interaction-smoke")) {
             preview_render_smoke = true;
@@ -318,6 +327,10 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
+    if (roll_smoke or roll_strip_smoke) {
+        scan_dir = roll_smoke_root ++ "/scans";
+        output_dir = roll_smoke_root ++ "/frames";
+    }
     var model = v600.native_ui.State.init(scan_dir, output_dir, 0);
     defer model.deinit(std.heap.page_allocator);
     std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
@@ -347,6 +360,25 @@ pub fn main(init: std.process.Init) !void {
     defer process_export_worker.deinit();
     var inverted_preview_worker = InvertedPreviewWorker.init(std.heap.page_allocator);
     defer inverted_preview_worker.deinit();
+    var rolls = roll_panel.RollPanel.init(init.io, &model, scanner_config_path);
+    defer rolls.deinit(&model);
+    // Smoke runs never reopen a real roll or export its strips.
+    const interactive = !smoke and !preview_render_smoke and !scan_interaction_smoke and !process_render_smoke and
+        !process_interaction_smoke and !gallery_render_smoke and !roll_strip_smoke and screenshot_path == null;
+    if (interactive) rolls.restore(&model);
+    if (roll_smoke) try setupRollSmoke(&rolls, &model, init.io);
+    if (roll_strip_smoke) {
+        if (!hardwareSmokeEnabled(init.environ_map)) {
+            std.debug.print("native roll strip smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
+            return;
+        }
+        std.Io.Dir.cwd().deleteTree(init.io, roll_smoke_root) catch {};
+        var roll = try v600.roll.Roll.create(std.heap.page_allocator, init.io, model.scanner.output_dir, model.processing.output_dir, "strip-smoke", .{ .dpi = 800 });
+        roll.deinit();
+        try rolls.openRoll(&model, "strip-smoke");
+    }
+    var roll_strip_started = false;
+    const roll_strip_deadline_ms: u64 = c.SDL_GetTicks() + 15 * std.time.ms_per_min;
     if (timing_report_path) |path| {
         timing_report = try v600.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
         if (timing_report) |*report| {
@@ -612,7 +644,7 @@ pub fn main(init: std.process.Init) !void {
                 ) catch |err| setProcessUiError(&model, err);
             }
             switch (model.active_view) {
-                .scan => drawScanView(&ctx, &model, init.io),
+                .scan => drawScanView(&ctx, &model, init.io, &rolls, preview_worker.last_preview),
                 .process => drawProcessView(
                     &ctx,
                     &model,
@@ -659,10 +691,16 @@ pub fn main(init: std.process.Init) !void {
             break :blk false;
         };
         _ = connect_worker.poll(&model);
-        if (preview_worker.poll(&model)) scan_transform.requestFit();
+        if (preview_worker.poll(&model)) {
+            scan_transform.requestFit();
+            rolls.afterPreview(&model, preview_worker.last_preview);
+        }
         _ = scan_worker.poll(&model);
         model.updateScanProgressStatus(c.SDL_GetTicks());
-        if (model.takeScanFinished()) sound.playScanFinished();
+        const scan_finished = model.takeScanFinished();
+        if (scan_finished) sound.playScanFinished();
+        rolls.afterScanPoll(&model, scan_finished);
+        rolls.poll(&model);
         sound.update();
         updateWindowTitle(window, &model, &window_title_eta);
         if (process_worker.poll(&model)) {
@@ -815,6 +853,19 @@ pub fn main(init: std.process.Init) !void {
                 smoke_resize_applied = true;
             }
         }
+        if (roll_strip_smoke) {
+            // Click Scan Strip once connected, then run until its export lands.
+            if (!roll_strip_started and model.scannerStatus().connected) {
+                rolls.scanStrip(&model);
+                roll_strip_started = true;
+            } else if (roll_strip_started and rolls.exportsFinished() and !rolls.stripInFlight() and !model.scannerWorkActive()) {
+                running = false;
+            }
+            if (model.scanner.connection == .error_state or c.SDL_GetTicks() > roll_strip_deadline_ms) {
+                std.debug.print("native roll strip smoke: {s} {s}\n", .{ model.status, rolls.notice });
+                return error.RollStripSmokeFailed;
+            }
+        }
         const smoke_min_frames: usize = if (scan_interaction_smoke or process_interaction_smoke or process_worker_smoke or process_selector_smoke or process_export_smoke or gallery_interaction_smoke or gallery_shortcut_smoke or gallery_confirm_smoke) 2 else 1;
         const smoke_max_frames: usize = if (process_render_smoke) 120 else smoke_min_frames;
         const smoke_elapsed_ms = c.SDL_GetTicks() - smoke_started_ms;
@@ -826,6 +877,8 @@ pub fn main(init: std.process.Init) !void {
         c.SDL_Delay(16);
     }
     if (scan_interaction_smoke and !scan_interaction_checked) return error.ScanInteractionSmokeFailed;
+    if (roll_smoke) try assertRollSmoke(&rolls, &model);
+    if (roll_strip_smoke) try assertRollStripSmoke(&rolls, init.io);
     if (process_interaction_smoke and !process_interaction_checked) return error.ProcessInteractionSmokeFailed;
 }
 
@@ -950,6 +1003,40 @@ fn runScanWorkerSmoke(
     if (model.scanner.scanning) return error.ScanWorkerSmokeFailed;
     std.debug.print("native scan worker smoke status: {s}\n", .{model.status});
     std.debug.print("native scan worker smoke wrote {s}\n", .{output_path});
+}
+
+const roll_smoke_root = ".zig-cache/tmp/v600-native-roll-smoke";
+
+/// Creates a roll with one unexported-looking strip entry missing, then opens
+/// it through the panel as a person would.
+fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io: std.Io) !void {
+    std.Io.Dir.cwd().deleteTree(io, roll_smoke_root) catch {};
+    var roll = try v600.roll.Roll.create(std.heap.page_allocator, io, model.scanner.output_dir, model.processing.output_dir, "smoke-roll", .{ .stock = "kodak_portra", .format = "645", .dpi = 1600 });
+    roll.deinit();
+    try rolls.openRoll(model, "smoke-roll");
+}
+
+fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State) !void {
+    if (!rolls.isActive()) return error.RollSmokeFailed;
+    if (!std.mem.endsWith(u8, model.processing.input_dir, "/smoke-roll")) return error.RollSmokeFailed;
+    if (!std.mem.endsWith(u8, model.processing.output_dir, "frames/smoke-roll")) return error.RollSmokeFailed;
+    if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
+}
+
+fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {
+    const roll = &(rolls.active orelse return error.RollStripSmokeFailed);
+    var strips = try roll.listStrips(io);
+    defer strips.deinit(std.heap.page_allocator);
+    if (strips.paths.len != 1 or !roll.isProcessed(io, strips.paths[0])) return error.RollStripSmokeFailed;
+    var exported = try v600.tiff.findImages(std.heap.page_allocator, io, roll.frames_dir);
+    defer exported.deinit(std.heap.page_allocator);
+    if (exported.paths.len == 0) return error.RollStripSmokeFailed;
+    std.debug.print("native roll strip smoke: {s} exported {d} frame file{s} to {s}\n", .{
+        std.fs.path.basename(strips.paths[0]),
+        exported.paths.len,
+        if (exported.paths.len == 1) "" else "s",
+        roll.frames_dir,
+    });
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
@@ -2571,12 +2658,19 @@ fn drawNavigation(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void 
     if (c.nk_option_label(ctx, "Gallery", nkBool(model.active_view == .gallery)) != 0) model.show(.gallery);
 }
 
-fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State, io: std.Io) void {
+fn drawScanView(
+    ctx: *c.struct_nk_context,
+    model: *v600.native_ui.State,
+    io: std.Io,
+    rolls: *roll_panel.RollPanel,
+    preview: ?v600.native_ui_preview_worker.PreviewBuffer,
+) void {
     const scanner_busy = model.scannerWorkActive();
+    rolls.draw(ctx, model, preview);
     layoutRow(ctx, 28.0, 3);
     if (scanner_busy) c.nk_widget_disable_begin(ctx);
     if (c.nk_button_label(ctx, "Preview") != 0) {
-        _ = model.queuePreviewScan("/tmp/v600-native-preview.tiff");
+        _ = model.queuePreviewScan(roll_panel.preview_output);
     }
     if (scanner_busy) c.nk_widget_disable_end(ctx);
     var autoselect = nkBool(model.scan_controls.autoselect);
@@ -2594,6 +2688,9 @@ fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State, io: std
         c.nk_label(ctx, "", c.NK_TEXT_LEFT);
     }
 
+    // An open roll fixes the mode and resolution.
+    const roll_open = rolls.isActive();
+    if (roll_open) c.nk_widget_disable_begin(ctx);
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Mode", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 3);
@@ -2611,6 +2708,8 @@ fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State, io: std
         }
     }
 
+    if (roll_open) c.nk_widget_disable_end(ctx);
+
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Exposure", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 2);
@@ -2620,8 +2719,12 @@ fn drawScanView(ctx: *c.struct_nk_context, model: *v600.native_ui.State, io: std
     layoutRow(ctx, 30.0, 2);
     if (!scanner_busy) {
         if (c.nk_button_label(ctx, "Scan Selection") != 0) {
-            model.syncScanCounter(io);
-            _ = model.queueScanStart(".zig-cache/v600-native-scan.cancel");
+            if (roll_open) {
+                rolls.queueStrip(model, preview);
+            } else {
+                model.syncScanCounter(io);
+                _ = model.queueScanStart(roll_panel.cancel_file);
+            }
         }
     } else {
         if (c.nk_button_label(ctx, "Cancel") != 0) model.requestScannerCancel();
