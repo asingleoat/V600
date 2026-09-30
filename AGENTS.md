@@ -157,6 +157,9 @@ code.
 - Image processing reachable from the native UI runs in worker threads on
   copied inputs. UI code draws and dispatches; it does not implement
   algorithms.
+- The native UI thread never waits on long work (exports, scans, joining a
+  busy thread). Whenever an action is unavailable or the app is waiting, the
+  UI says why on screen: what it is waiting for and how far that has got.
 
 ## Domain notes
 

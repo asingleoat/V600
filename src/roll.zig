@@ -360,6 +360,7 @@ pub const Roll = struct {
                 .rebate_rect = rebate_rect,
                 .config_overrides = overrides,
                 .invert_request = options.invert_request,
+                .progress_sink = options.progress_sink,
             });
             defer result.deinit(allocator);
             outcome.dmin = result.dmin;
@@ -623,6 +624,14 @@ pub const Processor = struct {
     queue: std.array_list.Managed([]u8),
     closing: bool = false,
     busy: bool = false,
+    /// The thread has returned; `finish` will not block.
+    exited: bool = false,
+    /// The strip in progress and how far its export has got, for the UI.
+    current_buffer: [96]u8 = undefined,
+    current_len: usize = 0,
+    stage_buffer: [96]u8 = undefined,
+    stage_len: usize = 0,
+    written: usize = 0,
     thread: std.Thread = undefined,
 
     pub fn start(
@@ -677,11 +686,54 @@ pub const Processor = struct {
     }
 
     /// Finishes the queued strips, then stops the thread and frees `self`.
-    pub fn finish(self: *Processor) void {
+    /// "<strip>: <stage> (<n> written)" while a strip exports, else null.
+    pub fn status(self: *Processor, buffer: []u8) ?[]const u8 {
         self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (!self.busy) return null;
+        var written_buffer: [32]u8 = undefined;
+        const written = if (self.written == 0) "" else std.fmt.bufPrint(&written_buffer, " ({d} written)", .{self.written}) catch "";
+        return std.fmt.bufPrint(buffer, "{s}: {s}{s}", .{
+            self.current_buffer[0..self.current_len],
+            self.stage_buffer[0..self.stage_len],
+            written,
+        }) catch null;
+    }
+
+    fn setStage(self: *Processor, stage: []const u8) void {
+        self.stage_len = @min(stage.len, self.stage_buffer.len);
+        @memcpy(self.stage_buffer[0..self.stage_len], stage[0..self.stage_len]);
+    }
+
+    fn onProgress(context: *anyopaque, notice: workflow.ExportProgressNotice) void {
+        const self: *Processor = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (notice.file_name != null) {
+            self.written += 1;
+        } else {
+            self.setStage(notice.message);
+        }
+    }
+
+    /// Asks the thread to exit once its queue is empty, without waiting.
+    pub fn requestStop(self: *Processor) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.closing = true;
         self.condition.signal(self.io);
-        self.mutex.unlock(self.io);
+    }
+
+    pub fn stopped(self: *Processor) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.exited;
+    }
+
+    /// Stops the thread, waiting for the strip in progress, and frees the
+    /// processor.
+    pub fn finish(self: *Processor) void {
+        self.requestStop();
         self.thread.join();
         for (self.queue.items) |strip| allocator.free(strip);
         self.queue.deinit();
@@ -696,11 +748,17 @@ pub const Processor = struct {
             self.mutex.lockUncancelable(self.io);
             while (self.queue.items.len == 0 and !self.closing) self.condition.waitUncancelable(self.io, &self.mutex);
             if (self.queue.items.len == 0) {
+                self.exited = true;
                 self.mutex.unlock(self.io);
                 return;
             }
             const strip = self.queue.orderedRemove(0);
             self.busy = true;
+            const name = std.fs.path.stem(std.fs.path.basename(strip));
+            self.current_len = @min(name.len, self.current_buffer.len);
+            @memcpy(self.current_buffer[0..self.current_len], name[0..self.current_len]);
+            self.setStage("Finding frames...");
+            self.written = 0;
             self.mutex.unlock(self.io);
 
             self.process(strip);
@@ -720,7 +778,9 @@ pub const Processor = struct {
             return;
         };
         defer roll.deinit();
-        const outcome = roll.processStrip(self.io, strip, self.options) catch |err| {
+        var options = self.options;
+        options.progress_sink = .{ .context = self, .emit = onProgress };
+        const outcome = roll.processStrip(self.io, strip, options) catch |err| {
             self.report(.{ .strip = strip, .outcome = null, .err = err, .seconds = std.Io.Clock.real.now(self.io).toSeconds() - started });
             return;
         };
@@ -751,6 +811,7 @@ pub const ProcessOptions = struct {
     preview_size: i64 = 8192,
     outputs: export_pipeline.OutputSelection = .{},
     invert_request: webgpu.Request = .{},
+    progress_sink: ?workflow.ExportProgressSink = null,
 };
 
 pub const FrameRect = export_pipeline.FrameRect;
@@ -1413,4 +1474,35 @@ test "the background processor reports every queued strip before it stops" {
     try processor.enqueue("missing/strip_02_rgbir_3200dpi.tiff");
     processor.finish();
     try std.testing.expectEqual(@as(usize, 2), counter.failed.load(.monotonic));
+}
+
+test "a stop request lets the processor finish its queue without waiting" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "queue", .{});
+    defer roll.deinit();
+
+    const Counter = struct {
+        done_count: std.atomic.Value(usize) = .init(0),
+        fn done(context: ?*anyopaque, _: Processor.Done) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            _ = self.done_count.fetchAdd(1, .monotonic);
+        }
+    };
+    var counter = Counter{};
+    const processor = try Processor.start(io, root, root, "queue", .{}, Counter.done, &counter);
+    try processor.enqueue("missing/strip_01_rgbir_3200dpi.tiff");
+    try processor.enqueue("missing/strip_02_rgbir_3200dpi.tiff");
+    processor.requestStop();
+    var waited_ms: usize = 0;
+    while (!processor.stopped()) : (waited_ms += 1) {
+        if (waited_ms > 10_000) return error.ProcessorDidNotStop;
+        try std.Io.sleep(io, .fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(@as(usize, 2), counter.done_count.load(.monotonic));
+    processor.finish();
 }

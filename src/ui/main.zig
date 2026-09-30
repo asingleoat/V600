@@ -193,6 +193,7 @@ pub fn main(init: std.process.Init) !void {
     var scan_interaction_smoke = false;
     var scan_sweep_smoke = false;
     var roll_reframe_smoke = false;
+    var roll_close_smoke = false;
     var roll_smoke = false;
     var roll_name_input_smoke = false;
     var roll_strip_smoke = false;
@@ -251,6 +252,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--scan-interaction-smoke")) {
             preview_render_smoke = true;
             scan_interaction_smoke = true;
+            smoke = true;
+        } else if (std.mem.eql(u8, arg, "--roll-close-smoke")) {
+            roll_close_smoke = true;
             smoke = true;
         } else if (std.mem.eql(u8, arg, "--roll-reframe-smoke")) {
             roll_reframe_smoke = true;
@@ -340,7 +344,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
-    if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke) {
+    if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke) {
         scan_dir = roll_smoke_root ++ "/scans";
         output_dir = roll_smoke_root ++ "/frames";
     }
@@ -356,7 +360,7 @@ pub fn main(init: std.process.Init) !void {
     const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke)
+    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke)
         roll_smoke_root ++ "/" ++ v600.processing.config.config_file
     else
         v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
@@ -388,6 +392,7 @@ pub fn main(init: std.process.Init) !void {
     if (interactive) rolls.restore(&model);
     if (roll_smoke) try setupRollSmoke(&rolls, &model, init.io);
     if (roll_reframe_smoke) try runRollReframeSmoke(&rolls, &model, init.io);
+    if (roll_close_smoke) try runRollCloseSmoke(&rolls, &model, init.io);
     if (roll_strip_smoke) {
         if (!hardwareSmokeEnabled(init.environ_map)) {
             std.debug.print("native roll strip smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
@@ -664,7 +669,9 @@ pub fn main(init: std.process.Init) !void {
             &process_selection_interaction,
             &process_transform,
         )) |shape| cursor.set(shape);
-        if (model.quit_requested) running = false;
+        // A roll export in progress finishes before the app quits, with the
+        // status line saying so, instead of freezing the window in shutdown.
+        if (model.quit_requested and rolls.stopForQuit(&model)) running = false;
 
         if (c.nk_begin(
             &ctx,
@@ -1131,6 +1138,42 @@ fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.Stat
     model.active_view = .process;
 }
 
+/// Closes a roll while its strip exports: Close Roll returns at once, the
+/// panel reports the export still finishing, and it completes afterwards.
+fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io: std.Io) !void {
+    const allocator = std.heap.page_allocator;
+    std.Io.Dir.cwd().deleteTree(io, roll_smoke_root) catch {};
+    var roll = try v600.roll.Roll.create(allocator, io, model.scanner.output_dir, model.processing.output_dir, "close", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    try writeSmokeStripSized(strip, 1600, 4800);
+    try rolls.openRoll(model, "close");
+    const processor = rolls.processor orelse return error.RollCloseSmokeFailed;
+    var status_buffer: [256]u8 = undefined;
+    var waited_ms: usize = 0;
+    while (processor.status(&status_buffer) == null) : (waited_ms += 5) {
+        if (waited_ms > 30_000) return error.RollCloseSmokeTimedOut;
+        try std.Io.sleep(io, .fromMilliseconds(5), .awake);
+    }
+
+    const started = c.SDL_GetTicks();
+    rolls.closeRoll(model);
+    const close_ms = c.SDL_GetTicks() - started;
+    if (close_ms > 500 or rolls.isActive()) return error.RollCloseSmokeFailed;
+    const finishing = rolls.finishing orelse return error.RollCloseSmokeFailed;
+    std.debug.print("roll close smoke: Close Roll returned in {d} ms; still exporting: {s}\n", .{ close_ms, finishing.status(&status_buffer) orelse "(between stages)" });
+
+    waited_ms = 0;
+    while (rolls.finishing != null) : (waited_ms += 20) {
+        if (waited_ms > 300_000) return error.RollCloseSmokeTimedOut;
+        rolls.poll(model);
+        try std.Io.sleep(io, .fromMilliseconds(20), .awake);
+    }
+    if (!roll.isProcessed(io, strip)) return error.RollCloseSmokeFailed;
+    if (std.mem.indexOf(u8, rolls.notice, "can be opened again") == null) return error.RollCloseSmokeFailed;
+}
+
 fn waitForRollExports(rolls: *roll_panel.RollPanel, io: std.Io) !void {
     const processor = rolls.processor orelse return error.RollReframeSmokeFailed;
     var waited_ms: usize = 0;
@@ -1142,14 +1185,16 @@ fn waitForRollExports(rolls: *roll_panel.RollPanel, io: std.Io) !void {
 
 /// A plain grey 240x480 RGB+IR strip scan at 800 dpi.
 fn writeSmokeStrip(path: []const u8) !void {
+    try writeSmokeStripSized(path, 240, 480);
+}
+
+fn writeSmokeStripSized(path: []const u8, width: u32, height: u32) !void {
     const allocator = std.heap.page_allocator;
-    const width = 240;
-    const height = 480;
-    const rgb = try allocator.alloc(u16, width * height * 3);
+    const rgb = try allocator.alloc(u16, @as(usize, width) * height * 3);
     defer allocator.free(rgb);
     @memset(rgb, 30000);
     const thumb = [_]u8{117} ** (2 * 4 * 3);
-    const ir = try allocator.alloc(u8, width * height);
+    const ir = try allocator.alloc(u8, @as(usize, width) * height);
     defer allocator.free(ir);
     @memset(ir, 250);
     try v600.tiff.writeScanPages(allocator, path, &.{

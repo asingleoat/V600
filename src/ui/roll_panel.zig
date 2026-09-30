@@ -31,6 +31,11 @@ pub const RollPanel = struct {
     default_output_dir: []const u8,
     active: ?Roll = null,
     processor: ?*v600.roll.Processor = null,
+    /// A closed roll's exporter finishing its strip in progress; rolls
+    /// cannot be opened until it has, so two big exports never overlap.
+    finishing: ?*v600.roll.Processor = null,
+    finishing_name_buffer: [64]u8 = undefined,
+    finishing_name_len: usize = 0,
     names: [][]u8 = &.{},
     strip_count: usize = 0,
     new_name: [64]u8 = undefined,
@@ -82,7 +87,9 @@ pub const RollPanel = struct {
     }
 
     pub fn deinit(self: *RollPanel, model: *v600.native_ui.State) void {
-        self.close(model, false);
+        self.close(model, false, true);
+        if (self.finishing) |processor| processor.finish();
+        self.finishing = null;
         self.freeNames();
     }
 
@@ -116,15 +123,24 @@ pub const RollPanel = struct {
             if (busy) c.nk_widget_disable_end(ctx);
             if (c.nk_button_label(ctx, "Open Review") != 0) self.openReview();
             if (busy) c.nk_widget_disable_begin(ctx);
-            if (c.nk_button_label(ctx, "Close Roll") != 0 and !busy) self.close(model, true);
+            if (c.nk_button_label(ctx, "Close Roll") != 0 and !busy) self.closeRoll(model);
             if (busy) c.nk_widget_disable_end(ctx);
             _ = preview;
+            if (busy) {
+                layoutRow(ctx, 22.0, 1);
+                drawText(ctx, "Scan Strip and Close Roll wait for the scan in progress.");
+            }
 
             const pending = if (self.processor) |processor| processor.pending() else 0;
             var status_buffer: [320]u8 = undefined;
             layoutRow(ctx, 22.0, 1);
             if (pending != 0) {
-                drawText(ctx, std.fmt.bufPrint(&status_buffer, "Exporting {d} strip{s}...", .{ pending, if (pending == 1) "" else "s" }) catch "Exporting...");
+                var progress_buffer: [256]u8 = undefined;
+                const progress = self.processor.?.status(&progress_buffer) orelse "starting";
+                const queued = pending -| 1;
+                var queued_buffer: [48]u8 = undefined;
+                const queued_text = if (queued == 0) "" else std.fmt.bufPrint(&queued_buffer, "; {d} more queued", .{queued}) catch "";
+                drawText(ctx, std.fmt.bufPrint(&status_buffer, "Exporting {s}{s}", .{ progress, queued_text }) catch "Exporting...");
             } else {
                 drawText(ctx, self.lastResult(&status_buffer));
             }
@@ -135,12 +151,23 @@ pub const RollPanel = struct {
             return;
         }
 
+        const finishing = self.finishing != null;
+        if (self.finishing) |processor| {
+            var line_buffer: [320]u8 = undefined;
+            var progress_buffer: [256]u8 = undefined;
+            const progress = processor.status(&progress_buffer) orelse "finishing";
+            layoutRow(ctx, 22.0, 1);
+            drawText(ctx, std.fmt.bufPrint(&line_buffer, "Still exporting {s}: {s}", .{ self.finishing_name_buffer[0..self.finishing_name_len], progress }) catch "Still exporting the closed roll");
+            layoutRow(ctx, 22.0, 1);
+            drawText(ctx, "Opening or starting a roll waits until that export is done.");
+        }
+        if (finishing) c.nk_widget_disable_begin(ctx);
         if (self.names.len != 0) {
             layoutRow(ctx, 22.0, 1);
             c.nk_label(ctx, "Open a roll:", c.NK_TEXT_LEFT);
             for (self.names) |name| {
                 layoutRow(ctx, 24.0, 1);
-                if (chrome.optionClicked(ctx, name, false)) {
+                if (chrome.optionClicked(ctx, name, false) and !finishing) {
                     self.activate(model, name) catch |err| self.setNotice("Could not open roll {s}: {s}", .{ name, @errorName(err) });
                     return;
                 }
@@ -170,7 +197,8 @@ pub const RollPanel = struct {
         layoutRow(ctx, 22.0, 1);
         c.nk_label(ctx, "Strips use the Mode and DPI below; change them any time.", c.NK_TEXT_LEFT);
         layoutRow(ctx, 30.0, 1);
-        if (c.nk_button_label(ctx, "Start Roll") != 0) self.startRoll(model);
+        if (c.nk_button_label(ctx, "Start Roll") != 0 and !finishing) self.startRoll(model);
+        if (finishing) c.nk_widget_disable_end(ctx);
         if (self.notice.len != 0) {
             layoutRow(ctx, 22.0, 1);
             drawText(ctx, self.notice);
@@ -207,7 +235,7 @@ pub const RollPanel = struct {
     }
 
     fn activate(self: *RollPanel, model: *v600.native_ui.State, name: []const u8) !void {
-        self.close(model, true);
+        self.close(model, true, true);
         var roll = try Roll.open(allocator, self.io, self.scans_root, self.frames_root, name);
         errdefer roll.deinit();
         std.Io.Dir.cwd().createDirPath(self.io, roll.frames_dir) catch {};
@@ -237,10 +265,26 @@ pub const RollPanel = struct {
 
     /// Stops background exports (finishing the strip in progress) and goes
     /// back to plain scans.
-    fn close(self: *RollPanel, model: *v600.native_ui.State, save: bool) void {
+    /// The Close Roll button: returns at once, leaving a strip in progress
+    /// to finish in the background.
+    pub fn closeRoll(self: *RollPanel, model: *v600.native_ui.State) void {
+        self.close(model, true, false);
+    }
+
+    /// With `wait` false, a strip still exporting finishes in the
+    /// background (`finishing`) instead of blocking the UI thread.
+    fn close(self: *RollPanel, model: *v600.native_ui.State, save: bool, wait: bool) void {
         if (self.processor) |processor| {
             processor.dropPending();
-            processor.finish();
+            if (wait or processor.pending() == 0) {
+                processor.finish();
+            } else {
+                processor.requestStop();
+                self.finishing = processor;
+                const name = if (self.active) |*roll| roll.name else "";
+                self.finishing_name_len = @min(name.len, self.finishing_name_buffer.len);
+                @memcpy(self.finishing_name_buffer[0..self.finishing_name_len], name[0..self.finishing_name_len]);
+            }
             self.processor = null;
         }
         if (self.active) |*roll| {
@@ -406,6 +450,13 @@ pub const RollPanel = struct {
                 if (self.notice.len == 0) self.notice = "The preview did not run; the strip was not scanned.";
             }
         }
+        if (self.finishing) |processor| {
+            if (processor.stopped()) {
+                processor.finish();
+                self.finishing = null;
+                self.setNotice("{s}'s last export finished; rolls can be opened again.", .{self.finishing_name_buffer[0..self.finishing_name_len]});
+            }
+        }
         const completed = self.completed.load(.acquire);
         if (completed == self.seen_completed) return;
         self.seen_completed = completed;
@@ -440,6 +491,25 @@ pub const RollPanel = struct {
         const len = @min(self.result_len, buffer.len);
         @memcpy(buffer[0..len], self.result_buffer[0..len]);
         return buffer[0..len];
+    }
+
+    /// Called each frame once the app has been asked to quit: queued strips
+    /// are dropped, the one in progress finishes, and the status line says
+    /// what the app is waiting for. True once no export is running.
+    pub fn stopForQuit(self: *RollPanel, model: *v600.native_ui.State) bool {
+        var waiting_for: ?*v600.roll.Processor = null;
+        for ([_]?*v600.roll.Processor{ self.processor, self.finishing }) |maybe| {
+            const processor = maybe orelse continue;
+            processor.dropPending();
+            processor.requestStop();
+            if (processor.pending() != 0 and !processor.stopped()) waiting_for = processor;
+        }
+        const processor = waiting_for orelse return true;
+        var progress_buffer: [256]u8 = undefined;
+        const progress = processor.status(&progress_buffer) orelse "finishing";
+        const text = std.fmt.bufPrint(&self.status_buffer, "Quitting when this export finishes: {s}", .{progress}) catch "Quitting when the roll export finishes";
+        model.setStatus(text);
+        return false;
     }
 
     /// The strip number when `path` is one of the open roll's strip scans.
