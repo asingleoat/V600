@@ -41,9 +41,9 @@ How it works (`src/scanner/interpreter_runtime.zig`, `usb.zig`, `macos.zig`,
   failure or cancel.
 - Each pass: FS I identity, ESC @ reset, the IR challenge for IR passes, FS W
   parameters, TPU calibration and gamma LUT upload over direct RS commands
-  (first TPU pass, or when the LUTs change, then an interpreter reinit), FS G,
-  block reads with cancel and progress, and a horizontal mirror for the
-  transparency unit.
+  (first TPU pass, or when the LUTs change), FS G, block reads with cancel and
+  progress, an interpreter reinit (every pass; see `docs/SCANNER_INTERNALS.md`),
+  and a horizontal mirror for the transparency unit.
 - Gamma LUTs stretch each RGB channel between the film strip's own black and
   white points (computed from the preview), so the film fills the 16-bit
   range. The LUT is stored in tag 50001 and inverted on load; see

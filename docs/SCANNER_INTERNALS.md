@@ -309,7 +309,15 @@ interp.INTClose()
 interp.INTInit(read_cb, write_cb, NULL)
 ```
 
-This re-uploads firmware (~10s). It only needs to happen once per session — the calibration persists in scanner hardware across reinits.
+This re-uploads firmware (~10s) on a cold scanner; on a warm one it takes milliseconds. The calibration persists in scanner hardware across reinits.
+
+A pass without RS commands appears to leave the interpreter unable to answer
+the next FS I too. Scanning a roll on a V600, every other strip failed with
+ScannerIdentityFailed: the full scan after the strip's preview (which needs
+no calibration once the LUTs stop changing, so was not reinitialized)
+failed, while scans after a calibrated, reinitialized pass never did. The
+Zig runtime therefore reinitializes after every pass, and a kept connection
+that still fails FS I gets one more reinit before the operation fails.
 
 ## IR Scanning
 

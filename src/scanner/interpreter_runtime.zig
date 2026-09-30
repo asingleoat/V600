@@ -79,7 +79,6 @@ const Connection = struct {
     model: macos.ScannerModelSelection,
     tpu_configured: bool = false,
     uploaded_luts: ?[lut.serialized_len]u8 = null,
-    needs_reinit: bool = false,
 
     fn modelName(self: *const Connection) []const u8 {
         return switch (self.model) {
@@ -163,7 +162,7 @@ pub const Runtime = struct {
         var ok = false;
         defer self.release(ok);
 
-        const caps = try capabilities(conn);
+        const caps = try self.identify(conn);
         self.emitProbe(.{
             .device = caps.device_name,
             .model = caps.model,
@@ -210,7 +209,7 @@ pub const Runtime = struct {
     }
 
     fn scanWithConnection(self: Runtime, conn: *Connection, options: ScanOptions) !void {
-        const caps = try capabilities(conn);
+        const caps = try self.identify(conn);
         var luts_buffer: [lut.serialized_len]u8 = undefined;
         const luts = try self.loadLuts(options.request, &luts_buffer);
 
@@ -306,8 +305,6 @@ pub const Runtime = struct {
                 conn.uploaded_luts = wanted;
                 try macos.configureTpu(conn.usb_io, gammaTables(&conn.uploaded_luts));
                 conn.tpu_configured = true;
-                // The direct RS commands desync the interpreter's USB state.
-                conn.needs_reinit = true;
             }
         }
 
@@ -316,10 +313,14 @@ pub const Runtime = struct {
         const data = try self.readBlocks(session, info, expected, options.cancel_file);
         errdefer self.allocator.free(data);
 
-        if (conn.needs_reinit) {
-            conn.needs_reinit = false;
-            session.reinit() catch return error.InterpreterReinitFailed;
-        }
+        // Reinitialize after every pass. The direct RS commands of TPU
+        // calibration desync the interpreter's USB state, and a pass without
+        // them also leaves the interpreter unable to answer the next FS I:
+        // repeated roll strips failed every other time with
+        // ScannerIdentityFailed after a preview that needed no calibration.
+        // The data is complete, so a failed reinit only warns; the next
+        // operation's identity check recovers or drops the connection.
+        session.reinit() catch self.emitTiming(.{ .stage = "macos.scan.reinit", .elapsed_us = 0, .detail = "failed" });
 
         const bytes_per_sample: u16 = if (planned.depth == .sixteen) 2 else 1;
         const image = tiff.ImageView{
@@ -474,6 +475,18 @@ pub const Runtime = struct {
         return metadata_path;
     }
 
+    /// The scanner's capabilities from FS I. A connection kept from an
+    /// earlier operation that does not answer gets one interpreter reinit
+    /// and a second try before the operation fails (which drops it).
+    fn identify(self: Runtime, conn: *Connection) !contracts.ScannerCapabilities {
+        return capabilities(conn) catch |err| {
+            if (err != error.ScannerIdentityFailed) return err;
+            self.emitTiming(.{ .stage = "macos.identity.retry", .elapsed_us = 0, .detail = "reinit" });
+            conn.session.reinit() catch return err;
+            return capabilities(conn);
+        };
+    }
+
     fn acquire(self: Runtime) !*Connection {
         connection_mutex.lockUncancelable(self.io);
         errdefer connection_mutex.unlock(self.io);
@@ -518,7 +531,6 @@ pub const Runtime = struct {
         };
         conn.tpu_configured = false;
         conn.uploaded_luts = null;
-        conn.needs_reinit = false;
 
         const init_start = monotonicNowNs();
         conn.session.init() catch |err| {
@@ -774,6 +786,10 @@ const FakeScanner = struct {
     close_count: usize = 0,
     fs_w_count: usize = 0,
     ir_enable_count: usize = 0,
+    /// Models the V600 failing FS I after a scan until the interpreter is
+    /// reinitialized, which made every other roll strip fail.
+    stale_after_scan: bool = false,
+    stale: bool = false,
 
     fn api(self: *FakeScanner) macos.InterpreterApi {
         return .{
@@ -790,6 +806,7 @@ const FakeScanner = struct {
     fn init(context: *anyopaque, _: macos.UsbCallback, _: macos.UsbCallback, _: ?*anyopaque) bool {
         const self: *FakeScanner = @ptrCast(@alignCast(context));
         self.init_count += 1;
+        self.stale = false;
         return true;
     }
 
@@ -835,6 +852,7 @@ const FakeScanner = struct {
         switch (self.state) {
             .ack => buffer[0] = interpreter.ACK,
             .identity => {
+                if (self.stale) return false;
                 @memset(buffer, 0);
                 std.mem.writeInt(u32, buffer[4..8], 6400, .little);
                 std.mem.writeInt(u32, buffer[12..16], 12800, .little);
@@ -847,6 +865,7 @@ const FakeScanner = struct {
             },
             .params => @memset(buffer, 0x11),
             .start => {
+                if (self.stale_after_scan) self.stale = true;
                 const info = self.starts[self.start_index];
                 self.start_index += 1;
                 self.data_counter = 0;
@@ -935,10 +954,10 @@ test "runs an RGB+IR scan through the interpreter conversation into a three-page
     try std.testing.expectEqual(@as(usize, 2), fake.fs_w_count);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tiff.partial", .{}));
     try std.testing.expectEqual(@as(usize, 1), fake.ir_enable_count);
-    // TPU calibration runs once, then the interpreter is reinitialized.
+    // TPU calibration runs once; the interpreter is reinitialized after each pass.
     try std.testing.expect(ack_usb.writes > 0);
-    try std.testing.expectEqual(@as(usize, 1), fake.init_count);
-    try std.testing.expectEqual(@as(usize, 1), fake.close_count);
+    try std.testing.expectEqual(@as(usize, 2), fake.init_count);
+    try std.testing.expectEqual(@as(usize, 2), fake.close_count);
 
     var pages = try tiff.loadRgbIrPages(allocator, output);
     defer pages.deinit(allocator);
@@ -967,6 +986,82 @@ test "runs an RGB+IR scan through the interpreter conversation into a three-page
     defer parsed.deinit();
     try std.testing.expectEqualStrings("rgb+ir", parsed.value.object.get("kind").?.string);
     try std.testing.expectEqual(@as(i64, 800), parsed.value.object.get("ir_effective_dpi").?.integer);
+}
+
+test "scans on one connection keep answering FS I when passes need no calibration" {
+    // Preview, strip, preview, strip...: once the LUTs stop changing no pass
+    // calibrates, and the scan after such a pass used to fail FS I.
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const block = interpreter.StartScanInfo{ .status = 0, .block_size = 100, .block_count = 4, .last_block_size = 32 };
+    var fake = FakeScanner{ .starts = &.{ block, block, block }, .stale_after_scan = true };
+    var ack_usb = AckUsb{};
+    const conn = try std.heap.page_allocator.create(Connection);
+    conn.* = .{
+        .hardware = null,
+        .usb_io = ack_usb.io(),
+        .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
+        .model = macos.scannerModelForProductId(0x013a),
+    };
+    shared_connection = conn;
+    defer {
+        if (shared_connection) |leftover| std.heap.page_allocator.destroy(leftover);
+        shared_connection = null;
+    }
+
+    var env = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer env.deinit();
+    const runtime = Runtime{ .allocator = allocator, .io = std.testing.io, .environ_map = &env };
+    for (0..3) |index| {
+        const output = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scan{d}.tiff", .{ tmp.sub_path[0..], index });
+        defer allocator.free(output);
+        try runtime.scan(.{
+            .request = .{ .dpi = 800, .source = .tpu, .kind = .rgb, .area = .{ .width = 1.0 / 64.0, .height = 1.0 / 128.0 } },
+            .output_path = output,
+        });
+    }
+    try std.testing.expectEqual(@as(usize, 3), fake.start_index);
+    try std.testing.expectEqual(@as(usize, 3), fake.init_count);
+    try std.testing.expect(shared_connection == conn);
+}
+
+test "a kept connection that fails FS I is reinitialized and asked again" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scan.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(output);
+
+    var fake = FakeScanner{
+        .starts = &.{.{ .status = 0, .block_size = 100, .block_count = 4, .last_block_size = 32 }},
+        .stale = true,
+    };
+    var ack_usb = AckUsb{};
+    const conn = try std.heap.page_allocator.create(Connection);
+    conn.* = .{
+        .hardware = null,
+        .usb_io = ack_usb.io(),
+        .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
+        .model = macos.scannerModelForProductId(0x013a),
+    };
+    shared_connection = conn;
+    defer {
+        if (shared_connection) |leftover| std.heap.page_allocator.destroy(leftover);
+        shared_connection = null;
+    }
+
+    var env = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer env.deinit();
+    const runtime = Runtime{ .allocator = allocator, .io = std.testing.io, .environ_map = &env };
+    try runtime.scan(.{
+        .request = .{ .dpi = 800, .source = .tpu, .kind = .rgb, .area = .{ .width = 1.0 / 64.0, .height = 1.0 / 128.0 } },
+        .output_path = output,
+    });
+    // One reinit for the retry, one after the pass.
+    try std.testing.expectEqual(@as(usize, 2), fake.init_count);
+    try std.testing.expectEqual(@as(usize, 1), fake.start_index);
 }
 
 test "a cancel file stops the scan, sends CAN, and drops the connection" {
