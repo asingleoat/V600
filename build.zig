@@ -31,6 +31,7 @@ const ui_smoke_steps = [_]UiSmokeSpec{
     .{ .arg = "--roll-smoke", .name = "native-roll-smoke", .description = "Verify opening a roll points the Scan and Process views at it" },
     .{ .arg = "--roll-name-input-smoke", .name = "native-roll-name-input-smoke", .description = "Verify typing into the roll name field reaches Nuklear" },
     .{ .arg = "--scan-sweep-smoke", .name = "native-scan-sweep-smoke", .description = "Verify the scan progress line draws over the scanned selection" },
+    .{ .arg = "--roll-reframe-smoke", .name = "native-roll-reframe-smoke", .description = "Verify hand-placed Process frames re-export a roll strip under the roll's names" },
     .{ .arg = "--process-dump-smoke", .name = "native-process-dump-smoke", .description = "Verify native Process selection dump diagnostics" },
     .{ .arg = "--process-export-smoke", .name = "native-process-export-smoke", .description = "Verify native Process export flow starts from the UI" },
     .{ .arg = "--preview-worker-smoke", .name = "native-preview-worker-smoke-skip", .description = "Verify native preview hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },

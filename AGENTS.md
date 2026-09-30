@@ -230,8 +230,9 @@ deliberately, not by accident.
   TOML reads.
 - Scans go to `scans/`, exports to `frames/`; both are gitignored. A roll
   uses `scans/<roll>/` (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`,
-  `review/`) and `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the
-  `[roll]` key in the scanner config.
+  hand-placed framing in `strip_NN_*.tiff.frames.json`, `review/`) and
+  `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the `[roll]` key in
+  the scanner config.
 - TIFF metadata: make, model, software, resolution, datetime. Custom tag
   50000 marks scanner custom LUTs; BYTE tag 50001 holds the applied LUT,
   which the RGB loaders invert; tag 65000 holds export metadata JSON.

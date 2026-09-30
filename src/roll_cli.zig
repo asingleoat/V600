@@ -146,7 +146,11 @@ fn printStatus(allocator: std.mem.Allocator, io: std.Io, roll: *const Roll, stdo
     defer strips.deinit(allocator);
     if (strips.paths.len == 0) try stdout.print("No strips yet.\n", .{});
     for (strips.paths) |strip| {
-        try stdout.print("  {s}  {s}\n", .{ std.fs.path.basename(strip), if (roll.isProcessed(io, strip)) "processed" else "not processed" });
+        try stdout.print("  {s}  {s}{s}\n", .{
+            std.fs.path.basename(strip),
+            if (roll.isProcessed(io, strip)) "processed" else "not processed",
+            if (roll.hasFraming(io, strip)) ", frames placed by hand" else "",
+        });
     }
 }
 

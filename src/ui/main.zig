@@ -192,6 +192,7 @@ pub fn main(init: std.process.Init) !void {
     var preview_render_smoke = false;
     var scan_interaction_smoke = false;
     var scan_sweep_smoke = false;
+    var roll_reframe_smoke = false;
     var roll_smoke = false;
     var roll_name_input_smoke = false;
     var roll_strip_smoke = false;
@@ -250,6 +251,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--scan-interaction-smoke")) {
             preview_render_smoke = true;
             scan_interaction_smoke = true;
+            smoke = true;
+        } else if (std.mem.eql(u8, arg, "--roll-reframe-smoke")) {
+            roll_reframe_smoke = true;
             smoke = true;
         } else if (std.mem.eql(u8, arg, "--scan-sweep-smoke")) {
             preview_render_smoke = true;
@@ -336,7 +340,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
-    if (roll_smoke or roll_strip_smoke or roll_name_input_smoke) {
+    if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke) {
         scan_dir = roll_smoke_root ++ "/scans";
         output_dir = roll_smoke_root ++ "/frames";
     }
@@ -352,7 +356,7 @@ pub fn main(init: std.process.Init) !void {
     const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke)
+    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke)
         roll_smoke_root ++ "/" ++ v600.processing.config.config_file
     else
         v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
@@ -383,6 +387,7 @@ pub fn main(init: std.process.Init) !void {
         !process_interaction_smoke and !gallery_render_smoke and !roll_strip_smoke and screenshot_path == null;
     if (interactive) rolls.restore(&model);
     if (roll_smoke) try setupRollSmoke(&rolls, &model, init.io);
+    if (roll_reframe_smoke) try runRollReframeSmoke(&rolls, &model, init.io);
     if (roll_strip_smoke) {
         if (!hardwareSmokeEnabled(init.environ_map)) {
             std.debug.print("native roll strip smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
@@ -697,6 +702,7 @@ pub fn main(init: std.process.Init) !void {
                     &process_worker,
                     &process_export_worker,
                     &process_transform,
+                    &rolls,
                 ),
                 .gallery => drawGalleryView(
                     &ctx,
@@ -1085,6 +1091,72 @@ fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io
     if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
     // Picking another resolution with the roll open applies to its next strips.
     model.scan_controls.setDpi(3200);
+}
+
+/// Opens a roll whose one strip was auto-exported, frames it by hand in the
+/// Process view, exports through the roll, and checks that the hand frame
+/// replaced the automatic export under the roll's name and was saved.
+fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io: std.Io) !void {
+    const allocator = std.heap.page_allocator;
+    std.Io.Dir.cwd().deleteTree(io, roll_smoke_root) catch {};
+    var roll = try v600.roll.Roll.create(allocator, io, model.scanner.output_dir, model.processing.output_dir, "reframe", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    try writeSmokeStrip(strip);
+    try rolls.openRoll(model, "reframe");
+    try waitForRollExports(rolls, io);
+
+    _ = try model.refreshProcessingImageList(allocator, io);
+    const path = model.currentProcessingImagePathForWorker() orelse return error.RollReframeSmokeFailed;
+    if (rolls.stripNumberOf(path) != 1) return error.RollReframeSmokeFailed;
+    model.processing.preview_scale = 0.5;
+    model.clearProcessingSelections();
+    _ = try model.addProcessSelection(.{ .x = 20.0, .y = 40.0, .w = 50.0, .h = 75.0, .angle = 0.0, .rotation = 0 });
+    try rolls.exportFramedStrip(model, path);
+    try waitForRollExports(rolls, io);
+
+    var exported = try v600.tiff.findImages(allocator, io, roll.frames_dir);
+    defer exported.deinit(allocator);
+    if (exported.paths.len != 1 or !std.mem.endsWith(u8, exported.paths[0], "/reframe_s01_01.tif")) return error.RollReframeSmokeFailed;
+    const info = try v600.tiff.readRgbIrPageInfo(allocator, exported.paths[0]);
+    if (info.rgb.width != 100 or info.rgb.height != 150) return error.RollReframeSmokeFailed;
+    if (!roll.hasFraming(io, strip)) return error.RollReframeSmokeFailed;
+    const marker = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, v600.roll.processed_suffix });
+    defer allocator.free(marker);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, marker, allocator, .limited(64 * 1024));
+    defer allocator.free(text);
+    if (std.mem.indexOf(u8, text, "\"framing\": \"manual\"") == null) return error.RollReframeSmokeFailed;
+    // The smoke's frame then draws the Process view's roll export controls.
+    model.active_view = .process;
+}
+
+fn waitForRollExports(rolls: *roll_panel.RollPanel, io: std.Io) !void {
+    const processor = rolls.processor orelse return error.RollReframeSmokeFailed;
+    var waited_ms: usize = 0;
+    while (processor.pending() != 0) : (waited_ms += 20) {
+        if (waited_ms > 120_000) return error.RollReframeSmokeTimedOut;
+        try std.Io.sleep(io, .fromMilliseconds(20), .awake);
+    }
+}
+
+/// A plain grey 240x480 RGB+IR strip scan at 800 dpi.
+fn writeSmokeStrip(path: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const width = 240;
+    const height = 480;
+    const rgb = try allocator.alloc(u16, width * height * 3);
+    defer allocator.free(rgb);
+    @memset(rgb, 30000);
+    const thumb = [_]u8{117} ** (2 * 4 * 3);
+    const ir = try allocator.alloc(u8, width * height);
+    defer allocator.free(ir);
+    @memset(ir, 250);
+    try v600.tiff.writeScanPages(allocator, path, &.{
+        .{ .image = .{ .width = width, .height = height, .samples_per_pixel = 3, .bits_per_sample = 16, .data = std.mem.sliceAsBytes(rgb) }, .metadata = .{ .dpi = 800 } },
+        .{ .image = .{ .width = 2, .height = 4, .samples_per_pixel = 3, .bits_per_sample = 8, .data = &thumb } },
+        .{ .image = .{ .width = width, .height = height, .samples_per_pixel = 1, .bits_per_sample = 8, .data = ir }, .metadata = .{ .dpi = 800 } },
+    });
 }
 
 /// A key press and release, as one keystroke.
@@ -3176,6 +3248,7 @@ fn drawProcessView(
     process_worker: *ProcessWorker,
     export_worker: *ProcessExportWorker,
     transform: *const v600.native_ui.ProcessViewTransform,
+    rolls: *roll_panel.RollPanel,
 ) void {
     const export_active = model.process_exporting or export_worker.isRunning();
     const worker_active = process_worker.isRunning();
@@ -3326,6 +3399,23 @@ fn drawProcessView(
     syncProcessExportBasename(ui, model);
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Export", c.NK_TEXT_LEFT);
+    // A strip of the open roll exports through the roll: its names, and the
+    // frames are kept as the strip's framing for later re-exports.
+    const image_path = model.currentProcessingImagePathForWorker();
+    if (if (image_path) |path| rolls.stripNumberOf(path) else null) |strip_number| {
+        var name_buffer: [96]u8 = undefined;
+        var note_buffer: [192]u8 = undefined;
+        const note = std.fmt.bufPrint(&note_buffer, "Replaces this strip's frames as {s}_NN.tif and keeps them for re-exports.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch "";
+        layoutRow(ctx, 22.0, 1);
+        drawText(ctx, note);
+        layoutRow(ctx, 30.0, 1);
+        if (export_active) {
+            c.nk_label(ctx, "Exporting...", c.NK_TEXT_LEFT);
+        } else if (c.nk_button_label(ctx, "Export Strip Frames") != 0) {
+            rolls.exportFramedStrip(model, image_path.?) catch |err| setProcessUiError(model, err);
+        }
+        return;
+    }
     layoutRow(ctx, 28.0, 1);
     _ = c.nk_edit_string(
         ctx,
@@ -3912,6 +4002,7 @@ fn setProcessUiError(model: *v600.native_ui.State, err: anyerror) void {
         error.InvalidFilmFormat => "Invalid film format",
         error.FileNotFound => "File not found",
         error.AccessDenied => "Access denied",
+        error.NoFrameSelections => "Draw or detect frames first",
         else => @errorName(err),
     });
 }

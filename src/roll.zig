@@ -25,6 +25,7 @@ pub const lut_name = "roll.lut.bin";
 pub const review_dir_name = "review";
 pub const strip_prefix = "strip_";
 pub const processed_suffix = ".processed.json";
+pub const framing_suffix = ".frames.json";
 const schema = "v600.roll.v1";
 const max_name_len = 64;
 
@@ -57,6 +58,10 @@ pub fn defaultRotation(format: []const u8) i32 {
     return 0;
 }
 
+fn positiveFinite(value: f64) bool {
+    return std.math.isFinite(value) and value > 0.0;
+}
+
 fn validRotation(rotation: i32) bool {
     return rotation == 0 or rotation == 90 or rotation == 180 or rotation == 270;
 }
@@ -67,6 +72,7 @@ pub const Error = error{
     RollExists,
     RollNotFound,
     InvalidRollManifest,
+    InvalidFraming,
 };
 
 pub const Roll = struct {
@@ -301,30 +307,42 @@ pub const Roll = struct {
 
         const preview = try workflow.loadQuickPreview(allocator, strip_path, options.preview_size);
         defer preview.deinit(allocator);
+        const framing = try self.loadFraming(io, strip_path);
+        defer if (framing) |owned| owned.deinit(allocator);
         try self.removePreviousExports(io, strip_path);
-        var detected = try workflow.autoDetectPreview(allocator, preview, .{ .format = self.format });
-        defer detected.deinit(allocator);
+        // Hand-placed frames still use detection for the rebate, but not
+        // when detection fails outright.
+        var detected: ?workflow.AutoDetectResult = workflow.autoDetectPreview(allocator, preview, .{ .format = self.format }) catch |err|
+            if (framing == null) return err else null;
+        defer if (detected) |*result| result.deinit(allocator);
         const to_full = 1.0 / preview.info.preview_scale;
 
-        const rects = try allocator.alloc(export_pipeline.FrameRect, detected.frames.len);
+        const rects = if (framing) |owned|
+            try allocator.dupe(export_pipeline.FrameRect, owned.frames)
+        else
+            try allocator.alloc(export_pipeline.FrameRect, detected.?.frames.len);
         defer allocator.free(rects);
-        for (detected.frames, rects) |frame, *rect| {
-            rect.* = .{
-                .cx = frame.cx * to_full,
-                .cy = frame.cy * to_full,
-                .w = frame.w * to_full,
-                .h = frame.h * to_full,
-                .angle = std.math.radiansToDegrees(frame.angle),
-                .rotation = self.rotation,
-            };
+        if (framing == null) {
+            for (detected.?.frames, rects) |frame, *rect| {
+                rect.* = .{
+                    .cx = frame.cx * to_full,
+                    .cy = frame.cy * to_full,
+                    .w = frame.w * to_full,
+                    .h = frame.h * to_full,
+                    .angle = std.math.radiansToDegrees(frame.angle),
+                    .rotation = self.rotation,
+                };
+            }
         }
-        const rebate_rect = if (detected.rebate) |rebate| try workflow.fullResolutionRebate(rebate, preview.info.preview_scale) else null;
+        const detected_rebate = if (detected) |result| (if (result.rebate) |rebate| try workflow.fullResolutionRebate(rebate, preview.info.preview_scale) else null) else null;
+        const rebate_rect = if (framing) |owned| owned.rebate orelse detected_rebate else detected_rebate;
         const use_roll_dmin = rebate_rect == null and self.dmin != null;
 
         const basename = try self.stripBasename(strip_path);
         defer allocator.free(basename);
         var outcome = StripOutcome{
             .frames = rects.len,
+            .manual = framing != null,
             .dmin_source = if (rebate_rect != null) "rebate" else if (use_roll_dmin) "roll" else "image",
             .files = &.{},
         };
@@ -356,10 +374,76 @@ pub const Roll = struct {
             try self.save(io);
         }
 
-        try self.writeReviewImage(io, strip_path, preview, detected);
+        try self.writeReviewImage(io, strip_path, preview, rects, rebate_rect);
         try self.writeMarker(io, strip_path, outcome);
         try self.writeReviewIndex(io);
         return outcome;
+    }
+
+    /// Saves hand-placed frames for a strip (`<strip>.frames.json`); from
+    /// then on its exports use them instead of detection. Delete the file
+    /// to go back to detected frames.
+    pub fn saveFraming(self: *const Roll, io: std.Io, strip_path: []const u8, framing: Framing) !void {
+        if (framing.frames.len == 0) return Error.InvalidFraming;
+        var out = std.array_list.Managed(u8).init(self.allocator);
+        defer out.deinit();
+        try out.appendSlice("{\n  \"frames\": [");
+        for (framing.frames, 0..) |frame, index| {
+            try out.print("{s}\n    {{\"cx\": {d}, \"cy\": {d}, \"w\": {d}, \"h\": {d}, \"angle_deg\": {d}, \"rotation\": {d}}}", .{
+                if (index == 0) "" else ",", frame.cx, frame.cy, frame.w, frame.h, frame.angle, frame.rotation,
+            });
+        }
+        try out.appendSlice("\n  ],\n  \"rebate\": ");
+        if (framing.rebate) |r| {
+            try out.print("{{\"x\": {d}, \"y\": {d}, \"w\": {d}, \"h\": {d}, \"angle_rad\": {d}}}", .{ r.x, r.y, r.w, r.h, r.angle });
+        } else {
+            try out.appendSlice("null");
+        }
+        try out.appendSlice("\n}\n");
+        const framing_path = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ strip_path, framing_suffix });
+        defer self.allocator.free(framing_path);
+        try writeFileAtomic(self.allocator, io, framing_path, out.items);
+    }
+
+    pub fn hasFraming(self: *const Roll, io: std.Io, strip_path: []const u8) bool {
+        const framing_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ strip_path, framing_suffix }) catch return false;
+        defer self.allocator.free(framing_path);
+        return fileExists(io, framing_path);
+    }
+
+    fn loadFraming(self: *const Roll, io: std.Io, strip_path: []const u8) !?OwnedFraming {
+        const allocator = self.allocator;
+        const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, framing_suffix });
+        defer allocator.free(framing_path);
+        const text = std.Io.Dir.cwd().readFileAlloc(io, framing_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+            error.FileNotFound => return null,
+            else => return err,
+        };
+        defer allocator.free(text);
+        const parsed = std.json.parseFromSlice(FramingJson, allocator, text, .{ .ignore_unknown_fields = true }) catch
+            return Error.InvalidFraming;
+        defer parsed.deinit();
+        const f = parsed.value;
+        if (f.frames.len == 0) return Error.InvalidFraming;
+        const rects = try allocator.alloc(export_pipeline.FrameRect, f.frames.len);
+        errdefer allocator.free(rects);
+        for (f.frames, rects) |frame, *rect| {
+            if (!positiveFinite(frame.w) or !positiveFinite(frame.h) or !std.math.isFinite(frame.cx) or
+                !std.math.isFinite(frame.cy) or !std.math.isFinite(frame.angle_deg) or !validRotation(frame.rotation))
+            {
+                return Error.InvalidFraming;
+            }
+            rect.* = .{ .cx = frame.cx, .cy = frame.cy, .w = frame.w, .h = frame.h, .angle = frame.angle_deg, .rotation = frame.rotation };
+        }
+        const rebate: ?frames.RebateOriginRect = if (f.rebate) |r| blk: {
+            if (!positiveFinite(r.w) or !positiveFinite(r.h) or !std.math.isFinite(r.x) or
+                !std.math.isFinite(r.y) or !std.math.isFinite(r.angle_rad))
+            {
+                return Error.InvalidFraming;
+            }
+            break :blk .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .angle = r.angle_rad };
+        } else null;
+        return .{ .frames = rects, .rebate = rebate };
     }
 
     /// Deletes the files an earlier run exported for this strip, as listed
@@ -389,7 +473,7 @@ pub const Roll = struct {
     fn writeMarker(self: *const Roll, io: std.Io, strip_path: []const u8, outcome: StripOutcome) !void {
         var out = std.array_list.Managed(u8).init(self.allocator);
         defer out.deinit();
-        try out.print("{{\n  \"frames\": {d},\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, outcome.dmin_source });
+        try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, if (outcome.manual) "manual" else "auto", outcome.dmin_source });
         try appendTriple(&out, "dmin", outcome.dmin);
         try out.appendSlice(",\n  \"files\": [");
         for (outcome.files, 0..) |file, index| {
@@ -409,25 +493,27 @@ pub const Roll = struct {
         });
     }
 
-    /// The strip as the detector saw it, frames and rebate outlined.
+    /// The strip's preview with the exported frames and the rebate outlined;
+    /// `rects` and `rebate` are in full-resolution pixels.
     fn writeReviewImage(
         self: *const Roll,
         io: std.Io,
         strip_path: []const u8,
         preview: workflow.QuickPreview,
-        detected: workflow.AutoDetectResult,
+        rects: []const export_pipeline.FrameRect,
+        rebate: ?frames.RebateOriginRect,
     ) !void {
         const allocator = self.allocator;
         const long_side = @max(preview.preview_width, preview.preview_height);
         const factor = @max(@as(usize, 1), (long_side + review_long_side - 1) / review_long_side);
         var image = try downscaleRgb8(allocator, preview.preview_rgb8, preview.preview_width, preview.preview_height, factor);
         defer allocator.free(image.pixels);
-        const scale = 1.0 / @as(f64, @floatFromInt(factor));
-        for (detected.frames, 0..) |frame, index| {
-            drawRotatedRect(&image, frame.cx * scale, frame.cy * scale, frame.w * scale, frame.h * scale, frame.angle, frame_colors[index % frame_colors.len]);
+        const scale = preview.info.preview_scale / @as(f64, @floatFromInt(factor));
+        for (rects, 0..) |rect, index| {
+            drawRotatedRect(&image, rect.cx * scale, rect.cy * scale, rect.w * scale, rect.h * scale, std.math.degreesToRadians(rect.angle), frame_colors[index % frame_colors.len]);
         }
-        if (detected.rebate) |rebate| {
-            drawRotatedRect(&image, rebate.cx * scale, rebate.cy * scale, rebate.w * scale, rebate.h * scale, rebate.angle, rebate_color);
+        if (rebate) |r| {
+            drawRotatedRect(&image, (r.x + r.w / 2.0) * scale, (r.y + r.h / 2.0) * scale, r.w * scale, r.h * scale, r.angle, rebate_color);
         }
         const jpeg = try workflow.encodeRgbJpeg(allocator, image.pixels, image.width, image.height, 85);
         defer allocator.free(jpeg);
@@ -487,7 +573,8 @@ pub const Roll = struct {
                 if (std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true })) |parsed| {
                     defer parsed.deinit();
                     const m = parsed.value;
-                    try out.print("{d} frame{s}, Dmin from {s}", .{ m.frames, if (m.frames == 1) "" else "s", m.dmin_source });
+                    const by_hand = if (std.mem.eql(u8, m.framing, "manual")) " placed by hand" else "";
+                    try out.print("{d} frame{s}{s}, Dmin from {s}", .{ m.frames, if (m.frames == 1) "" else "s", by_hand, m.dmin_source });
                     if (m.dmin) |dmin| try out.print(" ({d:.3} / {d:.3} / {d:.3})", .{ dmin[0], dmin[1], dmin[2] });
                     try out.appendSlice("<br><span class=files>");
                     for (m.files) |file| try out.print("{s}<br>", .{file});
@@ -666,8 +753,48 @@ pub const ProcessOptions = struct {
     invert_request: webgpu.Request = .{},
 };
 
+pub const FrameRect = export_pipeline.FrameRect;
+pub const RebateOriginRect = frames.RebateOriginRect;
+
+/// Frames placed by hand for a strip, in full-resolution scan pixels. A strip
+/// with a framing file is exported with these instead of detected frames.
+pub const Framing = struct {
+    frames: []const export_pipeline.FrameRect,
+    /// Where to measure Dmin; null uses the detected rebate, else the roll's.
+    rebate: ?frames.RebateOriginRect = null,
+};
+
+const OwnedFraming = struct {
+    frames: []export_pipeline.FrameRect,
+    rebate: ?frames.RebateOriginRect,
+
+    fn deinit(self: OwnedFraming, allocator: std.mem.Allocator) void {
+        allocator.free(self.frames);
+    }
+};
+
+const FramingJson = struct {
+    frames: []const struct {
+        cx: f64,
+        cy: f64,
+        w: f64,
+        h: f64,
+        angle_deg: f64 = 0.0,
+        rotation: i32 = 0,
+    },
+    rebate: ?struct {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        angle_rad: f64 = 0.0,
+    } = null,
+};
+
 pub const StripOutcome = struct {
     frames: usize,
+    /// The frames came from the strip's framing file, not detection.
+    manual: bool = false,
     dmin: ?[3]f64 = null,
     /// "rebate" (this strip), "roll" (another strip's), or "image".
     dmin_source: []const u8,
@@ -699,6 +826,7 @@ const MarkerJson = struct {
     dmin_source: []const u8,
     dmin: ?[3]f64 = null,
     files: []const []const u8 = &.{},
+    framing: []const u8 = "auto",
 };
 
 /// Names of the rolls under `scans_root` (directories with a `roll.json`),
@@ -1136,6 +1264,129 @@ test "processes a real strip scan into exports, a marker, and a review page" {
     var exported = try tiff.findImages(allocator, io, roll.frames_dir);
     defer exported.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 5), exported.paths.len);
+
+    // Frames placed by hand replace the detected set and stick on re-export.
+    const hand = [_]export_pipeline.FrameRect{
+        .{ .cx = 700.0, .cy = 640.0, .w = 740.0, .h = 1100.0, .angle = 0.0, .rotation = 0 },
+        .{ .cx = 690.0, .cy = 1830.0, .w = 760.0, .h = 1140.0, .angle = 1.5, .rotation = 270 },
+    };
+    try roll.saveFraming(io, strip, .{ .frames = &hand });
+    try std.testing.expect(roll.hasFraming(io, strip));
+    for (0..2) |_| {
+        const manual = try roll.processStrip(io, strip, .{
+            .processing_config_path = "no-such-config.toml",
+            .outputs = .{ .ir_neg = false, .ir_inv = false, .inv_only = true },
+        });
+        defer manual.deinit(allocator);
+        try std.testing.expect(manual.manual);
+        try std.testing.expectEqual(@as(usize, 2), manual.files.len);
+        try std.testing.expectEqualStrings("rebate", manual.dmin_source);
+        var now_exported = try tiff.findImages(allocator, io, roll.frames_dir);
+        defer now_exported.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 2), now_exported.paths.len);
+        const first = try std.fs.path.join(allocator, &.{ roll.frames_dir, manual.files[0] });
+        defer allocator.free(first);
+        const first_info = try tiff.readRgbIrPageInfo(allocator, first);
+        try std.testing.expectEqual(@as(u32, 740), first_info.rgb.width);
+        try std.testing.expectEqual(@as(u32, 1100), first_info.rgb.height);
+        const second = try std.fs.path.join(allocator, &.{ roll.frames_dir, manual.files[1] });
+        defer allocator.free(second);
+        const second_info = try tiff.readRgbIrPageInfo(allocator, second);
+        try std.testing.expectEqual(@as(u32, 1140), second_info.rgb.width);
+    }
+    const manual_html = try std.Io.Dir.cwd().readFileAlloc(io, review, allocator, .limited(64 * 1024));
+    defer allocator.free(manual_html);
+    try std.testing.expect(std.mem.indexOf(u8, manual_html, "2 frames placed by hand, Dmin from rebate") != null);
+}
+
+/// A plain grey RGB+IR strip scan with nothing for detection to find.
+fn writeFeaturelessStrip(allocator: std.mem.Allocator, path: []const u8, width: u32, height: u32) !void {
+    const rgb = try allocator.alloc(u16, @as(usize, width) * height * 3);
+    defer allocator.free(rgb);
+    @memset(rgb, 30000);
+    const thumb = [_]u8{117} ** (2 * 4 * 3);
+    const ir = try allocator.alloc(u8, @as(usize, width) * height);
+    defer allocator.free(ir);
+    @memset(ir, 250);
+    try tiff.writeScanPages(allocator, path, &.{
+        .{ .image = .{ .width = width, .height = height, .samples_per_pixel = 3, .bits_per_sample = 16, .data = std.mem.sliceAsBytes(rgb) }, .metadata = .{ .dpi = 800 } },
+        .{ .image = .{ .width = 2, .height = 4, .samples_per_pixel = 3, .bits_per_sample = 8, .data = &thumb } },
+        .{ .image = .{ .width = width, .height = height, .samples_per_pixel = 1, .bits_per_sample = 8, .data = ir }, .metadata = .{ .dpi = 800 } },
+    });
+}
+
+test "hand-placed frames replace detection, even where detection fails" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "plain", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    try writeFeaturelessStrip(allocator, strip, 240, 480);
+
+    try roll.saveFraming(io, strip, .{ .frames = &.{.{ .cx = 120.0, .cy = 200.0, .w = 100.0, .h = 150.0, .rotation = 0 }} });
+    const outcome = try roll.processStrip(io, strip, .{ .processing_config_path = "no-such-config.toml" });
+    defer outcome.deinit(allocator);
+    try std.testing.expect(outcome.manual);
+    try std.testing.expectEqual(@as(usize, 1), outcome.files.len);
+    try std.testing.expect(std.mem.endsWith(u8, outcome.files[0], "plain_s01_01.tif"));
+    const exported = try std.fs.path.join(allocator, &.{ roll.frames_dir, outcome.files[0] });
+    defer allocator.free(exported);
+    const info = try tiff.readRgbIrPageInfo(allocator, exported);
+    try std.testing.expectEqual(@as(u32, 100), info.rgb.width);
+    try std.testing.expectEqual(@as(u32, 150), info.rgb.height);
+
+    // Too small a strip for detection's profile bands: it errors, and the
+    // saved frame still exports.
+    const tiny = try roll.nextStripPath(io);
+    defer allocator.free(tiny);
+    try writeFeaturelessStrip(allocator, tiny, 16, 48);
+    const tiny_preview = try workflow.loadQuickPreview(allocator, tiny, 1024);
+    defer tiny_preview.deinit(allocator);
+    try std.testing.expectError(error.InvalidFrameProfileBand, workflow.autoDetectPreview(allocator, tiny_preview, .{ .format = "35mm" }));
+    try std.testing.expectError(error.InvalidFrameProfileBand, roll.processStrip(io, tiny, .{ .processing_config_path = "no-such-config.toml" }));
+    try roll.saveFraming(io, tiny, .{ .frames = &.{.{ .cx = 8.0, .cy = 24.0, .w = 10.0, .h = 20.0, .rotation = 0 }} });
+    const framed = try roll.processStrip(io, tiny, .{ .processing_config_path = "no-such-config.toml" });
+    defer framed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), framed.files.len);
+    try std.testing.expect(std.mem.endsWith(u8, framed.files[0], "plain_s02_01.tif"));
+}
+
+test "framing files round-trip and bad ones are rejected" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "framed", .{});
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+
+    try std.testing.expect(!roll.hasFraming(io, strip));
+    try std.testing.expectEqual(@as(?OwnedFraming, null), try roll.loadFraming(io, strip));
+    try std.testing.expectError(Error.InvalidFraming, roll.saveFraming(io, strip, .{ .frames = &.{} }));
+
+    const rects = [_]export_pipeline.FrameRect{.{ .cx = 10.5, .cy = 20.25, .w = 30.0, .h = 40.0, .angle = -1.25, .rotation = 90 }};
+    try roll.saveFraming(io, strip, .{ .frames = &rects, .rebate = .{ .x = 1.0, .y = 2.0, .w = 3.0, .h = 4.0, .angle = 0.5 } });
+    const loaded = (try roll.loadFraming(io, strip)).?;
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqualSlices(export_pipeline.FrameRect, &rects, loaded.frames);
+    try std.testing.expectEqual(@as(f64, 0.5), loaded.rebate.?.angle);
+
+    const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, framing_suffix });
+    defer allocator.free(framing_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = framing_path, .data =
+        \\{"frames": [{"cx": 1, "cy": 2, "w": -3, "h": 4}]}
+    });
+    try std.testing.expectError(Error.InvalidFraming, roll.loadFraming(io, strip));
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = framing_path, .data = "not json" });
+    try std.testing.expectError(Error.InvalidFraming, roll.loadFraming(io, strip));
 }
 
 test "the background processor reports every queued strip before it stops" {

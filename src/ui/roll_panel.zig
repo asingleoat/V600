@@ -45,6 +45,8 @@ pub const RollPanel = struct {
     /// The queued scan plan points at this until the scan worker copies it.
     strip_lut_path: ?[]u8 = null,
     notice_buffer: [320]u8 = undefined,
+    /// Backs the footer status after a background export finishes.
+    status_buffer: [256]u8 = undefined,
     notice: []const u8 = "",
     // Written by the processing thread.
     result_mutex: std.Io.Mutex = .init,
@@ -408,6 +410,8 @@ pub const RollPanel = struct {
         if (completed == self.seen_completed) return;
         self.seen_completed = completed;
         _ = model.refreshGalleryFiles(allocator, self.io) catch {};
+        const text = self.lastResult(&self.status_buffer);
+        model.setStatus(text);
     }
 
     fn onProcessed(context: ?*anyopaque, done: v600.roll.Processor.Done) void {
@@ -416,10 +420,11 @@ pub const RollPanel = struct {
         defer self.result_mutex.unlock(self.io);
         const name = std.fs.path.stem(std.fs.path.basename(done.strip));
         const text = if (done.outcome) |outcome|
-            std.fmt.bufPrint(&self.result_buffer, "{s}: {d} frame{s} exported, Dmin from {s}", .{
+            std.fmt.bufPrint(&self.result_buffer, "{s}: {d} frame{s}{s} exported, Dmin from {s}", .{
                 name,
                 outcome.files.len,
                 if (outcome.files.len == 1) "" else "s",
+                if (outcome.manual) " placed by hand" else "",
                 outcome.dmin_source,
             }) catch ""
         else
@@ -435,6 +440,44 @@ pub const RollPanel = struct {
         const len = @min(self.result_len, buffer.len);
         @memcpy(buffer[0..len], self.result_buffer[0..len]);
         return buffer[0..len];
+    }
+
+    /// The strip number when `path` is one of the open roll's strip scans.
+    pub fn stripNumberOf(self: *const RollPanel, path: []const u8) ?usize {
+        const roll = &(self.active orelse return null);
+        const dir = std.fs.path.dirname(path) orelse return null;
+        if (!std.mem.eql(u8, dir, roll.dir)) return null;
+        return v600.roll.stripNumber(path);
+    }
+
+    /// `<roll>_sNN`, the names a strip's frames export under.
+    pub fn stripExportName(self: *const RollPanel, buffer: []u8, number: usize) []const u8 {
+        const roll = &(self.active orelse return "");
+        return std.fmt.bufPrint(buffer, "{s}_s{d:0>2}", .{ roll.name, number }) catch "";
+    }
+
+    /// Saves the Process view's frames (and rebate, if one is set) as the
+    /// strip's framing and re-exports the strip in the background under the
+    /// roll's names, replacing its earlier exports. Later re-exports keep
+    /// using these frames.
+    pub fn exportFramedStrip(self: *RollPanel, model: *v600.native_ui.State, strip_path: []const u8) !void {
+        const roll = &(self.active orelse return error.NoOpenRoll);
+        const processor = self.processor orelse return error.NoOpenRoll;
+        var rect_buffer: [64]v600.roll.FrameRect = undefined;
+        const rects = try model.processExportRects(&rect_buffer);
+        if (rects.len == 0) return error.NoFrameSelections;
+        const rebate: ?v600.roll.RebateOriginRect = if (model.processing.rebate_rect) |r|
+            .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .angle = r.angle }
+        else
+            null;
+        try roll.saveFraming(self.io, strip_path, .{ .frames = rects, .rebate = rebate });
+        try processor.enqueue(strip_path);
+        self.setNotice("{s}: exporting {d} hand-placed frame{s} in the background", .{
+            std.fs.path.stem(std.fs.path.basename(strip_path)),
+            rects.len,
+            if (rects.len == 1) "" else "s",
+        });
+        model.setStatus(self.notice);
     }
 
     fn openReview(self: *RollPanel) void {
