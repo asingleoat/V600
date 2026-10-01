@@ -74,7 +74,8 @@ Open:
   scan_0003 ground-truth tests, so it was not kept. Decision: no detection
   changes until the owner has hand-framed the current batch of rolls; the
   strips' `strip_*.tiff.frames.json` files (frames in full-resolution
-  pixels, written by Export Strip Frames) are then the ground truth to
+  pixels, saved by Process view edits and Export Strip Frames; untouched
+  auto-detect results are never saved) are then the ground truth to
   measure detection against. The 645 pitch (45 mm) is nominal and camera
   gaps vary.
 

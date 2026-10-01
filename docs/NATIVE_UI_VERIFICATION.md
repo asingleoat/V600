@@ -13,7 +13,8 @@ typing, Backspace, and Cmd+A/C/V through SDL events and the clipboard),
 `native-scan-sweep-smoke` (the scan progress line draws at the reported
 position over the scanned selection), `native-roll-reframe-smoke` (frames
 placed in the Process view re-export a roll strip under the roll's names and
-are saved as its framing), `native-roll-close-smoke` (Close Roll returns at
+are saved as its framing; a settled edit saves and Undo saves the earlier
+frames back), `native-roll-close-smoke` (Close Roll returns at
 once while a strip exports, the panel reports the export finishing, and it
 completes afterwards), and the hardware-skip
 checks

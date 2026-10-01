@@ -559,6 +559,7 @@ pub fn main(init: std.process.Init) !void {
     var process_transform = v600.native_ui.ProcessViewTransform{};
     var scan_transform = v600.native_ui.ProcessViewTransform{};
     var scan_sweep = v600.native_ui_scan_sweep.Animator{};
+    var synced_roll_generation: usize = 0;
     var process_confirmation = ProcessConfirmation{};
     defer process_confirmation.deinit(std.heap.page_allocator);
     var process_selector_checked = false;
@@ -773,6 +774,8 @@ pub fn main(init: std.process.Init) !void {
                 break :blk false;
             };
         }
+        rolls.syncSavedFraming(&model);
+        followRollInProcessView(&rolls, &process_ui, &synced_roll_generation);
         if (model.active_view == .process and model.takeProcessAutoDetectPending()) {
             startProcessAutoDetect(
                 &model,
@@ -780,6 +783,14 @@ pub fn main(init: std.process.Init) !void {
                 processing_config_path,
                 &process_ui,
             ) catch |err| setProcessUiError(&model, err);
+        }
+        // Hand edits settle, go on the undo stack, and save for roll strips.
+        model.settleProcessEdits(c.SDL_GetTicks());
+        rolls.saveFramingIfEdited(&model);
+        // Restored frames with their own rebate remeasure Dmin from it.
+        if (model.process_rebate_dmin_pending and !process_worker.isRunning()) {
+            _ = model.takeProcessRebateDminPending();
+            startProcessRebate(&model, &process_worker, processing_config_path) catch |err| setProcessUiError(&model, err);
         }
         if (!scanControlsEqual(scan_controls_before_workers, model.scan_controls)) {
             _ = model.saveScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch false;
@@ -949,7 +960,11 @@ pub fn main(init: std.process.Init) !void {
         c.SDL_Delay(16);
     }
     if (scan_interaction_smoke and !scan_interaction_checked) return error.ScanInteractionSmokeFailed;
-    if (roll_smoke) try assertRollSmoke(&rolls, &model);
+    if (roll_smoke) {
+        try assertRollSmoke(&rolls, &model);
+        // The Process view follows the roll: 645, which needs no rotation.
+        if (!std.mem.eql(u8, process_formats[process_ui.format_index], "645") or process_ui.last_rotation != 0) return error.RollSmokeFailed;
+    }
     if (roll_name_input_smoke) {
         const typed = rolls.new_name[0..@intCast(rolls.new_name_len)];
         if (!std.mem.eql(u8, typed, "gold-400gold-400")) {
@@ -1134,8 +1149,29 @@ fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.Stat
     const text = try std.Io.Dir.cwd().readFileAlloc(io, marker, allocator, .limited(64 * 1024));
     defer allocator.free(text);
     if (std.mem.indexOf(u8, text, "\"framing\": \"manual\"") == null) return error.RollReframeSmokeFailed;
+
+    // An edit saves once it settles; undo saves the earlier frames back.
+    if (model.process_saved_framing == null) return error.RollReframeSmokeFailed;
+    model.process_selections[0].x += 5.0;
+    model.settleProcessEdits(1_000);
+    model.settleProcessEdits(1_000 + v600.native_ui.process_edit_settle_ms);
+    rolls.saveFramingIfEdited(model);
+    if (try framingCx(allocator, io, strip) != 100.0) return error.RollReframeSmokeFailed;
+    if (!model.undoProcessSelections()) return error.RollReframeSmokeFailed;
+    rolls.saveFramingIfEdited(model);
+    if (try framingCx(allocator, io, strip) != 90.0) return error.RollReframeSmokeFailed;
     // The smoke's frame then draws the Process view's roll export controls.
     model.active_view = .process;
+}
+
+fn framingCx(allocator: std.mem.Allocator, io: std.Io, strip: []const u8) !f64 {
+    const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, v600.roll.framing_suffix });
+    defer allocator.free(framing_path);
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, framing_path, allocator, .limited(64 * 1024));
+    defer allocator.free(text);
+    const parsed = try std.json.parseFromSlice(struct { frames: []const struct { cx: f64 } }, allocator, text, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return parsed.value.frames[0].cx;
 }
 
 /// Closes a roll while its strip exports: Close Roll returns at once, the
@@ -1362,6 +1398,18 @@ const UiFont = struct {
         if (self.atlas) |*atlas| c.nk_font_atlas_clear(atlas);
     }
 };
+
+/// When a roll opens, the Process view takes its film format (for
+/// auto-detect) and its rotation (for frames you draw).
+fn followRollInProcessView(rolls: *const roll_panel.RollPanel, ui: *ProcessUiState, synced_generation: *usize) void {
+    if (rolls.generation == synced_generation.*) return;
+    synced_generation.* = rolls.generation;
+    const roll = &(rolls.active orelse return);
+    for (process_formats, 0..) |format, index| {
+        if (std.mem.eql(u8, format, roll.format)) ui.format_index = index;
+    }
+    ui.last_rotation = roll.rotation;
+}
 
 /// The scan line for this frame: over the selection being scanned, or the
 /// whole preview during a preview scan.
@@ -1957,6 +2005,9 @@ fn handleProcessShortcutEvent(
             if (model.process_active_selection) |index| {
                 if (model.removeProcessSelection(index)) interaction.end();
             }
+        },
+        c.SDLK_Z => {
+            if ((event.key.mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL)) != 0 and model.undoProcessSelections()) interaction.end();
         },
         else => {},
     }
@@ -3439,6 +3490,7 @@ fn drawProcessView(
     ) catch "Selections";
     layoutRow(ctx, 22.0, 1);
     drawText(ctx, selection_text);
+    drawProcessUndo(ctx, model);
     drawProcessSelectionControls(ctx, model, ui);
 
     syncProcessExportBasename(ui, model);
@@ -3450,7 +3502,10 @@ fn drawProcessView(
     if (if (image_path) |path| rolls.stripNumberOf(path) else null) |strip_number| {
         var name_buffer: [96]u8 = undefined;
         var note_buffer: [192]u8 = undefined;
-        const note = std.fmt.bufPrint(&note_buffer, "Replaces this strip's frames as {s}_NN.tif and keeps them for re-exports.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch "";
+        const note = if (model.process_saved_framing != null)
+            std.fmt.bufPrint(&note_buffer, "Your frames for this strip are saved. Export Strip Frames re-exports them as {s}_NN.tif.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch ""
+        else
+            std.fmt.bufPrint(&note_buffer, "Edits save automatically. Export Strip Frames re-exports this strip as {s}_NN.tif.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch "";
         layoutRow(ctx, 22.0, 1);
         drawText(ctx, note);
         layoutRow(ctx, 30.0, 1);
@@ -3523,6 +3578,17 @@ fn drawProcessImageSelector(
             return;
         }
     }
+}
+
+fn drawProcessUndo(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void {
+    const can_undo = model.canUndoProcessSelections();
+    layoutRow(ctx, 28.0, 1);
+    if (!can_undo) c.nk_widget_disable_begin(ctx);
+    tooltip(ctx, "Restore the frames from before the last change or auto-detect (Cmd+Z)");
+    if (c.nk_button_label(ctx, if (can_undo) "Undo Frames" else "Undo Frames (nothing to undo yet)") != 0 and can_undo) {
+        _ = model.undoProcessSelections();
+    }
+    if (!can_undo) c.nk_widget_disable_end(ctx);
 }
 
 fn drawProcessSelectionControls(

@@ -79,10 +79,12 @@ Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
 Each export is the IR-cleaned positive with the scan's DPI and date. 35mm,
 6x7, and 6x9 frames are turned to landscape (the `rotation` in `roll.json`,
 clockwise degrees; `roll start --rotation` sets it).
-To fix a strip's framing, open it in the Process view with its roll open,
-adjust the frames, and press Export Strip Frames: they are saved as
-`strip_NN_….tiff.frames.json`, replace the strip's exports under the roll's
-names, and are reused by later exports (delete the file to go back to
+To fix a strip's framing, open it in the Process view with its roll open
+(the view takes the roll's format and rotation) and adjust the frames. Edits
+save to `strip_NN_….tiff.frames.json` once they settle, Undo Frames (Cmd+Z)
+steps back through edits and auto-detects, and reopening the strip shows the
+saved frames. Export Strip Frames re-exports the strip with them under the
+roll's names; later exports reuse them (delete the file to go back to
 detection).
 The native UI's Scan view does the same: start or open a roll, then press
 Scan Strip for each strip. Build with `-Doptimize=ReleaseFast` for real

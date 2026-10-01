@@ -36,6 +36,12 @@ pub const RollPanel = struct {
     finishing: ?*v600.roll.Processor = null,
     finishing_name_buffer: [64]u8 = undefined,
     finishing_name_len: usize = 0,
+    /// Bumped whenever a roll opens, so the Process view can follow its
+    /// format and rotation.
+    generation: usize = 0,
+    /// The Process view image whose saved frames were last loaded.
+    synced_image_buffer: [std.fs.max_path_bytes]u8 = undefined,
+    synced_image_len: usize = 0,
     names: [][]u8 = &.{},
     strip_count: usize = 0,
     new_name: [64]u8 = undefined,
@@ -242,6 +248,8 @@ pub const RollPanel = struct {
         const processor = try v600.roll.Processor.start(self.io, self.scans_root, self.frames_root, roll.name, .{}, onProcessed, self);
         self.active = roll;
         self.processor = processor;
+        self.generation += 1;
+        self.synced_image_len = 0;
         self.notice = "";
         self.result_len = 0;
         const active = &self.active.?;
@@ -531,22 +539,77 @@ pub const RollPanel = struct {
     /// roll's names, replacing its earlier exports. Later re-exports keep
     /// using these frames.
     pub fn exportFramedStrip(self: *RollPanel, model: *v600.native_ui.State, strip_path: []const u8) !void {
-        const roll = &(self.active orelse return error.NoOpenRoll);
         const processor = self.processor orelse return error.NoOpenRoll;
-        var rect_buffer: [64]v600.roll.FrameRect = undefined;
-        const rects = try model.processExportRects(&rect_buffer);
-        if (rects.len == 0) return error.NoFrameSelections;
-        const rebate: ?v600.roll.RebateOriginRect = if (model.processing.rebate_rect) |r|
-            .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .angle = r.angle }
-        else
-            null;
-        try roll.saveFraming(self.io, strip_path, .{ .frames = rects, .rebate = rebate });
+        const count = try self.saveFraming(model, strip_path);
         try processor.enqueue(strip_path);
         self.setNotice("{s}: exporting {d} hand-placed frame{s} in the background", .{
             std.fs.path.stem(std.fs.path.basename(strip_path)),
-            rects.len,
-            if (rects.len == 1) "" else "s",
+            count,
+            if (count == 1) "" else "s",
         });
+        model.setStatus(self.notice);
+    }
+
+    /// Writes the Process view's frames as the strip's framing file.
+    fn saveFraming(self: *RollPanel, model: *v600.native_ui.State, strip_path: []const u8) !usize {
+        const roll = &(self.active orelse return error.NoOpenRoll);
+        var framing = v600.native_ui.ProcessFraming{};
+        const rects = try model.processExportRects(&framing.frames);
+        if (rects.len == 0) return error.NoFrameSelections;
+        framing.count = rects.len;
+        if (model.processing.rebate_rect) |r| {
+            framing.rebate = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .angle = r.angle };
+        }
+        try roll.saveFraming(self.io, strip_path, .{ .frames = rects, .rebate = framing.rebate });
+        model.markProcessFramingSaved(framing);
+        return rects.len;
+    }
+
+    /// Call each frame: when the Process view moves to another image, hands
+    /// it that strip's saved frames (if it is one of the open roll's strips
+    /// and has them), to show instead of its first auto-detect.
+    pub fn syncSavedFraming(self: *RollPanel, model: *v600.native_ui.State) void {
+        const path = model.currentProcessingImagePathForWorker() orelse "";
+        if (std.mem.eql(u8, path, self.synced_image_buffer[0..self.synced_image_len])) return;
+        self.synced_image_len = @min(path.len, self.synced_image_buffer.len);
+        @memcpy(self.synced_image_buffer[0..self.synced_image_len], path[0..self.synced_image_len]);
+        model.setProcessSavedFraming(self.loadSavedFraming(path));
+    }
+
+    fn loadSavedFraming(self: *RollPanel, path: []const u8) ?v600.native_ui.ProcessFraming {
+        const roll = &(self.active orelse return null);
+        if (self.stripNumberOf(path) == null) return null;
+        const owned = (roll.loadFraming(self.io, path) catch |err| {
+            self.setNotice("Could not read the saved frames for {s}: {s}", .{ std.fs.path.basename(path), @errorName(err) });
+            return null;
+        }) orelse return null;
+        defer owned.deinit(roll.allocator);
+        var framing = v600.native_ui.ProcessFraming{ .rebate = owned.rebate };
+        framing.count = @min(owned.frames.len, framing.frames.len);
+        @memcpy(framing.frames[0..framing.count], owned.frames[0..framing.count]);
+        return framing;
+    }
+
+    /// Call each frame after `settleProcessEdits`: saves hand edits (and
+    /// undos) of an open-roll strip's frames, and says so.
+    pub fn saveFramingIfEdited(self: *RollPanel, model: *v600.native_ui.State) void {
+        if (!model.process_framing_dirty) return;
+        const path = model.currentProcessingImagePathForWorker() orelse return;
+        if (self.stripNumberOf(path) == null or model.processing.loading) {
+            model.process_framing_dirty = false;
+            return;
+        }
+        const name = std.fs.path.stem(std.fs.path.basename(path));
+        const count = self.saveFraming(model, path) catch |err| {
+            model.process_framing_dirty = false;
+            self.setNotice("Frames for {s} not saved: {s}", .{ name, switch (err) {
+                error.NoFrameSelections => "no frames are selected",
+                else => @errorName(err),
+            } });
+            model.setStatus(self.notice);
+            return;
+        };
+        self.setNotice("Saved {d} frame{s} for {s}; Export Strip Frames re-exports with them", .{ count, if (count == 1) "" else "s", name });
         model.setStatus(self.notice);
     }
 

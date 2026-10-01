@@ -412,7 +412,7 @@ pub const Roll = struct {
         return fileExists(io, framing_path);
     }
 
-    fn loadFraming(self: *const Roll, io: std.Io, strip_path: []const u8) !?OwnedFraming {
+    pub fn loadFraming(self: *const Roll, io: std.Io, strip_path: []const u8) !?OwnedFraming {
         const allocator = self.allocator;
         const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, framing_suffix });
         defer allocator.free(framing_path);
@@ -825,11 +825,11 @@ pub const Framing = struct {
     rebate: ?frames.RebateOriginRect = null,
 };
 
-const OwnedFraming = struct {
+pub const OwnedFraming = struct {
     frames: []export_pipeline.FrameRect,
     rebate: ?frames.RebateOriginRect,
 
-    fn deinit(self: OwnedFraming, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: OwnedFraming, allocator: std.mem.Allocator) void {
         allocator.free(self.frames);
     }
 };

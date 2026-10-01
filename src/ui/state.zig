@@ -86,6 +86,35 @@ pub const ProcessSelection = struct {
 };
 
 pub const default_process_output_rotation: i32 = 270;
+
+/// Frames saved for an image (a roll strip's framing file), in
+/// full-resolution pixels.
+pub const ProcessFraming = struct {
+    frames: [64]processing_export.FrameRect = undefined,
+    count: usize = 0,
+    rebate: ?processing_frames.RebateOriginRect = null,
+};
+
+/// The Process view's frames and rebate at one moment, for undo and for
+/// telling hand edits from what the app set.
+pub const ProcessSelectionsSnapshot = struct {
+    selections: [64]ProcessSelection = undefined,
+    count: usize = 0,
+    rebate: ?app_state.RebateRect = null,
+    rebate_preview: ?ProcessSelection = null,
+
+    fn sameAs(self: *const ProcessSelectionsSnapshot, other: *const ProcessSelectionsSnapshot) bool {
+        if (self.count != other.count) return false;
+        for (self.selections[0..self.count], other.selections[0..other.count]) |a, b| {
+            if (!std.meta.eql(a, b)) return false;
+        }
+        return std.meta.eql(self.rebate, other.rebate);
+    }
+};
+
+/// Edits count as settled once nothing has changed for this long.
+pub const process_edit_settle_ms: u64 = 600;
+const process_undo_depth = 32;
 pub const process_draw_frame_min_size: f64 = 10.0;
 
 pub const ProcessDrawnFrameFinalization = enum {
@@ -439,6 +468,22 @@ pub const State = struct {
     process_last_auto_count: usize = 0,
     process_last_rotation: i32 = default_process_output_rotation,
     process_rebate_rect: ?ProcessSelection = null,
+    /// Frames saved for the loaded image, laid over its first auto-detect.
+    process_saved_framing: ?ProcessFraming = null,
+    process_saved_framing_unapplied: bool = false,
+    /// Set when frames with their own rebate were restored, so the UI
+    /// remeasures Dmin from it.
+    process_rebate_dmin_pending: bool = false,
+    /// The frames as the app last set them or as the last settled edit left
+    /// them; anything different is an edit in progress.
+    process_baseline: ProcessSelectionsSnapshot = .{},
+    process_edit_hash: u64 = 0,
+    process_edit_changed_ms: u64 = 0,
+    /// The frames are a hand choice (a settled edit or an undo) not yet
+    /// saved for the image.
+    process_framing_dirty: bool = false,
+    process_undo: [process_undo_depth]ProcessSelectionsSnapshot = undefined,
+    process_undo_len: usize = 0,
     process_auto_detect_pending: bool = false,
     process_exporting: bool = false,
     process_export_files_written: usize = 0,
@@ -1270,6 +1315,159 @@ pub const State = struct {
         self.process_last_auto_count = 0;
         self.process_rebate_rect = null;
         self.processing.rebate_rect = null;
+        self.process_baseline = .{};
+        self.process_edit_hash = 0;
+        self.process_framing_dirty = false;
+        self.process_undo_len = 0;
+    }
+
+    pub fn processSelectionsSnapshot(self: *const State) ProcessSelectionsSnapshot {
+        var snapshot = ProcessSelectionsSnapshot{
+            .count = self.process_selection_count,
+            .rebate = self.processing.rebate_rect,
+            .rebate_preview = self.process_rebate_rect,
+        };
+        @memcpy(snapshot.selections[0..snapshot.count], self.process_selections[0..snapshot.count]);
+        return snapshot;
+    }
+
+    fn restoreProcessSelections(self: *State, snapshot: *const ProcessSelectionsSnapshot) void {
+        @memcpy(self.process_selections[0..snapshot.count], snapshot.selections[0..snapshot.count]);
+        self.process_selection_count = snapshot.count;
+        self.process_active_selection = if (snapshot.count > 0) 0 else null;
+        if (!std.meta.eql(self.processing.rebate_rect, snapshot.rebate) and snapshot.rebate != null) {
+            self.process_rebate_dmin_pending = true;
+        }
+        self.processing.rebate_rect = snapshot.rebate;
+        self.process_rebate_rect = snapshot.rebate_preview;
+    }
+
+    fn pushProcessUndo(self: *State, snapshot: ProcessSelectionsSnapshot) void {
+        if (snapshot.count == 0 and snapshot.rebate == null) return;
+        if (self.process_undo_len > 0 and self.process_undo[self.process_undo_len - 1].sameAs(&snapshot)) return;
+        if (self.process_undo_len == process_undo_depth) {
+            std.mem.copyForwards(ProcessSelectionsSnapshot, self.process_undo[0 .. process_undo_depth - 1], self.process_undo[1..]);
+            self.process_undo_len -= 1;
+        }
+        self.process_undo[self.process_undo_len] = snapshot;
+        self.process_undo_len += 1;
+    }
+
+    pub fn canUndoProcessSelections(self: *const State) bool {
+        if (self.process_undo_len > 0) return true;
+        const current = self.processSelectionsSnapshot();
+        return !current.sameAs(&self.process_baseline);
+    }
+
+    /// Undoes an edit still settling, else restores the frames before the
+    /// last settled edit or auto-detect.
+    pub fn undoProcessSelections(self: *State) bool {
+        const current = self.processSelectionsSnapshot();
+        if (!current.sameAs(&self.process_baseline)) {
+            const baseline = self.process_baseline;
+            self.restoreProcessSelections(&baseline);
+            self.process_edit_hash = 0;
+            self.status = "Undid the last change to the frames";
+            return true;
+        }
+        if (self.process_undo_len == 0) return false;
+        self.process_undo_len -= 1;
+        const snapshot = self.process_undo[self.process_undo_len];
+        self.restoreProcessSelections(&snapshot);
+        self.process_baseline = snapshot;
+        self.process_edit_hash = 0;
+        self.process_framing_dirty = true;
+        self.status = "Restored the previous frames";
+        return true;
+    }
+
+    /// Call each frame: an edit that has stopped changing becomes the new
+    /// baseline, the state before it goes on the undo stack, and the frames
+    /// are marked as a hand choice to save.
+    pub fn settleProcessEdits(self: *State, now_ms: u64) void {
+        const current = self.processSelectionsSnapshot();
+        if (current.sameAs(&self.process_baseline)) {
+            self.process_edit_hash = 0;
+            return;
+        }
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.sliceAsBytes(current.selections[0..current.count]));
+        hasher.update(std.mem.asBytes(&current.rebate));
+        const hash = hasher.final() | 1;
+        if (hash != self.process_edit_hash) {
+            self.process_edit_hash = hash;
+            self.process_edit_changed_ms = now_ms;
+            return;
+        }
+        if (now_ms -| self.process_edit_changed_ms < process_edit_settle_ms) return;
+        self.pushProcessUndo(self.process_baseline);
+        self.process_baseline = current;
+        self.process_edit_hash = 0;
+        self.process_framing_dirty = true;
+    }
+
+    /// The current frames were saved for the image.
+    pub fn markProcessFramingSaved(self: *State, framing: ProcessFraming) void {
+        self.process_saved_framing = framing;
+        self.process_baseline = self.processSelectionsSnapshot();
+        self.process_edit_hash = 0;
+        self.process_framing_dirty = false;
+    }
+
+    /// Frames saved for the newly loaded image, or null; they replace its
+    /// first auto-detect result.
+    pub fn setProcessSavedFraming(self: *State, framing: ?ProcessFraming) void {
+        self.process_saved_framing = framing;
+        self.process_saved_framing_unapplied = framing != null;
+    }
+
+    pub fn takeProcessRebateDminPending(self: *State) bool {
+        const pending = self.process_rebate_dmin_pending;
+        self.process_rebate_dmin_pending = false;
+        return pending;
+    }
+
+    fn applyProcessSavedFraming(self: *State, framing: *const ProcessFraming) void {
+        const scale = self.processing.preview_scale;
+        if (scale <= 0.0) return;
+        for (framing.frames[0..framing.count], 0..) |frame, index| {
+            self.process_selections[index] = .{
+                .x = (frame.cx - frame.w / 2.0) * scale,
+                .y = (frame.cy - frame.h / 2.0) * scale,
+                .w = frame.w * scale,
+                .h = frame.h * scale,
+                .angle = frame.angle * std.math.pi / 180.0,
+                .rotation = frame.rotation,
+            };
+        }
+        self.process_selection_count = framing.count;
+        self.process_active_selection = if (framing.count > 0) 0 else null;
+        if (framing.rebate) |r| {
+            self.processing.rebate_rect = .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .angle = r.angle };
+            self.process_rebate_rect = .{ .x = r.x * scale, .y = r.y * scale, .w = r.w * scale, .h = r.h * scale, .angle = r.angle };
+            self.process_rebate_dmin_pending = true;
+        }
+    }
+
+    /// After auto-detect replaced the frames: the first result for an image
+    /// with saved frames gives way to them; otherwise the new frames stand,
+    /// with what they replaced on the undo stack.
+    fn finishProcessAutoDetect(self: *State, before: ProcessSelectionsSnapshot) void {
+        if (self.process_saved_framing_unapplied) {
+            self.process_saved_framing_unapplied = false;
+            if (self.process_saved_framing) |*framing| {
+                self.applyProcessSavedFraming(framing);
+                self.status = "Showing this strip's saved frames";
+            }
+        } else {
+            self.pushProcessUndo(before);
+            if (self.process_saved_framing != null) {
+                self.status = "Detected frames are not saved yet: edit them or Export Strip Frames to keep them, or Undo to go back";
+            }
+        }
+        self.process_baseline = self.processSelectionsSnapshot();
+        self.process_edit_hash = 0;
+        self.process_framing_dirty = false;
     }
 
     pub fn writeProcessSelectionDump(self: State, out: anytype) !void {
@@ -1396,6 +1594,7 @@ pub const State = struct {
         scale_percent: f64,
         rotation: i32,
     ) ![]const u8 {
+        const before = self.processSelectionsSnapshot();
         var result = try self.runProcessAutoDetect(allocator, options);
         defer result.deinit(allocator);
         try self.applyProcessAutoDetect(
@@ -1408,6 +1607,7 @@ pub const State = struct {
         if (result.rebate != null) {
             _ = try self.runProcessAutoDetectRebate(allocator, io, config_path);
         }
+        self.finishProcessAutoDetect(before);
         return result.aspect;
     }
 
@@ -1423,6 +1623,7 @@ pub const State = struct {
         dmin: ?[3]f64,
     ) !bool {
         if (!self.processingOwnerMatches(generation, path)) return false;
+        const before = self.processSelectionsSnapshot();
         try self.applyProcessAutoDetect(
             result.frames,
             result.aspect,
@@ -1437,6 +1638,7 @@ pub const State = struct {
             try self.applyProcessDminConfig(value);
             self.applyProcessRebateDmin(allocator, value);
         }
+        self.finishProcessAutoDetect(before);
         return true;
     }
 
@@ -4145,4 +4347,66 @@ test "native UI saves scanner config controls without requiring a selection" {
     try std.testing.expectApproxEqAbs(0.5, saved.values.sel_y_in, 0.0);
     try std.testing.expectApproxEqAbs(2.0, saved.values.sel_w_in, 0.0);
     try std.testing.expectApproxEqAbs(1.0, saved.values.sel_h_in, 0.0);
+}
+
+test "settled hand edits can be undone and untouched auto-detect frames are not edits" {
+    var state = State.init("scans", "frames", 0);
+    state.processing.preview_scale = 0.5;
+    // Auto-detect sets two frames.
+    const before_auto = state.processSelectionsSnapshot();
+    state.process_selections[0] = .{ .x = 10, .y = 20, .w = 100, .h = 150, .rotation = 270 };
+    state.process_selections[1] = .{ .x = 10, .y = 200, .w = 100, .h = 150, .rotation = 270 };
+    state.process_selection_count = 2;
+    state.finishProcessAutoDetect(before_auto);
+    state.settleProcessEdits(0);
+    state.settleProcessEdits(10_000);
+    try std.testing.expect(!state.process_framing_dirty);
+    try std.testing.expect(!state.canUndoProcessSelections());
+
+    // A drag settles after a pause.
+    state.process_selections[0].x = 4;
+    state.settleProcessEdits(10_000);
+    state.settleProcessEdits(10_000 + process_edit_settle_ms - 1);
+    try std.testing.expect(!state.process_framing_dirty);
+    state.settleProcessEdits(10_000 + process_edit_settle_ms);
+    try std.testing.expect(state.process_framing_dirty);
+    try std.testing.expect(state.canUndoProcessSelections());
+
+    try std.testing.expect(state.undoProcessSelections());
+    try std.testing.expectEqual(@as(f64, 10), state.process_selections[0].x);
+    try std.testing.expect(state.process_framing_dirty);
+    try std.testing.expect(!state.canUndoProcessSelections());
+}
+
+test "auto-detect over hand frames can be undone, and saved frames replace only the first detect" {
+    var state = State.init("scans", "frames", 0);
+    state.processing.preview_scale = 0.5;
+    var framing = ProcessFraming{ .count = 1 };
+    framing.frames[0] = .{ .cx = 200, .cy = 300, .w = 100, .h = 200, .angle = 0, .rotation = 270 };
+    framing.rebate = .{ .x = 0, .y = 500, .w = 100, .h = 20 };
+    state.setProcessSavedFraming(framing);
+
+    // The strip loads and auto-detects; its saved frames win.
+    var before = state.processSelectionsSnapshot();
+    state.process_selections[0] = .{ .x = 1, .y = 1, .w = 5, .h = 5 };
+    state.process_selection_count = 1;
+    state.finishProcessAutoDetect(before);
+    try std.testing.expectEqual(@as(usize, 1), state.process_selection_count);
+    try std.testing.expectEqual(@as(f64, 75), state.process_selections[0].x);
+    try std.testing.expectEqual(@as(f64, 100), state.process_selections[0].y);
+    try std.testing.expectEqual(@as(f64, 50), state.process_selections[0].w);
+    try std.testing.expectEqual(@as(i32, 270), state.process_selections[0].rotation);
+    try std.testing.expectEqual(@as(f64, 500), state.processing.rebate_rect.?.y);
+    try std.testing.expect(state.takeProcessRebateDminPending());
+    try std.testing.expect(!state.process_framing_dirty);
+    try std.testing.expect(!state.canUndoProcessSelections());
+
+    // Pressing auto-detect again replaces them, with Undo back to the saved frames.
+    before = state.processSelectionsSnapshot();
+    state.process_selections[0] = .{ .x = 3, .y = 3, .w = 9, .h = 9 };
+    state.finishProcessAutoDetect(before);
+    try std.testing.expectEqual(@as(f64, 3), state.process_selections[0].x);
+    try std.testing.expect(std.mem.startsWith(u8, state.status, "Detected frames are not saved yet"));
+    try std.testing.expect(state.undoProcessSelections());
+    try std.testing.expectEqual(@as(f64, 75), state.process_selections[0].x);
 }
