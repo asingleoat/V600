@@ -2135,7 +2135,9 @@ fn benchExportRenderU16Pair(
         sample.* = @intFromFloat(@round(clipped));
     }
     const diff = try compareU16(old_u16, direct.pixels);
-    if (diff.max_abs != 0) return error.ExportRenderU16Mismatch;
+    // The u16 path inverts through an f32 density LUT, which can round a
+    // sample one count away from the f64 path.
+    if (diff.max_abs > 1) return error.ExportRenderU16Mismatch;
 
     try stdout.print(
         "export_render_u16_vs_f64,{s},{d},{d},{d},{d},f64_display_us={d};direct_u16_us={d};speedup_x1000={d};max_abs={d};rms={d:.3};mismatches={d};checksum_f64={d};checksum_u16={d}\n",
