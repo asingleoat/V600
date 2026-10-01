@@ -73,6 +73,7 @@ for the whole roll, full scan; finished strips export in the background):
     v600-zig roll start gold200-a --stock kodak_gold  # scans/gold200-a/, current roll
     v600-zig roll scan                                # Enter per strip, q to finish
     v600-zig roll status | export [--force] | review [--open]
+    v600-zig roll check-frames [--verified 1,2]       # detection vs frames placed by hand
 
 Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
 `scans/<roll>/review/index.html` shows each strip with its detected frames.

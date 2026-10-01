@@ -49,6 +49,8 @@ pub fn handle(
         try runScan(allocator, io, environ_map, argv, stdout);
     } else if (std.mem.eql(u8, subcommand, "export")) {
         try runExport(allocator, io, argv, stdout);
+    } else if (std.mem.eql(u8, subcommand, "check-frames")) {
+        try runCheckFrames(allocator, io, argv, stdout);
     } else if (std.mem.eql(u8, subcommand, "review")) {
         var roll = try openRoll(allocator, io, rollOption(argv));
         defer roll.deinit();
@@ -83,6 +85,10 @@ pub fn printUsage() void {
         \\  export [--roll NAME] [--force] export every strip not exported yet or whose saved frames
         \\                                 changed since; --force re-exports them all
         \\  review [--roll NAME] [--open]  rewrite the roll's review page and print its path
+        \\  check-frames [--roll NAME] [--verified N[,N...]]
+        \\                                 detect each strip's frames and compare them with the
+        \\                                 frames placed by hand, and for the strips listed in
+        \\                                 --verified with the frames their export cut
         \\
         \\Exports go to frames/NAME/ as NAME_sNN_FF.tif (strip NN, frame FF).
         \\
@@ -181,6 +187,118 @@ fn runExport(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         roll.dir,
         v600.roll.review_dir_name,
     });
+}
+
+/// Frames whose overlap with the known frame is below this count as off.
+const check_frames_good_iou = 0.9;
+
+fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdout: anytype) !void {
+    var roll = try openRoll(allocator, io, rollOption(argv));
+    defer roll.deinit();
+    var verified_buffer: [64]usize = undefined;
+    const verified = try parseStripNumbers(optionValue(argv, "--verified") orelse "", &verified_buffer);
+    const px_per_mm = @as(f64, @floatFromInt(roll.dpi)) / 25.4;
+
+    var strips = try roll.listStrips(io);
+    defer strips.deinit(allocator);
+    var count: usize = 0;
+    var off: usize = 0;
+    var iou_sum: f64 = 0.0;
+    var worst_iou: f64 = 1.0;
+    var offset_sum: f64 = 0.0;
+    var offset_max: f64 = 0.0;
+    for (strips.paths) |strip| {
+        const number = v600.roll.stripNumber(strip) orelse continue;
+        const framing = try roll.loadFraming(io, strip);
+        defer if (framing) |owned| owned.deinit(allocator);
+        const exported = if (framing == null and std.mem.indexOfScalar(usize, verified, number) != null)
+            try roll.loadExportedFrames(io, strip)
+        else
+            null;
+        defer if (exported) |rects| allocator.free(rects);
+        const known = if (framing) |owned| owned.frames else exported orelse continue;
+
+        const detected = roll.detectStripFrames(strip, .{}) catch |err| blk: {
+            try stdout.print("{s}: detection failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
+            break :blk try allocator.alloc(v600.roll.FrameRect, 0);
+        };
+        defer allocator.free(detected);
+        const matches = try allocator.alloc(v600.roll.FrameMatch, known.len);
+        defer allocator.free(matches);
+        v600.roll.matchFrames(known, detected, px_per_mm, matches);
+
+        try stdout.print("{s}: {d} frame{s} {s}, {d} detected\n", .{
+            std.fs.path.basename(strip),
+            known.len,
+            if (known.len == 1) "" else "s",
+            if (framing != null) "placed by hand" else "verified",
+            detected.len,
+        });
+        for (matches, 1..) |match, index| {
+            count += 1;
+            iou_sum += match.iou;
+            worst_iou = @min(worst_iou, match.iou);
+            if (match.iou < check_frames_good_iou) off += 1;
+            if (match.detected == null) {
+                try stdout.print("  {d}: not detected\n", .{index});
+                continue;
+            }
+            const offset = std.math.hypot(match.dx_mm, match.dy_mm);
+            offset_sum += offset;
+            offset_max = @max(offset_max, offset);
+            try stdout.print("  {d}: IoU {d:.3}  centre {s}{d:.2}, {s}{d:.2} mm  size {s}{d:.1}% x {s}{d:.1}%  angle {s}{d:.2} deg{s}\n", .{
+                index,
+                match.iou,
+                plus(match.dx_mm),
+                match.dx_mm,
+                plus(match.dy_mm),
+                match.dy_mm,
+                plus(match.dw_percent),
+                match.dw_percent,
+                plus(match.dh_percent),
+                match.dh_percent,
+                plus(match.dangle_deg),
+                match.dangle_deg,
+                if (match.iou < check_frames_good_iou) "  OFF" else "",
+            });
+        }
+        try stdout.flush();
+    }
+    if (count == 0) {
+        try stdout.print("No strip has frames placed by hand or listed in --verified.\n", .{});
+        return;
+    }
+    try stdout.print("{d} frames: IoU mean {d:.3}, worst {d:.3}; {d} off (IoU below {d:.2}); centre error mean {d:.2} mm, max {d:.2} mm\n", .{
+        count,
+        iou_sum / @as(f64, @floatFromInt(count)),
+        worst_iou,
+        off,
+        check_frames_good_iou,
+        offset_sum / @as(f64, @floatFromInt(count)),
+        offset_max,
+    });
+}
+
+fn plus(value: f64) []const u8 {
+    return if (value >= 0.0) "+" else "";
+}
+
+fn parseStripNumbers(text: []const u8, buffer: []usize) ![]usize {
+    var count: usize = 0;
+    var parts = std.mem.tokenizeScalar(u8, text, ',');
+    while (parts.next()) |part| {
+        if (count >= buffer.len) return error.TooManyStrips;
+        buffer[count] = std.fmt.parseUnsigned(usize, std.mem.trim(u8, part, " "), 10) catch return error.InvalidStripNumber;
+        count += 1;
+    }
+    return buffer[0..count];
+}
+
+fn optionValue(argv: []const []const u8, name: []const u8) ?[]const u8 {
+    for (argv, 0..) |arg, index| {
+        if (std.mem.eql(u8, arg, name) and index + 1 < argv.len) return argv[index + 1];
+    }
+    return null;
 }
 
 fn printOutcome(stdout: anytype, strip: []const u8, outcome: v600.roll.StripOutcome, seconds: i64) !void {

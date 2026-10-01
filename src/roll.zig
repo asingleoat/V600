@@ -73,6 +73,7 @@ pub const Error = error{
     RollNotFound,
     InvalidRollManifest,
     InvalidFraming,
+    InvalidExportRecord,
 };
 
 pub const Roll = struct {
@@ -355,16 +356,7 @@ pub const Roll = struct {
             try allocator.alloc(export_pipeline.FrameRect, detected.?.frames.len);
         defer allocator.free(rects);
         if (framing == null) {
-            for (detected.?.frames, rects) |frame, *rect| {
-                rect.* = .{
-                    .cx = frame.cx * to_full,
-                    .cy = frame.cy * to_full,
-                    .w = frame.w * to_full,
-                    .h = frame.h * to_full,
-                    .angle = std.math.radiansToDegrees(frame.angle),
-                    .rotation = self.rotation,
-                };
-            }
+            for (detected.?.frames, rects) |frame, *rect| rect.* = self.fullResolutionFrame(frame, to_full);
         }
         const detected_rebate = if (detected) |result| (if (result.rebate) |rebate| try workflow.fullResolutionRebate(rebate, preview.info.preview_scale) else null) else null;
         const rebate_rect = if (framing) |owned| owned.rebate orelse detected_rebate else detected_rebate;
@@ -437,6 +429,64 @@ pub const Roll = struct {
         const framing_path = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ strip_path, framing_suffix });
         defer self.allocator.free(framing_path);
         try writeFileAtomic(self.allocator, io, framing_path, out.items);
+    }
+
+    fn fullResolutionFrame(self: *const Roll, frame: frames.FrameRect, to_full: f64) FrameRect {
+        return .{
+            .cx = frame.cx * to_full,
+            .cy = frame.cy * to_full,
+            .w = frame.w * to_full,
+            .h = frame.h * to_full,
+            .angle = std.math.radiansToDegrees(frame.angle),
+            .rotation = self.rotation,
+        };
+    }
+
+    /// The frames auto-detection finds on the strip, as `processStrip`
+    /// exports them without a framing file. The caller frees the slice.
+    pub fn detectStripFrames(self: *const Roll, strip_path: []const u8, options: ProcessOptions) ![]FrameRect {
+        const allocator = self.allocator;
+        const preview = try workflow.loadQuickPreview(allocator, strip_path, options.preview_size);
+        defer preview.deinit(allocator);
+        var detected = try workflow.autoDetectPreview(allocator, preview, .{ .format = self.format });
+        defer detected.deinit(allocator);
+        const to_full = 1.0 / preview.info.preview_scale;
+        const rects = try allocator.alloc(FrameRect, detected.frames.len);
+        for (detected.frames, rects) |frame, *rect| rect.* = self.fullResolutionFrame(frame, to_full);
+        return rects;
+    }
+
+    /// The frames the strip's last export cut, from the crop each exported
+    /// file records; null when the strip has no export. The caller frees the
+    /// slice.
+    pub fn loadExportedFrames(self: *const Roll, io: std.Io, strip_path: []const u8) !?[]FrameRect {
+        const allocator = self.allocator;
+        const marker_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, processed_suffix });
+        defer allocator.free(marker_path);
+        const marker_text = std.Io.Dir.cwd().readFileAlloc(io, marker_path, allocator, .limited(64 * 1024)) catch |err| switch (err) {
+            error.FileNotFound => return null,
+            else => return err,
+        };
+        defer allocator.free(marker_text);
+        const marker = std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true }) catch
+            return Error.InvalidExportRecord;
+        defer marker.deinit();
+        if (marker.value.files.len == 0) return null;
+
+        const rects = try allocator.alloc(FrameRect, marker.value.files.len);
+        errdefer allocator.free(rects);
+        for (marker.value.files, rects) |file, *rect| {
+            const file_path = try std.fs.path.join(allocator, &.{ self.frames_dir, file });
+            defer allocator.free(file_path);
+            const json = (try tiff.readExportMetadataJson(allocator, file_path)) orelse return Error.InvalidExportRecord;
+            defer allocator.free(json);
+            const metadata = std.json.parseFromSlice(ExportCropJson, allocator, json, .{ .ignore_unknown_fields = true }) catch
+                return Error.InvalidExportRecord;
+            defer metadata.deinit();
+            const crop = metadata.value.crop;
+            rect.* = .{ .cx = crop.cx, .cy = crop.cy, .w = crop.w, .h = crop.h, .angle = crop.angle, .rotation = self.rotation };
+        }
+        return rects;
     }
 
     pub fn hasFraming(self: *const Roll, io: std.Io, strip_path: []const u8) bool {
@@ -920,6 +970,54 @@ const ManifestJson = struct {
     lut_black: ?[3]f64 = null,
     lut_white: ?[3]f64 = null,
 };
+
+const ExportCropJson = struct {
+    crop: struct { cx: f64, cy: f64, w: f64, h: f64, angle: f64 = 0.0 },
+};
+
+/// How one known frame compares with the detected frame overlapping it most.
+pub const FrameMatch = struct {
+    /// Index into the detected frames; null when none overlaps.
+    detected: ?usize = null,
+    /// Intersection over union of the unrotated rectangles, which is close
+    /// enough at the degree or so frames sit at; 0 when nothing overlaps.
+    iou: f64 = 0.0,
+    /// Detected minus known: centre offset in millimetres, size in percent,
+    /// angle in degrees.
+    dx_mm: f64 = 0.0,
+    dy_mm: f64 = 0.0,
+    dw_percent: f64 = 0.0,
+    dh_percent: f64 = 0.0,
+    dangle_deg: f64 = 0.0,
+};
+
+/// Pairs each known frame with the detected frame overlapping it most.
+pub fn matchFrames(known: []const FrameRect, detected: []const FrameRect, px_per_mm: f64, out: []FrameMatch) void {
+    for (known, out) |frame, *match| {
+        match.* = .{};
+        for (detected, 0..) |candidate, index| {
+            const iou = rectIou(frame, candidate);
+            if (iou <= match.iou) continue;
+            match.* = .{
+                .detected = index,
+                .iou = iou,
+                .dx_mm = (candidate.cx - frame.cx) / px_per_mm,
+                .dy_mm = (candidate.cy - frame.cy) / px_per_mm,
+                .dw_percent = 100.0 * (candidate.w / frame.w - 1.0),
+                .dh_percent = 100.0 * (candidate.h / frame.h - 1.0),
+                .dangle_deg = candidate.angle - frame.angle,
+            };
+        }
+    }
+}
+
+fn rectIou(a: FrameRect, b: FrameRect) f64 {
+    const ix = @min(a.cx + a.w / 2.0, b.cx + b.w / 2.0) - @max(a.cx - a.w / 2.0, b.cx - b.w / 2.0);
+    const iy = @min(a.cy + a.h / 2.0, b.cy + b.h / 2.0) - @max(a.cy - a.h / 2.0, b.cy - b.h / 2.0);
+    if (ix <= 0.0 or iy <= 0.0) return 0.0;
+    const intersection = ix * iy;
+    return intersection / (a.w * a.h + b.w * b.h - intersection);
+}
 
 const MarkerJson = struct {
     frames: usize,
@@ -1579,4 +1677,31 @@ test "a stop request lets the processor finish its queue without waiting" {
     }
     try std.testing.expectEqual(@as(usize, 2), counter.done_count.load(.monotonic));
     processor.finish();
+}
+
+test "known frames pair with the detected frame overlapping them most" {
+    const known = [_]FrameRect{
+        .{ .cx = 100.0, .cy = 100.0, .w = 100.0, .h = 200.0, .angle = 0.5 },
+        .{ .cx = 100.0, .cy = 400.0, .w = 100.0, .h = 200.0 },
+        .{ .cx = 100.0, .cy = 900.0, .w = 100.0, .h = 200.0 },
+    };
+    const detected = [_]FrameRect{
+        .{ .cx = 110.0, .cy = 400.0, .w = 100.0, .h = 220.0 },
+        .{ .cx = 100.0, .cy = 100.0, .w = 100.0, .h = 200.0, .angle = 1.0 },
+    };
+    var matches: [known.len]FrameMatch = undefined;
+    matchFrames(&known, &detected, 10.0, &matches);
+
+    try std.testing.expectEqual(@as(?usize, 1), matches[0].detected);
+    try std.testing.expectEqual(@as(f64, 1.0), matches[0].iou);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), matches[0].dangle_deg, 1e-12);
+
+    try std.testing.expectEqual(@as(?usize, 0), matches[1].detected);
+    // 90 x 200 shared of 100 x 200 + 100 x 220.
+    try std.testing.expectApproxEqAbs(18000.0 / 24000.0, matches[1].iou, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), matches[1].dx_mm, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), matches[1].dh_percent, 1e-9);
+
+    try std.testing.expectEqual(@as(?usize, null), matches[2].detected);
+    try std.testing.expectEqual(@as(f64, 0.0), matches[2].iou);
 }
