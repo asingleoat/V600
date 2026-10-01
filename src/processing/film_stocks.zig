@@ -11,6 +11,10 @@ pub const BuiltinStock = struct {
     name: []const u8,
     description: []const u8,
     coeffs: Coefficients,
+    /// Earlier coefficients of this built-in. Older saves wrote built-in
+    /// profiles out live, so a config may hold an unedited copy of one;
+    /// loading treats such a copy as the built-in.
+    retired: []const Coefficients = &.{},
 };
 
 pub const identity_coeffs: Coefficients = .{
@@ -26,7 +30,23 @@ pub const identity_coeffs: Coefficients = .{
     zero_row,
 };
 
+/// Green gain up and blue gain down from the Python profile, which left
+/// neutrals with a blue-purple cast (green about 8/255 low).
 pub const kodak_gold_coeffs: Coefficients = .{
+    .{ 1.20, -0.04, 0.0 },
+    .{ -0.10, 0.95, -0.06 },
+    .{ 0.0, -0.04, 0.98 },
+    zero_row,
+    zero_row,
+    zero_row,
+    zero_row,
+    zero_row,
+    zero_row,
+    zero_row,
+};
+
+/// The Python profile. The Python-generated fixtures use it.
+pub const kodak_gold_python_coeffs: Coefficients = .{
     .{ 1.20, -0.04, 0.0 },
     .{ -0.10, 0.90, -0.06 },
     .{ 0.0, -0.04, 1.02 },
@@ -57,6 +77,7 @@ pub const builtin_stocks = [_]BuiltinStock{
         .name = "kodak_gold",
         .description = "Kodak Gold 200 on Epson V600",
         .coeffs = kodak_gold_coeffs,
+        .retired = &.{kodak_gold_python_coeffs},
     },
     .{
         .name = "kodak_portra",
@@ -207,7 +228,7 @@ test "applies Kodak Gold density transform against Python fixture" {
     const value = fixture.value();
     const actual = try allocator.alloc(f64, value.expected.len);
     defer allocator.free(actual);
-    try applyDensityTransform(value.input, actual, kodak_gold_coeffs);
+    try applyDensityTransform(value.input, actual, kodak_gold_python_coeffs);
     try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
 }
 
@@ -248,7 +269,7 @@ test "preserves selected identity and stock polynomial outputs" {
     try expectChannels(.{ 1.20, -0.04, 0.0 }, applyBasis(kodak_gold_coeffs, .{
         1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     }));
-    try expectChannels(.{ -0.10, 0.90, -0.06 }, applyBasis(kodak_gold_coeffs, .{
+    try expectChannels(.{ -0.10, 0.95, -0.06 }, applyBasis(kodak_gold_coeffs, .{
         0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     }));
     try expectChannels(.{ 1.15, -0.03, 0.0 }, applyBasis(kodak_portra_coeffs, .{

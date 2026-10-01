@@ -115,8 +115,8 @@ term; each column to an output channel (R, G, B):
 ```
           R_out    G_out    B_out
     R   [  1.20,  -0.04,   0.00 ]    # row 0
-    G   [ -0.10,   0.90,  -0.06 ]    # row 1
-    B   [  0.00,  -0.04,   1.02 ]    # row 2
+    G   [ -0.10,   0.95,  -0.06 ]    # row 1
+    B   [  0.00,  -0.04,   0.98 ]    # row 2
     R^2 [  0.00,   0.00,   0.00 ]    # row 3
     G^2 [  0.00,   0.00,   0.00 ]    # row 4
     B^2 [  0.00,   0.00,   0.00 ]    # row 5
@@ -131,8 +131,8 @@ term; each column to an output channel (R, G, B):
 The output for each pixel is:
 
     R_out = 1.20*R - 0.10*G + 0.00*B + 0.00*R^2 + ... + 0.00
-    G_out = -0.04*R + 0.90*G - 0.04*B + ...
-    B_out = 0.00*R - 0.06*G + 1.02*B + ...
+    G_out = -0.04*R + 0.95*G - 0.04*B + ...
+    B_out = 0.00*R - 0.06*G + 0.98*B + ...
 
 ### What Each Coefficient Group Does
 
@@ -142,7 +142,7 @@ After Dmin subtraction, different channels have different density ranges
 because the scanner's spectral filters don't match the film dye
 absorption peaks equally. For example, Kodak Gold's R channel has a
 narrower density range than G after Dmin subtraction, so R->R is 1.20
-(boosted) while G->G is 0.90 (reduced).
+(boosted) while G->G is 0.95 (reduced).
 
 **Off-diagonal linear terms** (rows 0-2, off-diagonal: G->R, R->G, etc.):
 These correct for dye coupling. A negative G->R coefficient (-0.10)
@@ -171,27 +171,35 @@ well-calibrated profiles.
 
 ## TOML Storage Format
 
-Film stock profiles are stored in `scratchndent_config.toml`:
+Film stock profiles are stored in `scratchndent_config.toml`. Saving writes
+each built-in profile commented out, for reference, the same way settings
+left at their defaults are written:
 
 ```toml
-[stocks.kodak_gold]
-description = "Kodak Gold 200 on Epson V600"
-coeffs = [
-    [  1.2000,  -0.0400,   0.0000],  # R    (linear)
-    [ -0.1000,   0.9000,  -0.0600],  # G    (linear)
-    [  0.0000,  -0.0400,   1.0200],  # B    (linear)
-    [  0.0000,   0.0000,   0.0000],  # R2   (quadratic)
-    [  0.0000,   0.0000,   0.0000],  # G2   (quadratic)
-    [  0.0000,   0.0000,   0.0000],  # B2   (quadratic)
-    [  0.0000,   0.0000,   0.0000],  # RG   (cross)
-    [  0.0000,   0.0000,   0.0000],  # RB   (cross)
-    [  0.0000,   0.0000,   0.0000],  # GB   (cross)
-    [  0.0000,   0.0000,   0.0000],  # bias (constant)
-]
+# [stocks.kodak_gold]
+# description = "Kodak Gold 200 on Epson V600"
+# coeffs = [
+#     [  1.2000,  -0.0400,   0.0000],  # R
+#     [ -0.1000,   0.9500,  -0.0600],  # G
+#     [  0.0000,  -0.0400,   0.9800],  # B
+#     [  0.0000,   0.0000,   0.0000],  # R2
+#     [  0.0000,   0.0000,   0.0000],  # G2
+#     [  0.0000,   0.0000,   0.0000],  # B2
+#     [  0.0000,   0.0000,   0.0000],  # RG
+#     [  0.0000,   0.0000,   0.0000],  # RB
+#     [  0.0000,   0.0000,   0.0000],  # GB
+#     [  0.0000,   0.0000,   0.0000],  # bias
+# ]
 ```
 
 Each row is one basis term. The three values are the contribution of
 that term to the R, G, B output channels respectively.
+
+To customize a built-in, uncomment its section and edit it; the edited
+section then overrides the compiled profile. A live section whose values
+equal the built-in, or one of its earlier versions (older saves wrote the
+built-ins out live), is not a customization: the stock follows the
+compiled profile and the next save comments it out again.
 
 Custom `[stocks.*]` profiles in `scratchndent_config.toml` are the way to add
 stocks. The native app parses, lists, and re-serializes them; there is no
@@ -201,7 +209,12 @@ profile editor. The browser webapp supports only the built-in stocks.
 
 ### Kodak Gold 200
 
-wild guess for Gold 200 scanned on an Epson V600 at 3200-6400 DPI.
+wild guess for Gold 200 scanned on an Epson V600 at 3200-6400 DPI,
+balanced for neutrals on real Gold 200 rolls. The Python profile had
+G->G 0.90 and B->B 1.02, which left near-neutral areas about 8/255 short
+of green, a blue-purple cast across shadows and midtones; raising G->G to
+0.95 and lowering B->B to 0.98 removes most of it. A flat green bias
+instead turned shadows green before it fixed the midtones.
 
 Gold has a strong orange mask (high Dmin, especially in B). The
 cross-channel coupling is significant (0.91-0.97 correlation between

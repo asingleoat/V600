@@ -857,10 +857,10 @@ test "wasm preview core writes deterministic final u8 output" {
     var output_b: [raw.len]u8 = undefined;
     const options = defaultPreviewOptions(2, 2);
     const expected = [_]u8{
-        0,   5,   141,
-        18,  39,  222,
-        122, 133, 255,
-        242, 243, 255,
+        0,   8,   116,
+        12,  44,  193,
+        111, 141, 255,
+        229, 251, 255,
     };
 
     try previewInvertProvidedDminU16ToU8(allocator, &raw, &output_a, options);

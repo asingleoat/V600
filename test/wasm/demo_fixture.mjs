@@ -10,10 +10,10 @@ export const rawFixture = new Uint16Array([
 ]);
 
 export const expectedDemoPreview = new Uint8Array([
-  0, 5, 141,
-  18, 39, 222,
-  122, 133, 255,
-  242, 243, 255,
+  0, 8, 116,
+  12, 44, 193,
+  111, 141, 255,
+  229, 251, 255,
 ]);
 
 export function demoRawRgb16Buffer() {

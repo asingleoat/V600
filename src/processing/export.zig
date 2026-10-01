@@ -1788,7 +1788,7 @@ test "inverted positive output matches real-scan Python oracle fixture" {
         .pixels = @constCast(value.input),
     };
     const output = try prepareInvertedPositiveOutput(allocator, crop, .{
-        .stock = "kodak_gold",
+        .coeffs = film_stocks.kodak_gold_python_coeffs,
     }, .{
         .contrast = 1.4,
         .curve_k = 5.0,
@@ -1803,7 +1803,7 @@ test "inverted positive output matches real-scan Python oracle fixture" {
     try numeric.assertCloseSlices(value.expected, output.pixels, value.tolerance);
 
     const direct_u16 = try prepareInvertedPositiveOutputU16(allocator, crop, .{
-        .stock = "kodak_gold",
+        .coeffs = film_stocks.kodak_gold_python_coeffs,
     }, .{
         .contrast = 1.4,
         .curve_k = 5.0,
@@ -1877,7 +1877,7 @@ test "processFrame writes all fallback variants like Python real-scan fixture" {
             .crop = fixture.base_meta.crop,
         },
         .film_stock = fixture.film_stock,
-        .stock_coeffs = film_stocks.kodak_gold_coeffs,
+        .stock_coeffs = film_stocks.kodak_gold_python_coeffs,
         .dmin = fixture.dmin,
         .render_options = fixture.render_options,
     });

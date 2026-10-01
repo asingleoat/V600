@@ -524,7 +524,28 @@ fn parseStockCoeffs(lines: anytype, stock: *StockProfile, first_value: []const u
     }
 
     if (row_index != film_stocks.basis_len) return error.InvalidStockCoefficients;
-    stock.has_coeffs = true;
+    // An unedited copy of a built-in profile, current or retired, is not a
+    // customization: the stock follows the compiled coefficients.
+    stock.has_coeffs = !isBuiltinCoeffs(stock.name.slice(), stock.coeffs);
+}
+
+fn isBuiltinCoeffs(name: []const u8, coeffs: film_stocks.Coefficients) bool {
+    const builtin = film_stocks.builtinStock(name) orelse return false;
+    if (coeffsMatch(builtin.coeffs, coeffs)) return true;
+    for (builtin.retired) |retired| {
+        if (coeffsMatch(retired, coeffs)) return true;
+    }
+    return false;
+}
+
+/// Saved coefficients are rounded to four decimals.
+fn coeffsMatch(a: film_stocks.Coefficients, b: film_stocks.Coefficients) bool {
+    for (a, b) |row_a, row_b| {
+        for (row_a, row_b) |value_a, value_b| {
+            if (@abs(value_a - value_b) > 0.00005) return false;
+        }
+    }
+    return true;
 }
 
 fn parseTomlValue(value: []const u8) !Value {
@@ -629,10 +650,13 @@ fn appendStocks(out: *std.array_list.Managed(u8), loaded: LoadedConfig) !void {
     }
 }
 
+/// Built-in profiles are written commented out, like default settings, so
+/// the config follows built-in changes until the profile is uncommented and
+/// edited.
 fn appendBuiltinStock(out: *std.array_list.Managed(u8), stock: film_stocks.BuiltinStock) !void {
-    try out.print("[stocks.{s}]\n", .{stock.name});
-    try out.print("description = \"{s}\"\n", .{stock.description});
-    try appendCoeffRows(out, stock.coeffs);
+    try out.print("# [stocks.{s}]\n", .{stock.name});
+    try out.print("# description = \"{s}\"\n", .{stock.description});
+    try appendCoeffRows(out, stock.coeffs, "# ");
 }
 
 fn appendCustomStock(out: *std.array_list.Managed(u8), stock: StockProfile) !void {
@@ -640,20 +664,20 @@ fn appendCustomStock(out: *std.array_list.Managed(u8), stock: StockProfile) !voi
     if (stock.descriptionSlice()) |description| {
         try out.print("description = \"{s}\"\n", .{description});
     }
-    try appendCoeffRows(out, stock.coeffs);
+    try appendCoeffRows(out, stock.coeffs, "");
 }
 
-fn appendCoeffRows(out: *std.array_list.Managed(u8), coeffs: film_stocks.Coefficients) !void {
-    try out.appendSlice("coeffs = [\n");
+fn appendCoeffRows(out: *std.array_list.Managed(u8), coeffs: film_stocks.Coefficients, prefix: []const u8) !void {
+    try out.print("{s}coeffs = [\n", .{prefix});
     for (coeffs, 0..) |row, i| {
-        try out.print("    [", .{});
+        try out.print("{s}    [", .{prefix});
         for (row, 0..) |value, channel| {
             if (channel > 0) try out.appendSlice(", ");
             try out.print("{d:8.4}", .{value});
         }
         try out.print("],  # {s}\n", .{film_stocks.basis_labels[i]});
     }
-    try out.appendSlice("]\n");
+    try out.print("{s}]\n", .{prefix});
 }
 
 fn isBuiltinStockName(name: []const u8) bool {
@@ -820,7 +844,7 @@ test "parses and preserves config-defined film stock profiles" {
 
     const loaded = parseText(expected);
     try loaded.value("stock").?.expectEqual(.{ .string = FixedString.init("custom_c41") });
-    try std.testing.expectEqual(@as(usize, 3), loaded.stock_len);
+    try std.testing.expectEqual(@as(usize, 1), loaded.stock_len);
 
     const custom = loaded.availableStock("custom_c41").?;
     try std.testing.expectEqualStrings("Custom C-41 test profile", custom.descriptionSlice().?);
@@ -856,6 +880,35 @@ test "incomplete built-in stock profiles fall back to compiled coefficients" {
     defer allocator.free(actual);
     try std.testing.expect(std.mem.indexOf(u8, actual, "Runtime profile without coefficients") == null);
     try std.testing.expect(std.mem.indexOf(u8, actual, "[  1.2000,  -0.0400,   0.0000],  # R") != null);
+}
+
+test "unedited copies of built-in profiles follow the compiled coefficients" {
+    const allocator = std.testing.allocator;
+    var edited_portra = film_stocks.kodak_portra_coeffs;
+    edited_portra[1][1] = 0.95;
+    var text = std.array_list.Managed(u8).init(allocator);
+    defer text.deinit();
+    try text.appendSlice("[stocks.kodak_gold]\n");
+    try appendCoeffRows(&text, film_stocks.kodak_gold_python_coeffs, "");
+    try text.appendSlice("\n[stocks.kodak_portra]\n");
+    try appendCoeffRows(&text, edited_portra, "");
+
+    const loaded = parseText(text.items);
+    try std.testing.expect(!loaded.customStock("kodak_gold").?.has_coeffs);
+    try std.testing.expectEqual(film_stocks.kodak_gold_coeffs, loaded.availableStock("kodak_gold").?.coeffs);
+    try std.testing.expectEqual(edited_portra, loaded.availableStock("kodak_portra").?.coeffs);
+
+    const saved = try serialize(allocator, loaded);
+    defer allocator.free(saved);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "# [stocks.kodak_gold]\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "#     [ -0.1000,   0.9500,  -0.0600],  # G\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\n[stocks.kodak_portra]\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "0.9000") == null);
+
+    text.clearRetainingCapacity();
+    try text.appendSlice("[stocks.kodak_gold]\n");
+    try appendCoeffRows(&text, film_stocks.kodak_gold_coeffs, "");
+    try std.testing.expect(!parseText(text.items).customStock("kodak_gold").?.has_coeffs);
 }
 
 test "processing config file save persists Python-style merge" {

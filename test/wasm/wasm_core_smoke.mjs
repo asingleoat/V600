@@ -31,10 +31,10 @@ const rawFixture = new Uint16Array([
   33000, 27000, 21000,
 ]);
 const expectedPreview = new Uint8Array([
-  0, 5, 141,
-  18, 39, 222,
-  122, 133, 255,
-  242, 243, 255,
+  0, 8, 116,
+  12, 44, 193,
+  111, 141, 255,
+  229, 251, 255,
 ]);
 const irWidth = 9;
 const irHeight = 9;

@@ -1127,7 +1127,7 @@ test "inverts negative with provided Dmin and identity coefficients" {
 test "inverts negative with provided Dmin and Kodak Gold coefficients" {
     try expectInversionFixture(
         "test/fixtures/processing/numeric/invert-negative-kodak-gold-dmin.json",
-        film_stocks.kodak_gold_coeffs,
+        film_stocks.kodak_gold_python_coeffs,
     );
 }
 
@@ -1149,13 +1149,19 @@ test "inversion resolves built-in stock by name" {
     defer fixture.deinit();
 
     const value = fixture.value();
-    const actual = try allocator.alloc(f64, value.expected.len);
-    defer allocator.free(actual);
-    _ = try invertNegative(allocator, value.input, actual, .{
+    const by_name = try allocator.alloc(f64, value.input.len);
+    defer allocator.free(by_name);
+    const by_coeffs = try allocator.alloc(f64, value.input.len);
+    defer allocator.free(by_coeffs);
+    _ = try invertNegative(allocator, value.input, by_name, .{
         .dmin = .{ 0.2, 0.1, 0.05 },
         .stock = "kodak_gold",
     });
-    try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
+    _ = try invertNegative(allocator, value.input, by_coeffs, .{
+        .dmin = .{ 0.2, 0.1, 0.05 },
+        .coeffs = film_stocks.kodak_gold_coeffs,
+    });
+    try std.testing.expectEqualSlices(f64, by_coeffs, by_name);
 }
 
 test "inversion custom edge fixture pins EPS, Dmin, polynomial, and output clamps" {
@@ -1516,7 +1522,7 @@ test "real scan crop matches Python negative-to-positive pipeline" {
     const scene_linear = try allocator.alloc(f64, value.input.len);
     defer allocator.free(scene_linear);
     const inversion = try invertNegative(allocator, value.input, scene_linear, .{
-        .stock = "kodak_gold",
+        .coeffs = film_stocks.kodak_gold_python_coeffs,
     });
     try std.testing.expectApproxEqAbs(0.3229871988296509, inversion.dmin[0], 0.0000005);
     try std.testing.expectApproxEqAbs(0.48254984617233276, inversion.dmin[1], 0.0000005);
