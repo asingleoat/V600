@@ -15,8 +15,8 @@ position over the scanned selection), `native-roll-reframe-smoke` (frames
 placed in the Process view re-export a roll strip under the roll's names and
 are saved as its framing; a settled edit saves and Undo saves the earlier
 frames back), `native-roll-close-smoke` (Close Roll returns at
-once while a strip exports, the panel reports the export finishing, and it
-completes afterwards), and the hardware-skip
+once while a strip exports, the panel reports the export finishing and the
+queued strip it dropped, and reopening the roll exports that strip), and the hardware-skip
 checks
 `native-preview-worker-smoke-skip`, `native-scan-worker-smoke-skip`,
 `native-roll-strip-smoke-skip`.

@@ -80,7 +80,8 @@ pub fn printUsage() void {
         \\  scan [--roll NAME] [--once] [--no-process]
         \\                                 scan strips one at a time (preview, film area, roll
         \\                                 LUT, full scan) and process each in the background
-        \\  export [--roll NAME] [--force] detect and export every strip not yet processed
+        \\  export [--roll NAME] [--force] export every strip not exported yet or whose saved frames
+        \\                                 changed since; --force re-exports them all
         \\  review [--roll NAME] [--open]  rewrite the roll's review page and print its path
         \\
         \\Exports go to frames/NAME/ as NAME_sNN_FF.tif (strip NN, frame FF).
@@ -148,7 +149,7 @@ fn printStatus(allocator: std.mem.Allocator, io: std.Io, roll: *const Roll, stdo
     for (strips.paths) |strip| {
         try stdout.print("  {s}  {s}{s}\n", .{
             std.fs.path.basename(strip),
-            if (roll.isProcessed(io, strip)) "processed" else "not processed",
+            if (!roll.isProcessed(io, strip)) "not processed" else if (roll.needsExport(io, strip)) "frames changed since its export" else "processed",
             if (roll.hasFraming(io, strip)) ", frames placed by hand" else "",
         });
     }
@@ -162,7 +163,7 @@ fn runExport(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
     defer strips.deinit(allocator);
     var processed: usize = 0;
     for (strips.paths) |strip| {
-        if (!force and roll.isProcessed(io, strip)) continue;
+        if (!force and !roll.needsExport(io, strip)) continue;
         const started = nowSeconds(io);
         const outcome = roll.processStrip(io, strip, .{}) catch |err| {
             try stdout.print("{s}: failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });

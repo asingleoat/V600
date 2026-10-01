@@ -83,9 +83,12 @@ To fix a strip's framing, open it in the Process view with its roll open
 (the view takes the roll's format and rotation) and adjust the frames. Edits
 save to `strip_NN_….tiff.frames.json` once they settle, Undo Frames (Cmd+Z)
 steps back through edits and auto-detects, and reopening the strip shows the
-saved frames. Export Strip Frames re-exports the strip with them under the
-roll's names; later exports reuse them (delete the file to go back to
-detection).
+saved frames. Export Strip Frames queues the strip to re-export with them
+under the roll's names; later exports reuse them (delete the file to go back
+to detection). Strips export one at a time in the order queued. Opening a
+roll exports any strip never exported or whose saved frames changed since
+its export, including strips that Close Roll or quitting dropped from the
+queue.
 The native UI's Scan view does the same: start or open a roll, then press
 Scan Strip for each strip. Build with `-Doptimize=ReleaseFast` for real
 sessions; Debug export is several times slower.

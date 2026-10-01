@@ -1184,6 +1184,9 @@ fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State,
     const strip = try roll.nextStripPath(io);
     defer allocator.free(strip);
     try writeSmokeStripSized(strip, 1600, 4800);
+    const second = try std.fmt.allocPrint(allocator, "{s}/strip_02_rgbir_800dpi.tiff", .{roll.dir});
+    defer allocator.free(second);
+    try writeSmokeStrip(second);
     try rolls.openRoll(model, "close");
     const processor = rolls.processor orelse return error.RollCloseSmokeFailed;
     var status_buffer: [256]u8 = undefined;
@@ -1198,7 +1201,8 @@ fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State,
     const close_ms = c.SDL_GetTicks() - started;
     if (close_ms > 500 or rolls.isActive()) return error.RollCloseSmokeFailed;
     const finishing = rolls.finishing orelse return error.RollCloseSmokeFailed;
-    std.debug.print("roll close smoke: Close Roll returned in {d} ms; still exporting: {s}\n", .{ close_ms, finishing.status(&status_buffer) orelse "(between stages)" });
+    std.debug.print("roll close smoke: Close Roll returned in {d} ms; still exporting: {s}; dropped {d} queued\n", .{ close_ms, finishing.status(&status_buffer) orelse "(between stages)", rolls.dropped_strips });
+    if (rolls.dropped_strips != 1) return error.RollCloseSmokeFailed;
 
     waited_ms = 0;
     while (rolls.finishing != null) : (waited_ms += 20) {
@@ -1207,7 +1211,13 @@ fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State,
         try std.Io.sleep(io, .fromMilliseconds(20), .awake);
     }
     if (!roll.isProcessed(io, strip)) return error.RollCloseSmokeFailed;
-    if (std.mem.indexOf(u8, rolls.notice, "can be opened again") == null) return error.RollCloseSmokeFailed;
+    if (std.mem.indexOf(u8, rolls.notice, "1 queued strip will export when close is opened again") == null) return error.RollCloseSmokeFailed;
+    if (roll.isProcessed(io, second)) return error.RollCloseSmokeFailed;
+
+    // Reopening exports the strip the close dropped.
+    try rolls.openRoll(model, "close");
+    try waitForRollExports(rolls, io);
+    if (!roll.isProcessed(io, second)) return error.RollCloseSmokeFailed;
 }
 
 fn waitForRollExports(rolls: *roll_panel.RollPanel, io: std.Io) !void {

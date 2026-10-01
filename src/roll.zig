@@ -290,6 +290,38 @@ pub const Roll = struct {
         return all;
     }
 
+    /// The strip was never exported, or its saved frames changed (or were
+    /// deleted) since its last export.
+    pub fn needsExport(self: *const Roll, io: std.Io, strip_path: []const u8) bool {
+        const allocator = self.allocator;
+        const marker_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, processed_suffix }) catch return true;
+        defer allocator.free(marker_path);
+        const marker_text = std.Io.Dir.cwd().readFileAlloc(io, marker_path, allocator, .limited(64 * 1024)) catch return true;
+        defer allocator.free(marker_text);
+        const parsed = std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true }) catch return true;
+        defer parsed.deinit();
+        const exported_manual = std.mem.eql(u8, parsed.value.framing, "manual");
+
+        const framing_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, framing_suffix }) catch return true;
+        defer allocator.free(framing_path);
+        const framing_text = std.Io.Dir.cwd().readFileAlloc(io, framing_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+            // Hand frames removed: export from detection again.
+            error.FileNotFound => return exported_manual,
+            else => return true,
+        };
+        defer allocator.free(framing_text);
+        if (!exported_manual) return true;
+        if (parsed.value.framing_hash) |recorded| {
+            var current: [16]u8 = undefined;
+            _ = std.fmt.bufPrint(&current, "{x:0>16}", .{std.hash.Wyhash.hash(0, framing_text)}) catch return true;
+            return !std.mem.eql(u8, recorded, &current);
+        }
+        // Markers from before hashes were recorded: compare times.
+        const marker_stat = std.Io.Dir.cwd().statFile(io, marker_path, .{}) catch return true;
+        const framing_stat = std.Io.Dir.cwd().statFile(io, framing_path, .{}) catch return true;
+        return framing_stat.mtime.nanoseconds > marker_stat.mtime.nanoseconds;
+    }
+
     pub fn isProcessed(self: *const Roll, io: std.Io, strip_path: []const u8) bool {
         const marker = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ strip_path, processed_suffix }) catch return false;
         defer self.allocator.free(marker);
@@ -343,6 +375,7 @@ pub const Roll = struct {
         var outcome = StripOutcome{
             .frames = rects.len,
             .manual = framing != null,
+            .framing_hash = if (framing) |owned| owned.hash else null,
             .dmin_source = if (rebate_rect != null) "rebate" else if (use_roll_dmin) "roll" else "image",
             .files = &.{},
         };
@@ -444,7 +477,7 @@ pub const Roll = struct {
             }
             break :blk .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h, .angle = r.angle_rad };
         } else null;
-        return .{ .frames = rects, .rebate = rebate };
+        return .{ .frames = rects, .rebate = rebate, .hash = std.hash.Wyhash.hash(0, text) };
     }
 
     /// Deletes the files an earlier run exported for this strip, as listed
@@ -476,6 +509,7 @@ pub const Roll = struct {
         defer out.deinit();
         try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, if (outcome.manual) "manual" else "auto", outcome.dmin_source });
         try appendTriple(&out, "dmin", outcome.dmin);
+        if (outcome.framing_hash) |hash| try out.print(",\n  \"framing_hash\": \"{x:0>16}\"", .{hash});
         try out.appendSlice(",\n  \"files\": [");
         for (outcome.files, 0..) |file, index| {
             try out.print("{s}\"{s}\"", .{ if (index == 0) "" else ", ", std.fs.path.basename(file) });
@@ -678,14 +712,16 @@ pub const Processor = struct {
     }
 
     /// Drops strips not yet started; the one in progress still finishes.
-    pub fn dropPending(self: *Processor) void {
+    /// Returns how many strips were dropped.
+    pub fn dropPending(self: *Processor) usize {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+        const dropped = self.queue.items.len;
         for (self.queue.items) |strip| allocator.free(strip);
         self.queue.clearRetainingCapacity();
+        return dropped;
     }
 
-    /// Finishes the queued strips, then stops the thread and frees `self`.
     /// "<strip>: <stage> (<n> written)" while a strip exports, else null.
     pub fn status(self: *Processor, buffer: []u8) ?[]const u8 {
         self.mutex.lockUncancelable(self.io);
@@ -730,8 +766,8 @@ pub const Processor = struct {
         return self.exited;
     }
 
-    /// Stops the thread, waiting for the strip in progress, and frees the
-    /// processor.
+    /// Finishes the queued strips (callers usually drop them first), then
+    /// stops the thread and frees the processor.
     pub fn finish(self: *Processor) void {
         self.requestStop();
         self.thread.join();
@@ -828,6 +864,8 @@ pub const Framing = struct {
 pub const OwnedFraming = struct {
     frames: []export_pipeline.FrameRect,
     rebate: ?frames.RebateOriginRect,
+    /// Of the file's text; the marker records the one an export used.
+    hash: u64,
 
     pub fn deinit(self: OwnedFraming, allocator: std.mem.Allocator) void {
         allocator.free(self.frames);
@@ -856,6 +894,7 @@ pub const StripOutcome = struct {
     frames: usize,
     /// The frames came from the strip's framing file, not detection.
     manual: bool = false,
+    framing_hash: ?u64 = null,
     dmin: ?[3]f64 = null,
     /// "rebate" (this strip), "roll" (another strip's), or "image".
     dmin_source: []const u8,
@@ -888,6 +927,7 @@ const MarkerJson = struct {
     dmin: ?[3]f64 = null,
     files: []const []const u8 = &.{},
     framing: []const u8 = "auto",
+    framing_hash: ?[]const u8 = null,
 };
 
 /// Names of the rolls under `scans_root` (directories with a `roll.json`),
@@ -1415,6 +1455,40 @@ test "hand-placed frames replace detection, even where detection fails" {
     defer framed.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), framed.files.len);
     try std.testing.expect(std.mem.endsWith(u8, framed.files[0], "plain_s02_01.tif"));
+}
+
+test "a strip needs exporting until exported, and again when its saved frames change" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "stale", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    try writeFeaturelessStrip(allocator, strip, 240, 480);
+    const options = ProcessOptions{ .processing_config_path = "no-such-config.toml" };
+
+    try std.testing.expect(roll.needsExport(io, strip));
+    try roll.saveFraming(io, strip, .{ .frames = &.{.{ .cx = 120.0, .cy = 200.0, .w = 100.0, .h = 150.0 }} });
+    (try roll.processStrip(io, strip, options)).deinit(allocator);
+    try std.testing.expect(!roll.needsExport(io, strip));
+
+    // An edit saved after the export (even while it ran) makes it stale.
+    try roll.saveFraming(io, strip, .{ .frames = &.{.{ .cx = 121.0, .cy = 200.0, .w = 100.0, .h = 150.0 }} });
+    try std.testing.expect(roll.needsExport(io, strip));
+    (try roll.processStrip(io, strip, options)).deinit(allocator);
+    try std.testing.expect(!roll.needsExport(io, strip));
+
+    // Deleting the hand frames asks for an export from detection.
+    const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, framing_suffix });
+    defer allocator.free(framing_path);
+    try std.Io.Dir.cwd().deleteFile(io, framing_path);
+    try std.testing.expect(roll.needsExport(io, strip));
+    (try roll.processStrip(io, strip, options)).deinit(allocator);
+    try std.testing.expect(!roll.needsExport(io, strip));
 }
 
 test "framing files round-trip and bad ones are rejected" {

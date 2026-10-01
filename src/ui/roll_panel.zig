@@ -36,6 +36,9 @@ pub const RollPanel = struct {
     finishing: ?*v600.roll.Processor = null,
     finishing_name_buffer: [64]u8 = undefined,
     finishing_name_len: usize = 0,
+    /// Queued strips Close Roll or quitting dropped; they export when the
+    /// roll is next opened.
+    dropped_strips: usize = 0,
     /// Bumped whenever a roll opens, so the Process view can follow its
     /// format and rotation.
     generation: usize = 0,
@@ -166,6 +169,10 @@ pub const RollPanel = struct {
             drawText(ctx, std.fmt.bufPrint(&line_buffer, "Still exporting {s}: {s}", .{ self.finishing_name_buffer[0..self.finishing_name_len], progress }) catch "Still exporting the closed roll");
             layoutRow(ctx, 22.0, 1);
             drawText(ctx, "Opening or starting a roll waits until that export is done.");
+            if (self.dropped_strips != 0) {
+                layoutRow(ctx, 22.0, 1);
+                drawText(ctx, std.fmt.bufPrint(&line_buffer, "{d} queued strip{s} will export when that roll is opened again.", .{ self.dropped_strips, if (self.dropped_strips == 1) "" else "s" }) catch "");
+            }
         }
         if (finishing) c.nk_widget_disable_begin(ctx);
         if (self.names.len != 0) {
@@ -262,12 +269,13 @@ pub const RollPanel = struct {
             model.saveProcessingSettings(allocator, self.io, self.processing_config_path, &updates) catch {};
         } else |_| {}
 
-        // Export strips an earlier session scanned but did not finish.
+        // Export strips never exported, or whose saved frames changed since
+        // (including strips a Close Roll or quit dropped from the queue).
         var strips = active.listStrips(self.io) catch return;
         defer strips.deinit(allocator);
         self.strip_count = strips.paths.len;
         for (strips.paths) |strip| {
-            if (!active.isProcessed(self.io, strip)) processor.enqueue(strip) catch {};
+            if (active.needsExport(self.io, strip)) processor.enqueue(strip) catch {};
         }
     }
 
@@ -283,7 +291,7 @@ pub const RollPanel = struct {
     /// background (`finishing`) instead of blocking the UI thread.
     fn close(self: *RollPanel, model: *v600.native_ui.State, save: bool, wait: bool) void {
         if (self.processor) |processor| {
-            processor.dropPending();
+            self.dropped_strips = processor.dropPending();
             if (wait or processor.pending() == 0) {
                 processor.finish();
             } else {
@@ -462,7 +470,13 @@ pub const RollPanel = struct {
             if (processor.stopped()) {
                 processor.finish();
                 self.finishing = null;
-                self.setNotice("{s}'s last export finished; rolls can be opened again.", .{self.finishing_name_buffer[0..self.finishing_name_len]});
+                const name = self.finishing_name_buffer[0..self.finishing_name_len];
+                if (self.dropped_strips == 0) {
+                    self.setNotice("{s}'s last export finished; rolls can be opened again.", .{name});
+                } else {
+                    self.setNotice("{s}'s last export finished; rolls can be opened again. {d} queued strip{s} will export when {s} is opened again.", .{ name, self.dropped_strips, if (self.dropped_strips == 1) "" else "s", name });
+                }
+                self.dropped_strips = 0;
             }
         }
         const completed = self.completed.load(.acquire);
@@ -508,14 +522,16 @@ pub const RollPanel = struct {
         var waiting_for: ?*v600.roll.Processor = null;
         for ([_]?*v600.roll.Processor{ self.processor, self.finishing }) |maybe| {
             const processor = maybe orelse continue;
-            processor.dropPending();
+            self.dropped_strips += processor.dropPending();
             processor.requestStop();
             if (processor.pending() != 0 and !processor.stopped()) waiting_for = processor;
         }
         const processor = waiting_for orelse return true;
         var progress_buffer: [256]u8 = undefined;
         const progress = processor.status(&progress_buffer) orelse "finishing";
-        const text = std.fmt.bufPrint(&self.status_buffer, "Quitting when this export finishes: {s}", .{progress}) catch "Quitting when the roll export finishes";
+        var dropped_buffer: [96]u8 = undefined;
+        const dropped = if (self.dropped_strips == 0) "" else std.fmt.bufPrint(&dropped_buffer, "; {d} queued strip{s} will export when the roll is opened again", .{ self.dropped_strips, if (self.dropped_strips == 1) "" else "s" }) catch "";
+        const text = std.fmt.bufPrint(&self.status_buffer, "Quitting when this export finishes: {s}{s}", .{ progress, dropped }) catch "Quitting when the roll export finishes";
         model.setStatus(text);
         return false;
     }
