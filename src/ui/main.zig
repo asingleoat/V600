@@ -187,6 +187,7 @@ const process_formats = [_][]const u8{ "35mm", "645", "6x6", "6x7", "6x9" };
 const process_format_labels = [_][*:0]const u8{ "35mm", "645", "6x6", "6x7", "6x9" };
 pub fn main(init: std.process.Init) !void {
     var smoke = false;
+    var any_smoke = false;
     var preview_worker_smoke = false;
     var scan_worker_smoke = false;
     var preview_render_smoke = false;
@@ -228,6 +229,7 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
     while (args.next()) |arg| {
+        if (std.mem.endsWith(u8, arg, "-smoke")) any_smoke = true;
         if (std.mem.eql(u8, arg, "--smoke")) {
             smoke = true;
         } else if (std.mem.eql(u8, arg, "--scanner-connect-smoke")) {
@@ -387,8 +389,10 @@ pub fn main(init: std.process.Init) !void {
     var rolls = roll_panel.RollPanel.init(init.io, &model, scanner_config_path, processing_config_path);
     defer rolls.deinit(&model);
     // Smoke runs never reopen a real roll or export its strips.
-    const interactive = !smoke and !preview_render_smoke and !scan_interaction_smoke and !process_render_smoke and
-        !process_interaction_smoke and !gallery_render_smoke and !roll_strip_smoke and screenshot_path == null;
+    // Only a real session reopens the current roll: opening it saves both
+    // configs and queues strip exports, which a smoke run from the checkout
+    // must not do to the owner's rolls.
+    const interactive = !any_smoke and screenshot_path == null;
     if (interactive) rolls.restore(&model);
     if (roll_smoke) try setupRollSmoke(&rolls, &model, init.io);
     if (roll_reframe_smoke) try runRollReframeSmoke(&rolls, &model, init.io);
