@@ -99,9 +99,10 @@ alignment, and inpaint code.
 
 The core does not link libc, OpenCV, SuperLU, libtiff, libjpeg, or SDL:
 
-- The OpenCV ECC and local-grain helpers come from `ir_pure.zig`, the same
-  pure ports the no-libc native build uses. The pure ECC is tested against a
-  tolerance envelope and is not bit-exact with OpenCV.
+- The ECC alignment and local-grain helpers come from `ir_pure.zig`. The
+  native build uses the same ECC (it replaced the OpenCV helper) and the
+  grain ports only without libc. The ECC is held to a 0.05 px envelope of
+  OpenCV's on the alignment fixtures and is not bit-exact with it.
 - SuperLU has no port. The biharmonic solve falls back to its iterative path.
 
 The exports are:

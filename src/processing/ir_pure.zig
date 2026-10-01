@@ -1,7 +1,8 @@
 //! Dependency-free pure-Zig ports of the native C/C++ IR helper behavior:
 //! the opencv_ir.cpp local grain estimation, grain spectrum, and grain
-//! synthesis path, and the opencv_ecc.cpp translation-only ECC estimator.
-//! Shared by the browser Wasm core and the no-libc native fallbacks, so
+//! synthesis path, and the translation-only ECC estimator (ported from the
+//! former opencv_ecc.cpp; now the only implementation, native and browser).
+//! Shared by the browser Wasm core and the native build, so
 //! everything here must stay freestanding-safe: single-threaded, no libc,
 //! no OS calls, std-only.
 
@@ -13,8 +14,9 @@ pub fn roundF32(value: f64) f64 {
 }
 
 fn rgbToIrGrayU8(
+    comptime T: type,
     allocator: std.mem.Allocator,
-    rgb_f32: []const f32,
+    rgb: []const T,
     rgb_width: usize,
     rgb_height: usize,
     output: []u8,
@@ -24,17 +26,17 @@ fn rgbToIrGrayU8(
     const rgb_pixels = rgb_width * rgb_height;
     const gray_rgb = try allocator.alloc(u8, rgb_pixels);
     defer allocator.free(gray_rgb);
-    var max_value: f32 = 0.0;
-    for (rgb_f32) |sample| {
+    var max_value: T = 0.0;
+    for (rgb) |sample| {
         if (!std.math.isFinite(sample)) return error.InvalidBuffer;
         if (sample > max_value) max_value = sample;
     }
     const denominator = @as(f64, @floatCast(max_value)) / 255.0 + 1.0e-10;
     for (0..rgb_pixels) |pixel| {
         const base = pixel * 3;
-        const r = scaledU8(rgb_f32[base], denominator);
-        const g = scaledU8(rgb_f32[base + 1], denominator);
-        const b = scaledU8(rgb_f32[base + 2], denominator);
+        const r = scaledU8(T, rgb[base], denominator);
+        const g = scaledU8(T, rgb[base + 1], denominator);
+        const b = scaledU8(T, rgb[base + 2], denominator);
         const gray = (@as(u32, r) * 77 + @as(u32, g) * 150 + @as(u32, b) * 29 + 128) >> 8;
         gray_rgb[pixel] = @intCast(gray);
     }
@@ -45,19 +47,19 @@ fn rgbToIrGrayU8(
     }
 }
 
-fn samplesToU8(input: []const f32, output: []u8) !void {
-    var max_value: f32 = 0.0;
+fn samplesToU8(comptime T: type, input: []const T, output: []u8) !void {
+    var max_value: T = 0.0;
     for (input) |sample| {
         if (!std.math.isFinite(sample)) return error.InvalidBuffer;
         if (sample > max_value) max_value = sample;
     }
     const denominator = @as(f64, @floatCast(max_value)) / 255.0 + 1.0e-10;
     for (input, output) |sample, *out| {
-        out.* = scaledU8(sample, denominator);
+        out.* = scaledU8(T, sample, denominator);
     }
 }
 
-fn scaledU8(sample: f32, denominator: f64) u8 {
+fn scaledU8(comptime T: type, sample: T, denominator: f64) u8 {
     if (sample <= 0.0 or denominator <= 0.0) return 0;
     const scaled = @as(f64, @floatCast(sample)) / denominator;
     if (scaled >= 255.0) return 255;
@@ -844,15 +846,35 @@ pub fn estimateTranslationEccF32(
     max_iterations: u32,
     epsilon: f64,
 ) !TranslationEstimate {
+    return estimateTranslationEcc(f32, allocator, rgb_f32, rgb_width, rgb_height, ir_f32, ir_width, ir_height, ecc_scale, max_iterations, epsilon);
+}
+
+/// Translation-only ECC of the IR channel against the RGB image's gray at
+/// IR resolution. `T` is the sample type (f32 in the browser, f64 natively,
+/// so a full-resolution strip is never copied). Sizes and indexes are usize,
+/// so strips past 2^31 samples work.
+pub fn estimateTranslationEcc(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    rgb: []const T,
+    rgb_width: usize,
+    rgb_height: usize,
+    ir: []const T,
+    ir_width: usize,
+    ir_height: usize,
+    ecc_scale: f64,
+    max_iterations: u32,
+    epsilon: f64,
+) !TranslationEstimate {
     const ir_pixels = ir_width * ir_height;
 
     const gray_ir = try allocator.alloc(u8, ir_pixels);
     defer allocator.free(gray_ir);
-    try rgbToIrGrayU8(allocator, rgb_f32, rgb_width, rgb_height, gray_ir, ir_width, ir_height);
+    try rgbToIrGrayU8(T, allocator, rgb, rgb_width, rgb_height, gray_ir, ir_width, ir_height);
 
     const ir_u8 = try allocator.alloc(u8, ir_pixels);
     defer allocator.free(ir_u8);
-    try samplesToU8(ir_f32, ir_u8);
+    try samplesToU8(T, ir, ir_u8);
 
     const small_width = @max(@as(usize, 1), @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(ir_width)) * ecc_scale))));
     const small_height = @max(@as(usize, 1), @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(ir_height)) * ecc_scale))));

@@ -10,7 +10,6 @@ const NativeObjectSpec = struct {
 };
 
 const root_native_objects = [_]NativeObjectSpec{
-    .{ .command = opencv_object_command, .label = "compile-opencv-ecc", .source = "src/processing/opencv_ecc.cpp", .output = "opencv_ecc.o" },
     .{ .command = opencv_object_command, .label = "compile-opencv-ir", .source = "src/processing/opencv_ir.cpp", .output = "opencv_ir.o" },
     .{ .command = opencv_object_command, .label = "compile-opencv-preview", .source = "src/processing/opencv_preview.cpp", .output = "opencv_preview.o" },
     .{ .command = "cc -std=c99 -fPIC $(pkg-config --cflags libjpeg) -c \"$1\" -o \"$2\"", .label = "compile-jpeg-encode", .source = "src/processing/jpeg_encode.c", .output = "jpeg_encode.o" },

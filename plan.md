@@ -146,10 +146,11 @@ Open:
   `selection_geometry.zig` into the root module so it can be unit-tested.
 - Build C/C++ with `addCSourceFiles`/`linkLibCpp` instead of `sh -c "c++
   ..."`, so optimize flags and header dependencies apply.
-- Consider replacing `opencv_ir.cpp` and `opencv_ecc.cpp` with the pure Zig
-  ports, which the webapp already uses: the grain ports replay the fixtures
-  exactly and ECC agrees within 0.05 px. That would remove the OpenCV
-  dependency from IR cleaning.
+- Replace `opencv_ir.cpp` (grain estimation and synthesis) with the pure Zig
+  ports, which the webapp already uses and which replay the fixtures
+  exactly; it also indexes with 32-bit ints, which per-frame sizes stay under
+  for now (a 6x9 frame at 6400 dpi is about 0.9 billion samples). ECC
+  alignment already moved to Zig.
 
 ### Webapp cleanup
 

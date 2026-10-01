@@ -10,17 +10,6 @@ const ir_pure = @import("ir_pure.zig");
 
 pub const available = !builtin.cpu.arch.isWasm() and build_options.native_libs;
 
-pub extern fn v600_align_ir_find_ecc_translation(
-    rgb: [*]const f64,
-    rgb_width: c_int,
-    rgb_height: c_int,
-    ir: [*]const f64,
-    ir_width: c_int,
-    ir_height: c_int,
-    tx: *f64,
-    ty: *f64,
-) c_int;
-
 pub extern fn v600_estimate_local_grain(
     roi_rgb: [*]const f64,
     roi_mask: [*]const u8,
@@ -75,13 +64,15 @@ pub fn solveSparseLu(
     return 1;
 }
 
-// Matches the opencv_ecc.cpp constants so the pure-Zig fallback estimates the
-// same translation shape as the native OpenCV helper.
+// ECC runs at 1/8 scale with OpenCV findTransformECC's iteration limits,
+// which the earlier OpenCV helper used.
 const pure_ecc_scale: f64 = 0.125;
 const pure_ecc_max_iterations: u32 = 200;
 const pure_ecc_epsilon: f64 = 1.0e-6;
 
-pub fn estimateTranslationEccPure(
+/// IR-to-RGB translation for alignment, in Zig on every target (the OpenCV
+/// helper indexed with 32-bit ints and overran on strips past 2^31 samples).
+pub fn estimateTranslationEcc(
     allocator: std.mem.Allocator,
     rgb: []const f64,
     rgb_width: usize,
@@ -90,18 +81,13 @@ pub fn estimateTranslationEccPure(
     ir_width: usize,
     ir_height: usize,
 ) !ir_pure.TranslationEstimate {
-    const rgb_f32 = try allocator.alloc(f32, rgb.len);
-    defer allocator.free(rgb_f32);
-    for (rgb, rgb_f32) |value, *out| out.* = @floatCast(value);
-    const ir_f32 = try allocator.alloc(f32, ir.len);
-    defer allocator.free(ir_f32);
-    for (ir, ir_f32) |value, *out| out.* = @floatCast(value);
-    return ir_pure.estimateTranslationEccF32(
+    return ir_pure.estimateTranslationEcc(
+        f64,
         allocator,
-        rgb_f32,
+        rgb,
         rgb_width,
         rgb_height,
-        ir_f32,
+        ir,
         ir_width,
         ir_height,
         pure_ecc_scale,

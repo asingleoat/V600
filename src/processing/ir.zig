@@ -162,39 +162,12 @@ pub fn alignIr(
     try validateAlignmentInputs(rgb, rgb_width, rgb_height, ir, ir_width, ir_height, output);
     if (options.max_offset < 0) return error.InvalidIrAlignmentOffset;
 
-    if (rgb_width > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        rgb_height > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        ir_width > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        ir_height > @as(usize, @intCast(std.math.maxInt(c_int))))
-    {
-        return error.InvalidIrAlignmentBuffer;
-    }
-
-    var tx: f64 = 0.0;
-    var ty: f64 = 0.0;
-    if (use_native_ir_helpers) {
-        const ecc_status = ir_native.v600_align_ir_find_ecc_translation(
-            rgb.ptr,
-            @intCast(rgb_width),
-            @intCast(rgb_height),
-            ir.ptr,
-            @intCast(ir_width),
-            @intCast(ir_height),
-            &tx,
-            &ty,
-        );
-        if (ecc_status != 0) {
-            @memcpy(output, ir);
-            return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
-        }
-    } else {
-        const estimate = ir_native.estimateTranslationEccPure(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height) catch {
-            @memcpy(output, ir);
-            return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
-        };
-        tx = estimate.tx;
-        ty = estimate.ty;
-    }
+    const estimate = ir_native.estimateTranslationEcc(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height) catch {
+        @memcpy(output, ir);
+        return .{ .tx = 0.0, .ty = 0.0, .shifted = false };
+    };
+    const tx = estimate.tx;
+    const ty = estimate.ty;
 
     if (@abs(tx) < 0.5 and @abs(ty) < 0.5) {
         @memcpy(output, ir);
@@ -4137,37 +4110,25 @@ fn expectAlignmentFixture(path: []const u8) !void {
     const output = try allocator.alloc(f64, fixture.expected.len);
     defer allocator.free(output);
     const result = try alignIr(allocator, rgb, rgb_width, rgb_height, fixture.ir, ir_width, ir_height, output, .{ .max_offset = 4 });
-    if (use_native_ir_helpers) {
-        try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 1e-5);
-        try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 1e-5);
-        try std.testing.expect(result.shifted);
-        // The fixture comes from OpenCV on x86_64. Its float32 ECC lands about
-        // 3e-6 px away on arm64 (NEON), which moves these samples by up to
-        // ~0.01, so other architectures get a 0.02 sample tolerance.
-        var tolerance = fixture.tolerance;
-        if (builtin.cpu.arch != .x86_64) tolerance.abs = @max(tolerance.abs, 0.02);
-        try numeric.assertCloseSlices(fixture.expected, output, tolerance);
-    } else {
-        // The pure-Zig translation ECC is not OpenCV-bit-exact. Hold it to the
-        // 0.05 px offset envelope accepted for the browser estimate path.
-        try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 0.05);
-        try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 0.05);
-        try std.testing.expect(result.shifted);
-        var max_abs: f64 = 0.0;
-        var sum_sq: f64 = 0.0;
-        for (fixture.expected, output) |expected_sample, actual_sample| {
-            const diff = actual_sample - expected_sample;
-            max_abs = @max(max_abs, @abs(diff));
-            sum_sq += diff * diff;
-        }
-        const rms = @sqrt(sum_sq / @as(f64, @floatFromInt(output.len)));
-        // The fixture expected samples bake in the exact OpenCV offset, so the
-        // 0.035 px estimate difference produces max_abs ~141.42 and rms ~41.32
-        // on this data (the same envelope recorded for the browser estimate
-        // path in plan.md). Pin that envelope so pure-path drift fails loudly.
-        try std.testing.expect(max_abs <= 150.0);
-        try std.testing.expect(rms <= 45.0);
+    // The fixture comes from OpenCV's findTransformECC; the Zig ECC (the only
+    // one since opencv_ecc.cpp was dropped) is not bit-exact. Hold it to a
+    // 0.05 px offset envelope.
+    try std.testing.expectApproxEqAbs(fixture.expected_offset[0], result.tx, 0.05);
+    try std.testing.expectApproxEqAbs(fixture.expected_offset[1], result.ty, 0.05);
+    try std.testing.expect(result.shifted);
+    var max_abs: f64 = 0.0;
+    var sum_sq: f64 = 0.0;
+    for (fixture.expected, output) |expected_sample, actual_sample| {
+        const diff = actual_sample - expected_sample;
+        max_abs = @max(max_abs, @abs(diff));
+        sum_sq += diff * diff;
     }
+    const rms = @sqrt(sum_sq / @as(f64, @floatFromInt(output.len)));
+    // The expected samples bake in the exact OpenCV offset, and this synthetic
+    // pattern has hard edges, so the 0.035 px offset difference gives max_abs
+    // about 141.42 and rms about 41.32. Pin that envelope so drift fails loudly.
+    try std.testing.expect(max_abs <= 150.0);
+    try std.testing.expect(rms <= 45.0);
 }
 
 fn expectThresholdFixture(path: []const u8) !void {
