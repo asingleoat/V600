@@ -880,6 +880,7 @@ fn benchAutoDetectBreakdown(
             .frame_count_override = 5,
             .detect_film_extent = true,
             .apply_clahe = true,
+            .px_per_mm = if (loaded.info.dpi) |dpi| @as(f64, @floatFromInt(dpi)) / 25.4 * loaded.info.preview_scale else null,
         },
     );
     var breakdown_owns_result = true;

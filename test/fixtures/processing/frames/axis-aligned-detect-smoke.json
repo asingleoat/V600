@@ -1,18 +1,18 @@
 {
   "name": "axis-aligned-detect-smoke",
   "operation": "axis_aligned_prepared_gray_detect_frames",
-  "generated_by": "hand-authored format-consistent synthetic strips for Zig detector orchestration smoke tests",
+  "generated_by": "hand-authored synthetic strips drawn to their format's scale (35mm: a 140 px strip is 35 mm at 4 px/mm, 96x144 px frames at a 152 px pitch) for Zig detector orchestration smoke tests",
   "cases": [
     {
       "name": "axis-35mm-vertical-three-frame",
       "format": "35mm",
       "orientation": "vertical",
-      "width": 180,
+      "width": 140,
       "height": 620,
       "preview_scale": 1.0,
       "background_level": 0.92,
       "strip_rect": {
-        "x": 30.0,
+        "x": 0.0,
         "y": 20.0,
         "w": 140.0,
         "h": 580.0,
@@ -22,51 +22,51 @@
       "frame_level": 0.18,
       "expected_frames": [
         {
-          "x": 45.0,
-          "y": 55.0,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 22.0,
+          "y": 86.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.0
         },
         {
-          "x": 45.0,
-          "y": 235.0,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 22.0,
+          "y": 238.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.0
         },
         {
-          "x": 45.0,
-          "y": 415.0,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 22.0,
+          "y": 390.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.0
         }
       ],
       "expected_full": [
         {
-          "cx": 95.0,
-          "cy": 130.0,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 70.0,
+          "cy": 158.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.0
         },
         {
-          "cx": 95.0,
+          "cx": 70.0,
           "cy": 310.0,
-          "w": 100.0,
-          "h": 150.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.0
         },
         {
-          "cx": 95.0,
-          "cy": 490.0,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 70.0,
+          "cy": 462.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.0
         }
       ],
-      "expected_frame_pixel_count": 45000,
+      "expected_frame_pixel_count": 41472,
       "cross_center_tolerance": 1.25,
       "expected_aspect": "24:36"
     },
@@ -140,12 +140,12 @@
       "name": "axis-35mm-vertical-three-frame-sloped-edges",
       "format": "35mm",
       "orientation": "vertical",
-      "width": 180,
+      "width": 140,
       "height": 620,
       "preview_scale": 1.0,
       "background_level": 0.92,
       "strip_rect": {
-        "x": 30.0,
+        "x": 0.0,
         "y": 20.0,
         "w": 140.0,
         "h": 580.0,
@@ -155,51 +155,51 @@
       "frame_level": 0.18,
       "expected_frames": [
         {
-          "x": 45.0,
-          "y": 55.0,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 22.0,
+          "y": 86.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.03490658503988659
         },
         {
-          "x": 45.0,
-          "y": 235.0,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 22.0,
+          "y": 238.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.03490658503988659
         },
         {
-          "x": 45.0,
-          "y": 415.0,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 22.0,
+          "y": 390.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.03490658503988659
         }
       ],
       "expected_full": [
         {
-          "cx": 95.0,
-          "cy": 130.0,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 70.0,
+          "cy": 158.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.03490658503988659
         },
         {
-          "cx": 95.0,
+          "cx": 70.0,
           "cy": 310.0,
-          "w": 100.0,
-          "h": 150.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.03490658503988659
         },
         {
-          "cx": 95.0,
-          "cy": 490.0,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 70.0,
+          "cy": 462.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.03490658503988659
         }
       ],
-      "expected_frame_pixel_count": 45000,
+      "expected_frame_pixel_count": 41472,
       "cross_center_tolerance": 2.0,
       "cross_size_tolerance": 3.0,
       "angle_tolerance": 0.012,
@@ -210,6 +210,6 @@
   "tolerance": {
     "abs": 12.0,
     "rel": 0.0,
-    "reason": "axis-aligned smoke detector uses DTW, snapping, and repair over synthetic step edges; tolerance covers blur and integer edge placement"
+    "reason": "axis-aligned smoke detector fits fixed-length frames (35mm) or uses DTW, snapping, and repair (6x6) over synthetic step edges; tolerance covers blur and integer edge placement"
   }
 }

@@ -725,6 +725,7 @@ pub fn autoDetectPreview(
             .frame_count_override = options.n_frames,
             .detect_film_extent = options.detect_film_extent,
             .apply_clahe = options.apply_clahe,
+            .px_per_mm = if (preview.info.dpi) |dpi| @as(f64, @floatFromInt(dpi)) / 25.4 * preview.info.preview_scale else null,
         },
     );
     errdefer detected.deinit(allocator);
@@ -2744,12 +2745,12 @@ test "process auto-detect preview mirrors route detector composition" {
 
     try std.testing.expectEqual(@as(usize, 3), detected.frames.len);
     try std.testing.expectEqualStrings("24:36", detected.aspect);
-    try expectFrameRectApprox(.{ .cx = 95.0, .cy = 130.0, .w = 100.0, .h = 150.0, .angle = 0.0 }, detected.frames[0], 12.0);
-    try expectFrameRectApprox(.{ .cx = 95.0, .cy = 310.0, .w = 100.0, .h = 150.0, .angle = 0.0 }, detected.frames[1], 12.0);
-    try expectFrameRectApprox(.{ .cx = 95.0, .cy = 490.0, .w = 100.0, .h = 150.0, .angle = 0.0 }, detected.frames[2], 12.0);
+    try expectFrameRectApprox(.{ .cx = 70.0, .cy = 158.0, .w = 96.0, .h = 144.0, .angle = 0.0 }, detected.frames[0], 12.0);
+    try expectFrameRectApprox(.{ .cx = 70.0, .cy = 310.0, .w = 96.0, .h = 144.0, .angle = 0.0 }, detected.frames[1], 12.0);
+    try expectFrameRectApprox(.{ .cx = 70.0, .cy = 462.0, .w = 96.0, .h = 144.0, .angle = 0.0 }, detected.frames[2], 12.0);
     const rebate = detected.rebate orelse return error.MissingAutoDetectRebate;
-    try std.testing.expectApproxEqAbs(95.0, rebate.cx, 16.0);
-    try std.testing.expectApproxEqAbs(400.0, rebate.cy, 16.0);
+    try std.testing.expectApproxEqAbs(70.0, rebate.cx, 16.0);
+    try std.testing.expectApproxEqAbs(386.0, rebate.cy, 16.0);
     try std.testing.expect(rebate.w > 40.0);
     try std.testing.expect(rebate.h > 1.0);
 }
@@ -3267,8 +3268,10 @@ fn expectMaxAbsDiff(actual: []const u8, expected: []const u8, tolerance: u8) !vo
     }
 }
 
+/// A 35mm strip drawn to scale at 4 px/mm: 140 px wide, three 96x144 px
+/// frames at a 152 px pitch.
 fn syntheticAutoDetectPreview(allocator: std.mem.Allocator) !QuickPreview {
-    const width: usize = 180;
+    const width: usize = 140;
     const height: usize = 620;
     const sample_count = width * height * 3;
     const raw = try allocator.alloc(u16, sample_count);
@@ -3281,9 +3284,9 @@ fn syntheticAutoDetectPreview(allocator: std.mem.Allocator) !QuickPreview {
     for (0..height) |y| {
         for (0..width) |x| {
             var level: f64 = 0.92;
-            if (x >= 30 and x < 170 and y >= 20 and y < 600) level = 0.65;
-            if (x >= 45 and x < 145 and
-                ((y >= 55 and y < 205) or (y >= 235 and y < 385) or (y >= 415 and y < 565)))
+            if (y >= 20 and y < 600) level = 0.65;
+            if (x >= 22 and x < 118 and
+                ((y >= 86 and y < 230) or (y >= 238 and y < 382) or (y >= 390 and y < 534)))
             {
                 level = 0.18;
             }

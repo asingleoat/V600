@@ -972,20 +972,21 @@ test "wasm preview core validates shape and stock id" {
 
 test "wasm frame detect finds synthetic 35mm frames" {
     const allocator = std.testing.allocator;
-    const width: usize = 180;
+    // A 35mm strip drawn to scale at 4 px/mm: 96x144 px frames, 152 px apart.
+    const width: usize = 140;
     const height: usize = 620;
     const raw = try allocator.alloc(u16, width * height * 3);
     defer allocator.free(raw);
     fillTestRgb16Level(raw, width, height, 0, 0, width, height, 0.92);
-    fillTestRgb16Level(raw, width, height, 30, 20, 140, 580, 0.65);
-    fillTestRgb16Level(raw, width, height, 45, 55, 100, 150, 0.18);
-    fillTestRgb16Level(raw, width, height, 45, 235, 100, 150, 0.18);
-    fillTestRgb16Level(raw, width, height, 45, 415, 100, 150, 0.18);
+    fillTestRgb16Level(raw, width, height, 0, 20, 140, 580, 0.65);
+    fillTestRgb16Level(raw, width, height, 22, 86, 96, 144, 0.18);
+    fillTestRgb16Level(raw, width, height, 22, 238, 96, 144, 0.18);
+    fillTestRgb16Level(raw, width, height, 22, 390, 96, 144, 0.18);
 
     var frames_out: [8]FrameDetectRect = undefined;
     var result: FrameDetectResult = undefined;
     try detectFramesRgb16(allocator, raw, &frames_out, &result, .{
-        .width = 180,
+        .width = 140,
         .height = 620,
         .format = 1,
         .frame_count_override = 3,
@@ -997,9 +998,9 @@ test "wasm frame detect finds synthetic 35mm frames" {
     try std.testing.expectEqual(@as(u32, 1), result.aspect);
     try std.testing.expectEqual(@as(u32, 1), result.has_rebate);
     const expected = [_]FrameDetectRect{
-        .{ .cx = 95.0, .cy = 130.0, .w = 100.0, .h = 150.0, .angle = 0.0 },
-        .{ .cx = 95.0, .cy = 310.0, .w = 100.0, .h = 150.0, .angle = 0.0 },
-        .{ .cx = 95.0, .cy = 490.0, .w = 100.0, .h = 150.0, .angle = 0.0 },
+        .{ .cx = 70.0, .cy = 158.0, .w = 96.0, .h = 144.0, .angle = 0.0 },
+        .{ .cx = 70.0, .cy = 310.0, .w = 96.0, .h = 144.0, .angle = 0.0 },
+        .{ .cx = 70.0, .cy = 462.0, .w = 96.0, .h = 144.0, .angle = 0.0 },
     };
     for (expected, frames_out[0..3]) |expected_frame, actual| {
         try std.testing.expectApproxEqAbs(expected_frame.cx, actual.cx, 12.0);

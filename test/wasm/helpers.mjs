@@ -3,13 +3,15 @@
 // wasm_core_smoke, worker_runtime_smoke, and webapp_shell_smoke.
 import assert from "node:assert/strict";
 
-export const frameDetectWidth = 180;
+// A 35mm strip drawn to scale at 4 px/mm: 140 px wide, three 96x144 px
+// frames at a 152 px pitch.
+export const frameDetectWidth = 140;
 export const frameDetectHeight = 620;
 
 export const expectedDetectedFrames = [
-  { cx: 95.0, cy: 130.0, w: 100.0, h: 150.0, angle: 0.0 },
-  { cx: 95.0, cy: 310.0, w: 100.0, h: 150.0, angle: 0.0 },
-  { cx: 95.0, cy: 490.0, w: 100.0, h: 150.0, angle: 0.0 },
+  { cx: 70.0, cy: 158.0, w: 96.0, h: 144.0, angle: 0.0 },
+  { cx: 70.0, cy: 310.0, w: 96.0, h: 144.0, angle: 0.0 },
+  { cx: 70.0, cy: 462.0, w: 96.0, h: 144.0, angle: 0.0 },
 ];
 
 export function normalizedToU16(value) {
@@ -86,10 +88,10 @@ export function assertCloseToFixture(actual, fixture, maxTolerance = 0.01, rmsTo
 export function syntheticFrameDetectRawBuffer() {
   const pixels = new Uint16Array(frameDetectWidth * frameDetectHeight * 3);
   fillRgb16Level(pixels, 0, 0, frameDetectWidth, frameDetectHeight, 0.92);
-  fillRgb16Level(pixels, 30, 20, 140, 580, 0.65);
-  fillRgb16Level(pixels, 45, 55, 100, 150, 0.18);
-  fillRgb16Level(pixels, 45, 235, 100, 150, 0.18);
-  fillRgb16Level(pixels, 45, 415, 100, 150, 0.18);
+  fillRgb16Level(pixels, 0, 20, 140, 580, 0.65);
+  fillRgb16Level(pixels, 22, 86, 96, 144, 0.18);
+  fillRgb16Level(pixels, 22, 238, 96, 144, 0.18);
+  fillRgb16Level(pixels, 22, 390, 96, 144, 0.18);
   return pixels.buffer;
 }
 

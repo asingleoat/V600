@@ -12,6 +12,11 @@ pub const FilmFormat = struct {
     pitch_mm: f64,
     strip_width_mm: f64,
     description: []const u8,
+    /// Shortest and longest frame start to frame start that cameras advance
+    /// the film. Formats with one are placed by a fixed-length fit
+    /// (`fitFramesAlongStrip`); the others by pitch alignment, until
+    /// hand-placed frames show the fit works for them too.
+    pitch_range_mm: ?[2]f64 = null,
 
     pub fn acrossMm(self: FilmFormat) f64 {
         return self.frame_mm[0];
@@ -36,6 +41,8 @@ pub const format_35mm: FilmFormat = .{
     .pitch_mm = 38.0,
     .strip_width_mm = 35.0,
     .description = "35mm (135 film)",
+    // Eight 4.75 mm perforations per frame; scans measure 37.8-38.2 mm.
+    .pitch_range_mm = .{ 37.4, 38.8 },
 };
 
 pub const format_645: FilmFormat = .{

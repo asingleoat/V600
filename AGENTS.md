@@ -55,7 +55,7 @@ diffs for this before committing.
 
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
-`processing info|detect|rebate|export`, `roll start|use|status|scan|export|review`,
+`processing info|detect|rebate|export`, `roll start|use|status|scan|export|review|check-frames`,
 `serve`. Build with `-Doptimize=ReleaseFast` for real scanning sessions;
 Debug export is several times slower.
 
@@ -205,9 +205,16 @@ deliberately, not by accident.
   56x41.5 mm, 45 mm pitch; 6x6 56x56 mm, 60 mm pitch; 6x7 56x69 mm, 73 mm
   pitch; 6x9 56x84 mm, 88 mm pitch. 645 is the one format whose long side
   runs across the strip.
-- Pipeline: 1D strip profile, DTW pitch alignment, gradient edge snapping,
-  size-consistency correction, first/last frame repair, cross-strip
-  positioning, Theil-Sen angle per frame.
+- Pipeline: 1D strip profile; along the strip, for 35mm, one frame length
+  per strip and a 37.4-38.8 mm pitch fitted by dynamic programming over edge
+  strength, at the scan's DPI scale (the film's measured width when there is
+  no DPI); for the other formats, DTW pitch alignment, gradient edge
+  snapping, size-consistency correction, and first/last frame repair; then
+  cross-strip positioning and a Theil-Sen angle per frame, with angles more
+  than 1 degree off the strip's median replaced by it.
+- `roll check-frames` measures detection against frames placed by hand
+  (and exports the owner verified, `--verified`); use it on real rolls
+  before and after a detection change.
 - If detection returns exactly one frame covering less than 30% of the
   image, treat it as a failure and fall back to a full-image frame.
 

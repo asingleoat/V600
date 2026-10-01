@@ -68,16 +68,17 @@ Open:
 - Medium-format frame detection is weak on real strips. The first real 6x7
   strip (6400 dpi, two frames) got frame 2 right but cut frame 1 to
   60x49 mm, missing picture on the left and bottom, and its rebate box
-  overlapped the bottom of frame 1. On synthetic strips the DTW pitch
-  alignment (free to skip the strip's ends) did the same to 6x7 and 6x9;
-  charging for skipped ends fixed those but broke the Linux scan_0001 and
-  scan_0003 ground-truth tests, so it was not kept. Decision: no detection
-  changes until the owner has hand-framed the current batch of rolls; the
-  strips' `strip_*.tiff.frames.json` files (frames in full-resolution
-  pixels, saved by Process view edits and Export Strip Frames; untouched
-  auto-detect results are never saved) are then the ground truth to
-  measure detection against. The 645 pitch (45 mm) is nominal and camera
-  gaps vary.
+  overlapped the bottom of frame 1. 35mm moved off the DTW pitch alignment
+  to a fixed-length fit (one frame length per strip, pitch within the
+  format's `pitch_range_mm`, scale from the scan's DPI), measured with
+  `roll check-frames` on KODAKGOLD_200_0: hand framings on strips 3-5 and
+  the owner-verified exports of strips 1-2 are the ground truth. Medium
+  format keeps DTW until 120 strips are hand-framed the same way; then
+  measure the fit on them, giving each format a pitch range (120 camera
+  gaps vary more than 35mm's; the 645 pitch of 45 mm is nominal).
+- A 35mm strip with blank film at one end gets an extra frame on the blank
+  part: the frame count comes from the strip's length (KODAKGOLD_200_1 and
+  _2, strip 1). Needs a per-frame evidence test before dropping frames.
 
 - Linux custom film LUTs are not applied, but scans are marked as if they
   were. `src/scanner/linux.zig` sets `V600_LUT_FILE` and writes

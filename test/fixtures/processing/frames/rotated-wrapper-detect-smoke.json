@@ -1,7 +1,7 @@
 {
   "name": "rotated-wrapper-detect-smoke",
   "operation": "detect_frames_from_image_with_film_extent_rotation",
-  "generated_by": "hand-authored rotated synthetic strip exercising image-buffer rotation and rotated-to-original frame transform",
+  "generated_by": "hand-authored rotated synthetic 35mm strip drawn to scale (4 px/mm: 96x144 px frames at a 152 px pitch) exercising image-buffer rotation and rotated-to-original frame transform",
   "cases": [
     {
       "name": "rotated-35mm-vertical-three-frame",
@@ -22,47 +22,47 @@
       "frame_level": 0.18,
       "expected_frames": [
         {
-          "x": 106.44288918241244,
-          "y": 86.84906693910162,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 103.15431134592995,
+          "y": 127.47925355128132,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.13962634015954636
         },
         {
-          "x": 81.39173100960065,
-          "y": 265.0973193125843,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 82.0,
+          "y": 278.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.13962634015954636
         },
         {
-          "x": 56.34057283678888,
-          "y": 443.34557168606693,
-          "w": 100.0,
-          "h": 150.0,
+          "x": 60.845688654070045,
+          "y": 428.5207464487187,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.13962634015954636
         }
       ],
       "expected_full": [
         {
-          "cx": 156.44288918241244,
-          "cy": 161.84906693910162,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 151.15431134592995,
+          "cy": 199.47925355128132,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.13962634015954636
         },
         {
-          "cx": 131.39173100960065,
-          "cy": 340.0973193125843,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 130.0,
+          "cy": 350.0,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.13962634015954636
         },
         {
-          "cx": 106.34057283678888,
-          "cy": 518.3455716860669,
-          "w": 100.0,
-          "h": 150.0,
+          "cx": 108.84568865407005,
+          "cy": 500.5207464487187,
+          "w": 96.0,
+          "h": 144.0,
           "angle": 0.13962634015954636
         }
       ],
