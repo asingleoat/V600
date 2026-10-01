@@ -65,6 +65,19 @@ Open:
 
 ### Bugs
 
+- Medium-format frame detection is weak on real strips. The first real 6x7
+  strip (6400 dpi, two frames) got frame 2 right but cut frame 1 to
+  60x49 mm, missing picture on the left and bottom, and its rebate box
+  overlapped the bottom of frame 1. On synthetic strips the DTW pitch
+  alignment (free to skip the strip's ends) did the same to 6x7 and 6x9;
+  charging for skipped ends fixed those but broke the Linux scan_0001 and
+  scan_0003 ground-truth tests, so it was not kept. Decision: no detection
+  changes until the owner has hand-framed the current batch of rolls; the
+  strips' `strip_*.tiff.frames.json` files (frames in full-resolution
+  pixels, written by Export Strip Frames) are then the ground truth to
+  measure detection against. The 645 pitch (45 mm) is nominal and camera
+  gaps vary.
+
 - Linux custom film LUTs are not applied, but scans are marked as if they
   were. `src/scanner/linux.zig` sets `V600_LUT_FILE` and writes
   `custom_luts_applied=true` and TIFF tag 50000; nothing installed reads the
@@ -200,13 +213,6 @@ Open:
 
 ### Needs the scanner
 
-- Medium format detection has never run on a real 120 strip. The 645 pitch
-  (45 mm) is nominal and camera gaps vary. On synthetic strips, the DTW pitch
-  alignment (free to skip the strip's ends) started a 3-frame 6x7 strip's
-  first frame mid-frame and dropped a 2-frame 6x9 strip's last edge. Charging
-  for skipped ends fixed those but broke the Linux scan_0001 and scan_0003
-  ground-truth tests, so it was not kept. Check 6x7 and 6x9 on real scans
-  before changing detection.
 - Verify custom LUT application on Linux (after the LUT fix).
 - A full 3200 dpi roll through `roll scan` or Scan Strip; the hardware runs
   so far used 800 dpi strips.
