@@ -10,6 +10,7 @@ extern "C" int v600_estimate_local_grain(
     int width,
     int height,
     int grain_padding,
+    double grain_sigma,
     double* grain_std,
     double* signal_out,
     double* spectrum_out,
@@ -20,7 +21,7 @@ extern "C" int v600_estimate_local_grain(
     if (roi_rgb == nullptr || roi_mask == nullptr || grain_std == nullptr ||
         signal_out == nullptr || spectrum_out == nullptr ||
         spectrum_len == nullptr || has_spectrum == nullptr ||
-        width <= 0 || height <= 0 || grain_padding < 0) {
+        width <= 0 || height <= 0 || grain_padding < 0 || !(grain_sigma > 0.0)) {
         return -1;
     }
 
@@ -56,8 +57,35 @@ extern "C" int v600_estimate_local_grain(
     cv::Mat dilated;
     cv::dilate(mask_u8, dilated, kernel);
 
+    // Normalized convolution: the low-pass of the clean pixels only, so the
+    // defect does not leak into the values around it.
     cv::Mat signal;
-    cv::GaussianBlur(rgb, signal, cv::Size(0, 0), 2.5);
+    {
+        cv::Mat known(height, width, CV_32FC3);
+        for (int y = 0; y < height; ++y) {
+            float* row = reinterpret_cast<float*>(known.data + static_cast<size_t>(y) * known.step[0]);
+            for (int x = 0; x < width; ++x) {
+                const float value = roi_mask[y * width + x] != 0 ? 0.0f : 1.0f;
+                row[x * 3] = value;
+                row[x * 3 + 1] = value;
+                row[x * 3 + 2] = value;
+            }
+        }
+        cv::Mat weighted = rgb.mul(known);
+        cv::Mat numerator;
+        cv::Mat denominator;
+        cv::GaussianBlur(weighted, numerator, cv::Size(0, 0), grain_sigma);
+        cv::GaussianBlur(known, denominator, cv::Size(0, 0), grain_sigma);
+        signal = rgb.clone();
+        for (int y = 0; y < height; ++y) {
+            const float* num_row = reinterpret_cast<const float*>(numerator.data + static_cast<size_t>(y) * numerator.step[0]);
+            const float* den_row = reinterpret_cast<const float*>(denominator.data + static_cast<size_t>(y) * denominator.step[0]);
+            float* out_row = reinterpret_cast<float*>(signal.data + static_cast<size_t>(y) * signal.step[0]);
+            for (int i = 0; i < width * 3; ++i) {
+                if (den_row[i] > 1.0e-3f) out_row[i] = num_row[i] / den_row[i];
+            }
+        }
+    }
 
     int surround_count = 0;
     int clean_count = 0;
@@ -136,6 +164,11 @@ extern "C" int v600_estimate_local_grain(
     const double pi = 3.141592653589793238462643383279502884;
     const int y_shift = (height + 1) / 2;
     const int x_shift = (width + 1) / 2;
+    // Rings of equal frequency, in bins of the shorter side: a DFT bin is
+    // 1/width cycles per pixel across and 1/height down.
+    const double short_side = static_cast<double>(height < width ? height : width);
+    const double x_bin = short_side / static_cast<double>(width);
+    const double y_bin = short_side / static_cast<double>(height);
 
     for (int c = 0; c < 3; ++c) {
         for (int y = 0; y < height; ++y) {
@@ -161,11 +194,11 @@ extern "C" int v600_estimate_local_grain(
         cv::dft(dft_input, dft_output, cv::DFT_COMPLEX_OUTPUT);
         for (int y = 0; y < height; ++y) {
             const int src_y = (y + y_shift) % height;
-            const double dy = static_cast<double>(y - cy);
+            const double dy = static_cast<double>(y - cy) * y_bin;
             const double* dft_row = reinterpret_cast<const double*>(dft_output.data + static_cast<size_t>(src_y) * dft_output.step[0]);
             for (int x = 0; x < width; ++x) {
                 const int src_x = (x + x_shift) % width;
-                const double dx = static_cast<double>(x - cx);
+                const double dx = static_cast<double>(x - cx) * x_bin;
                 const int ri = static_cast<int>(std::sqrt(dx * dx + dy * dy));
                 if (ri < 0 || ri >= r_max) {
                     continue;
@@ -228,6 +261,10 @@ extern "C" int v600_synthesize_grain_from_noise(
     const int cx = width / 2;
     const int y_shift = height / 2;
     const int x_shift = width / 2;
+    // Rings of equal frequency, in bins of the shorter side, as measured.
+    const double short_side = static_cast<double>(height < width ? height : width);
+    const double x_bin = short_side / static_cast<double>(width);
+    const double y_bin = short_side / static_cast<double>(height);
 
     for (int c = 0; c < channels; ++c) {
         for (int y = 0; y < height; ++y) {
@@ -243,8 +280,8 @@ extern "C" int v600_synthesize_grain_from_noise(
             for (int x = 0; x < width; ++x) {
                 const int centered_y = (y + y_shift) % height;
                 const int centered_x = (x + x_shift) % width;
-                const double dy = static_cast<double>(centered_y - cy);
-                const double dx = static_cast<double>(centered_x - cx);
+                const double dy = static_cast<double>(centered_y - cy) * y_bin;
+                const double dx = static_cast<double>(centered_x - cx) * x_bin;
                 const double radius = std::sqrt(dx * dx + dy * dy);
                 double amp = 1.0;
                 if (grain_spectrum != nullptr && spectrum_len > 4) {

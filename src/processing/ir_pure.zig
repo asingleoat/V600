@@ -104,6 +104,7 @@ pub fn estimateLocalGrain(
     width: usize,
     height: usize,
     grain_padding: usize,
+    grain_sigma: f64,
 ) !LocalGrainEstimate {
     if (width == 0 or height == 0 or roi_rgb.len != width * height * 3 or roi_mask.len != width * height) {
         return error.InvalidIrLocalGrainBuffer;
@@ -118,7 +119,25 @@ pub fn estimateLocalGrain(
 
     const signal_f32 = try allocator.alloc(f32, roi_rgb.len);
     defer allocator.free(signal_f32);
-    try gaussianBlurRgbSigmaF32(allocator, rgb_f32, width, height, 2.5, signal_f32);
+    {
+        // Normalized convolution: the low-pass of the clean pixels only, so
+        // the defect does not leak into the values around it.
+        const known = try allocator.alloc(f32, roi_rgb.len);
+        defer allocator.free(known);
+        const weighted = try allocator.alloc(f32, roi_rgb.len);
+        defer allocator.free(weighted);
+        for (known, weighted, rgb_f32, 0..) |*k, *w, value, index| {
+            k.* = if (roi_mask[index / 3] != 0) 0.0 else 1.0;
+            w.* = value * k.*;
+        }
+        const denominator = try allocator.alloc(f32, roi_rgb.len);
+        defer allocator.free(denominator);
+        try gaussianBlurRgbSigmaF32(allocator, weighted, width, height, grain_sigma, signal_f32);
+        try gaussianBlurRgbSigmaF32(allocator, known, width, height, grain_sigma, denominator);
+        for (signal_f32, denominator, rgb_f32) |*out, den, value| {
+            out.* = if (den > 1.0e-3) out.* / den else value;
+        }
+    }
 
     const signal = try allocator.alloc(f64, roi_rgb.len);
     errdefer allocator.free(signal);
@@ -211,6 +230,11 @@ fn estimateGrainSpectrum(
     const cx = width / 2;
     const y_shift = (height + 1) / 2;
     const x_shift = (width + 1) / 2;
+    // Rings of equal frequency, in bins of the shorter side: a DFT bin is
+    // 1/width cycles per pixel across and 1/height down.
+    const short_side: f64 = @floatFromInt(@min(width, height));
+    const x_bin = short_side / @as(f64, @floatFromInt(width));
+    const y_bin = short_side / @as(f64, @floatFromInt(height));
 
     for (0..3) |channel| {
         for (0..height) |y| {
@@ -234,10 +258,10 @@ fn estimateGrainSpectrum(
         defer allocator.free(dft_output);
         for (0..height) |y| {
             const src_y = (y + y_shift) % height;
-            const dy = @as(f64, @floatFromInt(@as(isize, @intCast(y)) - @as(isize, @intCast(cy))));
+            const dy = @as(f64, @floatFromInt(@as(isize, @intCast(y)) - @as(isize, @intCast(cy)))) * y_bin;
             for (0..width) |x| {
                 const src_x = (x + x_shift) % width;
-                const dx = @as(f64, @floatFromInt(@as(isize, @intCast(x)) - @as(isize, @intCast(cx))));
+                const dx = @as(f64, @floatFromInt(@as(isize, @intCast(x)) - @as(isize, @intCast(cx)))) * x_bin;
                 const ri: usize = @intFromFloat(@sqrt(dx * dx + dy * dy));
                 if (ri >= r_max) continue;
                 const value = dft_output[src_y * width + src_x];
@@ -563,13 +587,17 @@ fn shapeSpectrumInPlace(values: []Complex, width: usize, height: usize, grain_sp
     const y_shift = height / 2;
     const x_shift = width / 2;
     const spectrum_len = if (grain_spectrum) |spectrum| spectrum.len else 0;
+    // Rings of equal frequency, in bins of the shorter side, as measured.
+    const short_side: f64 = @floatFromInt(@min(width, height));
+    const x_bin = short_side / @as(f64, @floatFromInt(width));
+    const y_bin = short_side / @as(f64, @floatFromInt(height));
 
     for (0..height) |y| {
         const centered_y = (y + y_shift) % height;
-        const dy = @as(f64, @floatFromInt(@as(isize, @intCast(centered_y)) - @as(isize, @intCast(cy))));
+        const dy = @as(f64, @floatFromInt(@as(isize, @intCast(centered_y)) - @as(isize, @intCast(cy)))) * y_bin;
         for (0..width) |x| {
             const centered_x = (x + x_shift) % width;
-            const dx = @as(f64, @floatFromInt(@as(isize, @intCast(centered_x)) - @as(isize, @intCast(cx))));
+            const dx = @as(f64, @floatFromInt(@as(isize, @intCast(centered_x)) - @as(isize, @intCast(cx)))) * x_bin;
             const radius = @sqrt(dx * dx + dy * dy);
             var amp: f64 = 1.0;
             if (grain_spectrum != null and spectrum_len > 4) {

@@ -990,7 +990,7 @@ pub fn processExportFromTiff(
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(full.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(full.rgb.height)) else 1.0;
     const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
-    var ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides);
+    var ir_clean_options = irCleanOptionsForConfig(current_dpi, irDpi(current_dpi, ir_scale_x), options.config_overrides);
     if (options.adaptive_dust_precision_override) |precision| {
         ir_clean_options.defect_mask.adaptive_precision = precision;
     }
@@ -1252,7 +1252,8 @@ fn processExportDirectRgbCropFromLoadedPage(
     );
 
     const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
-    var ir_clean_options = irCleanOptionsForConfig(current_dpi, options.config_overrides);
+    // This path never cleans with IR.
+    var ir_clean_options = irCleanOptionsForConfig(current_dpi, current_dpi, options.config_overrides);
     if (options.adaptive_dust_precision_override) |precision| {
         ir_clean_options.defect_mask.adaptive_precision = precision;
     }
@@ -2641,30 +2642,59 @@ pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Overr
     };
 }
 
-pub fn irCleanOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override) ir_processing.IrCleanOptions {
+/// The defect mask is built on the IR page, which is often scanned at a
+/// lower resolution than the RGB (6400 dpi RGB has a 3200 dpi IR pass), so
+/// its sizes scale with the IR's dpi; inpainting runs on the RGB, so its
+/// padding and grain sizes scale with the RGB's.
+pub fn irCleanOptionsForConfig(rgb_dpi: ?u32, ir_dpi: ?u32, overrides: []const config.Override) ir_processing.IrCleanOptions {
+    // Grain around a defect is told from the picture at 2.5 px, measured in
+    // a ring 8 px wide, both at 800 dpi like the configured sizes.
+    const rgb_scale = if (rgb_dpi) |dpi| (if (dpi > 0) @as(f64, @floatFromInt(dpi)) / 800.0 else 1.0) else 1.0;
     return .{
         .defect_mask = .{
-            .threshold = config.getParam("ir_threshold", current_dpi, overrides).?.asFloat(),
-            .hair_sensitivity = config.getParam("ir_hair_sensitivity", current_dpi, overrides).?.asFloat(),
-            .min_area = @intFromFloat(config.getParam("ir_min_area", current_dpi, overrides).?.asFloat()),
-            .dilate_radius = @intFromFloat(config.getParam("ir_dilate_radius", current_dpi, overrides).?.asFloat()),
-            .close_radius = @intFromFloat(config.getParam("ir_close_radius", current_dpi, overrides).?.asFloat()),
-            .blur_size = @intFromFloat(config.getParam("ir_blur_size", current_dpi, overrides).?.asFloat()),
-            .max_coverage = config.getParam("ir_max_coverage", current_dpi, overrides).?.asFloat(),
+            .threshold = config.getParam("ir_threshold", ir_dpi, overrides).?.asFloat(),
+            .hair_sensitivity = config.getParam("ir_hair_sensitivity", ir_dpi, overrides).?.asFloat(),
+            .min_area = @intFromFloat(config.getParam("ir_min_area", ir_dpi, overrides).?.asFloat()),
+            .dilate_radius = @intFromFloat(config.getParam("ir_dilate_radius", ir_dpi, overrides).?.asFloat()),
+            .close_radius = @intFromFloat(config.getParam("ir_close_radius", ir_dpi, overrides).?.asFloat()),
+            .blur_size = @intFromFloat(config.getParam("ir_blur_size", ir_dpi, overrides).?.asFloat()),
+            .max_coverage = config.getParam("ir_max_coverage", ir_dpi, overrides).?.asFloat(),
             .adaptive_precision = .f32,
         },
         .inpaint = .{
-            .padding = @intFromFloat(config.getParam("inpaint_padding", current_dpi, overrides).?.asFloat()),
-            .grain_padding = 8,
+            .padding = @intFromFloat(config.getParam("inpaint_padding", rgb_dpi, overrides).?.asFloat()),
+            .grain_padding = @intFromFloat(8.0 * rgb_scale),
+            .grain_sigma = 2.5 * rgb_scale,
             .value_kind = .uint16,
         },
     };
+}
+
+/// The IR page's dpi: the RGB's, scaled by the IR's width over the RGB's.
+pub fn irDpi(rgb_dpi: ?u32, ir_scale: f64) ?u32 {
+    const dpi = rgb_dpi orelse return null;
+    return @intFromFloat(@round(@as(f64, @floatFromInt(dpi)) * ir_scale));
 }
 
 fn monotonicNowNs() u64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+test "IR clean options size the mask by the IR's dpi and the inpaint by the RGB's" {
+    // 6400 dpi RGB with its 3200 dpi IR pass (5031 of 10063 columns).
+    const ir_dpi = irDpi(6400, 5031.0 / 10063.0);
+    try std.testing.expectEqual(@as(?u32, 3200), ir_dpi);
+    const options = irCleanOptionsForConfig(6400, ir_dpi, &.{});
+    try std.testing.expectEqual(@as(usize, 16), options.defect_mask.dilate_radius);
+    try std.testing.expectEqual(@as(usize, 24), options.defect_mask.close_radius);
+    try std.testing.expectEqual(@as(usize, 48), options.defect_mask.min_area);
+    try std.testing.expectEqual(@as(usize, 1205), options.defect_mask.blur_size);
+    try std.testing.expectEqual(@as(usize, 128), options.inpaint.padding);
+    try std.testing.expectEqual(@as(usize, 64), options.inpaint.grain_padding);
+    try std.testing.expectEqual(@as(f64, 20.0), options.inpaint.grain_sigma);
+    try std.testing.expectEqual(@as(?u32, null), irDpi(null, 0.5));
 }
 
 test "process image search uses parent directory for file inputs" {

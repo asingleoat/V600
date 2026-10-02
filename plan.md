@@ -65,6 +65,23 @@ Open:
 
 ### Bugs
 
+- IR dust removal, open points from its audit:
+  - Alignment applies whatever translation ECC returns:
+    `AlignOptions.max_offset` is never used and the correlation is not
+    checked, so a failed fit would move the whole mask off the dust.
+  - The hair detector runs at a fixed quarter of the IR's resolution with
+    ridge widths of 1-8 px there, so it does not follow the IR's dpi (it
+    suits a 3200 dpi IR pass).
+  - Closing merges specks closer than twice its radius (0.38 mm) into one
+    fill; it could close hair detections only.
+  - Dense picture areas show in the IR (the dyes absorb some infrared) and
+    can pass the threshold, so real detail gets filled (foliage on
+    KODAKGOLD_200_0 strip 1). Removing the IR's correlation with the red
+    channel before thresholding would stop it.
+  - Synthetic grain is independent per channel, where scan grain correlates
+    0.3-0.45 between channels, and its coarse part (4-16 px at 6400 dpi) is
+    about 60% of the surround's.
+  - Above 3% coverage the cap drops all cleaning for the frame.
 - `v600-ui --process-interaction-smoke` (not a build step) fails with
   ProcessInteractionSmokeFailed.
 - Loading an image, auto-detect, and export in the Process view copy the

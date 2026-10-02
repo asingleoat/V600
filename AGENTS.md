@@ -245,9 +245,14 @@ deliberately, not by accident.
 - Film stocks are 3x10 quadratic polynomials in density space with basis
   `[R, G, B, R^2, G^2, B^2, RG, RB, GB, 1]`. See
   `docs/FILM_STOCK_PROFILES.md`.
-- IR defects: threshold, dilate/close, coverage cap, inpaint.
+- IR defects: threshold, dilate/close, coverage cap, inpaint. Inpainting
+  fills each defect with a biharmonic fill of the picture (a low-pass of
+  the clean pixels around it) plus synthetic grain matched to the
+  surround's level and spectrum.
 - Parameters are defined at 800 dpi. Linear parameters scale by
-  `dpi / 800`, area parameters by `(dpi / 800)^2`.
+  `dpi / 800`, area parameters by `(dpi / 800)^2`, at the dpi of the image
+  they act on: the defect mask's sizes by the IR page's dpi (6400 dpi RGB
+  has a 3200 dpi IR pass), inpaint padding and grain sizes by the RGB's.
 
 ### Config and files
 

@@ -162,7 +162,7 @@ async function handleLoadModule(message) {
       ir_mask_options_layout: "IrMaskOptions/v1",
       ir_mask_resize_options_layout: "IrMaskResizeOptions/v1",
       ir_inpaint_options_layout: "IrInpaintOptions/v1",
-      ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v1",
+      ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v2",
       pointer_bits: wasmPointerBits,
       output_formats: ["rgb8-preview", "rgb16-export", "frame-detection", "ir-alignment", "ir-f32", "ir-mask", "rgb-mask", "cleaned-rgb16", "ir-clean-crops"],
       cache_key_schema: "v600.webapp.cache-key.v1",

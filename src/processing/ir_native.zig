@@ -16,6 +16,7 @@ pub extern fn v600_estimate_local_grain(
     width: c_int,
     height: c_int,
     grain_padding: c_int,
+    grain_sigma: f64,
     grain_std: [*]f64,
     signal_out: [*]f64,
     spectrum_out: [*]f64,

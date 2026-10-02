@@ -15,7 +15,7 @@ export const irEstimateResultSize = 24;
 export const irMaskOptionsSize = 36;
 export const irMaskResizeOptionsSize = 16;
 export const irInpaintOptionsSize = 8;
-export const irInpaintGrainOptionsSize = 16;
+export const irInpaintGrainOptionsSize = 20;
 
 export const requiredWasmExports = [
   "memory",
@@ -187,11 +187,12 @@ export function createWasmAbi(exports) {
   }
 
   function writeIrInpaintGrainOptions(ptr, options) {
-    const { u32, written } = fieldWriters(structView(ptr, irInpaintGrainOptionsSize));
+    const { u32, f32, written } = fieldWriters(structView(ptr, irInpaintGrainOptionsSize));
     u32(options.width);
     u32(options.height);
     u32(options.padding);
     u32(options.grain_padding);
+    f32(options.grain_sigma ?? 0);
     if (written() !== irInpaintGrainOptionsSize) throw new Error(`IR grain inpaint option layout wrote ${written()} bytes`);
   }
 

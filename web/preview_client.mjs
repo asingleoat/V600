@@ -2,7 +2,7 @@
 // and the headless smokes.
 
 import { scalarArrayType, sha256ArrayBuffer } from "./util.mjs";
-import { defaultDustRemovalConfig, defaultFrameDetectConfig, defaultFrameDetectOptions, defaultIrAlignOptions, defaultIrEstimateConfig, defaultIrEstimateOptions, defaultIrInpaintGrainOptions, defaultIrMaskOptions, defaultIrMaskResizeOptions, defaultPreviewOptions, defaultRenderConfig, stockIds, stockName } from "./config.mjs";
+import { defaultDustRemovalConfig, defaultFrameDetectConfig, defaultFrameDetectOptions, defaultIrAlignOptions, defaultIrEstimateConfig, defaultIrEstimateOptions, defaultIrInpaintGrainOptions, defaultIrMaskOptions, defaultIrMaskResizeOptions, defaultPreviewOptions, defaultRenderConfig, grainSettingsForDpi, stockIds, stockName } from "./config.mjs";
 import { frameCropGeometry, normalizeFrameSelection, parseRawRgb16Buffer, previewOutputGeometry, randomNoiseSeed, scalarArrayBufferToF32 } from "./geometry.mjs";
 import { buildFrameDetectCacheInput, buildIrAlignCacheInput, buildIrCleanCropCacheInput, buildIrEstimateCacheInput, buildIrInpaintCacheInput, buildIrMaskCacheInput, buildIrRgbMaskCacheInput, buildPreviewCacheInput, exportCacheKey, fileIdentity, frameDetectCacheKey, irAlignCacheKey, irCleanCropCacheKey, irEstimateCacheKey, irInpaintCacheKey, irMaskCacheKey, irRgbMaskCacheKey, previewCacheKey } from "./cache_inputs.mjs";
 import { exportVariants } from "./export_pipeline.mjs";
@@ -362,6 +362,7 @@ export class WebPreviewClient {
     rgbMaskCacheKey,
     padding = 16,
     grainPadding = 8,
+    grainSigma = 2.5,
   }) {
     await this.loadModule();
     if (rgbBuffer.byteLength !== image.width * image.height * 3 * 2) {
@@ -385,6 +386,7 @@ export class WebPreviewClient {
       mode: "biharmonic-grain",
       padding,
       grainPadding,
+      grainSigma,
       noiseHash,
     });
     const cacheKey = await irInpaintCacheKey(cacheInput);
@@ -412,9 +414,9 @@ export class WebPreviewClient {
         } : {}),
       },
       options: {
-        ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v1",
+        ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v2",
         ir_inpaint_grain_options: {
-          ...defaultIrInpaintGrainOptions({ image, padding, grainPadding }),
+          ...defaultIrInpaintGrainOptions({ image, padding, grainPadding, grainSigma }),
           noise_seed: noiseSeed,
         },
       },
@@ -507,7 +509,8 @@ export class WebPreviewClient {
     noiseBuffer = null,
     alignIr = true,
     estimator = defaultIrEstimateConfig(),
-    grainPadding = 8,
+    grainPadding = grainSettingsForDpi(image?.dpi).grainPadding,
+    grainSigma = grainSettingsForDpi(image?.dpi).grainSigma,
   }) {
     await this.loadModule();
     if (!variant.needs_ir) throw new Error(`variant ${variant.id} does not use IR cleaning`);
@@ -608,6 +611,7 @@ export class WebPreviewClient {
       rgbMaskCacheKey: rgbMask.cacheKey,
       padding,
       grainPadding,
+      grainSigma,
     });
     const cleanTimings = alignmentTimings
       .concat(cropped.timings)

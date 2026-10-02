@@ -468,7 +468,9 @@ fn runExport(
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
     const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
-    const ir_clean_options = workflow.irCleanOptionsForConfig(current_dpi, overrides);
+    const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0;
+    const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0;
+    const ir_clean_options = workflow.irCleanOptionsForConfig(current_dpi, workflow.irDpi(current_dpi, ir_scale_x), overrides);
     var written = std.array_list.Managed([]u8).init(allocator);
     defer {
         for (written.items) |name| allocator.free(name);
@@ -508,8 +510,8 @@ fn runExport(
             rect,
             pages.rgb,
             aligned_ir,
-            if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0,
-            if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0,
+            ir_scale_x,
+            ir_scale_y,
             .{
                 .outputs = options.outputs,
                 .paths = paths.paths,

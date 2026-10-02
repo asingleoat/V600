@@ -10,6 +10,7 @@ import {
   supportsWasm64,
   defaultDustRemovalConfig,
   dustRemovalForDpi,
+  irDpiForImage,
   drawRgb8ToCanvas,
   enabledExportVariants,
   exportNativeVariantResults,
@@ -489,7 +490,7 @@ async function exportCurrentInput() {
     percentileSampleLimit: Number.parseInt(elements.sampleLimit.value, 10),
     frameSelections,
     variants,
-    dustRemoval: currentDustRemovalConfig(source.dpi),
+    dustRemoval: currentDustRemovalConfig(source.dpi, irDpiForImage(image, source.dpi)),
     transferInput: true,
   });
   for (const item of exported) {
@@ -564,7 +565,7 @@ function currentRenderConfig() {
   });
 }
 
-function currentDustRemovalConfig(dpi) {
+function currentDustRemovalConfig(dpi, irDpi) {
   return dustRemovalForDpi(defaultDustRemovalConfig({
     ir_threshold: Number.parseFloat(elements.irThreshold.value),
     ir_hair_sensitivity: Number.parseFloat(elements.irHair.value),
@@ -573,7 +574,7 @@ function currentDustRemovalConfig(dpi) {
     ir_min_area: Number.parseInt(elements.irMinArea.value, 10),
     ir_max_coverage: Number.parseFloat(elements.irMaxCoverage.value),
     inpaint_padding: Number.parseInt(elements.irPadding.value, 10),
-  }), dpi);
+  }), dpi, irDpi);
 }
 
 // Without a rebate or a typed value, use the whole image's Dmin rather than

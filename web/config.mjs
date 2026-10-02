@@ -46,17 +46,28 @@ export function defaultDustRemovalConfig(overrides = {}) {
 // Dust-removal values are given at 800 dpi. Scale them to the scan: linear
 // sizes with dpi, ir_min_area with its square, truncating to integers and
 // keeping the blur size odd, as src/processing/config.zig getParam does.
-export function dustRemovalForDpi(dustRemoval, dpi) {
-  if (!Number.isFinite(dpi) || dpi <= 0) return dustRemoval;
-  const scale = dpi / 800;
-  return {
-    ...dustRemoval,
-    ir_min_area: Math.trunc(dustRemoval.ir_min_area * scale * scale),
-    ir_dilate_radius: Math.trunc(dustRemoval.ir_dilate_radius * scale),
-    ir_close_radius: Math.trunc(dustRemoval.ir_close_radius * scale),
-    ir_blur_size: Math.trunc(dustRemoval.ir_blur_size * scale) | 1,
-    inpaint_padding: Math.trunc(dustRemoval.inpaint_padding * scale),
-  };
+// The defect mask is built on the IR page, which may be scanned at a lower
+// resolution than the RGB (6400 dpi RGB has a 3200 dpi IR pass), so its
+// sizes follow the IR's dpi; the inpaint padding follows the RGB's.
+export function dustRemovalForDpi(dustRemoval, dpi, irDpi = dpi) {
+  const scaled = { ...dustRemoval };
+  if (Number.isFinite(irDpi) && irDpi > 0) {
+    const scale = irDpi / 800;
+    scaled.ir_min_area = Math.trunc(dustRemoval.ir_min_area * scale * scale);
+    scaled.ir_dilate_radius = Math.trunc(dustRemoval.ir_dilate_radius * scale);
+    scaled.ir_close_radius = Math.trunc(dustRemoval.ir_close_radius * scale);
+    scaled.ir_blur_size = Math.trunc(dustRemoval.ir_blur_size * scale) | 1;
+  }
+  if (Number.isFinite(dpi) && dpi > 0) {
+    scaled.inpaint_padding = Math.trunc(dustRemoval.inpaint_padding * dpi / 800);
+  }
+  return scaled;
+}
+
+// The IR page's dpi: the RGB's, scaled by the IR's width over the RGB's.
+export function irDpiForImage(image, dpi) {
+  if (!Number.isFinite(dpi) || !image?.ir?.width || !image.width) return dpi;
+  return Math.round(dpi * image.ir.width / image.width);
 }
 
 export function defaultPreviewOptions({
@@ -133,13 +144,22 @@ export function defaultIrMaskResizeOptions({ image }) {
   };
 }
 
-export function defaultIrInpaintGrainOptions({ image, padding = 16, grainPadding = 8 }) {
+export function defaultIrInpaintGrainOptions({ image, padding = 16, grainPadding = 8, grainSigma = 2.5 }) {
   return {
     width: image.width,
     height: image.height,
     padding,
     grain_padding: grainPadding,
+    grain_sigma: grainSigma,
   };
+}
+
+// Grain around a defect is told from the picture at 2.5 px and measured in
+// a ring 8 px wide, both at 800 dpi, as src/processing/workflow.zig
+// irCleanOptionsForConfig scales them for the RGB.
+export function grainSettingsForDpi(dpi) {
+  const scale = Number.isFinite(dpi) && dpi > 0 ? dpi / 800 : 1;
+  return { grainPadding: Math.trunc(8 * scale), grainSigma: 2.5 * scale };
 }
 
 export function defaultIrEstimateConfig(overrides = {}) {

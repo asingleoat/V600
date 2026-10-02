@@ -16,6 +16,8 @@ import {
   defaultFrameDetectConfig,
   defaultDustRemovalConfig,
   dustRemovalForDpi,
+  irDpiForImage,
+  grainSettingsForDpi,
   supportsWasm64,
   defaultOutputSelection,
   enabledExportVariants,
@@ -577,6 +579,7 @@ try {
     mode: "biharmonic-grain",
     padding: grainFixture.padding,
     grainPadding: grainFixture.grain_padding,
+    grainSigma: 2.5,
     noiseHash: grainNoiseFile.content_hash,
   });
   const expectedGrainKey = await irInpaintCacheKey(grainCacheInput);
@@ -609,6 +612,7 @@ try {
     mode: "biharmonic-grain",
     padding: grainFixture.padding,
     grainPadding: grainFixture.grain_padding,
+    grainSigma: 2.5,
     noiseHash: `seed:${seededNoise}`,
   });
   const seededGrainKey = await irInpaintCacheKey(seededGrainCacheInput);
@@ -688,6 +692,7 @@ try {
     alignIr: false,
     variant: exportVariants.irNeg,
     grainPadding: cleanFixture.grain_padding,
+    grainSigma: 2.5,
   });
   assert.equal(cleanResult.mode, "biharmonic-grain");
   assert.ok(cleanResult.timings.some((timing) => timing.stage === "worker.crop-ir-clean-rgb16"));
@@ -749,6 +754,7 @@ try {
     alignIr: false,
     variant: exportVariants.irInv,
     grainPadding: cleanFixture.grain_padding,
+    grainSigma: 2.5,
   });
   let cleanInvMaxAbs = 0;
   for (let index = 0; index < cleanInvResult.rgb16.length; index += 1) {
@@ -956,6 +962,20 @@ try {
   assert.equal(dust3200.ir_threshold, defaultDustRemovalConfig().ir_threshold);
   assert.equal(dustRemovalForDpi(defaultDustRemovalConfig(), 400).ir_blur_size, 151);
   assert.deepEqual(dustRemovalForDpi(defaultDustRemovalConfig(), null), defaultDustRemovalConfig());
+  // 6400 dpi RGB with a 3200 dpi IR pass: the mask's sizes follow the IR's
+  // dpi, the inpaint padding the RGB's.
+  const irDpi = irDpiForImage({ width: 10063, ir: { width: 5031 } }, 6400);
+  assert.equal(irDpi, 3200);
+  const dust6400 = dustRemovalForDpi(defaultDustRemovalConfig(), 6400, irDpi);
+  assert.equal(dust6400.ir_min_area, 48);
+  assert.equal(dust6400.ir_dilate_radius, 16);
+  assert.equal(dust6400.ir_close_radius, 24);
+  assert.equal(dust6400.ir_blur_size, 1205);
+  assert.equal(dust6400.inpaint_padding, 128);
+  assert.equal(irDpiForImage({ width: 100 }, 800), 800);
+  // Grain sizes around a defect follow the RGB's dpi like the native export.
+  assert.deepEqual(grainSettingsForDpi(6400), { grainPadding: 64, grainSigma: 20 });
+  assert.deepEqual(grainSettingsForDpi(null), { grainPadding: 8, grainSigma: 2.5 });
 
   // Whole-image Dmin fallback: exact for small images, strided sampling for large ones.
   const dminImage = { width: 2, height: 2 };
