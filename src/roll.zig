@@ -302,6 +302,9 @@ pub const Roll = struct {
         const parsed = std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true }) catch return true;
         defer parsed.deinit();
         const exported_manual = std.mem.eql(u8, parsed.value.framing, "manual");
+        // An export that passed hand frames over stays current until they
+        // change.
+        const ignored = std.mem.eql(u8, parsed.value.framing, "ignored");
 
         const framing_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, framing_suffix }) catch return true;
         defer allocator.free(framing_path);
@@ -311,7 +314,7 @@ pub const Roll = struct {
             else => return true,
         };
         defer allocator.free(framing_text);
-        if (!exported_manual) return true;
+        if (!exported_manual and !ignored) return true;
         if (parsed.value.framing_hash) |recorded| {
             var current: [16]u8 = undefined;
             _ = std.fmt.bufPrint(&current, "{x:0>16}", .{std.hash.Wyhash.hash(0, framing_text)}) catch return true;
@@ -340,8 +343,9 @@ pub const Roll = struct {
 
         const preview = try workflow.loadQuickPreview(allocator, strip_path, options.preview_size);
         defer preview.deinit(allocator);
-        const framing = try self.loadFraming(io, strip_path);
-        defer if (framing) |owned| owned.deinit(allocator);
+        const saved_framing = try self.loadFraming(io, strip_path);
+        defer if (saved_framing) |owned| owned.deinit(allocator);
+        const framing = if (options.ignore_framing) null else saved_framing;
         try self.removePreviousExports(io, strip_path);
         // Hand-placed frames still use detection for the rebate, but not
         // when detection fails outright.
@@ -370,7 +374,8 @@ pub const Roll = struct {
         var outcome = StripOutcome{
             .frames = rects.len,
             .manual = framing != null,
-            .framing_hash = if (framing) |owned| owned.hash else null,
+            .framing_ignored = framing == null and saved_framing != null,
+            .framing_hash = if (saved_framing) |owned| owned.hash else null,
             .dmin_source = if (rebate_rect != null) "rebate" else if (use_roll_dmin) "roll" else "image",
             .files = &.{},
         };
@@ -495,6 +500,18 @@ pub const Roll = struct {
         return rects;
     }
 
+    /// The strip's last export used detection although it has hand frames.
+    pub fn exportIgnoredFraming(self: *const Roll, io: std.Io, strip_path: []const u8) bool {
+        const allocator = self.allocator;
+        const marker_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, processed_suffix }) catch return false;
+        defer allocator.free(marker_path);
+        const marker_text = std.Io.Dir.cwd().readFileAlloc(io, marker_path, allocator, .limited(64 * 1024)) catch return false;
+        defer allocator.free(marker_text);
+        const parsed = std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true }) catch return false;
+        defer parsed.deinit();
+        return std.mem.eql(u8, parsed.value.framing, "ignored");
+    }
+
     pub fn hasFraming(self: *const Roll, io: std.Io, strip_path: []const u8) bool {
         const framing_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ strip_path, framing_suffix }) catch return false;
         defer self.allocator.free(framing_path);
@@ -563,7 +580,8 @@ pub const Roll = struct {
     fn writeMarker(self: *const Roll, io: std.Io, strip_path: []const u8, outcome: StripOutcome) !void {
         var out = std.array_list.Managed(u8).init(self.allocator);
         defer out.deinit();
-        try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, if (outcome.manual) "manual" else "auto", outcome.dmin_source });
+        const framing = if (outcome.manual) "manual" else if (outcome.framing_ignored) "ignored" else "auto";
+        try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, framing, outcome.dmin_source });
         try appendTriple(&out, "dmin", outcome.dmin);
         if (outcome.framing_hash) |hash| try out.print(",\n  \"framing_hash\": \"{x:0>16}\"", .{hash});
         try out.appendSlice(",\n  \"files\": [");
@@ -664,7 +682,12 @@ pub const Roll = struct {
                 if (std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true })) |parsed| {
                     defer parsed.deinit();
                     const m = parsed.value;
-                    const by_hand = if (std.mem.eql(u8, m.framing, "manual")) " placed by hand" else "";
+                    const by_hand = if (std.mem.eql(u8, m.framing, "manual"))
+                        " placed by hand"
+                    else if (std.mem.eql(u8, m.framing, "ignored"))
+                        " detected (frames placed by hand not used)"
+                    else
+                        "";
                     try out.print("{d} frame{s}{s}, Dmin from {s}", .{ m.frames, if (m.frames == 1) "" else "s", by_hand, m.dmin_source });
                     if (m.dmin) |dmin| try out.print(" ({d:.3} / {d:.3} / {d:.3})", .{ dmin[0], dmin[1], dmin[2] });
                     try out.appendSlice("<br><span class=files>");
@@ -904,6 +927,10 @@ pub const ProcessOptions = struct {
     outputs: export_pipeline.OutputSelection = .{},
     invert_request: webgpu.Request = .{},
     progress_sink: ?workflow.ExportProgressSink = null,
+    /// Export detected frames even where frames were placed by hand. The
+    /// saved frames stay on disk, and the export records that it passed
+    /// them over.
+    ignore_framing: bool = false,
 };
 
 pub const FrameRect = export_pipeline.FrameRect;
@@ -950,6 +977,8 @@ pub const StripOutcome = struct {
     frames: usize,
     /// The frames came from the strip's framing file, not detection.
     manual: bool = false,
+    /// Detection was exported although the strip has a framing file.
+    framing_ignored: bool = false,
     framing_hash: ?u64 = null,
     dmin: ?[3]f64 = null,
     /// "rebate" (this strip), "roll" (another strip's), or "image".
@@ -1614,6 +1643,34 @@ test "a strip needs exporting until exported, and again when its saved frames ch
     try std.Io.Dir.cwd().deleteFile(io, framing_path);
     try std.testing.expect(roll.needsExport(io, strip));
     try std.testing.expectError(error.NoFrameFitsStrip, roll.processStrip(io, strip, options));
+    try std.testing.expect(roll.needsExport(io, strip));
+}
+
+test "an export that ignores hand frames stays current until they change" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "ignored", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    // 38 x 51 mm at 800 dpi: room for one 35mm frame.
+    try writeFeaturelessStrip(allocator, strip, 1200, 1600);
+    try roll.saveFraming(io, strip, .{ .frames = &.{.{ .cx = 600.0, .cy = 800.0, .w = 700.0, .h = 1100.0 }} });
+
+    const outcome = try roll.processStrip(io, strip, .{ .processing_config_path = "no-such-config.toml", .ignore_framing = true });
+    defer outcome.deinit(allocator);
+    try std.testing.expect(!outcome.manual);
+    try std.testing.expect(outcome.framing_ignored);
+    try std.testing.expect(roll.hasFraming(io, strip));
+    try std.testing.expect(roll.exportIgnoredFraming(io, strip));
+    try std.testing.expect(!roll.needsExport(io, strip));
+
+    // Editing the hand frames asks for an export with them.
+    try roll.saveFraming(io, strip, .{ .frames = &.{.{ .cx = 601.0, .cy = 800.0, .w = 700.0, .h = 1100.0 }} });
     try std.testing.expect(roll.needsExport(io, strip));
 }
 

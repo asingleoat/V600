@@ -82,8 +82,11 @@ pub fn printUsage() void {
         \\  scan [--roll NAME] [--once] [--no-process]
         \\                                 scan strips one at a time (preview, film area, roll
         \\                                 LUT, full scan) and process each in the background
-        \\  export [--roll NAME] [--force] export every strip not exported yet or whose saved frames
-        \\                                 changed since; --force re-exports them all
+        \\  export [--roll NAME] [--force] [--ignore-framing]
+        \\                                 export every strip not exported yet or whose saved frames
+        \\                                 changed since; --force re-exports them all;
+        \\                                 --ignore-framing exports detected frames where frames were
+        \\                                 placed by hand (those stay saved and count again once edited)
         \\  review [--roll NAME] [--open]  rewrite the roll's review page and print its path
         \\  check-frames [--roll NAME] [--verified N[,N...]]
         \\                                 detect each strip's frames and compare them with the
@@ -156,7 +159,12 @@ fn printStatus(allocator: std.mem.Allocator, io: std.Io, roll: *const Roll, stdo
         try stdout.print("  {s}  {s}{s}\n", .{
             std.fs.path.basename(strip),
             if (!roll.isProcessed(io, strip)) "not processed" else if (roll.needsExport(io, strip)) "frames changed since its export" else "processed",
-            if (roll.hasFraming(io, strip)) ", frames placed by hand" else "",
+            if (!roll.hasFraming(io, strip))
+                ""
+            else if (roll.exportIgnoredFraming(io, strip))
+                ", frames placed by hand (not used by this export)"
+            else
+                ", frames placed by hand",
         });
     }
 }
@@ -165,13 +173,14 @@ fn runExport(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
     var roll = try openRoll(allocator, io, rollOption(argv));
     defer roll.deinit();
     const force = hasFlag(argv, "--force");
+    const ignore_framing = hasFlag(argv, "--ignore-framing");
     var strips = try roll.listStrips(io);
     defer strips.deinit(allocator);
     var processed: usize = 0;
     for (strips.paths) |strip| {
         if (!force and !roll.needsExport(io, strip)) continue;
         const started = nowSeconds(io);
-        const outcome = roll.processStrip(io, strip, .{}) catch |err| {
+        const outcome = roll.processStrip(io, strip, .{ .ignore_framing = ignore_framing }) catch |err| {
             try stdout.print("{s}: failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
             try stdout.flush();
             continue;
