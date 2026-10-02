@@ -916,13 +916,12 @@ fn benchAutoDetectBreakdown(
         },
     );
     try stdout.print(
-        ";rotate_us={d};clahe_us={d};axis_total_us={d};analyze_us={d};profiles_us={d};gradients_us={d};fit_us={d};frames_from_edges_us={d};angle_us={d};cross_strip_us={d};transform_back_us={d};postprocess_us={d};rotated={};frames={d};aspect={s};checksum={d};reference_checksum={d};frame_max_abs={d:.9};rebate_max_abs={d:.9};mismatches={d}\n",
+        ";rotate_us={d};clahe_us={d};axis_total_us={d};analyze_us={d};gradients_us={d};fit_us={d};frames_from_edges_us={d};angle_us={d};cross_strip_us={d};transform_back_us={d};postprocess_us={d};rotated={};frames={d};aspect={s};checksum={d};reference_checksum={d};frame_max_abs={d:.9};rebate_max_abs={d:.9};mismatches={d}\n",
         .{
             breakdown.rotate_ns / std.time.ns_per_us,
             breakdown.clahe_ns / std.time.ns_per_us,
             breakdown.axis_total_ns / std.time.ns_per_us,
             breakdown.analyze_ns / std.time.ns_per_us,
-            breakdown.profiles_ns / std.time.ns_per_us,
             breakdown.gradients_ns / std.time.ns_per_us,
             breakdown.fit_ns / std.time.ns_per_us,
             breakdown.frames_from_edges_ns / std.time.ns_per_us,
