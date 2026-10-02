@@ -209,8 +209,9 @@ deliberately, not by accident.
   the scan's DPI scale (the film's measured width when there is no DPI):
   one frame length per strip within 6% of the format's (cameras differ),
   gaps within the format's range that may differ between every pair of
-  frames (35mm 0.2-6 mm, 120 0.5-12 mm), a soft pull toward the strip's
-  usual gap where a frame's edges barely show, and edges scored by
+  frames (35mm 0.2-6 mm, 120 0.5-12 mm), a weak pull toward the format's
+  pitch and then toward the strip's usual gap, which places frames whose
+  edges barely show (dark frames, taped ends), and edges scored by
   direction (brightness changes one way entering a frame and the other
   leaving it); fewer frames when the strip's length promised more than
   fit. Across the strip, the frame width measured per strip within the

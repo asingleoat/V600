@@ -1108,12 +1108,20 @@ fn fitFramesAlongStrip(
 
     var scratch = try FrameFitScratch.init(allocator, len, frame_count);
     defer scratch.deinit(allocator);
+    const typical_edge = try typicalEdgeStrength(allocator, evidence, frame_count);
+    // Cameras advance about the format's pitch; a weak pull toward it keeps
+    // frames whose edges barely show from sliding off to stronger edges
+    // (tape, the end of the film) while visible edges still decide.
+    const nominal_prior = GapPrior{
+        .step = format.pitch_mm * px_per_mm,
+        .per_px = nominal_pitch_prior_per_mm * typical_edge / px_per_mm,
+    };
     const nominal = roundToUsize(along_px);
     var best_length: ?usize = null;
     var best_score = -std.math.inf(f64);
     var length = length_lo;
     while (length <= length_hi) : (length += length_step) {
-        const pass = fitFramesPass(evidence, frame_count, length, length + gap_lo, length + gap_hi, &scratch, false, null) orelse continue;
+        const pass = fitFramesPass(evidence, frame_count, length, length + gap_lo, length + gap_hi, &scratch, false, nominal_prior) orelse continue;
         const closer = if (best_length) |best| absDiffUsize(length, nominal) < absDiffUsize(best, nominal) else true;
         if (pass.score > best_score or (pass.score == best_score and closer)) {
             best_score = pass.score;
@@ -1125,32 +1133,50 @@ fn fitFramesAlongStrip(
     const step_hi = frame_length + gap_hi;
     const edges = try allocator.alloc(usize, frame_count * 2);
     errdefer allocator.free(edges);
-    var pass = fitFramesPass(evidence, frame_count, frame_length, step_lo, step_hi, &scratch, true, null).?;
+    var pass = fitFramesPass(evidence, frame_count, frame_length, step_lo, step_hi, &scratch, true, nominal_prior).?;
     traceFrameEdges(scratch, len, pass.last_start, frame_length, edges);
 
     // Gaps differ frame to frame, but where a frame's edges barely show (a
-    // dark frame beside the film base) the strip's usual gap places it.
-    if (frame_count >= 3 and frame_count <= max_fit_frames) {
+    // dark frame beside the film base) this strip's usual gap places it.
+    if (frame_count >= 3 and frame_count <= max_fit_frames and typical_edge > 0.0) {
         var gaps: [max_fit_frames]f64 = undefined;
-        var strengths: [2 * max_fit_frames]f64 = undefined;
-        var strength_count: usize = 0;
         for (0..frame_count - 1) |index| {
             gaps[index] = @floatFromInt(edges[2 * index + 2] - edges[2 * index + 1]);
-            strengths[strength_count] = evidence.end[edges[2 * index + 1]];
-            strengths[strength_count + 1] = evidence.start[edges[2 * index + 2]];
-            strength_count += 2;
         }
         const usual_gap = medianInPlace(gaps[0 .. frame_count - 1]);
-        const typical_edge = medianInPlace(strengths[0..strength_count]);
-        if (typical_edge > 0.0) {
-            pass = fitFramesPass(evidence, frame_count, frame_length, step_lo, step_hi, &scratch, true, .{
-                .step = @as(f64, @floatFromInt(frame_length)) + usual_gap,
-                .per_px = gap_prior_per_mm * typical_edge / px_per_mm,
-            }).?;
-            traceFrameEdges(scratch, len, pass.last_start, frame_length, edges);
-        }
+        pass = fitFramesPass(evidence, frame_count, frame_length, step_lo, step_hi, &scratch, true, .{
+            .step = @as(f64, @floatFromInt(frame_length)) + usual_gap,
+            .per_px = gap_prior_per_mm * typical_edge / px_per_mm,
+        }).?;
+        traceFrameEdges(scratch, len, pass.last_start, frame_length, edges);
     }
     return edges;
+}
+
+/// How strong a frame edge on this strip is: the median of the strongest
+/// `frame_count` peaks of the start evidence and of the end evidence.
+fn typicalEdgeStrength(allocator: std.mem.Allocator, evidence: FrameEdgeEvidence, frame_count: usize) !f64 {
+    var strongest = std.array_list.Managed(f64).init(allocator);
+    defer strongest.deinit();
+    var peaks = std.array_list.Managed(f64).init(allocator);
+    defer peaks.deinit();
+    for ([_][]const f64{ evidence.start, evidence.end }) |values| {
+        peaks.clearRetainingCapacity();
+        if (values.len >= 3) {
+            for (1..values.len - 1) |index| {
+                const value = values[index];
+                if (value > 0.0 and value >= values[index - 1] and value > values[index + 1]) try peaks.append(value);
+            }
+        }
+        std.sort.pdq(f64, peaks.items, {}, greaterThanF64);
+        try strongest.appendSlice(peaks.items[0..@min(frame_count, peaks.items.len)]);
+    }
+    if (strongest.items.len == 0) return 0.0;
+    return medianInPlace(strongest.items);
+}
+
+fn greaterThanF64(_: void, lhs: f64, rhs: f64) bool {
+    return lhs > rhs;
 }
 
 fn traceFrameEdges(scratch: FrameFitScratch, len: usize, last_start: usize, frame_length: usize, edges: []usize) void {
@@ -1172,11 +1198,15 @@ fn medianInPlace(values: []f64) f64 {
 /// What a gap costs per millimetre away from the strip's usual gap, in
 /// typical edges: far less than moving off a visible edge.
 const gap_prior_per_mm = 0.5;
+/// What a pitch costs per millimetre away from the format's, in typical
+/// edges, while the strip's own spacing is still unknown.
+const nominal_pitch_prior_per_mm = 0.15;
 const max_fit_frames = 32;
 
 const GapPrior = struct {
-    /// Frame start to frame start at the usual gap, in pixels.
+    /// Frame start to frame start that costs nothing, in pixels.
     step: f64,
+    /// Cost per pixel of step away from it.
     per_px: f64,
 };
 
@@ -1188,6 +1218,7 @@ const FrameFitScratch = struct {
     previous: []f64,
     current: []f64,
     queue: []usize,
+    queue_short: []usize,
     /// For each frame after the first and each start, the best start of the
     /// frame before it.
     parents: []usize,
@@ -1201,8 +1232,10 @@ const FrameFitScratch = struct {
         errdefer allocator.free(current);
         const queue = try allocator.alloc(usize, len);
         errdefer allocator.free(queue);
+        const queue_short = try allocator.alloc(usize, len);
+        errdefer allocator.free(queue_short);
         const parents = try allocator.alloc(usize, len * frame_count);
-        return .{ .frame_score = frame_score, .previous = previous, .current = current, .queue = queue, .parents = parents };
+        return .{ .frame_score = frame_score, .previous = previous, .current = current, .queue = queue, .queue_short = queue_short, .parents = parents };
     }
 
     fn deinit(self: *FrameFitScratch, allocator: std.mem.Allocator) void {
@@ -1210,6 +1243,7 @@ const FrameFitScratch = struct {
         allocator.free(self.previous);
         allocator.free(self.current);
         allocator.free(self.queue);
+        allocator.free(self.queue_short);
         allocator.free(self.parents);
         self.* = undefined;
     }
@@ -1226,8 +1260,10 @@ const FrameFitPass = struct {
 const outer_edge_weight = 0.5;
 
 /// Best total edge score for frames of `length`, by dynamic programming over
-/// frame starts; a sliding-window maximum over the allowed pitches keeps
-/// each frame one pass over the strip.
+/// frame starts, less the prior's cost for each step between frames. The
+/// cost is linear either side of the prior's step, so sliding-window maxima
+/// over the longer and the shorter steps keep each frame one pass over the
+/// strip.
 fn fitFramesPass(
     evidence: FrameEdgeEvidence,
     frame_count: usize,
@@ -1236,67 +1272,96 @@ fn fitFramesPass(
     step_hi: usize,
     scratch: *FrameFitScratch,
     record_parents: bool,
-    gap_prior: ?GapPrior,
+    prior: GapPrior,
 ) ?FrameFitPass {
     const len = evidence.start.len;
     if (length >= len) return null;
     const start_count = len - length;
-    const no_fit = -std.math.inf(f64);
     var previous = scratch.previous[0..start_count];
     var current = scratch.current[0..start_count];
     const last_end_weight: f64 = if (frame_count == 1) outer_edge_weight else 1.0;
     for (0..start_count) |x| previous[x] = outer_edge_weight * evidence.start[x] + last_end_weight * evidence.end[x + length];
 
+    // Steps at or past the prior's step cost more the longer they are,
+    // shorter ones the shorter they are.
+    const split = roundToUsize(@ceil(@max(prior.step, 0.0)));
+    const long_near = @max(step_lo, split);
+    const short_far = if (split > 0) @min(step_hi, split - 1) else 0;
+    const has_long = long_near <= step_hi;
+    const has_short = split > step_lo and short_far >= step_lo;
     for (1..frame_count) |frame| {
         const end_weight: f64 = if (frame == frame_count - 1) outer_edge_weight else 1.0;
         for (0..start_count) |x| scratch.frame_score[x] = evidence.start[x] + end_weight * evidence.end[x + length];
-        if (gap_prior) |prior| {
-            for (0..start_count) |x| {
-                current[x] = no_fit;
-                if (x < step_lo) continue;
-                const oldest = if (x > step_hi) x - step_hi else 0;
-                for (oldest..x - step_lo + 1) |parent| {
-                    if (previous[parent] == no_fit) continue;
+        var long_steps = StepWindow{ .queue = scratch.queue, .slope = prior.per_px };
+        var short_steps = StepWindow{ .queue = scratch.queue_short, .slope = -prior.per_px };
+        for (0..start_count) |x| {
+            current[x] = no_fit_score;
+            var best = no_fit_score;
+            var best_parent: usize = 0;
+            if (has_long) {
+                if (long_steps.best(previous, x, long_near, step_hi)) |parent| {
                     const step: f64 = @floatFromInt(x - parent);
-                    const score = scratch.frame_score[x] + previous[parent] - prior.per_px * @abs(step - prior.step);
-                    if (score > current[x]) {
-                        current[x] = score;
-                        if (record_parents) scratch.parents[frame * len + x] = parent;
+                    const score = previous[parent] - prior.per_px * (step - prior.step);
+                    if (score > best) {
+                        best = score;
+                        best_parent = parent;
                     }
                 }
             }
-            std.mem.swap([]f64, &previous, &current);
-            continue;
-        }
-        var head: usize = 0;
-        var tail: usize = 0;
-        var next: usize = 0;
-        for (0..start_count) |x| {
-            current[x] = no_fit;
-            if (x < step_lo) continue;
-            while (next <= x - step_lo) : (next += 1) {
-                if (previous[next] == no_fit) continue;
-                while (tail > head and previous[scratch.queue[tail - 1]] <= previous[next]) tail -= 1;
-                scratch.queue[tail] = next;
-                tail += 1;
+            if (has_short) {
+                if (short_steps.best(previous, x, step_lo, short_far)) |parent| {
+                    const step: f64 = @floatFromInt(x - parent);
+                    const score = previous[parent] - prior.per_px * (prior.step - step);
+                    if (score > best) {
+                        best = score;
+                        best_parent = parent;
+                    }
+                }
             }
-            const oldest = if (x > step_hi) x - step_hi else 0;
-            while (tail > head and scratch.queue[head] < oldest) head += 1;
-            if (tail == head) continue;
-            const parent = scratch.queue[head];
-            current[x] = scratch.frame_score[x] + previous[parent];
-            if (record_parents) scratch.parents[frame * len + x] = parent;
+            if (best == no_fit_score) continue;
+            current[x] = scratch.frame_score[x] + best;
+            if (record_parents) scratch.parents[frame * len + x] = best_parent;
         }
         std.mem.swap([]f64, &previous, &current);
     }
 
-    var best: ?FrameFitPass = null;
+    var result: ?FrameFitPass = null;
     for (previous, 0..) |score, x| {
-        if (score == no_fit) continue;
-        if (best == null or score > best.?.score) best = .{ .score = score, .last_start = x };
+        if (score == no_fit_score) continue;
+        if (result == null or score > result.?.score) result = .{ .score = score, .last_start = x };
     }
-    return best;
+    return result;
 }
+
+const no_fit_score = -std.math.inf(f64);
+
+/// The earlier frame start, `near` to `far` before x, with the highest
+/// score plus `slope` per pixel of its position; x rises by one each call.
+const StepWindow = struct {
+    queue: []usize,
+    slope: f64,
+    head: usize = 0,
+    tail: usize = 0,
+    next: usize = 0,
+
+    fn key(self: StepWindow, values: []const f64, index: usize) f64 {
+        return values[index] + self.slope * @as(f64, @floatFromInt(index));
+    }
+
+    fn best(self: *StepWindow, values: []const f64, x: usize, near: usize, far: usize) ?usize {
+        if (x < near) return null;
+        while (self.next <= x - near) : (self.next += 1) {
+            if (values[self.next] == no_fit_score) continue;
+            const value = self.key(values, self.next);
+            while (self.tail > self.head and self.key(values, self.queue[self.tail - 1]) <= value) self.tail -= 1;
+            self.queue[self.tail] = self.next;
+            self.tail += 1;
+        }
+        const oldest = x -| far;
+        while (self.tail > self.head and self.queue[self.head] < oldest) self.head += 1;
+        return if (self.tail > self.head) self.queue[self.head] else null;
+    }
+};
 
 /// Frames on one strip lie within a fraction of a degree of each other, so
 /// an angle more than a degree from the strip's median is a bad edge fit.
