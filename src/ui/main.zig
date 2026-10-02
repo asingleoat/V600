@@ -1836,7 +1836,7 @@ fn handleProcessSelectionEvent(
         transform.panning = false;
         return;
     }
-    if (process_worker.isRunning() or !model.processPreviewInteractionReady()) {
+    if (process_worker.blocksSelectionEdits() or !model.processPreviewInteractionReady()) {
         interaction.end();
         transform.panning = false;
         return;

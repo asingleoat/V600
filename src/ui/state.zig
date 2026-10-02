@@ -1753,6 +1753,9 @@ pub const State = struct {
         dmin: [3]f64,
     ) !bool {
         if (!self.processingOwnerMatches(generation, path)) return false;
+        // The rebate moved while this one was measured: the newer box is
+        // measured next, and this result would undo it.
+        if (self.process_rebate_dmin_pending) return false;
         self.processing.rebate_rect = rect;
         try self.applyProcessDminConfig(dmin);
         self.applyProcessRebateDmin(allocator, dmin);

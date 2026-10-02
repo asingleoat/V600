@@ -65,6 +65,8 @@ Open:
 
 ### Bugs
 
+- `v600-ui --process-interaction-smoke` (not a build step) fails with
+  ProcessInteractionSmokeFailed.
 - Loading an image, auto-detect, and export in the Process view copy the
   cached RGB page on the UI thread before starting their worker
   (`getCachedRgbPage`, `rgb_pages.getClone`). Pages over the 1 GiB cache

@@ -91,6 +91,13 @@ pub const Worker = struct {
         return self.context != null and !self.done.load(.acquire);
     }
 
+    /// Loading an image or auto-detecting replaces the frames being edited;
+    /// measuring Dmin does not, so frames and the rebate stay editable.
+    pub fn blocksSelectionEdits(self: Worker) bool {
+        const context = self.context orelse return false;
+        return self.isRunning() and context.operation != .rebate;
+    }
+
     pub fn takeLastAutoAspect(self: *Worker) ?[]const u8 {
         if (self.last_auto_aspect_len == 0) return null;
         const aspect = self.last_auto_aspect_buffer[0..self.last_auto_aspect_len];
@@ -1053,6 +1060,33 @@ test "rebate edits leave a resident RGB page in the cache" {
     try std.testing.expect(try worker.startRebateFromState(&model, "scratchndent_config.toml"));
     try waitForPoll(&worker, &model);
     try std.testing.expectApproxEqAbs(0.8, model.processing.dmin.?[1], 0.0);
+}
+
+test "a Dmin result for a rebate moved since it was requested is dropped" {
+    var model = ui_state.State.init("scans", "frames", 0);
+    defer model.deinit(std.testing.allocator);
+    model.processing_images.paths = try std.testing.allocator.alloc([]u8, 1);
+    model.processing_images.paths[0] = try std.testing.allocator.dupe(u8, "scans/scan_rebate_moved.tiff");
+    model.processing.image_count = 1;
+    const generation = model.beginProcessingImageLoadRequest(model.processing_images.paths[0], 0);
+    var preview: ?processing_workflow.QuickPreview = try fakePreview(std.testing.allocator, 4, 3, 0.5);
+    try std.testing.expect(model.finishProcessingImageLoadResult(std.testing.allocator, generation, 0, model.processing_images.paths[0], &preview));
+    try std.testing.expect(try model.setProcessRebatePreviewRect(.{ .x = 1.0, .y = 1.0, .w = 6.0, .h = 6.0 }));
+    const requested = (try model.processRebateRequest()).?;
+    const dmin_before = model.processing.dmin;
+
+    // Moved and released while the worker measured the first box.
+    try std.testing.expect(try model.setProcessRebatePreviewRect(.{ .x = 1.5, .y = 1.0, .w = 6.0, .h = 6.0 }));
+    model.process_rebate_dmin_pending = true;
+    const moved = model.processing.rebate_rect;
+    try std.testing.expect(!(try model.applyProcessRebateWorkerResult(std.testing.allocator, model.processingGeneration(), model.processing_images.paths[0], requested, .{ 0.1, 0.2, 0.3 })));
+    try std.testing.expectEqual(dmin_before, model.processing.dmin);
+    try std.testing.expectEqual(moved, model.processing.rebate_rect);
+
+    _ = model.takeProcessRebateDminPending();
+    const latest = (try model.processRebateRequest()).?;
+    try std.testing.expect(try model.applyProcessRebateWorkerResult(std.testing.allocator, model.processingGeneration(), model.processing_images.paths[0], latest, .{ 0.4, 0.5, 0.6 }));
+    try std.testing.expectEqual(@as(?[3]f64, .{ 0.4, 0.5, 0.6 }), model.processing.dmin);
 }
 
 test "process worker reuses cached rebate Dmin and persists config without worker thread" {
