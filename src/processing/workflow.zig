@@ -826,14 +826,26 @@ pub fn computeRebateDminFromImage(
     return inversion.computeDmin(allocator, crop.pixels, null, .{});
 }
 
+/// Reads only the rows the rebate covers: a rebate is a sliver of a scan
+/// that can run to gigabytes, and this runs on every rebate edit.
 pub fn computeRebateDminFromTiff(
     allocator: std.mem.Allocator,
     path: []const u8,
     rect: frames.RebateOriginRect,
 ) ![3]f64 {
-    const image = try tiff.loadRgbPage(allocator, path);
-    defer image.deinit(allocator);
-    return computeRebateDminFromTiffImage(allocator, image, rect);
+    const center_y = rect.y + rect.h / 2.0;
+    const half_height = @abs(rect.w / 2.0 * @sin(rect.angle)) + @abs(rect.h / 2.0 * @cos(rect.angle));
+    // Two rows of margin for the crop's interpolation.
+    const top = @floor(center_y - half_height) - 2.0;
+    const bottom = @ceil(center_y + half_height) + 2.0;
+    if (!std.math.isFinite(top) or !std.math.isFinite(bottom)) return error.InvalidRebateRect;
+    const first_row: u32 = @intFromFloat(std.math.clamp(top, 0.0, @as(f64, std.math.maxInt(u32))));
+    const row_count: u32 = @intFromFloat(std.math.clamp(bottom - @as(f64, @floatFromInt(first_row)) + 1.0, 1.0, @as(f64, std.math.maxInt(u32))));
+    const rows = try tiff.loadRgbPageRows(allocator, path, first_row, row_count);
+    defer rows.deinit(allocator);
+    var shifted = rect;
+    shifted.y -= @floatFromInt(first_row);
+    return computeRebateDminFromTiffImage(allocator, rows, shifted);
 }
 
 pub fn computeRebateDminFromTiffImage(
@@ -2831,6 +2843,37 @@ test "rebate TIFF crop avoids full f64 image materialization with crop parity" {
     try std.testing.expectEqual(expected.channels, actual.channels);
     for (expected.pixels, actual.pixels) |left, right| {
         try std.testing.expectApproxEqAbs(left, right, 0.0);
+    }
+}
+
+test "rebate Dmin read from the rebate's rows matches the full page" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/rebate-rows.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(path);
+    const width: u32 = 40;
+    const height: u32 = 30;
+    const bytes = try allocator.alloc(u8, width * height * 3 * 2);
+    defer allocator.free(bytes);
+    for (0..width * height * 3) |index| {
+        const value: u16 = @intCast((index * 7919 + 20000) % 50000 + 10000);
+        std.mem.writeInt(u16, bytes[index * 2 ..][0..2], value, .little);
+    }
+    try tiff.writeImage(allocator, path, .{ .width = width, .height = height, .samples_per_pixel = 3, .bits_per_sample = 16, .data = bytes }, .{});
+    const full = try tiff.loadRgbPage(allocator, path);
+    defer full.deinit(allocator);
+
+    const rects = [_]frames.RebateOriginRect{
+        .{ .x = 6.3, .y = 11.6, .w = 24.0, .h = 3.5, .angle = 0.03 },
+        // Running off the bottom of the page.
+        .{ .x = 2.0, .y = 27.2, .w = 30.0, .h = 6.0, .angle = -0.05 },
+    };
+    for (rects) |rect| {
+        const expected = try computeRebateDminFromTiffImage(allocator, full, rect);
+        const actual = try computeRebateDminFromTiff(allocator, path, rect);
+        // The same samples from a different crop origin: equal to rounding.
+        for (expected, actual) |left, right| try std.testing.expectApproxEqAbs(left, right, 1e-12);
     }
 }
 

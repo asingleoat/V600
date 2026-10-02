@@ -791,7 +791,8 @@ pub fn main(init: std.process.Init) !void {
         // Hand edits settle, go on the undo stack, and save for roll strips.
         model.settleProcessEdits(c.SDL_GetTicks());
         rolls.saveFramingIfEdited(&model);
-        // Restored frames with their own rebate remeasure Dmin from it.
+        // Restored frames with their own rebate, and rebate edits made while
+        // the worker was busy, remeasure Dmin once it is free.
         if (model.process_rebate_dmin_pending and !process_worker.isRunning()) {
             _ = model.takeProcessRebateDminPending();
             startProcessRebate(&model, &process_worker, processing_config_path) catch |err| setProcessUiError(&model, err);
@@ -2038,6 +2039,12 @@ fn finalizeProcessRebate(
         return;
     };
     if (!accepted) return;
+    // Measure the latest box once the worker is free rather than drop it.
+    if (process_worker.isRunning()) {
+        model.process_rebate_dmin_pending = true;
+        model.setStatus("Rebate moved; Dmin is measured when the current processing finishes");
+        return;
+    }
     startProcessRebate(model, process_worker, config_path) catch |err| setProcessUiError(model, err);
 }
 

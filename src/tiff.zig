@@ -254,6 +254,46 @@ pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
     return rgb;
 }
 
+/// Rows `first_row` up to `first_row + row_count` of the RGB page (fewer at
+/// the page's end), with the scanner LUT inverted, without reading the rest.
+pub fn loadRgbPageRows(allocator: std.mem.Allocator, path: []const u8, first_row: u32, row_count: u32) !Image {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    ensureCustomTagsRegistered();
+    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+
+    if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
+    const info = try readCurrentPageInfo(tiff);
+    if (first_row >= info.height) return error.RowsOutsidePage;
+    const rows = @min(row_count, info.height - first_row);
+    const scanline_size_raw = c.TIFFScanlineSize(tiff);
+    if (scanline_size_raw <= 0) return error.UnsupportedTiff;
+    const scanline_size: usize = @intCast(scanline_size_raw);
+    if (scanline_size != try expectedScanlineSize(info.width, info.samples_per_pixel, info.bits_per_sample)) {
+        return error.UnsupportedTiff;
+    }
+
+    const data = try allocator.alloc(u8, try std.math.mul(usize, scanline_size, rows));
+    errdefer allocator.free(data);
+    for (0..rows) |index| {
+        const offset = index * scanline_size;
+        if (c.TIFFReadScanline(tiff, data[offset .. offset + scanline_size].ptr, first_row + @as(u32, @intCast(index)), 0) < 0) {
+            return error.TiffReadFailed;
+        }
+    }
+    const image = Image{
+        .width = info.width,
+        .height = rows,
+        .samples_per_pixel = info.samples_per_pixel,
+        .bits_per_sample = info.bits_per_sample,
+        .data = data,
+    };
+    try applyScannerLut(allocator, tiff, image);
+    return image;
+}
+
 pub fn loadRgbPageWithMetadata(allocator: std.mem.Allocator, path: []const u8) !RgbPageWithMetadata {
     return loadRgbPageWithMetadataTimed(allocator, path, null);
 }
@@ -1101,6 +1141,46 @@ test "scan pages carrying a gamma LUT load linearized" {
     var with_metadata = try loadRgbPageWithMetadata(allocator, path);
     defer with_metadata.deinit(allocator);
     try expectLutFixturePixels(fixture, with_metadata.rgb.data);
+}
+
+test "row reads match the same rows of the full page, LUT inverted" {
+    const allocator = std.testing.allocator;
+    var parsed = try loadLutFixture(allocator);
+    defer parsed.deinit();
+    const fixture = parsed.value;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/lut-rows.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(path);
+
+    const row = try lutFixturePixels(allocator, fixture, fixture.samples);
+    defer allocator.free(row);
+    const height: u32 = 6;
+    const data = try allocator.alloc(u8, row.len * height);
+    defer allocator.free(data);
+    for (0..height) |index| {
+        // Each row its own values: rotate the fixture row by a sample.
+        const shift = (index * 2) % row.len;
+        @memcpy(data[index * row.len ..][0 .. row.len - shift], row[shift..]);
+        @memcpy(data[index * row.len + row.len - shift ..][0..shift], row[0..shift]);
+    }
+    const width: u32 = @intCast(fixture.samples_per_channel);
+    try writeScanPages(allocator, path, &.{.{
+        .image = .{ .width = width, .height = height, .samples_per_pixel = 3, .bits_per_sample = 16, .data = data },
+        .metadata = .{ .dpi = 800, .custom_luts_applied = true, .gamma_lut = fixture.lut[0..scanner_lut_len] },
+    }});
+
+    const full = try loadRgbPage(allocator, path);
+    defer full.deinit(allocator);
+    const rows = try loadRgbPageRows(allocator, path, 2, 3);
+    defer rows.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 3), rows.height);
+    try std.testing.expectEqualSlices(u8, full.data[2 * row.len .. 5 * row.len], rows.data);
+
+    const tail = try loadRgbPageRows(allocator, path, 4, 10);
+    defer tail.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 2), tail.height);
+    try std.testing.expectError(error.RowsOutsidePage, loadRgbPageRows(allocator, path, height, 1));
 }
 
 test "writes export TIFF with private JSON metadata tag" {

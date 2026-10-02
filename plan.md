@@ -65,6 +65,12 @@ Open:
 
 ### Bugs
 
+- Loading an image, auto-detect, and export in the Process view copy the
+  cached RGB page on the UI thread before starting their worker
+  (`getCachedRgbPage`, `rgb_pages.getClone`). Pages over the 1 GiB cache
+  budget (6400 dpi strips) are never cached, so this bites at 3200 dpi and
+  below: a pause of a second or so per action. Sharing the cached page
+  read-only with workers (reference-counted) would remove the copy.
 - Medium-format frame detection is weak on real strips. The first real 6x7
   strip (6400 dpi, two frames) got frame 2 right but cut frame 1 to
   60x49 mm, missing picture on the left and bottom, and its rebate box

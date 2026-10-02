@@ -268,18 +268,15 @@ pub const Worker = struct {
                 dmin,
             );
         }
-        var cached_rgb_page = try getCachedRgbPage(self.allocator, self.io, model, path);
-        errdefer if (cached_rgb_page) |page| page.deinit(self.allocator);
+        // The worker reads just the rebate's rows from the file; a copy of a
+        // cached page here would hold up the UI thread on every edit.
         const context = try self.createContext(.{
             .operation = .rebate,
             .path = path,
             .config_path = config_path,
             .generation = model.processingGeneration(),
             .full_rebate = rect,
-            .rgb_page = cached_rgb_page,
-            .rgb_page_cache_hit = cached_rgb_page != null,
         });
-        cached_rgb_page = null;
         errdefer self.destroyContext(context);
         model.setProcessingProgress("Computing Dmin...");
         try self.spawn(context);
@@ -884,8 +881,10 @@ pub fn fakeRebateSuccess(context: *Context) !void {
     context.dmin = .{ 0.4, 0.5, 0.6 };
 }
 
-fn fakeRebateRequiresCachedRgbPage(context: *Context) !void {
-    try std.testing.expect(context.rgb_page != null);
+/// The rebate worker reads the rebate's rows itself; copying a cached page
+/// for it would stall the UI thread on every edit.
+fn fakeRebateWithoutRgbPage(context: *Context) !void {
+    try std.testing.expect(context.rgb_page == null);
     context.dmin = .{ 0.7, 0.8, 0.9 };
 }
 
@@ -1033,7 +1032,7 @@ test "process worker does not store stale RGB page load results" {
     try std.testing.expect((try model.processing_result_cache.rgb_pages.getClone(std.testing.allocator, key)) == null);
 }
 
-test "process worker passes resident RGB page to rebate computation" {
+test "rebate edits leave a resident RGB page in the cache" {
     var model = ui_state.State.init("scans", "frames", 0);
     defer model.deinit(std.testing.allocator);
     model.processing_images.paths = try std.testing.allocator.alloc([]u8, 1);
@@ -1049,7 +1048,7 @@ test "process worker passes resident RGB page to rebate computation" {
     var page = try fakeRgbPage(std.testing.allocator, 4, 3);
     try std.testing.expect(try model.processing_result_cache.rgb_pages.putOwned(std.testing.allocator, key, &page));
 
-    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateRequiresCachedRgbPage);
+    var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateWithoutRgbPage);
     defer worker.deinit();
     try std.testing.expect(try worker.startRebateFromState(&model, "scratchndent_config.toml"));
     try waitForPoll(&worker, &model);
