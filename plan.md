@@ -46,6 +46,10 @@ Confirmed by the owner, 2026-09-28:
   are updated deliberately when output changes on purpose.
 - The render display range uses a sampled percentile (16,384 samples) for
   previews and exports, for performance.
+- Dust removal covers only defects on the film when it is scanned. Dust on
+  the film plane at exposure time is part of the picture (dark specks in
+  the positive, invisible to the IR); removing it belongs in downstream
+  image editing, not in scanning or scan processing. (2026-10-02)
 
 Recorded in the May-July log; correct anything that is wrong:
 
@@ -89,10 +93,6 @@ Open:
     sky of KODAKGOLD_200_120_0 strip 1 frame 2 passed the ratio test but
     not that one. `ir_threshold` sets both tests and moves them opposite
     ways.
-  - Dust on the film when the picture was taken (dark specks in the
-    positive, a hair at the frame edge) is in the dyes, so the IR cannot
-    see it; it reads slightly brighter there, with less dye. Removing it
-    needs a detector on the RGB, which that IR brightening could confirm.
 - `v600-ui --process-interaction-smoke` (not a build step) fails with
   ProcessInteractionSmokeFailed.
 - Loading an image, auto-detect, and export in the Process view copy the
