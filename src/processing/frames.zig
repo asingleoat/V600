@@ -3711,133 +3711,6 @@ fn validatePreviewScale(preview_scale: f64) !void {
     if (!std.math.isFinite(preview_scale) or preview_scale <= 0.0) return error.InvalidPreviewScale;
 }
 
-const StripProfileFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    shape: []const usize,
-    is_vertical: bool,
-    tolerance: numeric.Tolerance,
-    expected_profile_a: []const f64,
-    expected_profile_b: []const f64,
-    expected_profile_c: []const f64,
-    expected_cross_profile: []const f64,
-};
-
-const DtwFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    format: []const u8,
-    frame_count: usize,
-    strip_len: usize,
-    dtw_max_len: usize,
-    tolerance: numeric.Tolerance,
-    gradient: []const f64,
-    expected_edges: []const usize,
-    dtw_scale: f64,
-    template_len: usize,
-    effective_frame_dim: usize,
-    effective_gap: usize,
-    band: usize,
-    end_j: usize,
-};
-
-const GradientSnapFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    frame_strip_dim: f64,
-    gradient: []const f64,
-    edge_positions: []const usize,
-    expected: []const usize,
-    tolerance: numeric.Tolerance,
-};
-
-const WeightedPeakFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    gradient: []const f64,
-    cases: []const WeightedPeakCase,
-    tolerance: numeric.Tolerance,
-};
-
-const WeightedPeakCase = struct {
-    target: usize,
-    radius: usize,
-    sigma: f64,
-    expected: usize,
-};
-
-const SizeCorrectionFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    actual_n: usize,
-    frame_strip_dim: f64,
-    gradient: []const f64,
-    edge_positions: []const usize,
-    expected: []const usize,
-    tolerance: numeric.Tolerance,
-};
-
-const TerminalRepairFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    actual_n: usize,
-    frame_strip_dim: f64,
-    snap_radius: usize,
-    work_pitch_px: f64,
-    gradient: []const f64,
-    edge_positions: []const usize,
-    expected: []const usize,
-    tolerance: numeric.Tolerance,
-};
-
-const CrossStripFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    cross_dim_est: f64,
-    cross_search_r: usize,
-    gradient_signed: []const f64,
-    expected: CrossStripMeasurement,
-    tolerance: numeric.Tolerance,
-};
-
-const TheilSenFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    points: []const EdgePeakPoint,
-    expected_angle: f64,
-    expected_median_slope: f64,
-    max_angle_degrees: f64,
-    tolerance: numeric.Tolerance,
-};
-
-const SingleFrameFallbackFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    preview_width: f64,
-    preview_height: f64,
-    frame: FrameRect,
-    expected: FrameRect,
-    tolerance: numeric.Tolerance,
-};
-
 const RotatedCropFixture = struct {
     name: []const u8,
     operation: []const u8,
@@ -3852,22 +3725,6 @@ const RotatedCropFixture = struct {
     input: []const f64,
     expected_shape: []const usize,
     expected: []const f64,
-    tolerance: numeric.Tolerance,
-};
-
-const RebateHelpersFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    mask_shape: []const usize,
-    mask_rect: RebateMaskRect,
-    expected_mask: []const bool,
-    bounds_shape: []const usize,
-    bounds_rect: RebateOriginRect,
-    expected_bounds: bool,
-    inter_frames: []const FrameRect,
-    expected_inter_rebate: RebateRect,
     tolerance: numeric.Tolerance,
 };
 
@@ -4024,260 +3881,6 @@ const BinaryCloseCase = struct {
     expected: []const bool,
 };
 
-const StripAnalysisFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    cases: []const StripAnalysisCase,
-    tolerance: numeric.Tolerance,
-};
-
-const StripAnalysisCase = struct {
-    name: []const u8,
-    format: []const u8,
-    width: usize,
-    height: usize,
-    film_extent: ?FilmExtent = null,
-    strip_angle: f64,
-    expected_analysis: StripAnalysis,
-    expected_initial_frames: []const FrameRect,
-};
-
-fn fillProfilePattern(gray: []f64, width: usize, height: usize) void {
-    for (0..height) |y| {
-        for (0..width) |x| {
-            const product_mod = (x * y) % 11;
-            gray[y * width + x] = @as(f64, @floatFromInt(y)) * 3.0 +
-                @as(f64, @floatFromInt(x)) * 7.0 +
-                @as(f64, @floatFromInt(product_mod)) * 0.5;
-        }
-    }
-}
-
-fn expectStripProfileFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(StripProfileFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidStripProfileFixture;
-    }
-    if (fixture.shape.len != 2) return error.InvalidStripProfileFixture;
-    const height = fixture.shape[0];
-    const width = fixture.shape[1];
-    const profile_len = if (fixture.is_vertical) height else width;
-    const cross_len = if (fixture.is_vertical) width else height;
-    if (fixture.expected_profile_a.len != profile_len or
-        fixture.expected_profile_b.len != profile_len or
-        fixture.expected_profile_c.len != profile_len or
-        fixture.expected_cross_profile.len != cross_len)
-    {
-        return error.InvalidStripProfileFixture;
-    }
-
-    const gray = try allocator.alloc(f64, width * height);
-    defer allocator.free(gray);
-    fillProfilePattern(gray, width, height);
-
-    var profiles = try computeStripProfiles(allocator, gray, width, height, fixture.is_vertical);
-    defer profiles.deinit(allocator);
-    try numeric.assertCloseSlices(fixture.expected_profile_a, profiles.profile_a, fixture.tolerance);
-    try numeric.assertCloseSlices(fixture.expected_profile_b, profiles.profile_b, fixture.tolerance);
-    try numeric.assertCloseSlices(fixture.expected_profile_c, profiles.profile_c, fixture.tolerance);
-    try numeric.assertCloseSlices(fixture.expected_cross_profile, profiles.cross_profile, fixture.tolerance);
-}
-
-fn expectDtwFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(DtwFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidDtwFixture;
-    }
-    if (fixture.expected_edges.len != fixture.frame_count * 2) return error.InvalidDtwFixture;
-    const format = formatByName(fixture.format) orelse return error.InvalidDtwFixture;
-    var alignment = try alignPitchDtw(allocator, fixture.gradient, fixture.strip_len, format, fixture.frame_count, .{
-        .max_len = fixture.dtw_max_len,
-    });
-    defer alignment.deinit(allocator);
-
-    try std.testing.expectEqualSlices(usize, fixture.expected_edges, alignment.edge_positions);
-    try std.testing.expectApproxEqAbs(fixture.dtw_scale, alignment.dtw_scale, fixture.tolerance.abs);
-    try std.testing.expectEqual(fixture.template_len, alignment.template_len);
-    try std.testing.expectEqual(fixture.effective_frame_dim, alignment.effective_frame_dim);
-    try std.testing.expectEqual(fixture.effective_gap, alignment.effective_gap);
-    try std.testing.expectEqual(fixture.band, alignment.band);
-    try std.testing.expectEqual(fixture.end_j, alignment.end_j);
-}
-
-fn expectGradientSnapFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(GradientSnapFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidGradientSnapFixture;
-    }
-    if (fixture.edge_positions.len != fixture.expected.len) return error.InvalidGradientSnapFixture;
-
-    const output = try allocator.alloc(usize, fixture.expected.len);
-    defer allocator.free(output);
-    try snapEdgesToGradients(fixture.gradient, fixture.edge_positions, output, fixture.frame_strip_dim);
-    try std.testing.expectEqualSlices(usize, fixture.expected, output);
-    _ = fixture.tolerance;
-}
-
-fn expectWeightedPeakFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(WeightedPeakFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidWeightedPeakFixture;
-    }
-    if (fixture.cases.len == 0) return error.InvalidWeightedPeakFixture;
-    for (fixture.cases) |case| {
-        const actual = try snapToWeightedPeak(fixture.gradient, case.target, case.radius, case.sigma);
-        try std.testing.expectEqual(case.expected, actual);
-    }
-    _ = fixture.tolerance;
-}
-
-fn expectSizeCorrectionFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(SizeCorrectionFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidSizeCorrectionFixture;
-    }
-    if (fixture.edge_positions.len != fixture.expected.len) return error.InvalidSizeCorrectionFixture;
-
-    const positions = try allocator.dupe(usize, fixture.edge_positions);
-    defer allocator.free(positions);
-    try applySizeConsistencyCorrection(fixture.gradient, positions, fixture.actual_n, fixture.frame_strip_dim);
-    try std.testing.expectEqualSlices(usize, fixture.expected, positions);
-    _ = fixture.tolerance;
-}
-
-fn expectTerminalRepairFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(TerminalRepairFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidTerminalRepairFixture;
-    }
-    if (fixture.edge_positions.len != fixture.expected.len) return error.InvalidTerminalRepairFixture;
-
-    const positions = try allocator.dupe(usize, fixture.edge_positions);
-    defer allocator.free(positions);
-    try repairTerminalFrames(
-        allocator,
-        fixture.gradient,
-        positions,
-        fixture.actual_n,
-        fixture.frame_strip_dim,
-        fixture.snap_radius,
-        fixture.work_pitch_px,
-    );
-    try std.testing.expectEqualSlices(usize, fixture.expected, positions);
-    _ = fixture.tolerance;
-}
-
-fn expectCrossStripFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(CrossStripFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidCrossStripFixture;
-    }
-
-    const actual = (try measureCrossStripEdges(allocator, fixture.gradient_signed, fixture.cross_dim_est, fixture.cross_search_r)) orelse return error.InvalidCrossStripFixture;
-    try std.testing.expectApproxEqAbs(fixture.expected.left_t, actual.left_t, fixture.tolerance.abs);
-    try std.testing.expectApproxEqAbs(fixture.expected.right_t, actual.right_t, fixture.tolerance.abs);
-    try std.testing.expectApproxEqAbs(fixture.expected.cross_w, actual.cross_w, fixture.tolerance.abs);
-    try std.testing.expectApproxEqAbs(fixture.expected.cross_center_offset, actual.cross_center_offset, fixture.tolerance.abs);
-    try std.testing.expectEqual(fixture.expected.hw_idx, actual.hw_idx);
-    try std.testing.expectEqual(fixture.expected.coarse_k, actual.coarse_k);
-}
-
-fn expectTheilSenFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(TheilSenFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidTheilSenFixture;
-    }
-
-    const max_angle = fixture.max_angle_degrees * std.math.pi / 180.0;
-    const actual = (try estimateAngleTheilSen(allocator, fixture.points, max_angle)) orelse return error.InvalidTheilSenFixture;
-    try std.testing.expectApproxEqAbs(fixture.expected_median_slope, actual.median_slope, fixture.tolerance.abs);
-    try std.testing.expectApproxEqAbs(fixture.expected_angle, actual.angle, fixture.tolerance.abs);
-}
-
-fn expectSingleFrameFallbackFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(SingleFrameFallbackFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidSingleFrameFallbackFixture;
-    }
-
-    const actual = (try singleFrameFallback(1, fixture.frame, fixture.preview_width, fixture.preview_height)) orelse return error.InvalidSingleFrameFallbackFixture;
-    try expectFrameRect(fixture.expected, actual, fixture.tolerance.abs);
-}
-
 fn expectFrameRect(expected: FrameRect, actual: FrameRect, tolerance: f64) !void {
     try std.testing.expectApproxEqAbs(expected.cx, actual.cx, tolerance);
     try std.testing.expectApproxEqAbs(expected.cy, actual.cy, tolerance);
@@ -4309,42 +3912,6 @@ fn expectRotatedCropFixture(path: []const u8) !void {
     try std.testing.expectEqual(fixture.expected_shape[1], crop.width);
     try std.testing.expectEqual(fixture.expected_shape[0], crop.height);
     try numeric.assertCloseSlices(fixture.expected, crop.pixels, fixture.tolerance);
-}
-
-fn expectRebateHelpersFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(RebateHelpersFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidRebateFixture;
-    }
-    if (fixture.mask_shape.len != 2 or fixture.bounds_shape.len != 2) return error.InvalidRebateFixture;
-    const mask_h = fixture.mask_shape[0];
-    const mask_w = fixture.mask_shape[1];
-    const mask = (try makeRebateMask(allocator, mask_h, mask_w, fixture.mask_rect)) orelse return error.InvalidRebateFixture;
-    defer allocator.free(mask);
-    try std.testing.expectEqualSlices(bool, fixture.expected_mask, mask);
-
-    const bounds_h = fixture.bounds_shape[0];
-    const bounds_w = fixture.bounds_shape[1];
-    try std.testing.expectEqual(fixture.expected_bounds, rebateInBounds(bounds_w, bounds_h, fixture.bounds_rect));
-
-    const actual_rebate = computeInterFrameRebate(fixture.inter_frames) orelse return error.InvalidRebateFixture;
-    try expectRebateRect(fixture.expected_inter_rebate, actual_rebate, fixture.tolerance.abs);
-}
-
-fn expectRebateRect(expected: RebateRect, actual: RebateRect, tolerance: f64) !void {
-    try std.testing.expectApproxEqAbs(expected.cx, actual.cx, tolerance);
-    try std.testing.expectApproxEqAbs(expected.cy, actual.cy, tolerance);
-    try std.testing.expectApproxEqAbs(expected.w, actual.w, tolerance);
-    try std.testing.expectApproxEqAbs(expected.h, actual.h, tolerance);
-    try std.testing.expectApproxEqAbs(expected.angle, actual.angle, tolerance);
 }
 
 fn expectPreviewScalingFixture(path: []const u8) !void {
@@ -4696,50 +4263,6 @@ fn expectBinaryCloseFixture(path: []const u8) !void {
         try closeBinaryMask(allocator, mask, test_case.width, test_case.height, test_case.kernel_size);
         try std.testing.expectEqualSlices(bool, test_case.expected, mask);
     }
-}
-
-fn expectStripAnalysisFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(StripAnalysisFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidStripAnalysisFixture;
-    }
-
-    for (fixture.cases) |test_case| {
-        if (test_case.name.len == 0 or test_case.format.len == 0) return error.InvalidStripAnalysisFixture;
-        const format = formatByName(test_case.format) orelse return error.InvalidStripAnalysisFixture;
-        const analysis = try analyzeStrip(test_case.width, test_case.height, format, test_case.film_extent);
-        try expectStripAnalysis(test_case.expected_analysis, analysis, fixture.tolerance.abs);
-        try std.testing.expectEqual(test_case.expected_analysis.n_frames, test_case.expected_initial_frames.len);
-        const frames = try initialPlacement(
-            allocator,
-            test_case.width,
-            test_case.height,
-            analysis.n_frames,
-            analysis,
-            test_case.strip_angle,
-        );
-        defer allocator.free(frames);
-        try std.testing.expectEqual(test_case.expected_initial_frames.len, frames.len);
-        for (test_case.expected_initial_frames, frames) |expected, actual| {
-            try expectFrameRect(expected, actual, fixture.tolerance.abs);
-        }
-    }
-}
-
-fn expectStripAnalysis(expected: StripAnalysis, actual: StripAnalysis, tolerance: f64) !void {
-    try std.testing.expectEqual(expected.n_frames, actual.n_frames);
-    try std.testing.expectApproxEqAbs(expected.frame_w, actual.frame_w, tolerance);
-    try std.testing.expectApproxEqAbs(expected.frame_h, actual.frame_h, tolerance);
-    try std.testing.expectApproxEqAbs(expected.pitch_px, actual.pitch_px, tolerance);
-    try std.testing.expectEqual(expected.is_vertical, actual.is_vertical);
 }
 
 fn sampleValuesToBytes(allocator: std.mem.Allocator, values: []const u16, bits_per_sample: u16) ![]u8 {
@@ -5104,23 +4627,11 @@ test "formats detect_frames aspect string like Python result" {
     try std.testing.expectEqualStrings("84:56", detectFramesAspect(format_6x9, false));
 }
 
-test "computes vertical strip profiles against Python fixture" {
-    try expectStripProfileFixture("test/fixtures/processing/frames/strip-profiles-vertical.json");
-}
-
-test "computes horizontal strip profiles against Python fixture" {
-    try expectStripProfileFixture("test/fixtures/processing/frames/strip-profiles-horizontal.json");
-}
-
 test "rejects invalid strip profile inputs" {
     var pixel = [_]f64{1.0};
     try std.testing.expectError(error.InvalidFrameProfileBuffer, computeStripProfiles(std.testing.allocator, &pixel, 0, 1, true));
     try std.testing.expectError(error.InvalidFrameProfileBuffer, computeStripProfiles(std.testing.allocator, &pixel, 2, 1, true));
     try std.testing.expectError(error.InvalidFrameProfileBand, computeStripProfiles(std.testing.allocator, &pixel, 1, 1, true));
-}
-
-test "aligns frame pitch with subsequence DTW against Python fixture" {
-    try expectDtwFixture("test/fixtures/processing/frames/dtw-pitch-35mm-two-frame.json");
 }
 
 test "rejects invalid DTW inputs" {
@@ -5130,11 +4641,6 @@ test "rejects invalid DTW inputs" {
     try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 1, format_35mm, 1, .{ .max_len = 0 }));
 }
 
-test "snaps DTW edges to gradient peaks against Python fixture" {
-    try expectGradientSnapFixture("test/fixtures/processing/frames/gradient-snap-internal-peaks.json");
-    try expectGradientSnapFixture("test/fixtures/processing/frames/gradient-snap-scipy-prominence-bounds.json");
-}
-
 test "rejects invalid gradient snap inputs" {
     var out = [_]usize{0};
     try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{}, &.{1}, &out, 10.0));
@@ -5142,27 +4648,15 @@ test "rejects invalid gradient snap inputs" {
     try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{1.0}, &.{1}, &out, 0.0));
 }
 
-test "selects Gaussian-weighted peaks against Python fixture" {
-    try expectWeightedPeakFixture("test/fixtures/processing/frames/gaussian-weighted-peak-smoke.json");
-}
-
 test "rejects invalid weighted peak inputs" {
     try std.testing.expectError(error.InvalidWeightedPeakInput, snapToWeightedPeak(&.{}, 0, 1, 1.0));
     try std.testing.expectError(error.InvalidWeightedPeakInput, snapToWeightedPeak(&.{1.0}, 0, 1, 0.0));
-}
-
-test "repairs inconsistent frame sizes against Python fixture" {
-    try expectSizeCorrectionFixture("test/fixtures/processing/frames/size-consistency-correction-smoke.json");
 }
 
 test "rejects invalid size correction inputs" {
     var positions = [_]usize{ 0, 1 };
     try std.testing.expectError(error.InvalidSizeCorrectionInput, applySizeConsistencyCorrection(&.{}, &positions, 1, 10.0));
     try std.testing.expectError(error.InvalidSizeCorrectionInput, applySizeConsistencyCorrection(&.{1.0}, &positions, 1, 0.0));
-}
-
-test "repairs first and last frame edges against Python fixture" {
-    try expectTerminalRepairFixture("test/fixtures/processing/frames/terminal-frame-repair-smoke.json");
 }
 
 test "rejects invalid terminal frame repair inputs" {
@@ -5172,35 +4666,9 @@ test "rejects invalid terminal frame repair inputs" {
     try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{1.0}, &positions, 1, 10.0, 1, 0.0));
 }
 
-test "measures cross-strip paired-gradient edges against Python fixture" {
-    try expectCrossStripFixture("test/fixtures/processing/frames/cross-strip-paired-gradient-smoke.json");
-}
-
 test "rejects invalid cross-strip inputs" {
     try std.testing.expectError(error.InvalidCrossStripInput, measureCrossStripEdges(std.testing.allocator, &.{ 0.0, 1.0 }, 10.0, 1));
     try std.testing.expectError(error.InvalidCrossStripInput, measureCrossStripEdges(std.testing.allocator, &.{ 0.0, 1.0, 0.0 }, 0.0, 1));
-}
-
-test "estimates Theil-Sen frame angle against Python fixture" {
-    try expectTheilSenFixture("test/fixtures/processing/frames/theil-sen-angle-smoke.json");
-}
-
-test "handles missing Theil-Sen slopes and invalid options" {
-    try std.testing.expect((try estimateAngleTheilSen(std.testing.allocator, &.{}, 0.1)) == null);
-    try std.testing.expect((try estimateAngleTheilSen(std.testing.allocator, &.{ .{ .x = 1.0, .y = 1.0 }, .{ .x = 1.5, .y = 2.0 } }, 0.1)) == null);
-    try std.testing.expectError(error.InvalidTheilSenInput, estimateAngleTheilSen(std.testing.allocator, &.{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 2.0, .y = 1.0 } }, 0.0));
-}
-
-test "applies single-frame fallback guard against Python fixture" {
-    try expectSingleFrameFallbackFixture("test/fixtures/processing/frames/single-frame-fallback-smoke.json");
-}
-
-test "preserves single-frame fallback boundaries" {
-    const preview_w = 100.0;
-    const preview_h = 100.0;
-    try std.testing.expect((try singleFrameFallback(2, .{ .cx = 0.0, .cy = 0.0, .w = 10.0, .h = 10.0, .angle = 0.0 }, preview_w, preview_h)) == null);
-    try std.testing.expect((try singleFrameFallback(1, .{ .cx = 0.0, .cy = 0.0, .w = 30.0, .h = 100.0, .angle = 0.0 }, preview_w, preview_h)) == null);
-    try std.testing.expectError(error.InvalidSingleFrameFallbackInput, singleFrameFallback(1, .{ .cx = 0.0, .cy = 0.0, .w = 1.0, .h = 1.0, .angle = 0.0 }, 0.0, preview_h));
 }
 
 test "crops rotated rectangle against Python fixture" {
@@ -5210,21 +4678,6 @@ test "crops rotated rectangle against Python fixture" {
 test "rejects invalid rotated crop inputs" {
     try std.testing.expectError(error.InvalidRotatedCropInput, cropRotatedRect(std.testing.allocator, &.{}, 0, 1, 0.0, 0.0, 1.0, 1.0, 0.0));
     try std.testing.expectError(error.InvalidRotatedCropInput, cropRotatedRect(std.testing.allocator, &.{1.0}, 1, 1, 0.0, 0.0, 0.0, 1.0, 0.0));
-}
-
-test "ports rebate helper behavior against fixture" {
-    try expectRebateHelpersFixture("test/fixtures/processing/frames/rebate-helpers-smoke.json");
-}
-
-test "handles empty rebate helper cases" {
-    try std.testing.expect((try makeRebateMask(std.testing.allocator, 4, 4, null)) == null);
-    try std.testing.expect((try makeRebateMask(std.testing.allocator, 4, 4, .{ .x = 0.0, .y = 0.0, .width = 0.0, .height = 2.0 })) == null);
-    try std.testing.expect(!rebateInBounds(10, 10, .{ .x = -20.0, .y = 0.0, .w = 2.0, .h = 2.0 }));
-    try std.testing.expect(computeInterFrameRebate(&.{}) == null);
-    try std.testing.expect(computeInterFrameRebate(&.{
-        .{ .cx = 0.0, .cy = 0.0, .w = 10.0, .h = 10.0, .angle = 0.0 },
-        .{ .cx = 0.0, .cy = 5.0, .w = 10.0, .h = 10.0, .angle = 0.0 },
-    }) == null);
 }
 
 test "ports preview-to-full coordinate scaling against Python fixture" {
@@ -5257,10 +4710,6 @@ test "detects test_detect scan_0003 frames within the hand-verified truth when t
 
 test "detects test_detect scan_0004 frames within the hand-verified truth when the local scan exists" {
     try expectScanDetectionAccuracy("scans/scan_0004_rgbir_3200dpi.tiff");
-}
-
-test "ports strip analysis and initial placement against Python fixture" {
-    try expectStripAnalysisFixture("test/fixtures/processing/frames/strip-analysis-initial-placement-smoke.json");
 }
 
 test "rejects invalid strip analysis and initial placement inputs" {

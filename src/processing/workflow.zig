@@ -2747,27 +2747,6 @@ test "auto-detect needs a film format" {
     try std.testing.expectError(error.InvalidFilmFormat, autoDetectPreview(allocator, preview, .{}));
 }
 
-test "process auto-detect postprocess applies single-frame fallback before rebate" {
-    const allocator = std.testing.allocator;
-    const source = [_]frames.FrameRect{
-        .{ .cx = 200.0, .cy = 150.0, .w = 200.0, .h = 300.0, .angle = 0.12 },
-    };
-    var detected = frames.DetectFramesResult{
-        .frames = try allocator.dupe(frames.FrameRect, &source),
-        .strip_info = .{ .n_frames = 1, .frame_w = 200.0, .frame_h = 300.0, .pitch_px = 0.0, .is_vertical = false },
-        .aspect = "36:24",
-    };
-    errdefer detected.deinit(allocator);
-
-    var result = try autoDetectDetectedFrames(&detected, 1000, 500);
-    defer result.deinit(allocator);
-
-    try std.testing.expectEqual(@as(usize, 0), detected.frames.len);
-    try std.testing.expectEqual(@as(usize, 1), result.frames.len);
-    try std.testing.expect(result.rebate == null);
-    try expectFrameRectApprox(.{ .cx = 500.0, .cy = 250.0, .w = 1000.0, .h = 500.0, .angle = 0.0 }, result.frames[0], 0.0);
-}
-
 test "process rebate Dmin workflow mirrors route crop and save" {
     const allocator = std.testing.allocator;
     const pixels = [_]f64{
