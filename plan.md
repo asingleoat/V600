@@ -69,13 +69,15 @@ Open:
   strip (6400 dpi, two frames) got frame 2 right but cut frame 1 to
   60x49 mm, missing picture on the left and bottom, and its rebate box
   overlapped the bottom of frame 1. 35mm moved off the DTW pitch alignment
-  to a fixed-length fit (one frame length per strip, pitch within the
-  format's `pitch_range_mm`, scale from the scan's DPI), measured with
+  to a fixed-length fit (one frame length per strip, gaps within the
+  format's `gap_range_mm`, scale from the scan's DPI), measured with
   `roll check-frames` on KODAKGOLD_200_0: hand framings on strips 3-5 and
   the owner-verified exports of strips 1-2 are the ground truth. Medium
   format keeps DTW until 120 strips are hand-framed the same way; then
-  measure the fit on them, giving each format a pitch range (120 camera
-  gaps vary more than 35mm's; the 645 pitch of 45 mm is nominal).
+  measure the fit on them, giving each format a gap range (the 645 pitch of
+  45 mm is nominal). The 35mm fit keeps the frame's across size at 2/3 of
+  its length: hand frames are drawn at the format's aspect, so there is no
+  ground truth yet for a separately measured width.
 - A 35mm strip with blank film at one end gets an extra frame on the blank
   part: the frame count comes from the strip's length (KODAKGOLD_200_1 and
   _2, strip 1). Needs a per-frame evidence test before dropping frames.

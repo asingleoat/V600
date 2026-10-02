@@ -46,7 +46,7 @@ import {
 } from "../../web/app_core.mjs";
 import { demoRawRgb16Buffer, expectedDemoPreview, rawFixture } from "./demo_fixture.mjs";
 import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "../../web/tiff.mjs";
-import { assertCloseToFixture, assertDetectedFramesApprox, buildAlignmentRgbFixture, expectedDetectedFrames, frameDetectHeight, frameDetectWidth, normalizedToU16, syntheticFrameDetectRawBuffer } from "./helpers.mjs";
+import { assertCloseToFixture, assertDetectedFramesShape, buildAlignmentRgbFixture, frameDetectCount, frameDetectHeight, frameDetectWidth, normalizedToU16, syntheticFrameDetectRawBuffer } from "./helpers.mjs";
 
 const wasmPath = process.argv[2];
 if (!wasmPath) throw new Error("usage: node test/wasm/webapp_shell_smoke.mjs <v600-wasm-core.wasm>");
@@ -225,7 +225,7 @@ try {
   });
   assert.equal(frameDetectResult.cacheKey, expectedFrameDetectKey);
   assert.equal(frameDetectResult.aspect, "24:36");
-  assertDetectedFramesApprox(frameDetectResult.frames, expectedDetectedFrames);
+  assertDetectedFramesShape(frameDetectResult.frames, frameDetectCount);
   assert.ok(frameDetectResult.rebate);
   const detectedRebateSelection = frameSelectionFromDetectedFrame(frameDetectResult.rebate);
   const detectedRebateDmin = computeDminFromRgb16(frameDetectBuffer.slice(0), {

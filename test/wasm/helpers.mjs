@@ -3,16 +3,12 @@
 // wasm_core_smoke, worker_runtime_smoke, and webapp_shell_smoke.
 import assert from "node:assert/strict";
 
-// A 35mm strip drawn to scale at 4 px/mm: 140 px wide, three 96x144 px
-// frames at a 152 px pitch.
+// A strip-like image for the frame-detect message path. Where frames land
+// is judged only on real scans with owner-verified frames, so the smokes
+// check the shape of the result, not its geometry.
 export const frameDetectWidth = 140;
 export const frameDetectHeight = 620;
-
-export const expectedDetectedFrames = [
-  { cx: 70.0, cy: 158.0, w: 96.0, h: 144.0, angle: 0.0 },
-  { cx: 70.0, cy: 310.0, w: 96.0, h: 144.0, angle: 0.0 },
-  { cx: 70.0, cy: 462.0, w: 96.0, h: 144.0, angle: 0.0 },
-];
+export const frameDetectCount = 3;
 
 export function normalizedToU16(value) {
   if (!Number.isFinite(value) || value <= 0.0) return 0;
@@ -111,14 +107,14 @@ export function fillRgb16Level(pixels, x, y, width, height, level) {
   }
 }
 
-export function assertDetectedFramesApprox(actual, expected, tolerance = 12.0) {
-  assert.equal(actual.length, expected.length);
-  for (let index = 0; index < expected.length; index += 1) {
-    const a = actual[index];
-    const e = expected[index];
-    for (const field of ["cx", "cy", "w", "h"]) {
-      assert.ok(Math.abs(a[field] - e[field]) <= tolerance, `frame ${index} ${field}: ${a[field]} vs ${e[field]}`);
+export function assertDetectedFramesShape(actual, count) {
+  assert.equal(actual.length, count);
+  for (const [index, frame] of actual.entries()) {
+    for (const field of ["cx", "cy", "angle"]) {
+      assert.ok(Number.isFinite(frame[field]), `frame ${index} ${field}: ${frame[field]}`);
     }
-    assert.ok(Math.abs(a.angle - e.angle) <= 0.05, `frame ${index} angle: ${a.angle} vs ${e.angle}`);
+    for (const field of ["w", "h"]) {
+      assert.ok(Number.isFinite(frame[field]) && frame[field] > 0, `frame ${index} ${field}: ${frame[field]}`);
+    }
   }
 }

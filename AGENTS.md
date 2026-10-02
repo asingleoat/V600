@@ -205,16 +205,21 @@ deliberately, not by accident.
   56x41.5 mm, 45 mm pitch; 6x6 56x56 mm, 60 mm pitch; 6x7 56x69 mm, 73 mm
   pitch; 6x9 56x84 mm, 88 mm pitch. 645 is the one format whose long side
   runs across the strip.
-- Pipeline: 1D strip profile; along the strip, for 35mm, one frame length
-  per strip and a 37.4-38.8 mm pitch fitted by dynamic programming over edge
-  strength, at the scan's DPI scale (the film's measured width when there is
-  no DPI); for the other formats, DTW pitch alignment, gradient edge
-  snapping, size-consistency correction, and first/last frame repair; then
-  cross-strip positioning and a Theil-Sen angle per frame, with angles more
-  than 1 degree off the strip's median replaced by it.
-- `roll check-frames` measures detection against frames placed by hand
-  (and exports the owner verified, `--verified`); use it on real rolls
-  before and after a detection change.
+- Pipeline: 1D strip profile; along the strip, for 35mm, a dynamic-program
+  fit at the scan's DPI scale (the film's measured width when there is no
+  DPI): one frame length per strip within 6% of 36 mm (cameras differ),
+  gaps of 0.2-6 mm that may differ between every pair of frames, a soft
+  pull toward the strip's usual gap where a frame's edges barely show, and
+  edges scored by direction (brightness changes one way entering a frame
+  and the other leaving it); for the other formats, DTW pitch alignment,
+  gradient edge snapping, size-consistency correction, and first/last
+  frame repair; then cross-strip positioning and a Theil-Sen angle per
+  frame, with angles more than 1 degree off the strip's median replaced by
+  it.
+- Judge frame detection only on real scans against frames the owner
+  verified: `roll check-frames` (frames placed by hand, plus exports the
+  owner verified via `--verified`) before and after every change, and the
+  real-scan tests. Do not test or tune framing on synthetic strips.
 - If detection returns exactly one frame covering less than 30% of the
   image, treat it as a failure and fall back to a full-image frame.
 

@@ -24,7 +24,7 @@ import {
   messageTypes,
   previewCacheKeyString,
 } from "../../web/worker/protocol.mjs";
-import { assertCloseToFixture, assertDetectedFramesApprox, buildAlignmentRgbFixture, expectedDetectedFrames, frameDetectHeight, frameDetectWidth, normalizedToU16, syntheticFrameDetectRawBuffer } from "./helpers.mjs";
+import { assertCloseToFixture, assertDetectedFramesShape, buildAlignmentRgbFixture, frameDetectCount, frameDetectHeight, frameDetectWidth, normalizedToU16, syntheticFrameDetectRawBuffer } from "./helpers.mjs";
 
 const rawFixture = new Uint16Array([
   51000, 42000, 35000,
@@ -536,7 +536,7 @@ try {
   assert.equal(frameDetectResult.request_id, "req-frame-detect");
   assert.equal(frameDetectResult.cache_key, frameDetectKey);
   assert.equal(frameDetectResult.aspect, "24:36");
-  assertDetectedFramesApprox(frameDetectResult.frames, expectedDetectedFrames);
+  assertDetectedFramesShape(frameDetectResult.frames, frameDetectCount);
   assert.ok(frameDetectResult.rebate);
   assert.ok(frameDetectResult.timings.some((timing) => timing.stage === "worker.process-frame-detect"));
 

@@ -967,11 +967,11 @@ pub fn detectFramesAxisAlignedPrepared(
     defer allocator.free(grad_avg);
 
     const strip_len = if (strip_info.is_vertical) height else width;
-    if (format.pitch_range_mm != null) {
+    if (format.gap_range_mm != null) {
         if (options.px_per_mm) |px_per_mm| applyKnownScale(&strip_info, format, px_per_mm);
     }
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
-    const edges = try frameEdgesAlongStrip(allocator, grad_avg, strip_len, format, strip_info, options);
+    const edges = try frameEdgesAlongStrip(allocator, profiles, grad_avg, strip_len, format, strip_info, options);
     errdefer allocator.free(edges);
     const frames = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
     errdefer allocator.free(frames);
@@ -1019,7 +1019,7 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     breakdown.gradients_ns = monotonicNowNs() - gradients_started;
 
     const strip_len = if (strip_info.is_vertical) height else width;
-    if (format.pitch_range_mm != null) {
+    if (format.gap_range_mm != null) {
         if (options.px_per_mm) |px_per_mm| applyKnownScale(&strip_info, format, px_per_mm);
     }
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
@@ -1027,7 +1027,7 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     // Snapping and repairs, where the format still uses them, count as
     // alignment too.
     const dtw_started = monotonicNowNs();
-    const edges = try frameEdgesAlongStrip(allocator, grad_avg, strip_len, format, strip_info, options);
+    const edges = try frameEdgesAlongStrip(allocator, profiles, grad_avg, strip_len, format, strip_info, options);
     errdefer allocator.free(edges);
     breakdown.dtw_ns = monotonicNowNs() - dtw_started;
 
@@ -1066,10 +1066,11 @@ fn applyKnownScale(strip_info: *StripAnalysis, format: FilmFormat, px_per_mm: f6
 }
 
 /// Start and end of every frame along the strip: the fixed-length fit for
-/// formats with a pitch range, else pitch alignment followed by edge
-/// snapping and repairs. The caller frees the slice.
+/// formats with a gap range, else pitch alignment followed by edge snapping
+/// and repairs. The caller frees the slice.
 fn frameEdgesAlongStrip(
     allocator: std.mem.Allocator,
+    profiles: StripProfiles,
     grad_avg: []const f64,
     strip_len: usize,
     format: FilmFormat,
@@ -1077,9 +1078,11 @@ fn frameEdgesAlongStrip(
     options: DetectFramesOptions,
 ) ![]usize {
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
-    if (format.pitch_range_mm != null) {
+    if (format.gap_range_mm != null) {
+        var evidence = try FrameEdgeEvidence.init(allocator, profiles);
+        defer evidence.deinit(allocator);
         const px_per_mm = strip_info.pitch_px / format.pitch_mm;
-        if (try fitFramesAlongStrip(allocator, grad_avg, strip_info.n_frames, format, px_per_mm, options.px_per_mm != null)) |edges| {
+        if (try fitFramesAlongStrip(allocator, evidence, strip_info.n_frames, format, px_per_mm, options.px_per_mm != null)) |edges| {
             return edges;
         }
     }
@@ -1101,45 +1104,83 @@ fn frameEdgesAlongStrip(
     return edges;
 }
 
-/// Places `frame_count` frames of one length along the strip where the edge
-/// gradient is strongest at both ends of every frame, neighbours a pitch
-/// apart within the format's pitch range and at least `min_gap_mm` apart. A
-/// camera's frames all have the same length, so it is searched once per
-/// strip. Lengths and pitches hold to the format when `scale_known` (from
-/// the scan's DPI) and widen by the error of a scale taken from the film's
-/// measured width otherwise. Returns start/end pairs, or null when the
-/// frames cannot fit in the strip. The caller frees the slice.
-pub fn fitFramesAlongStrip(
+/// Where frames start and end along the strip. The film between frames is
+/// unexposed, the clearest part of the strip, so brightness changes one way
+/// entering a frame and the other way leaving it; a single edge cannot
+/// count as both, and content edges count only for the side they face.
+const FrameEdgeEvidence = struct {
+    start: []f64,
+    end: []f64,
+
+    fn init(allocator: std.mem.Allocator, profiles: StripProfiles) !FrameEdgeEvidence {
+        const len = profiles.profile_a.len;
+        const start = try allocator.alloc(f64, len);
+        errdefer allocator.free(start);
+        const end = try allocator.alloc(f64, len);
+        errdefer allocator.free(end);
+        @memset(start, 0.0);
+        for ([_][]const f64{ profiles.profile_a, profiles.profile_b, profiles.profile_c }) |profile| {
+            const signed = try computeSignedGradientBlurred(allocator, profile);
+            defer allocator.free(signed);
+            for (start, signed) |*value, gradient| value.* += gradient / 3.0;
+        }
+        for (start, end) |*rise, *fall| {
+            const signed = rise.* * frame_start_sign;
+            rise.* = @max(signed, 0.0);
+            fall.* = @max(-signed, 0.0);
+        }
+        return .{ .start = start, .end = end };
+    }
+
+    fn deinit(self: *FrameEdgeEvidence, allocator: std.mem.Allocator) void {
+        allocator.free(self.start);
+        allocator.free(self.end);
+        self.* = undefined;
+    }
+};
+
+/// Detection profiles are inverted (film base dark), so entering a frame
+/// they rise.
+const frame_start_sign = 1.0;
+
+/// Places `frame_count` frames of one length along the strip where the
+/// evidence is strongest at both ends of every frame, with the film between
+/// neighbours inside the format's gap range; the gap may differ between
+/// every pair. A camera's frames all have the same length, so it is
+/// searched once per strip, within 6% of the format's: cameras do not all
+/// project the same frame. The band widens by the error of a scale taken
+/// from the film's measured width when `scale_known` (the scan's DPI) is
+/// false. Returns start/end pairs, or null when the frames cannot fit in
+/// the strip. The caller frees the slice.
+fn fitFramesAlongStrip(
     allocator: std.mem.Allocator,
-    gradient: []const f64,
+    evidence: FrameEdgeEvidence,
     frame_count: usize,
     format: FilmFormat,
     px_per_mm: f64,
     scale_known: bool,
 ) !?[]usize {
-    const pitch_range = format.pitch_range_mm orelse return error.InvalidFrameFitInput;
-    if (gradient.len < 2 or frame_count == 0 or !std.math.isFinite(px_per_mm) or px_per_mm <= 0.0) {
+    const gap_range = format.gap_range_mm orelse return error.InvalidFrameFitInput;
+    const len = evidence.start.len;
+    if (len < 2 or evidence.end.len != len or frame_count == 0 or !std.math.isFinite(px_per_mm) or px_per_mm <= 0.0) {
         return error.InvalidFrameFitInput;
     }
     const along_px = format.alongMm() * px_per_mm;
     const scale_error: [2]f64 = if (scale_known) .{ 1.0, 1.0 } else .{ 0.94, 1.08 };
-    const length_lo = @max(@as(usize, 2), roundToUsize(along_px * 0.985 * scale_error[0]));
-    const length_hi = @max(length_lo, roundToUsize(along_px * 1.035 * scale_error[1]));
+    const length_lo = @max(@as(usize, 2), roundToUsize(along_px * (1.0 - frame_size_variation) * scale_error[0]));
+    const length_hi = @max(length_lo, roundToUsize(along_px * (1.0 + frame_size_variation) * scale_error[1]));
     const length_step = @max(@as(usize, 1), roundToUsize(0.05 * px_per_mm));
-    const pitch_lo = roundToUsize(pitch_range[0] * px_per_mm * scale_error[0]);
-    const pitch_hi = roundToUsize(pitch_range[1] * px_per_mm * scale_error[1]);
-    const min_gap = @max(@as(usize, 1), roundToUsize(min_gap_mm * px_per_mm));
+    const gap_lo = @max(@as(usize, 1), roundToUsize(gap_range[0] * px_per_mm * scale_error[0]));
+    const gap_hi = @max(gap_lo, roundToUsize(gap_range[1] * px_per_mm * scale_error[1]));
 
-    var scratch = try FrameFitScratch.init(allocator, gradient.len, frame_count);
+    var scratch = try FrameFitScratch.init(allocator, len, frame_count);
     defer scratch.deinit(allocator);
     const nominal = roundToUsize(along_px);
     var best_length: ?usize = null;
     var best_score = -std.math.inf(f64);
     var length = length_lo;
     while (length <= length_hi) : (length += length_step) {
-        const step_lo = @max(pitch_lo, length + min_gap);
-        if (step_lo > pitch_hi) continue;
-        const pass = fitFramesPass(gradient, frame_count, length, step_lo, pitch_hi, &scratch, false) orelse continue;
+        const pass = fitFramesPass(evidence, frame_count, length, length + gap_lo, length + gap_hi, &scratch, false, null) orelse continue;
         const closer = if (best_length) |best| absDiffUsize(length, nominal) < absDiffUsize(best, nominal) else true;
         if (pass.score > best_score or (pass.score == best_score and closer)) {
             best_score = pass.score;
@@ -1147,22 +1188,67 @@ pub fn fitFramesAlongStrip(
         }
     }
     const frame_length = best_length orelse return null;
-    const pass = fitFramesPass(gradient, frame_count, frame_length, @max(pitch_lo, frame_length + min_gap), pitch_hi, &scratch, true).?;
-
+    const step_lo = frame_length + gap_lo;
+    const step_hi = frame_length + gap_hi;
     const edges = try allocator.alloc(usize, frame_count * 2);
-    var start = pass.last_start;
-    var frame = frame_count;
-    while (frame > 0) {
-        frame -= 1;
-        edges[2 * frame] = start;
-        edges[2 * frame + 1] = start + frame_length;
-        if (frame > 0) start = scratch.parents[frame * gradient.len + start];
+    errdefer allocator.free(edges);
+    var pass = fitFramesPass(evidence, frame_count, frame_length, step_lo, step_hi, &scratch, true, null).?;
+    traceFrameEdges(scratch, len, pass.last_start, frame_length, edges);
+
+    // Gaps differ frame to frame, but where a frame's edges barely show (a
+    // dark frame beside the film base) the strip's usual gap places it.
+    if (frame_count >= 3 and frame_count <= max_fit_frames) {
+        var gaps: [max_fit_frames]f64 = undefined;
+        var strengths: [2 * max_fit_frames]f64 = undefined;
+        var strength_count: usize = 0;
+        for (0..frame_count - 1) |index| {
+            gaps[index] = @floatFromInt(edges[2 * index + 2] - edges[2 * index + 1]);
+            strengths[strength_count] = evidence.end[edges[2 * index + 1]];
+            strengths[strength_count + 1] = evidence.start[edges[2 * index + 2]];
+            strength_count += 2;
+        }
+        const usual_gap = medianInPlace(gaps[0 .. frame_count - 1]);
+        const typical_edge = medianInPlace(strengths[0..strength_count]);
+        if (typical_edge > 0.0) {
+            pass = fitFramesPass(evidence, frame_count, frame_length, step_lo, step_hi, &scratch, true, .{
+                .step = @as(f64, @floatFromInt(frame_length)) + usual_gap,
+                .per_px = gap_prior_per_mm * typical_edge / px_per_mm,
+            }).?;
+            traceFrameEdges(scratch, len, pass.last_start, frame_length, edges);
+        }
     }
     return edges;
 }
 
-/// Least film between neighbouring frames.
-const min_gap_mm = 0.5;
+fn traceFrameEdges(scratch: FrameFitScratch, len: usize, last_start: usize, frame_length: usize, edges: []usize) void {
+    var start = last_start;
+    var frame = edges.len / 2;
+    while (frame > 0) {
+        frame -= 1;
+        edges[2 * frame] = start;
+        edges[2 * frame + 1] = start + frame_length;
+        if (frame > 0) start = scratch.parents[frame * len + start];
+    }
+}
+
+fn medianInPlace(values: []f64) f64 {
+    std.sort.pdq(f64, values, {}, lessThanF64);
+    return medianSortedF64(values);
+}
+
+/// What a gap costs per millimetre away from the strip's usual gap, in
+/// typical edges: far less than moving off a visible edge.
+const gap_prior_per_mm = 0.5;
+const max_fit_frames = 32;
+
+const GapPrior = struct {
+    /// Frame start to frame start at the usual gap, in pixels.
+    step: f64,
+    per_px: f64,
+};
+
+/// How far a camera's frame may run from the format's size.
+const frame_size_variation = 0.06;
 
 const FrameFitScratch = struct {
     frame_score: []f64,
@@ -1210,25 +1296,45 @@ const outer_edge_weight = 0.5;
 /// frame starts; a sliding-window maximum over the allowed pitches keeps
 /// each frame one pass over the strip.
 fn fitFramesPass(
-    gradient: []const f64,
+    evidence: FrameEdgeEvidence,
     frame_count: usize,
     length: usize,
     step_lo: usize,
     step_hi: usize,
     scratch: *FrameFitScratch,
     record_parents: bool,
+    gap_prior: ?GapPrior,
 ) ?FrameFitPass {
-    if (length >= gradient.len) return null;
-    const start_count = gradient.len - length;
+    const len = evidence.start.len;
+    if (length >= len) return null;
+    const start_count = len - length;
     const no_fit = -std.math.inf(f64);
     var previous = scratch.previous[0..start_count];
     var current = scratch.current[0..start_count];
     const last_end_weight: f64 = if (frame_count == 1) outer_edge_weight else 1.0;
-    for (0..start_count) |x| previous[x] = outer_edge_weight * gradient[x] + last_end_weight * gradient[x + length];
+    for (0..start_count) |x| previous[x] = outer_edge_weight * evidence.start[x] + last_end_weight * evidence.end[x + length];
 
     for (1..frame_count) |frame| {
         const end_weight: f64 = if (frame == frame_count - 1) outer_edge_weight else 1.0;
-        for (0..start_count) |x| scratch.frame_score[x] = gradient[x] + end_weight * gradient[x + length];
+        for (0..start_count) |x| scratch.frame_score[x] = evidence.start[x] + end_weight * evidence.end[x + length];
+        if (gap_prior) |prior| {
+            for (0..start_count) |x| {
+                current[x] = no_fit;
+                if (x < step_lo) continue;
+                const oldest = if (x > step_hi) x - step_hi else 0;
+                for (oldest..x - step_lo + 1) |parent| {
+                    if (previous[parent] == no_fit) continue;
+                    const step: f64 = @floatFromInt(x - parent);
+                    const score = scratch.frame_score[x] + previous[parent] - prior.per_px * @abs(step - prior.step);
+                    if (score > current[x]) {
+                        current[x] = score;
+                        if (record_parents) scratch.parents[frame * len + x] = parent;
+                    }
+                }
+            }
+            std.mem.swap([]f64, &previous, &current);
+            continue;
+        }
         var head: usize = 0;
         var tail: usize = 0;
         var next: usize = 0;
@@ -1246,7 +1352,7 @@ fn fitFramesPass(
             if (tail == head) continue;
             const parent = scratch.queue[head];
             current[x] = scratch.frame_score[x] + previous[parent];
-            if (record_parents) scratch.parents[frame * gradient.len + x] = parent;
+            if (record_parents) scratch.parents[frame * len + x] = parent;
         }
         std.mem.swap([]f64, &previous, &current);
     }
@@ -2177,6 +2283,19 @@ fn computeAbsGradientBlurred(allocator: std.mem.Allocator, profile: []const f64)
         gradient[index] = @abs((profile[index + 1] - profile[index - 1]) / 2.0);
     }
     gradient[profile.len - 1] = 0.0;
+    try gaussianBlur1dInPlaceWithKernel(allocator, gradient, gradientBlurKernelSize(profile.len));
+    return gradient;
+}
+
+fn computeSignedGradientBlurred(allocator: std.mem.Allocator, profile: []const f64) ![]f64 {
+    const gradient = try allocator.alloc(f64, profile.len);
+    errdefer allocator.free(gradient);
+    @memset(gradient, 0.0);
+    if (profile.len > 2) {
+        for (1..profile.len - 1) |index| {
+            gradient[index] = (profile[index + 1] - profile[index - 1]) / 2.0;
+        }
+    }
     try gaussianBlur1dInPlaceWithKernel(allocator, gradient, gradientBlurKernelSize(profile.len));
     return gradient;
 }
@@ -3797,43 +3916,6 @@ const TestDetectGroundTruthCase = struct {
     expected_full: []const FrameRect,
 };
 
-const SyntheticDetectionFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    generated_by: []const u8,
-    cases: []const SyntheticDetectionCase,
-    tolerance: numeric.Tolerance,
-};
-
-const AxisAlignedDetectionFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    generated_by: []const u8,
-    cases: []const SyntheticDetectionCase,
-    rms_acceptance_px: f64,
-    tolerance: numeric.Tolerance,
-};
-
-const SyntheticDetectionCase = struct {
-    name: []const u8,
-    format: []const u8,
-    orientation: []const u8,
-    width: usize,
-    height: usize,
-    preview_scale: f64,
-    background_level: f64,
-    strip_rect: RebateOriginRect,
-    strip_level: f64,
-    frame_level: f64,
-    expected_frames: []const PreviewSelection,
-    expected_full: []const FrameRect,
-    expected_frame_pixel_count: usize,
-    cross_center_tolerance: ?f64 = null,
-    cross_size_tolerance: ?f64 = null,
-    angle_tolerance: ?f64 = null,
-    expected_aspect: ?[]const u8 = null,
-};
-
 const DetectionGrayFixture = struct {
     name: []const u8,
     operation: []const u8,
@@ -3925,15 +4007,6 @@ const ExpandedRotationResampleFixture = struct {
     tolerance: numeric.Tolerance,
 };
 
-const FilmExtentFixture = struct {
-    name: []const u8,
-    operation: []const u8,
-    python_oracle: []const u8,
-    generated_by: []const u8,
-    cases: []const FilmExtentCase,
-    tolerance: numeric.Tolerance,
-};
-
 const BinaryCloseFixture = struct {
     name: []const u8,
     operation: []const u8,
@@ -3949,16 +4022,6 @@ const BinaryCloseCase = struct {
     kernel_size: usize,
     input: []const bool,
     expected: []const bool,
-};
-
-const FilmExtentCase = struct {
-    name: []const u8,
-    width: usize,
-    height: usize,
-    background_level: f64,
-    film_rect: ?RebateOriginRect = null,
-    film_level: f64 = 0.2,
-    expected_extent: ?FilmExtent = null,
 };
 
 const StripAnalysisFixture = struct {
@@ -4439,217 +4502,6 @@ fn expectScanDetectionAccuracy(scan_path: []const u8) !void {
     try std.testing.expect(all_frames_match);
 }
 
-fn expectSyntheticDetectionFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(SyntheticDetectionFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.generated_by.len == 0) {
-        return error.InvalidSyntheticDetectionFixture;
-    }
-    if (fixture.cases.len == 0) return error.InvalidSyntheticDetectionFixture;
-
-    for (fixture.cases) |test_case| {
-        if (test_case.name.len == 0 or test_case.format.len == 0 or test_case.orientation.len == 0) {
-            return error.InvalidSyntheticDetectionFixture;
-        }
-        _ = formatByName(test_case.format) orelse return error.InvalidSyntheticDetectionFixture;
-        const is_vertical = if (std.mem.eql(u8, test_case.orientation, "vertical"))
-            true
-        else if (std.mem.eql(u8, test_case.orientation, "horizontal"))
-            false
-        else
-            return error.InvalidSyntheticDetectionFixture;
-        if (test_case.width == 0 or test_case.height == 0 or test_case.expected_frames.len == 0) {
-            return error.InvalidSyntheticDetectionFixture;
-        }
-        if (test_case.expected_full.len != test_case.expected_frames.len) {
-            return error.InvalidSyntheticDetectionFixture;
-        }
-
-        const image = try synthesizeDetectionImage(allocator, test_case);
-        defer allocator.free(image);
-        try std.testing.expectEqual(test_case.expected_frame_pixel_count, countExactPixels(image, test_case.frame_level));
-
-        for (test_case.expected_frames, test_case.expected_full) |frame_preview, expected_full| {
-            try expectFrameRect(expected_full, try previewSelectionToFullResolution(frame_preview, test_case.preview_scale), fixture.tolerance.abs);
-        }
-
-        var profiles = try computeStripProfiles(allocator, image, test_case.width, test_case.height, is_vertical);
-        defer profiles.deinit(allocator);
-        try std.testing.expectEqual(if (is_vertical) test_case.height else test_case.width, profiles.profile_a.len);
-        try std.testing.expectEqual(if (is_vertical) test_case.width else test_case.height, profiles.cross_profile.len);
-    }
-}
-
-fn expectAxisAlignedDetectionFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(AxisAlignedDetectionFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
-        return error.InvalidSyntheticDetectionFixture;
-    }
-    if (!std.math.isFinite(fixture.rms_acceptance_px) or fixture.rms_acceptance_px <= 0.0) {
-        return error.InvalidSyntheticDetectionFixture;
-    }
-
-    for (fixture.cases) |test_case| {
-        const format = formatByName(test_case.format) orelse return error.InvalidSyntheticDetectionFixture;
-        const image = try synthesizeDetectionImage(allocator, test_case);
-        defer allocator.free(image);
-        var detected = try detectFramesAxisAlignedPrepared(allocator, image, test_case.width, test_case.height, format, .{
-            .frame_count_override = test_case.expected_frames.len,
-        });
-        defer detected.deinit(allocator);
-        try std.testing.expectEqual(test_case.expected_full.len, detected.frames.len);
-        if (test_case.expected_aspect) |expected_aspect| {
-            try std.testing.expectEqualStrings(expected_aspect, detected.aspect);
-        }
-        for (test_case.expected_full, detected.frames) |expected, actual| {
-            try std.testing.expect(frameRmsError(actual, expected) <= fixture.rms_acceptance_px);
-            try expectFrameRect(expected, actual, fixture.tolerance.abs);
-            if (test_case.cross_center_tolerance) |cross_tolerance| {
-                if (detected.strip_info.is_vertical) {
-                    try std.testing.expectApproxEqAbs(expected.cx, actual.cx, cross_tolerance);
-                } else {
-                    try std.testing.expectApproxEqAbs(expected.cy, actual.cy, cross_tolerance);
-                }
-            }
-            if (test_case.cross_size_tolerance) |cross_tolerance| {
-                if (detected.strip_info.is_vertical) {
-                    try std.testing.expectApproxEqAbs(expected.w, actual.w, cross_tolerance);
-                } else {
-                    try std.testing.expectApproxEqAbs(expected.h, actual.h, cross_tolerance);
-                }
-            }
-            if (test_case.angle_tolerance) |angle_tolerance| {
-                try std.testing.expectApproxEqAbs(expected.angle, actual.angle, angle_tolerance);
-            }
-        }
-
-        const image_bytes = try grayImageToU8Bytes(allocator, image);
-        defer allocator.free(image_bytes);
-        var detected_from_image = try detectFramesFromImage(
-            allocator,
-            image_bytes,
-            test_case.width,
-            test_case.height,
-            1,
-            8,
-            format,
-            .{
-                .frame_count_override = test_case.expected_frames.len,
-                .detect_film_extent = false,
-                .apply_clahe = false,
-            },
-        );
-        defer detected_from_image.deinit(allocator);
-        try std.testing.expectEqual(test_case.expected_full.len, detected_from_image.frames.len);
-        if (test_case.expected_aspect) |expected_aspect| {
-            try std.testing.expectEqualStrings(expected_aspect, detected_from_image.aspect);
-        }
-        for (test_case.expected_full, detected_from_image.frames) |expected, actual| {
-            try std.testing.expect(frameRmsError(actual, expected) <= fixture.rms_acceptance_px);
-            try expectFrameRect(expected, actual, fixture.tolerance.abs);
-        }
-
-        var detected_with_clahe = try detectFramesFromImage(
-            allocator,
-            image_bytes,
-            test_case.width,
-            test_case.height,
-            1,
-            8,
-            format,
-            .{
-                .frame_count_override = test_case.expected_frames.len,
-                .detect_film_extent = false,
-                .apply_clahe = true,
-            },
-        );
-        defer detected_with_clahe.deinit(allocator);
-        try std.testing.expectEqual(test_case.expected_full.len, detected_with_clahe.frames.len);
-        if (test_case.expected_aspect) |expected_aspect| {
-            try std.testing.expectEqualStrings(expected_aspect, detected_with_clahe.aspect);
-        }
-    }
-}
-
-fn expectRotatedWrapperDetectionFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(256 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(AxisAlignedDetectionFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
-        return error.InvalidSyntheticDetectionFixture;
-    }
-    if (!std.math.isFinite(fixture.rms_acceptance_px) or fixture.rms_acceptance_px <= 0.0) {
-        return error.InvalidSyntheticDetectionFixture;
-    }
-
-    for (fixture.cases) |test_case| {
-        const format = formatByName(test_case.format) orelse return error.InvalidSyntheticDetectionFixture;
-        const image = try synthesizeDetectionImage(allocator, test_case);
-        defer allocator.free(image);
-        const extent = FilmExtent{
-            .strip_narrow_px = @min(test_case.strip_rect.w, test_case.strip_rect.h),
-            .strip_long_px = @max(test_case.strip_rect.w, test_case.strip_rect.h),
-            .strip_angle = test_case.strip_rect.angle,
-        };
-        try std.testing.expect(@abs(extent.strip_angle) > 0.1 * std.math.pi / 180.0);
-
-        const image_bytes = try grayImageToU8Bytes(allocator, image);
-        defer allocator.free(image_bytes);
-        var detected = try detectFramesFromImage(
-            allocator,
-            image_bytes,
-            test_case.width,
-            test_case.height,
-            1,
-            8,
-            format,
-            .{
-                .frame_count_override = test_case.expected_full.len,
-                .detect_film_extent = false,
-                .film_extent_override = extent,
-                .apply_clahe = false,
-            },
-        );
-        defer detected.deinit(allocator);
-
-        try std.testing.expectEqual(test_case.expected_full.len, detected.frames.len);
-        if (test_case.expected_aspect) |expected_aspect| {
-            try std.testing.expectEqualStrings(expected_aspect, detected.aspect);
-        }
-        const angle_tolerance = test_case.angle_tolerance orelse fixture.tolerance.abs;
-        for (test_case.expected_full, detected.frames) |expected, actual| {
-            const rms = frameRmsError(actual, expected);
-            try std.testing.expect(rms <= fixture.rms_acceptance_px);
-            try std.testing.expectApproxEqAbs(expected.cx, actual.cx, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(expected.cy, actual.cy, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(expected.w, actual.w, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(expected.h, actual.h, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(expected.angle, actual.angle, angle_tolerance);
-        }
-    }
-}
-
 fn expectDetectionGrayFixture(path: []const u8) !void {
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
@@ -4821,44 +4673,6 @@ fn expectExpandedRotationResampleFixture(path: []const u8) !void {
     }
 }
 
-fn expectFilmExtentFixture(path: []const u8) !void {
-    const allocator = std.testing.allocator;
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
-    defer allocator.free(text);
-    var parsed = try std.json.parseFromSlice(FilmExtentFixture, allocator, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-    });
-    defer parsed.deinit();
-    const fixture = parsed.value;
-    if (fixture.name.len == 0 or fixture.operation.len == 0 or fixture.python_oracle.len == 0 or fixture.generated_by.len == 0 or fixture.cases.len == 0) {
-        return error.InvalidFilmExtentFixture;
-    }
-
-    for (fixture.cases) |test_case| {
-        if (test_case.name.len == 0 or test_case.width == 0 or test_case.height == 0) return error.InvalidFilmExtentFixture;
-        const image = try synthesizeFilmExtentImage(allocator, test_case);
-        defer allocator.free(image);
-        const actual = try detectFilmExtentAxisAligned(allocator, image, test_case.width, test_case.height);
-        const image_u8 = try grayImageToU8Bytes(allocator, image);
-        defer allocator.free(image_u8);
-        const actual_u8 = try detectFilmExtentAxisAlignedU8(allocator, image_u8, test_case.width, test_case.height);
-        if (test_case.expected_extent) |expected| {
-            const extent = actual orelse return error.InvalidFilmExtentFixture;
-            const extent_u8 = actual_u8 orelse return error.InvalidFilmExtentFixture;
-            try std.testing.expectApproxEqAbs(expected.strip_narrow_px, extent.strip_narrow_px, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(expected.strip_long_px, extent.strip_long_px, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(expected.strip_angle, extent.strip_angle, fixture.tolerance.abs);
-            try std.testing.expectApproxEqAbs(extent.strip_narrow_px, extent_u8.strip_narrow_px, 1e-9);
-            try std.testing.expectApproxEqAbs(extent.strip_long_px, extent_u8.strip_long_px, 1e-9);
-            try std.testing.expectApproxEqAbs(extent.strip_angle, extent_u8.strip_angle, 1e-12);
-        } else {
-            try std.testing.expect(actual == null);
-            try std.testing.expect(actual_u8 == null);
-        }
-    }
-}
-
 fn expectBinaryCloseFixture(path: []const u8) !void {
     const allocator = std.testing.allocator;
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(128 * 1024));
@@ -4928,39 +4742,6 @@ fn expectStripAnalysis(expected: StripAnalysis, actual: StripAnalysis, tolerance
     try std.testing.expectEqual(expected.is_vertical, actual.is_vertical);
 }
 
-fn synthesizeDetectionImage(allocator: std.mem.Allocator, test_case: SyntheticDetectionCase) ![]f64 {
-    if (test_case.width == 0 or test_case.height == 0) return error.InvalidSyntheticDetectionFixture;
-    const image = try allocator.alloc(f64, test_case.width * test_case.height);
-    errdefer allocator.free(image);
-    @memset(image, test_case.background_level);
-    fillRect(image, test_case.width, test_case.height, .{
-        .x = test_case.strip_rect.x,
-        .y = test_case.strip_rect.y,
-        .width = test_case.strip_rect.w,
-        .height = test_case.strip_rect.h,
-    }, test_case.strip_level);
-    for (test_case.expected_frames) |frame| {
-        fillSyntheticFrame(image, test_case.width, test_case.height, frame, test_case.frame_level);
-    }
-    return image;
-}
-
-fn synthesizeFilmExtentImage(allocator: std.mem.Allocator, test_case: FilmExtentCase) ![]f64 {
-    const image = try allocator.alloc(f64, test_case.width * test_case.height);
-    errdefer allocator.free(image);
-    @memset(image, test_case.background_level);
-    if (test_case.film_rect) |rect| {
-        fillSyntheticFrame(image, test_case.width, test_case.height, .{
-            .x = rect.x,
-            .y = rect.y,
-            .w = rect.w,
-            .h = rect.h,
-            .angle = rect.angle,
-        }, test_case.film_level);
-    }
-    return image;
-}
-
 fn sampleValuesToBytes(allocator: std.mem.Allocator, values: []const u16, bits_per_sample: u16) ![]u8 {
     if (bits_per_sample != 8 and bits_per_sample != 16) return error.InvalidDetectionGrayFixture;
     const bytes_per_sample: usize = bits_per_sample / 8;
@@ -4975,15 +4756,6 @@ fn sampleValuesToBytes(allocator: std.mem.Allocator, values: []const u16, bits_p
         for (values, 0..) |value, index| {
             std.mem.writeInt(u16, data[index * 2 ..][0..2], value, .little);
         }
-    }
-    return data;
-}
-
-fn grayImageToU8Bytes(allocator: std.mem.Allocator, image: []const f64) ![]u8 {
-    const data = try allocator.alloc(u8, image.len);
-    errdefer allocator.free(data);
-    for (image, data) |value, *byte| {
-        byte.* = grayToU8(value);
     }
     return data;
 }
@@ -5176,51 +4948,6 @@ fn fillU8ToF64Range(input: []const u8, output: []f64, start: usize, end: usize) 
     }
 }
 
-fn fillSyntheticFrame(image: []f64, width: usize, height: usize, frame: PreviewSelection, value: f64) void {
-    if (@abs(frame.angle) <= 1e-12) {
-        fillRect(image, width, height, .{
-            .x = frame.x,
-            .y = frame.y,
-            .width = frame.w,
-            .height = frame.h,
-        }, value);
-        return;
-    }
-
-    const cx = frame.x + frame.w / 2.0;
-    const cy = frame.y + frame.h / 2.0;
-    const half_w = frame.w / 2.0;
-    const half_h = frame.h / 2.0;
-    const cos_a = std.math.cos(frame.angle);
-    const sin_a = std.math.sin(frame.angle);
-    const extent_x = @abs(half_w * cos_a) + @abs(half_h * sin_a) + 2.0;
-    const extent_y = @abs(half_w * sin_a) + @abs(half_h * cos_a) + 2.0;
-
-    var x0: i64 = @intFromFloat(@floor(cx - extent_x));
-    var x1: i64 = @intFromFloat(@ceil(cx + extent_x));
-    var y0: i64 = @intFromFloat(@floor(cy - extent_y));
-    var y1: i64 = @intFromFloat(@ceil(cy + extent_y));
-    x0 = @max(0, x0);
-    y0 = @max(0, y0);
-    x1 = @min(@as(i64, @intCast(width)), x1);
-    y1 = @min(@as(i64, @intCast(height)), y1);
-    if (x1 <= x0 or y1 <= y0) return;
-
-    for (@as(usize, @intCast(y0))..@as(usize, @intCast(y1))) |y| {
-        const py = @as(f64, @floatFromInt(y)) + 0.5;
-        for (@as(usize, @intCast(x0))..@as(usize, @intCast(x1))) |x| {
-            const px = @as(f64, @floatFromInt(x)) + 0.5;
-            const dx = px - cx;
-            const dy = py - cy;
-            const local_x = dx * cos_a + dy * sin_a;
-            const local_y = -dx * sin_a + dy * cos_a;
-            if (@abs(local_x) <= half_w and @abs(local_y) <= half_h) {
-                image[y * width + x] = value;
-            }
-        }
-    }
-}
-
 fn fillRect(image: []f64, width: usize, height: usize, rect: RebateMaskRect, value: f64) void {
     var x0: i64 = @intFromFloat(rect.x);
     var y0: i64 = @intFromFloat(rect.y);
@@ -5236,14 +4963,6 @@ fn fillRect(image: []f64, width: usize, height: usize, rect: RebateMaskRect, val
             image[y * width + x] = value;
         }
     }
-}
-
-fn countExactPixels(image: []const f64, value: f64) usize {
-    var count: usize = 0;
-    for (image) |pixel| {
-        if (pixel == value) count += 1;
-    }
-    return count;
 }
 
 fn expectRebateOriginRect(expected: RebateOriginRect, actual: RebateOriginRect, tolerance: f64) !void {
@@ -5365,18 +5084,6 @@ test "rotates image into expanded replicate-border canvas against Python fixture
 
 test "matches OpenCV square binary close used by film extent detection" {
     try expectBinaryCloseFixture("test/fixtures/processing/frames/film-extent-close-binary-smoke.json");
-}
-
-test "detects axis-aligned film extent against synthetic fixture" {
-    try expectFilmExtentFixture("test/fixtures/processing/frames/film-extent-axis-aligned-smoke.json");
-}
-
-test "detects rotated film extent angle against synthetic fixture" {
-    try expectFilmExtentFixture("test/fixtures/processing/frames/film-extent-rotated-smoke.json");
-}
-
-test "detects rotated image-buffer frames and transforms them back" {
-    try expectRotatedWrapperDetectionFixture("test/fixtures/processing/frames/rotated-wrapper-detect-smoke.json");
 }
 
 test "pins frozen detect_frames work scale as no-op" {
@@ -5536,30 +5243,6 @@ test "pins test_detect ground truth conversion and scoring semantics" {
     try expectTestDetectGroundTruthFixture("test/fixtures/processing/frames/test-detect-ground-truth.json");
 }
 
-test "frame fit keeps one frame length through a film cut and a missing edge" {
-    const allocator = std.testing.allocator;
-    // 10 px/mm: 35mm frames of 36.2 mm, 38 mm apart.
-    const starts = [_]usize{ 100, 480, 860 };
-    const length: usize = 362;
-    var gradient = [_]f64{0.0} ** 1300;
-    for (starts) |start| {
-        gradient[start] = 1.0;
-        gradient[start + length] = 1.0;
-    }
-    // The second frame's start is too dark to show an edge, and the film is
-    // cut just past the last frame, 6 mm before the scan ends, an edge
-    // stronger than any frame's.
-    gradient[480] = 0.0;
-    gradient[1240] = 3.0;
-
-    const edges = (try fitFramesAlongStrip(allocator, &gradient, starts.len, format_35mm, 10.0, true)).?;
-    defer allocator.free(edges);
-    for (starts, 0..) |start, index| {
-        try std.testing.expectEqual(start, edges[2 * index]);
-        try std.testing.expectEqual(start + length, edges[2 * index + 1]);
-    }
-}
-
 test "detects test_detect scan_0006 frames within the hand-verified truth when the local scan exists" {
     try expectScanDetectionAccuracy("scans/scan_0006_rgbir_800dpi.tiff");
 }
@@ -5574,14 +5257,6 @@ test "detects test_detect scan_0003 frames within the hand-verified truth when t
 
 test "detects test_detect scan_0004 frames within the hand-verified truth when the local scan exists" {
     try expectScanDetectionAccuracy("scans/scan_0004_rgbir_3200dpi.tiff");
-}
-
-test "validates synthetic frame detection fixtures without scan TIFFs" {
-    try expectSyntheticDetectionFixture("test/fixtures/processing/frames/synthetic-detection-fixtures.json");
-}
-
-test "runs axis-aligned detector wiring on synthetic fixtures" {
-    try expectAxisAlignedDetectionFixture("test/fixtures/processing/frames/axis-aligned-detect-smoke.json");
 }
 
 test "ports strip analysis and initial placement against Python fixture" {

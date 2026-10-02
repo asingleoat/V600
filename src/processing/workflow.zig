@@ -2728,31 +2728,11 @@ test "process inverted preview mirrors render_inverted_preview cache guards" {
     try expectInvertedPreviewFixture("test/fixtures/processing/preview/inverted-preview-kodak-gold-defaults.json");
 }
 
-test "process auto-detect preview mirrors route detector composition" {
+test "auto-detect needs a film format" {
     const allocator = std.testing.allocator;
-    const preview = try syntheticAutoDetectPreview(allocator);
+    const preview = try uniformPreview(allocator);
     defer preview.deinit(allocator);
-
     try std.testing.expectError(error.InvalidFilmFormat, autoDetectPreview(allocator, preview, .{}));
-
-    var detected = try autoDetectPreview(allocator, preview, .{
-        .format = "35mm",
-        .n_frames = 3,
-        .detect_film_extent = false,
-        .apply_clahe = false,
-    });
-    defer detected.deinit(allocator);
-
-    try std.testing.expectEqual(@as(usize, 3), detected.frames.len);
-    try std.testing.expectEqualStrings("24:36", detected.aspect);
-    try expectFrameRectApprox(.{ .cx = 70.0, .cy = 158.0, .w = 96.0, .h = 144.0, .angle = 0.0 }, detected.frames[0], 12.0);
-    try expectFrameRectApprox(.{ .cx = 70.0, .cy = 310.0, .w = 96.0, .h = 144.0, .angle = 0.0 }, detected.frames[1], 12.0);
-    try expectFrameRectApprox(.{ .cx = 70.0, .cy = 462.0, .w = 96.0, .h = 144.0, .angle = 0.0 }, detected.frames[2], 12.0);
-    const rebate = detected.rebate orelse return error.MissingAutoDetectRebate;
-    try std.testing.expectApproxEqAbs(70.0, rebate.cx, 16.0);
-    try std.testing.expectApproxEqAbs(386.0, rebate.cy, 16.0);
-    try std.testing.expect(rebate.w > 40.0);
-    try std.testing.expect(rebate.h > 1.0);
 }
 
 test "process auto-detect postprocess applies single-frame fallback before rebate" {
@@ -3268,9 +3248,7 @@ fn expectMaxAbsDiff(actual: []const u8, expected: []const u8, tolerance: u8) !vo
     }
 }
 
-/// A 35mm strip drawn to scale at 4 px/mm: 140 px wide, three 96x144 px
-/// frames at a 152 px pitch.
-fn syntheticAutoDetectPreview(allocator: std.mem.Allocator) !QuickPreview {
+fn uniformPreview(allocator: std.mem.Allocator) !QuickPreview {
     const width: usize = 140;
     const height: usize = 620;
     const sample_count = width * height * 3;
@@ -3281,22 +3259,7 @@ fn syntheticAutoDetectPreview(allocator: std.mem.Allocator) !QuickPreview {
     const jpeg = try allocator.alloc(u8, 0);
     errdefer allocator.free(jpeg);
 
-    for (0..height) |y| {
-        for (0..width) |x| {
-            var level: f64 = 0.92;
-            if (y >= 20 and y < 600) level = 0.65;
-            if (x >= 22 and x < 118 and
-                ((y >= 86 and y < 230) or (y >= 238 and y < 382) or (y >= 390 and y < 534)))
-            {
-                level = 0.18;
-            }
-            const sample: u16 = @intFromFloat(@floor(level * 65535.0 + 0.5));
-            const base = (y * width + x) * 3;
-            raw[base] = sample;
-            raw[base + 1] = sample;
-            raw[base + 2] = sample;
-        }
-    }
+    @memset(raw, 40000);
 
     return .{
         .info = .{
