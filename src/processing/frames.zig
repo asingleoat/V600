@@ -977,7 +977,7 @@ pub fn detectFramesAxisAlignedPrepared(
     errdefer allocator.free(frames);
     try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frames);
     alignOutlierAngles(frames);
-    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames);
+    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames, format.gap_range_mm != null);
     allocator.free(edges);
     return .{ .frames = frames, .strip_info = strip_info, .aspect = detectFramesAspect(format, strip_info.is_vertical) };
 }
@@ -1042,7 +1042,7 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     breakdown.angle_ns = monotonicNowNs() - angle_started;
 
     const cross_strip_started = monotonicNowNs();
-    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frame_rects);
+    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frame_rects, format.gap_range_mm != null);
     breakdown.cross_strip_ns = monotonicNowNs() - cross_strip_started;
 
     allocator.free(edges);
@@ -1735,8 +1735,23 @@ pub fn measureCrossStripEdges(
     cross_dim_est: f64,
     cross_search_r: usize,
 ) !?CrossStripMeasurement {
+    return measureCrossStripEdgesInBand(allocator, gradient_signed, cross_dim_est, cross_dim_est, cross_search_r);
+}
+
+/// The frame's two cross edges on one line across the strip, its width
+/// anywhere from `cross_dim_lo` to `cross_dim_hi`: the pair of edges that
+/// scores highest wins.
+fn measureCrossStripEdgesInBand(
+    allocator: std.mem.Allocator,
+    gradient_signed: []const f64,
+    cross_dim_lo: f64,
+    cross_dim_hi: f64,
+    cross_search_r: usize,
+) !?CrossStripMeasurement {
     if (gradient_signed.len < 3) return error.InvalidCrossStripInput;
-    if (!std.math.isFinite(cross_dim_est) or cross_dim_est <= 0.0) return error.InvalidCrossStripInput;
+    if (!std.math.isFinite(cross_dim_lo) or !std.math.isFinite(cross_dim_hi) or cross_dim_lo <= 0.0 or cross_dim_hi < cross_dim_lo) {
+        return error.InvalidCrossStripInput;
+    }
 
     const g_pos = try allocator.alloc(f64, gradient_signed.len);
     defer allocator.free(g_pos);
@@ -1748,30 +1763,35 @@ pub fn measureCrossStripEdges(
     }
 
     const n_pts = gradient_signed.len;
-    const denominator = @as(f64, @floatFromInt(n_pts - 1));
-    const half_w = cross_dim_est / 2.0;
-    const hw_idx = pythonRoundToUsize(half_w * denominator / denominator);
-    if (!(hw_idx > 0 and hw_idx < g_pos.len / 2)) return null;
-
-    const lo_c = hw_idx;
-    const hi_c = g_pos.len - hw_idx;
-    const paired_len = hi_c - lo_c;
-    const paired = try allocator.alloc(f64, paired_len);
-    defer allocator.free(paired);
-    for (paired, 0..) |*score, index| {
-        score.* = g_pos[index] * g_neg[index + 2 * hw_idx];
+    const center_idx = pythonRoundToUsize(@as(f64, @floatFromInt(n_pts - 1)) / 2.0);
+    const hw_lo = pythonRoundToUsize(cross_dim_lo / 2.0);
+    const hw_hi = @max(hw_lo, pythonRoundToUsize(cross_dim_hi / 2.0));
+    var best_score: f64 = 0.0;
+    var best_k: usize = 0;
+    var best_hw: usize = 0;
+    var hw_idx = hw_lo;
+    while (hw_idx <= hw_hi) : (hw_idx += 1) {
+        if (!(hw_idx > 0 and hw_idx < g_pos.len / 2)) continue;
+        // Pairs start at k, end at k + 2 * hw_idx, centred at k + hw_idx.
+        const paired_len = g_pos.len - 2 * hw_idx;
+        if (center_idx < hw_idx) continue;
+        const target = center_idx - hw_idx;
+        const search_lo = target -| cross_search_r;
+        const search_hi = @min(paired_len, target + cross_search_r + 1);
+        if (search_hi <= search_lo) continue;
+        for (search_lo..search_hi) |k| {
+            const score = g_pos[k] * g_neg[k + 2 * hw_idx];
+            if (score > best_score) {
+                best_score = score;
+                best_k = k;
+                best_hw = hw_idx;
+            }
+        }
     }
+    if (best_score <= 0.0) return null;
 
-    const center_target_idx = pythonRoundToUsize(@as(f64, @floatFromInt(n_pts - 1)) / 2.0) - lo_c;
-    const search_lo = if (center_target_idx > cross_search_r) center_target_idx - cross_search_r else 0;
-    const search_hi = @min(paired.len, center_target_idx + cross_search_r + 1);
-    if (search_hi <= search_lo) return null;
-    const search = paired[search_lo..search_hi];
-    if (maxSlice(search) <= 0.0) return null;
-
-    const coarse_k = search_lo + argMax(search);
-    const left_img_idx = coarse_k;
-    const right_img_idx = coarse_k + 2 * hw_idx;
+    const left_img_idx = best_k;
+    const right_img_idx = best_k + 2 * best_hw;
     const left_f = subpixelPeak(g_pos, if (left_img_idx > 2) left_img_idx - 2 else 0, @min(g_pos.len, left_img_idx + 3));
     const right_f = subpixelPeak(g_neg, if (right_img_idx > 2) right_img_idx - 2 else 0, @min(g_neg.len, right_img_idx + 3));
     const center = @as(f64, @floatFromInt(n_pts - 1)) / 2.0;
@@ -1782,8 +1802,8 @@ pub fn measureCrossStripEdges(
         .right_t = right_t,
         .cross_w = right_t - left_t,
         .cross_center_offset = (left_t + right_t) / 2.0,
-        .hw_idx = hw_idx,
-        .coarse_k = coarse_k,
+        .hw_idx = best_hw,
+        .coarse_k = best_k,
     };
 }
 
@@ -2621,6 +2641,11 @@ fn framesFromStripEdges(
     return frames;
 }
 
+/// Places every frame across the strip on its measured cross edges. With
+/// `measure_width`, the frames' width is measured too, within the format's
+/// `width_variation`: each frame's within the band, then all at the strip's
+/// median, as one camera's gate made them all. Otherwise the width follows
+/// the frame's length at the format's aspect.
 fn refineCrossStripAxisAligned(
     allocator: std.mem.Allocator,
     gray: []const f64,
@@ -2629,94 +2654,149 @@ fn refineCrossStripAxisAligned(
     format: FilmFormat,
     strip_info: StripAnalysis,
     frames: []FrameRect,
+    measure_width: bool,
 ) !void {
     if (gray.len != width * height or frames.len != strip_info.n_frames) return error.InvalidDetectFramesInput;
     const line_len = if (strip_info.is_vertical) width else height;
     if (line_len < 3) return error.InvalidDetectFramesInput;
 
-    const across_mm = format.acrossMm();
-    const along_mm = format.alongMm();
-    const cross_search_r = @max(@as(usize, 3), @as(usize, @intFromFloat(@as(f64, @floatFromInt(line_len)) * 0.04)));
+    var sampler = try CrossEdgeSampler.init(allocator, gray, width, height, strip_info.is_vertical, line_len);
+    defer sampler.deinit(allocator);
+    const aspect = format.acrossMm() / format.alongMm();
+
+    var strip_cross_dim: ?f64 = null;
+    const variation = format.width_variation;
+    if (measure_width and variation > 0.0 and frames.len <= max_fit_frames) {
+        var widths: [max_fit_frames]f64 = undefined;
+        var count: usize = 0;
+        for (frames) |frame| {
+            const nominal = sampler.alongDim(frame) * aspect;
+            if (!std.math.isFinite(nominal) or nominal <= 0.0) continue;
+            const edges = (try sampler.measure(allocator, frame, nominal * (1.0 - variation), nominal * (1.0 + variation))) orelse continue;
+            widths[count] = edges.right - edges.left;
+            count += 1;
+        }
+        if (count > 0) strip_cross_dim = medianInPlace(widths[0..count]);
+    }
+
+    for (frames) |*frame| {
+        const cross_dim = strip_cross_dim orelse sampler.alongDim(frame.*) * aspect;
+        if (!std.math.isFinite(cross_dim) or cross_dim <= 0.0) continue;
+        const edges = (try sampler.measure(allocator, frame.*, cross_dim, cross_dim)) orelse continue;
+        const cross_w = edges.right - edges.left;
+        const cross_center_offset = (edges.left + edges.right) / 2.0;
+        const cos_a = std.math.cos(frame.angle);
+        if (strip_info.is_vertical) {
+            frame.cx += cross_center_offset * cos_a;
+            frame.w = cross_w;
+        } else {
+            frame.cy += cross_center_offset * cos_a;
+            frame.h = cross_w;
+        }
+    }
+}
+
+/// Samples lines across the strip through a frame and finds its two cross
+/// edges on each, as offsets from the frame's centre line.
+const CrossEdgeSampler = struct {
+    gray: []const f64,
+    width: usize,
+    height: usize,
+    is_vertical: bool,
+    line: []f64,
+    left_edges: []f64,
+    right_edges: []f64,
+    cross_search_r: usize,
+
     const sample_count: usize = 15;
     const margin_frac = 0.2;
 
-    const line = try allocator.alloc(f64, line_len);
-    defer allocator.free(line);
-    const left_edges = try allocator.alloc(f64, sample_count);
-    defer allocator.free(left_edges);
-    const right_edges = try allocator.alloc(f64, sample_count);
-    defer allocator.free(right_edges);
+    fn init(allocator: std.mem.Allocator, gray: []const f64, width: usize, height: usize, is_vertical: bool, line_len: usize) !CrossEdgeSampler {
+        const line = try allocator.alloc(f64, line_len);
+        errdefer allocator.free(line);
+        const left_edges = try allocator.alloc(f64, sample_count);
+        errdefer allocator.free(left_edges);
+        const right_edges = try allocator.alloc(f64, sample_count);
+        return .{
+            .gray = gray,
+            .width = width,
+            .height = height,
+            .is_vertical = is_vertical,
+            .line = line,
+            .left_edges = left_edges,
+            .right_edges = right_edges,
+            .cross_search_r = @max(@as(usize, 3), @as(usize, @intFromFloat(@as(f64, @floatFromInt(line_len)) * 0.04))),
+        };
+    }
 
-    for (frames) |*frame| {
-        const cx = frame.cx;
-        const cy = frame.cy;
-        const angle = frame.angle;
-        const cos_a = std.math.cos(angle);
-        const sin_a = std.math.sin(angle);
-        const strip_dim = if (strip_info.is_vertical) frame.h else frame.w;
-        if (!std.math.isFinite(strip_dim) or strip_dim <= 0.0) continue;
-        const cross_dim_est = strip_dim * across_mm / along_mm;
+    fn deinit(self: *CrossEdgeSampler, allocator: std.mem.Allocator) void {
+        allocator.free(self.line);
+        allocator.free(self.left_edges);
+        allocator.free(self.right_edges);
+        self.* = undefined;
+    }
+
+    fn alongDim(self: CrossEdgeSampler, frame: FrameRect) f64 {
+        return if (self.is_vertical) frame.h else frame.w;
+    }
+
+    /// Median left and right edge offsets for a frame between `dim_lo` and
+    /// `dim_hi` wide, or null when no line shows both edges.
+    fn measure(self: *CrossEdgeSampler, allocator: std.mem.Allocator, frame: FrameRect, dim_lo: f64, dim_hi: f64) !?struct { left: f64, right: f64 } {
+        const strip_dim = self.alongDim(frame);
+        if (!std.math.isFinite(strip_dim) or strip_dim <= 0.0) return null;
+        const cos_a = std.math.cos(frame.angle);
+        const sin_a = std.math.sin(frame.angle);
         const start_offset = -strip_dim / 2.0 * (1.0 - margin_frac);
         const end_offset = strip_dim / 2.0 * (1.0 - margin_frac);
+        const center_t = @as(f64, @floatFromInt(self.line.len - 1)) / 2.0;
         var edge_count: usize = 0;
 
         for (0..sample_count) |sample_index| {
-            const fraction = if (sample_count == 1)
-                0.0
-            else
-                @as(f64, @floatFromInt(sample_index)) / @as(f64, @floatFromInt(sample_count - 1));
+            const fraction = @as(f64, @floatFromInt(sample_index)) / @as(f64, @floatFromInt(sample_count - 1));
             const offset = start_offset + (end_offset - start_offset) * fraction;
-            const center_t = @as(f64, @floatFromInt(line_len - 1)) / 2.0;
             var valid_count: usize = 0;
-            if (strip_info.is_vertical) {
-                const sample_y = cy + offset * cos_a;
-                const sample_x_base = cx + offset * sin_a;
-                for (line, 0..) |*value, index| {
+            if (self.is_vertical) {
+                const sample_y = frame.cy + offset * cos_a;
+                const sample_x_base = frame.cx + offset * sin_a;
+                for (self.line, 0..) |*value, index| {
                     const t = @as(f64, @floatFromInt(index)) - center_t;
                     const x = sample_x_base + t * cos_a;
                     const y = sample_y - t * sin_a;
-                    if (isValidBilinearCoordinate(x, y, width, height)) valid_count += 1;
-                    value.* = sampleInvertedConstantBilinear(gray, width, height, x, y);
+                    if (isValidBilinearCoordinate(x, y, self.width, self.height)) valid_count += 1;
+                    value.* = sampleInvertedConstantBilinear(self.gray, self.width, self.height, x, y);
                 }
             } else {
-                const sample_x_base = cx + offset * cos_a;
-                const sample_y = cy + offset * sin_a;
-                for (line, 0..) |*value, index| {
+                const sample_x_base = frame.cx + offset * cos_a;
+                const sample_y = frame.cy + offset * sin_a;
+                for (self.line, 0..) |*value, index| {
                     const t = @as(f64, @floatFromInt(index)) - center_t;
                     const x = sample_x_base - t * sin_a;
                     const y = sample_y + t * cos_a;
-                    if (isValidBilinearCoordinate(x, y, width, height)) valid_count += 1;
-                    value.* = sampleInvertedConstantBilinear(gray, width, height, x, y);
+                    if (isValidBilinearCoordinate(x, y, self.width, self.height)) valid_count += 1;
+                    value.* = sampleInvertedConstantBilinear(self.gray, self.width, self.height, x, y);
                 }
             }
-            if (@as(f64, @floatFromInt(valid_count)) < @as(f64, @floatFromInt(line_len)) * 0.5) continue;
+            if (@as(f64, @floatFromInt(valid_count)) < @as(f64, @floatFromInt(self.line.len)) * 0.5) continue;
 
-            var gradient = try signedGradientForCrossLine(allocator, line);
+            var gradient = try signedGradientForCrossLine(allocator, self.line);
             defer gradient.deinit(allocator);
-            if (try measureCrossStripEdges(allocator, gradient.values, cross_dim_est, cross_search_r)) |measurement| {
-                if (measurement.cross_w > 0.0 and edge_count < sample_count) {
-                    left_edges[edge_count] = measurement.left_t;
-                    right_edges[edge_count] = measurement.right_t;
+            if (try measureCrossStripEdgesInBand(allocator, gradient.values, dim_lo, dim_hi, self.cross_search_r)) |measurement| {
+                if (measurement.cross_w > 0.0) {
+                    self.left_edges[edge_count] = measurement.left_t;
+                    self.right_edges[edge_count] = measurement.right_t;
                     edge_count += 1;
                 }
             }
         }
 
-        if (edge_count == 0) continue;
-        const left_offset = try medianF64(allocator, left_edges[0..edge_count]);
-        const right_offset = try medianF64(allocator, right_edges[0..edge_count]);
-        const cross_w = right_offset - left_offset;
-        const cross_center_offset = (left_offset + right_offset) / 2.0;
-        if (cross_w <= 0.0) continue;
-        if (strip_info.is_vertical) {
-            frame.cx = cx + cross_center_offset * cos_a;
-            frame.w = cross_w;
-        } else {
-            frame.cy = cy + cross_center_offset * cos_a;
-            frame.h = cross_w;
-        }
+        if (edge_count == 0) return null;
+        const left = try medianF64(allocator, self.left_edges[0..edge_count]);
+        const right = try medianF64(allocator, self.right_edges[0..edge_count]);
+        if (right <= left) return null;
+        return .{ .left = left, .right = right };
     }
-}
+};
 
 const CrossLineGradient = struct {
     values: []f64,
@@ -3998,8 +4078,10 @@ fn expectTestDetectGroundTruthFixture(path: []const u8) !void {
 }
 
 /// Detection on the local scan, at the scan's DPI as the app runs it, lands
-/// within half a millimetre of the centre, 1% of the size, and 0.15 degrees
-/// of every frame test_detect.py's hand-verified truth gives.
+/// within half a millimetre of the centre, 1% of the length, and 0.15
+/// degrees of every frame test_detect.py's hand-verified truth gives. The
+/// truth's widths were drawn at the format's aspect, while detection
+/// measures the width, so widths agree within the format's width band.
 fn expectScanDetectionAccuracy(scan_path: []const u8) !void {
     if (!tiff_available) return error.SkipZigTest;
     std.Io.Dir.cwd().access(std.testing.io, scan_path, .{}) catch return error.SkipZigTest;
@@ -4051,17 +4133,20 @@ fn expectScanDetectionAccuracy(scan_path: []const u8) !void {
 
     try std.testing.expectEqual(test_case.ground_truth.len, detected.frames.len);
     var all_frames_match = true;
+    const vertical = detected.strip_info.is_vertical;
     for (test_case.ground_truth, detected.frames, 1..) |truth, actual, frame_number| {
         const centre_mm = std.math.hypot(actual.cx - (truth.x + truth.w / 2.0), actual.cy - (truth.y + truth.h / 2.0)) / px_per_mm;
-        const size_error = @max(@abs(actual.w / truth.w - 1.0), @abs(actual.h / truth.h - 1.0));
+        const length_error = if (vertical) @abs(actual.h / truth.h - 1.0) else @abs(actual.w / truth.w - 1.0);
+        const width_error = if (vertical) @abs(actual.w / truth.w - 1.0) else @abs(actual.h / truth.h - 1.0);
         const angle_deg = @abs(std.math.radiansToDegrees(frameAngleErrorRadians(actual.angle, truth.angle)));
-        if (centre_mm > 0.5 or size_error > 0.01 or angle_deg > 0.15) {
+        if (centre_mm > 0.5 or length_error > 0.01 or width_error > format.width_variation or angle_deg > 0.15) {
             all_frames_match = false;
-            std.debug.print("{s} frame {d}: centre off {d:.3} mm, size off {d:.2}%, angle off {d:.3} deg\n", .{
+            std.debug.print("{s} frame {d}: centre off {d:.3} mm, length off {d:.2}%, width off {d:.2}%, angle off {d:.3} deg\n", .{
                 scan_path,
                 frame_number,
                 centre_mm,
-                100.0 * size_error,
+                100.0 * length_error,
+                100.0 * width_error,
                 angle_deg,
             });
         }

@@ -17,6 +17,11 @@ pub const FilmFormat = struct {
     /// fixed-length fit (`fitFramesAlongStrip`); the others by pitch
     /// alignment, until hand-placed frames show the fit works for them too.
     gap_range_mm: ?[2]f64 = null,
+    /// How far, as a fraction, a camera's frame may run wider or narrower
+    /// across the strip than the format's; the fit measures the width within
+    /// it. Bounded by the nearest other edge the same way round outside the
+    /// frame.
+    width_variation: f64 = 0.0,
 
     pub fn acrossMm(self: FilmFormat) f64 {
         return self.frame_mm[0];
@@ -42,6 +47,9 @@ pub const format_35mm: FilmFormat = .{
     .strip_width_mm = 35.0,
     .description = "35mm (135 film)",
     .gap_range_mm = .{ 0.2, 6.0 },
+    // A line along the strip lies about 0.5 mm outside the frame, inside
+    // the perforations; gates vary about 1%.
+    .width_variation = 0.02,
 };
 
 pub const format_645: FilmFormat = .{
@@ -67,6 +75,10 @@ pub const format_6x7: FilmFormat = .{
     .pitch_mm = 73.0,
     .strip_width_mm = 61.5,
     .description = "6x7 medium format",
+    // Hand-placed frames show 3-8 mm between frames.
+    .gap_range_mm = .{ 0.5, 12.0 },
+    // The film's edge lies about 2.75 mm outside the frame.
+    .width_variation = 0.04,
 };
 
 pub const format_6x9: FilmFormat = .{
