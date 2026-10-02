@@ -921,8 +921,10 @@ pub fn detectFramesAxisAlignedPrepared(
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
     const frames = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
     errdefer allocator.free(frames);
-    try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frames, blur_kernel);
-    alignOutlierAngles(frames);
+    const angle_uncertainties = try allocator.alloc(f64, frames.len);
+    defer allocator.free(angle_uncertainties);
+    try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frames, blur_kernel, angle_uncertainties);
+    pullAnglesTowardStrip(frames, angle_uncertainties);
     try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames);
     allocator.free(edges);
     return .{ .frames = frames, .strip_info = strip_info, .aspect = detectFramesAspect(format, strip_info.is_vertical) };
@@ -968,8 +970,10 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     errdefer allocator.free(frame_rects);
 
     const angle_started = monotonicNowNs();
-    try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frame_rects, blur_kernel);
-    alignOutlierAngles(frame_rects);
+    const angle_uncertainties = try allocator.alloc(f64, frame_rects.len);
+    defer allocator.free(angle_uncertainties);
+    try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frame_rects, blur_kernel, angle_uncertainties);
+    pullAnglesTowardStrip(frame_rects, angle_uncertainties);
     breakdown.angle_ns = monotonicNowNs() - angle_started;
 
     const cross_strip_started = monotonicNowNs();
@@ -1420,18 +1424,35 @@ const StepWindow = struct {
     }
 };
 
-/// Frames on one strip lie within a fraction of a degree of each other, so
-/// an angle more than a degree from the strip's median is a bad edge fit.
-fn alignOutlierAngles(frames: []FrameRect) void {
-    if (frames.len < 3) return;
-    var angles: [64]f64 = undefined;
-    if (frames.len > angles.len) return;
-    for (frames, angles[0..frames.len]) |frame, *angle| angle.* = frame.angle;
-    std.sort.pdq(f64, angles[0..frames.len], {}, lessThanF64);
-    const median = medianSortedF64(angles[0..frames.len]);
-    const limit = std.math.degreesToRadians(1.0);
-    for (frames) |*frame| {
-        if (@abs(frame.angle - median) > limit) frame.angle = median;
+/// How much frames on one strip really turn against each other, beyond the
+/// strip's own rotation: very little.
+const frame_rotation_spread = 0.1 * std.math.pi / 180.0;
+
+/// The film strip as a whole sits at a slight angle, and its frames turn
+/// very little beyond that, so every frame's angle is pulled toward the
+/// strip's (the median of the measured frames): each the more, the less
+/// certain its own edges are. A frame more than a degree off the strip, or
+/// with no angle of its own, takes the strip's.
+fn pullAnglesTowardStrip(frames: []FrameRect, uncertainties: []const f64) void {
+    var measured: [64]f64 = undefined;
+    if (frames.len > measured.len) return;
+    var count: usize = 0;
+    for (frames, uncertainties) |frame, uncertainty| {
+        if (!std.math.isFinite(uncertainty)) continue;
+        measured[count] = frame.angle;
+        count += 1;
+    }
+    if (count == 0) return;
+    const strip_angle = medianInPlace(measured[0..count]);
+    const outlier = std.math.degreesToRadians(1.0);
+    const prior = frame_rotation_spread * frame_rotation_spread;
+    for (frames, uncertainties) |*frame, uncertainty| {
+        const deviation = frame.angle - strip_angle;
+        if (!std.math.isFinite(uncertainty) or @abs(deviation) > outlier) {
+            frame.angle = strip_angle;
+            continue;
+        }
+        frame.angle = strip_angle + deviation * prior / (prior + uncertainty * uncertainty);
     }
 }
 
@@ -2016,10 +2037,15 @@ fn estimateFrameAnglesAxisAligned(
     edge_positions: []const usize,
     frames: []FrameRect,
     blur_kernel: usize,
+    /// Out: each frame's angle uncertainty in radians, infinite when its
+    /// edges gave no angle.
+    uncertainties: []f64,
 ) !void {
     if (gray.len != width * height or edge_positions.len != strip_info.n_frames * 2 or frames.len != strip_info.n_frames) {
         return error.InvalidDetectFramesInput;
     }
+    if (uncertainties.len != frames.len) return error.InvalidDetectFramesInput;
+    @memset(uncertainties, std.math.inf(f64));
     if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidDetectFramesInput;
 
     var angle_set = try computeAngleGradientSet(allocator, gray, width, height, strip_info.is_vertical, blur_kernel);
@@ -2049,8 +2075,12 @@ fn estimateFrameAnglesAxisAligned(
         }
 
         var point_count: usize = 0;
+        var group_starts: [3]usize = undefined;
+        var group_count: usize = 0;
         for (edge_indices[0..edge_count]) |edge_index| {
             if (edge_index >= edge_positions.len) continue;
+            group_starts[group_count] = point_count;
+            group_count += 1;
             const pos = edge_positions[edge_index];
             const gradient_len = angle_set.gradients[0].len;
             const lo = if (pos > search_r) pos - search_r else 0;
@@ -2072,9 +2102,39 @@ fn estimateFrameAnglesAxisAligned(
         if (point_count >= 4) {
             if (try estimateAngleTheilSen(allocator, points[0..point_count], max_angle)) |angle| {
                 frame.angle = angle.angle;
+                group_starts[group_count] = point_count;
+                uncertainties[frame_index] = slopeUncertainty(points[0..point_count], group_starts[0 .. group_count + 1], angle.median_slope);
             }
         }
     }
+}
+
+/// Standard error of an edge slope: the points' robust scatter about the
+/// line (each edge with its own offset), over the spread of their
+/// positions along the edge.
+fn slopeUncertainty(points: []const EdgePeakPoint, group_starts: []const usize, slope: f64) f64 {
+    var residuals: [128]f64 = undefined;
+    if (points.len > residuals.len) return std.math.inf(f64);
+    var spread: f64 = 0.0;
+    for (group_starts[0 .. group_starts.len - 1], group_starts[1..]) |first, end| {
+        if (end <= first) continue;
+        const group = residuals[first..end];
+        var mean_x: f64 = 0.0;
+        for (points[first..end], group) |point, *residual| {
+            residual.* = point.y - slope * point.x;
+            mean_x += point.x;
+        }
+        mean_x /= @floatFromInt(end - first);
+        for (points[first..end]) |point| spread += (point.x - mean_x) * (point.x - mean_x);
+        // Each edge's own offset: residuals about the group's median.
+        var sorted: [128]f64 = undefined;
+        @memcpy(sorted[0..group.len], group);
+        const offset = medianInPlace(sorted[0..group.len]);
+        for (group) |*residual| residual.* = @abs(residual.* - offset);
+    }
+    if (spread <= 0.0) return std.math.inf(f64);
+    const scatter = 1.4826 * medianInPlace(residuals[0..points.len]);
+    return scatter / @sqrt(spread) / (1.0 + slope * slope);
 }
 
 fn computeAngleGradientSet(

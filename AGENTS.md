@@ -218,8 +218,11 @@ deliberately, not by accident.
   barely show; fewer frames when the strip's length promised more than
   fit. Across the strip, the frame width is measured per strip within the
   format's band (35mm 2%, 120 4%), so the aspect comes from the film. Each
-  frame's angle comes from its edges, sought the way round they turn,
-  with angles more than 1 degree off the strip's median replaced by it.
+  frame's angle comes from its edges, sought the way round they turn, then
+  is pulled toward the strip's (the median of the frames): frames turn
+  about 0.1 degree against each other beyond the strip's own rotation, so
+  a frame moves the more the less certain its edges are, and one more than
+  1 degree off, or without an angle, takes the strip's.
   The Dmin rebate goes in a gap between frames and never overlaps one: the
   middle gap, else the nearest gap whose rebate clears every frame, else
   none. Roll export drops a detected rebate that overlaps hand-placed
