@@ -76,17 +76,17 @@ Open:
 - Medium-format frame detection is weak on real strips. The first real 6x7
   strip (6400 dpi, two frames) got frame 2 right but cut frame 1 to
   60x49 mm, missing picture on the left and bottom, and its rebate box
-  overlapped the bottom of frame 1. 35mm and 6x7 moved off the DTW pitch
+  overlapped the bottom of frame 1. Every format moved off the DTW pitch
   alignment to a fixed-length fit (one frame length per strip, gaps within
   the format's `gap_range_mm`, width measured within `width_variation`,
-  scale from the scan's DPI), measured with `roll check-frames` against
-  the owner's frames: KODAKGOLD_200_0 (hand framings on strips 3-5,
-  verified exports of strips 1-2) and KODAKGOLD_200_120_0 (hand framings
-  on strips 1, 3, 4, 5). Hand frames are drawn at a locked aspect, so
-  their widths are approximate (the 6x7 gate is wider than the 56:69
-  lock); measured widths were checked by eye against the picture edges.
-  645, 6x6, and 6x9 keep DTW until strips in those formats are hand-framed
-  the same way.
+  scale from the scan's DPI). 35mm and 6x7 are measured with `roll
+  check-frames` against the owner's frames: KODAKGOLD_200_0 (hand framings
+  on strips 3-5, verified exports of strips 1-2) and KODAKGOLD_200_120_0
+  (hand framings on strips 1, 3, 4, 5). Hand frames are drawn at a locked
+  aspect, so their widths are approximate (the 6x7 gate is wider than the
+  56:69 lock); measured widths were checked by eye against the picture
+  edges. 645, 6x6, and 6x9 use the 6x7 settings unchecked: measure them
+  once strips in those formats are hand-framed.
 - A 35mm strip with blank film at one end gets an extra frame on the blank
   part: the frame count comes from the strip's length (KODAKGOLD_200_1 and
   _2, strip 1). Needs a per-frame evidence test before dropping frames.

@@ -1191,7 +1191,8 @@ fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State,
     try writeSmokeStripSized(strip, 1600, 4800);
     const second = try std.fmt.allocPrint(allocator, "{s}/strip_02_rgbir_800dpi.tiff", .{roll.dir});
     defer allocator.free(second);
-    try writeSmokeStrip(second);
+    // 38 x 51 mm: room for one 35mm frame, so its export can run.
+    try writeSmokeStripSized(second, 1200, 1600);
     try rolls.openRoll(model, "close");
     const processor = rolls.processor orelse return error.RollCloseSmokeFailed;
     var status_buffer: [256]u8 = undefined;

@@ -13,15 +13,13 @@ pub const FilmFormat = struct {
     strip_width_mm: f64,
     description: []const u8,
     /// Least and most film cameras leave between neighbouring frames; the
-    /// gap varies frame to frame. Formats with one are placed by a
-    /// fixed-length fit (`fitFramesAlongStrip`); the others by pitch
-    /// alignment, until hand-placed frames show the fit works for them too.
-    gap_range_mm: ?[2]f64 = null,
+    /// gap varies frame to frame.
+    gap_range_mm: [2]f64,
     /// How far, as a fraction, a camera's frame may run wider or narrower
-    /// across the strip than the format's; the fit measures the width within
-    /// it. Bounded by the nearest other edge the same way round outside the
-    /// frame.
-    width_variation: f64 = 0.0,
+    /// across the strip than the format's; detection measures the width
+    /// within it. Bounded by the nearest other edge the same way round
+    /// outside the frame.
+    width_variation: f64,
 
     pub fn acrossMm(self: FilmFormat) f64 {
         return self.frame_mm[0];
@@ -59,6 +57,9 @@ pub const format_645: FilmFormat = .{
     .pitch_mm = 45.0,
     .strip_width_mm = 61.5,
     .description = "645 medium format",
+    // As 6x7: not yet checked against hand-placed 645 frames.
+    .gap_range_mm = .{ 0.5, 12.0 },
+    .width_variation = 0.04,
 };
 
 pub const format_6x6: FilmFormat = .{
@@ -67,6 +68,9 @@ pub const format_6x6: FilmFormat = .{
     .pitch_mm = 60.0,
     .strip_width_mm = 61.5,
     .description = "6x6 medium format",
+    // As 6x7: not yet checked against hand-placed 6x6 frames.
+    .gap_range_mm = .{ 0.5, 12.0 },
+    .width_variation = 0.04,
 };
 
 pub const format_6x7: FilmFormat = .{
@@ -87,6 +91,9 @@ pub const format_6x9: FilmFormat = .{
     .pitch_mm = 88.0,
     .strip_width_mm = 61.5,
     .description = "6x9 medium format",
+    // As 6x7: not yet checked against hand-placed 6x9 frames.
+    .gap_range_mm = .{ 0.5, 12.0 },
+    .width_variation = 0.04,
 };
 
 pub const formats = [_]FilmFormat{

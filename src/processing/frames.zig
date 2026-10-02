@@ -69,25 +69,6 @@ pub const StripProfiles = struct {
     }
 };
 
-pub const DtwOptions = struct {
-    max_len: usize = 1000,
-};
-
-pub const DtwAlignment = struct {
-    edge_positions: []usize,
-    dtw_scale: f64,
-    template_len: usize,
-    effective_frame_dim: usize,
-    effective_gap: usize,
-    band: usize,
-    end_j: usize,
-
-    pub fn deinit(self: *DtwAlignment, allocator: std.mem.Allocator) void {
-        allocator.free(self.edge_positions);
-        self.* = undefined;
-    }
-};
-
 pub const CrossStripMeasurement = struct {
     left_t: f64,
     right_t: f64,
@@ -131,7 +112,6 @@ pub const DetectFramesOptions = struct {
     film_extent: ?FilmExtent = null,
     strip_angle: f64 = 0.0,
     cross_gray_raw: ?[]const f64 = null,
-    dtw_options: DtwOptions = .{},
     /// Image pixels per millimetre of film, from the scan's DPI. Without it
     /// the scale comes from the film's measured width, which runs a few
     /// percent off.
@@ -143,7 +123,6 @@ pub const DetectFramesImageOptions = struct {
     detect_film_extent: bool = true,
     film_extent_override: ?FilmExtent = null,
     apply_clahe: bool = true,
-    dtw_options: DtwOptions = .{},
     px_per_mm: ?f64 = null,
 };
 
@@ -173,8 +152,7 @@ pub const DetectFramesBreakdown = struct {
     analyze_ns: u64 = 0,
     profiles_ns: u64 = 0,
     gradients_ns: u64 = 0,
-    dtw_ns: u64 = 0,
-    snap_repair_ns: u64 = 0,
+    fit_ns: u64 = 0,
     frames_from_edges_ns: u64 = 0,
     angle_ns: u64 = 0,
     cross_strip_ns: u64 = 0,
@@ -700,7 +678,6 @@ pub fn detectFramesFromImage(
                 .frame_count_override = options.frame_count_override,
                 .film_extent = extent,
                 .cross_gray_raw = rotated_raw.pixels,
-                .dtw_options = options.dtw_options,
                 .px_per_mm = options.px_per_mm,
             });
             errdefer detected.deinit(allocator);
@@ -719,7 +696,6 @@ pub fn detectFramesFromImage(
         .frame_count_override = options.frame_count_override,
         .film_extent = film_extent,
         .cross_gray_raw = raw_gray.gray,
-        .dtw_options = options.dtw_options,
         .px_per_mm = options.px_per_mm,
     });
 }
@@ -782,7 +758,6 @@ pub fn detectFramesFromImageBreakdown(
                 .frame_count_override = options.frame_count_override,
                 .film_extent = extent,
                 .cross_gray_raw = rotated_raw.pixels,
-                .dtw_options = options.dtw_options,
                 .px_per_mm = options.px_per_mm,
             });
             errdefer axis_breakdown.deinit(allocator);
@@ -809,7 +784,6 @@ pub fn detectFramesFromImageBreakdown(
         .frame_count_override = options.frame_count_override,
         .film_extent = film_extent,
         .cross_gray_raw = raw_gray.gray,
-        .dtw_options = options.dtw_options,
         .px_per_mm = options.px_per_mm,
     });
     copyAxisBreakdown(&breakdown, axis_breakdown);
@@ -822,8 +796,7 @@ fn copyAxisBreakdown(target: *DetectFramesBreakdown, source: DetectFramesBreakdo
     target.analyze_ns = source.analyze_ns;
     target.profiles_ns = source.profiles_ns;
     target.gradients_ns = source.gradients_ns;
-    target.dtw_ns = source.dtw_ns;
-    target.snap_repair_ns = source.snap_repair_ns;
+    target.fit_ns = source.fit_ns;
     target.frames_from_edges_ns = source.frames_from_edges_ns;
     target.angle_ns = source.angle_ns;
     target.cross_strip_ns = source.cross_strip_ns;
@@ -956,28 +929,18 @@ pub fn detectFramesAxisAlignedPrepared(
 
     var profiles = try computeStripProfiles(allocator, gray, width, height, strip_info.is_vertical);
     defer profiles.deinit(allocator);
+    var evidence = try FrameEdgeEvidence.init(allocator, profiles);
+    defer evidence.deinit(allocator);
 
-    const grad_a = try computeAbsGradientBlurred(allocator, profiles.profile_a);
-    defer allocator.free(grad_a);
-    const grad_b = try computeAbsGradientBlurred(allocator, profiles.profile_b);
-    defer allocator.free(grad_b);
-    const grad_c = try computeAbsGradientBlurred(allocator, profiles.profile_c);
-    defer allocator.free(grad_c);
-    const grad_avg = try averageGradients(allocator, grad_a, grad_b, grad_c);
-    defer allocator.free(grad_avg);
-
-    const strip_len = if (strip_info.is_vertical) height else width;
-    if (format.gap_range_mm != null) {
-        if (options.px_per_mm) |px_per_mm| applyKnownScale(&strip_info, format, px_per_mm);
-    }
-    const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
-    const edges = try frameEdgesAlongStrip(allocator, profiles, grad_avg, strip_len, format, strip_info, options);
+    if (options.px_per_mm) |px_per_mm| applyKnownScale(&strip_info, format, px_per_mm);
+    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null);
     errdefer allocator.free(edges);
+    const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
     const frames = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
     errdefer allocator.free(frames);
     try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frames);
     alignOutlierAngles(frames);
-    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames, format.gap_range_mm != null);
+    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames);
     allocator.free(edges);
     return .{ .frames = frames, .strip_info = strip_info, .aspect = detectFramesAspect(format, strip_info.is_vertical) };
 }
@@ -1008,28 +971,16 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     defer profiles.deinit(allocator);
 
     const gradients_started = monotonicNowNs();
-    const grad_a = try computeAbsGradientBlurred(allocator, profiles.profile_a);
-    defer allocator.free(grad_a);
-    const grad_b = try computeAbsGradientBlurred(allocator, profiles.profile_b);
-    defer allocator.free(grad_b);
-    const grad_c = try computeAbsGradientBlurred(allocator, profiles.profile_c);
-    defer allocator.free(grad_c);
-    const grad_avg = try averageGradients(allocator, grad_a, grad_b, grad_c);
-    defer allocator.free(grad_avg);
+    var evidence = try FrameEdgeEvidence.init(allocator, profiles);
+    defer evidence.deinit(allocator);
     breakdown.gradients_ns = monotonicNowNs() - gradients_started;
 
-    const strip_len = if (strip_info.is_vertical) height else width;
-    if (format.gap_range_mm != null) {
-        if (options.px_per_mm) |px_per_mm| applyKnownScale(&strip_info, format, px_per_mm);
-    }
-    const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
-
-    // Snapping and repairs, where the format still uses them, count as
-    // alignment too.
-    const dtw_started = monotonicNowNs();
-    const edges = try frameEdgesAlongStrip(allocator, profiles, grad_avg, strip_len, format, strip_info, options);
+    if (options.px_per_mm) |px_per_mm| applyKnownScale(&strip_info, format, px_per_mm);
+    const fit_started = monotonicNowNs();
+    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null);
     errdefer allocator.free(edges);
-    breakdown.dtw_ns = monotonicNowNs() - dtw_started;
+    breakdown.fit_ns = monotonicNowNs() - fit_started;
+    const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
 
     const frames_started = monotonicNowNs();
     const frame_rects = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
@@ -1042,7 +993,7 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     breakdown.angle_ns = monotonicNowNs() - angle_started;
 
     const cross_strip_started = monotonicNowNs();
-    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frame_rects, format.gap_range_mm != null);
+    try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frame_rects);
     breakdown.cross_strip_ns = monotonicNowNs() - cross_strip_started;
 
     allocator.free(edges);
@@ -1065,43 +1016,25 @@ fn applyKnownScale(strip_info: *StripAnalysis, format: FilmFormat, px_per_mm: f6
     strip_info.pitch_px = format.pitch_mm * px_per_mm;
 }
 
-/// Start and end of every frame along the strip: the fixed-length fit for
-/// formats with a gap range, else pitch alignment followed by edge snapping
-/// and repairs. The caller frees the slice.
+/// Start and end of every frame along the strip. When the strip's length
+/// suggested more frames than fit, places as many as do and sets
+/// `strip_info.n_frames` to that. The caller frees the slice.
 fn frameEdgesAlongStrip(
     allocator: std.mem.Allocator,
-    profiles: StripProfiles,
-    grad_avg: []const f64,
-    strip_len: usize,
+    evidence: FrameEdgeEvidence,
     format: FilmFormat,
-    strip_info: StripAnalysis,
-    options: DetectFramesOptions,
+    strip_info: *StripAnalysis,
+    scale_known: bool,
 ) ![]usize {
-    const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
-    if (format.gap_range_mm != null) {
-        var evidence = try FrameEdgeEvidence.init(allocator, profiles);
-        defer evidence.deinit(allocator);
-        const px_per_mm = strip_info.pitch_px / format.pitch_mm;
-        if (try fitFramesAlongStrip(allocator, evidence, strip_info.n_frames, format, px_per_mm, options.px_per_mm != null)) |edges| {
+    const px_per_mm = strip_info.pitch_px / format.pitch_mm;
+    var frame_count = strip_info.n_frames;
+    while (frame_count > 0) : (frame_count -= 1) {
+        if (try fitFramesAlongStrip(allocator, evidence, frame_count, format, px_per_mm, scale_known)) |edges| {
+            strip_info.n_frames = frame_count;
             return edges;
         }
     }
-    var alignment = try alignPitchDtw(allocator, grad_avg, strip_len, format, strip_info.n_frames, options.dtw_options);
-    defer alignment.deinit(allocator);
-    const edges = try allocator.alloc(usize, alignment.edge_positions.len);
-    errdefer allocator.free(edges);
-    try snapEdgesToGradients(grad_avg, alignment.edge_positions, edges, frame_strip_dim);
-    try applySizeConsistencyCorrection(grad_avg, edges, strip_info.n_frames, frame_strip_dim);
-    try repairTerminalFrames(
-        allocator,
-        grad_avg,
-        edges,
-        strip_info.n_frames,
-        frame_strip_dim,
-        @intFromFloat(frame_strip_dim * 0.15),
-        strip_info.pitch_px,
-    );
-    return edges;
+    return error.NoFrameFitsStrip;
 }
 
 /// Where frames start and end along the strip. The film between frames is
@@ -1160,7 +1093,7 @@ fn fitFramesAlongStrip(
     px_per_mm: f64,
     scale_known: bool,
 ) !?[]usize {
-    const gap_range = format.gap_range_mm orelse return error.InvalidFrameFitInput;
+    const gap_range = format.gap_range_mm;
     const len = evidence.start.len;
     if (len < 2 or evidence.end.len != len or frame_count == 0 or !std.math.isFinite(px_per_mm) or px_per_mm <= 0.0) {
         return error.InvalidFrameFitInput;
@@ -1437,298 +1370,6 @@ pub fn computeStripProfiles(
     return result;
 }
 
-pub fn alignPitchDtw(
-    allocator: std.mem.Allocator,
-    gradient: []const f64,
-    strip_len: usize,
-    format: FilmFormat,
-    frame_count: usize,
-    options: DtwOptions,
-) !DtwAlignment {
-    if (gradient.len == 0 or strip_len == 0 or frame_count == 0) return error.InvalidDtwInput;
-    if (options.max_len == 0) return error.InvalidDtwInput;
-
-    const dtw_scale = @min(@as(f64, @floatFromInt(options.max_len)) / @as(f64, @floatFromInt(gradient.len)), 1.0);
-    const obs = if (dtw_scale < 1.0)
-        try resizeArea1d(allocator, gradient, @max(@as(usize, 1), @as(usize, @intFromFloat(@as(f64, @floatFromInt(gradient.len)) * dtw_scale))))
-    else
-        try allocator.dupe(f64, gradient);
-    defer allocator.free(obs);
-    normalizeMax(obs);
-
-    const total_mm = @as(f64, @floatFromInt(frame_count)) * format.pitch_mm;
-    const template_len_target = @min(obs.len, @as(usize, 1000));
-    const samples_per_mm = @as(f64, @floatFromInt(template_len_target)) / total_mm;
-    const effective_frame_dim = @max(@as(usize, 1), @as(usize, @intFromFloat(format.alongMm() * samples_per_mm)));
-    const effective_gap = @max(@as(usize, 1), @as(usize, @intFromFloat(format.gapMm() * samples_per_mm)));
-
-    const template = try buildDtwTemplate(allocator, frame_count, effective_frame_dim, effective_gap);
-    defer allocator.free(template);
-
-    const n_t = template.len;
-    const n_o = obs.len;
-    const scale_ratio = @as(f64, @floatFromInt(n_o)) / @as(f64, @floatFromInt(n_t));
-    const band = @as(usize, @intFromFloat(@max(
-        @as(f64, @floatFromInt(n_o)) * 0.1,
-        @as(f64, @floatFromInt(effective_frame_dim)) * 0.5,
-    )));
-    const columns = n_o + 1;
-    const cost = try allocator.alloc(f64, (n_t + 1) * columns);
-    defer allocator.free(cost);
-    @memset(cost, dtw_inf);
-    for (0..columns) |j| {
-        cost[j] = 0.0;
-    }
-
-    const parent = try allocator.alloc(DtwParent, (n_t + 1) * columns);
-    defer allocator.free(parent);
-    @memset(parent, .{});
-
-    for (1..n_t + 1) |i| {
-        const expected_j: usize = @intFromFloat(@as(f64, @floatFromInt(i)) * scale_ratio);
-        const j_lo = if (expected_j > band) expected_j - band else 1;
-        const j_hi = @min(n_o, expected_j + band);
-        if (j_hi < j_lo) continue;
-        for (j_lo..j_hi + 1) |j| {
-            const diff = template[i - 1] - obs[j - 1];
-            const d = diff * diff;
-            var best_cost = dtw_inf;
-            var best_parent = DtwParent{};
-            const diag = cost[dtwIndex(i - 1, j - 1, columns)];
-            if (diag < dtw_inf) {
-                best_cost = diag + d;
-                best_parent = .{ .i = i - 1, .j = j - 1 };
-            }
-            const left = cost[dtwIndex(i, j - 1, columns)];
-            if (left < dtw_inf and left + d * 0.5 < best_cost) {
-                best_cost = left + d * 0.5;
-                best_parent = .{ .i = i, .j = j - 1 };
-            }
-            const up = cost[dtwIndex(i - 1, j, columns)];
-            if (up < dtw_inf and up + d * 0.5 < best_cost) {
-                best_cost = up + d * 0.5;
-                best_parent = .{ .i = i - 1, .j = j };
-            }
-            const index = dtwIndex(i, j, columns);
-            if (best_cost < cost[index]) {
-                cost[index] = best_cost;
-                parent[index] = best_parent;
-            }
-        }
-    }
-
-    var end_j: usize = 0;
-    var end_cost = cost[dtwIndex(n_t, 0, columns)];
-    for (1..n_o + 1) |j| {
-        const value = cost[dtwIndex(n_t, j, columns)];
-        if (value < end_cost) {
-            end_cost = value;
-            end_j = j;
-        }
-    }
-    if (end_cost >= dtw_inf) return error.InvalidDtwAlignment;
-
-    const alignment = try allocator.alloc(?usize, n_t);
-    defer allocator.free(alignment);
-    @memset(alignment, null);
-    var i = n_t;
-    var j = end_j;
-    while (i > 0 and j > 0) {
-        alignment[i - 1] = j - 1;
-        const previous = parent[dtwIndex(i, j, columns)];
-        i = previous.i;
-        j = previous.j;
-    }
-
-    const edge_positions = try allocator.alloc(usize, frame_count * 2);
-    errdefer allocator.free(edge_positions);
-    var edge_index: usize = 0;
-    for (template, 0..) |value, template_index| {
-        if (value != 1.0) continue;
-        const pos_dtw = alignment[template_index] orelse try nearestAlignedIndex(alignment, template_index);
-        edge_positions[edge_index] = pythonRoundToUsize(@as(f64, @floatFromInt(pos_dtw)) / dtw_scale);
-        edge_index += 1;
-    }
-    if (edge_index != frame_count * 2) return error.InvalidDtwAlignment;
-
-    return .{
-        .edge_positions = edge_positions,
-        .dtw_scale = dtw_scale,
-        .template_len = template.len,
-        .effective_frame_dim = effective_frame_dim,
-        .effective_gap = effective_gap,
-        .band = band,
-        .end_j = end_j,
-    };
-}
-
-pub fn snapEdgesToGradients(
-    gradient: []const f64,
-    edge_positions: []const usize,
-    output: []usize,
-    frame_strip_dim: f64,
-) !void {
-    if (gradient.len == 0 or edge_positions.len == 0 or output.len != edge_positions.len) return error.InvalidGradientSnapInput;
-    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidGradientSnapInput;
-
-    const snap_radius: usize = @intFromFloat(frame_strip_dim * 0.15);
-    const n_edges = edge_positions.len;
-    for (edge_positions, 0..) |pos, edge_index| {
-        const is_frame_end = edge_index % 2 == 1;
-        const is_internal = edge_index > 0 and edge_index < n_edges - 1;
-        const min_pos = if (edge_index > 0) output[edge_index - 1] + 3 else 0;
-        const radius_lo = if (pos > snap_radius) pos - snap_radius else 0;
-        const lo = @max(min_pos, radius_lo);
-        const hi = @min(gradient.len, pos + snap_radius + 1);
-
-        if (hi > lo) {
-            const window = gradient[lo..hi];
-            const best = if (is_internal and is_frame_end)
-                lo + (firstProminentPeak(window) orelse argMax(window))
-            else if (is_internal and !is_frame_end)
-                lo + (lastProminentPeak(window) orelse argMax(window))
-            else
-                lo + argMax(window);
-            output[edge_index] = best;
-        } else {
-            output[edge_index] = @max(min_pos, pos);
-        }
-    }
-}
-
-pub fn snapToWeightedPeak(gradient: []const f64, target: usize, radius: usize, sigma: f64) !usize {
-    if (gradient.len == 0) return error.InvalidWeightedPeakInput;
-    if (!std.math.isFinite(sigma) or sigma <= 0.0) return error.InvalidWeightedPeakInput;
-    const lo = if (target > radius) target - radius else 0;
-    const hi = @min(gradient.len, target + radius + 1);
-    if (hi <= lo) return target;
-
-    var best_index = lo;
-    var best_value = weightedPeakValue(gradient[lo], lo, target, sigma);
-    for (gradient[lo + 1 .. hi], lo + 1..) |value, index| {
-        const weighted = weightedPeakValue(value, index, target, sigma);
-        if (weighted > best_value) {
-            best_value = weighted;
-            best_index = index;
-        }
-    }
-    return best_index;
-}
-
-pub fn applySizeConsistencyCorrection(
-    gradient: []const f64,
-    edge_positions: []usize,
-    frame_count: usize,
-    frame_strip_dim: f64,
-) !void {
-    if (gradient.len == 0 or edge_positions.len == 0) return error.InvalidSizeCorrectionInput;
-    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidSizeCorrectionInput;
-    if (frame_count < 2 or edge_positions.len != frame_count * 2) return;
-
-    for (0..frame_count) |frame_index| {
-        const start_index = 2 * frame_index;
-        const end_index = start_index + 1;
-        const start = edge_positions[start_index];
-        const end = edge_positions[end_index];
-        const dim_i = @as(f64, @floatFromInt(end)) - @as(f64, @floatFromInt(start));
-        const ratio = dim_i / frame_strip_dim;
-        if (ratio >= 0.7 and ratio <= 1.3) continue;
-
-        const end_target = start + pythonRoundToUsize(frame_strip_dim);
-        const end_radius = @max(@as(usize, @intFromFloat(frame_strip_dim * 0.05)), @as(usize, 4));
-        const half_dim: usize = @intFromFloat(frame_strip_dim * 0.5);
-        const min_end = start + half_dim;
-        const target_lo = if (end_target > end_radius) end_target - end_radius else 0;
-        const end_lo = @max(min_end, target_lo);
-        const end_hi = @min(gradient.len, end_target + end_radius + 1);
-        edge_positions[end_index] = if (end_hi > end_lo)
-            end_lo + argMax(gradient[end_lo..end_hi])
-        else
-            end_target;
-    }
-}
-
-pub fn repairTerminalFrames(
-    allocator: std.mem.Allocator,
-    gradient: []const f64,
-    edge_positions: []usize,
-    frame_count: usize,
-    frame_strip_dim: f64,
-    snap_radius: usize,
-    work_pitch_px: f64,
-) !void {
-    if (gradient.len == 0 or edge_positions.len == 0) return error.InvalidTerminalRepairInput;
-    if (!std.math.isFinite(frame_strip_dim) or frame_strip_dim <= 0.0) return error.InvalidTerminalRepairInput;
-    if (!std.math.isFinite(work_pitch_px) or work_pitch_px <= 0.0) return error.InvalidTerminalRepairInput;
-    if (edge_positions.len != frame_count * 2) return;
-
-    var run_last_frame_fix = false;
-    if (frame_count >= 3) {
-        run_last_frame_fix = true;
-    } else if (frame_count == 2) {
-        const last_dim = edge_positions[edge_positions.len - 1] - edge_positions[edge_positions.len - 2];
-        const last_dim_ratio = @as(f64, @floatFromInt(last_dim)) / frame_strip_dim;
-        run_last_frame_fix = last_dim_ratio < 0.85 or last_dim_ratio > 1.15;
-    }
-
-    if (run_last_frame_fix) {
-        const starts = try frameStarts(allocator, edge_positions, frame_count);
-        defer allocator.free(starts);
-        const dims = try frameDimsRange(allocator, edge_positions, 0, frame_count - 1);
-        defer allocator.free(dims);
-        const pitches = try framePitchesRange(allocator, starts, 0, if (frame_count >= 2) frame_count - 2 else 0);
-        defer allocator.free(pitches);
-
-        const median_pitch = if (pitches.len > 0) try medianTrunc(allocator, pitches) else pythonRoundToUsize(work_pitch_px);
-        const expected_dim = try medianTrunc(allocator, dims);
-        const expected_start = starts[frame_count - 2] + median_pitch;
-        const wide_radius = @max(snap_radius, expected_dim / 4);
-        var new_start = try snapToWeightedPeak(gradient, expected_start, wide_radius, @max(@as(f64, @floatFromInt(expected_dim)) * 0.01, 1.0));
-        new_start = @max(new_start, edge_positions[edge_positions.len - 3] + 3);
-
-        const end_target = new_start + expected_dim;
-        const dim_std = if (dims.len > 1) stdDevUsize(dims) else 3.0;
-        const end_radius = @max(@as(usize, @intFromFloat(dim_std * 1.5)) + 2, @as(usize, 4));
-        const end_lo = @max(new_start + expected_dim / 2, if (end_target > end_radius) end_target - end_radius else 0);
-        const end_hi = @min(gradient.len, end_target + end_radius + 1);
-        const new_end = if (end_hi > end_lo)
-            end_lo + argMax(gradient[end_lo..end_hi])
-        else
-            end_target;
-        edge_positions[edge_positions.len - 2] = new_start;
-        edge_positions[edge_positions.len - 1] = new_end;
-    }
-
-    if (frame_count >= 3) {
-        const starts = try frameStarts(allocator, edge_positions, frame_count);
-        defer allocator.free(starts);
-        const dims = try frameDimsRange(allocator, edge_positions, 1, frame_count);
-        defer allocator.free(dims);
-        const pitches = try framePitchesRange(allocator, starts, 1, frame_count - 1);
-        defer allocator.free(pitches);
-
-        const median_pitch = if (pitches.len > 0) try medianTrunc(allocator, pitches) else pythonRoundToUsize(work_pitch_px);
-        const expected_dim = try medianTrunc(allocator, dims);
-        const expected_end = starts[1] -| (median_pitch -| expected_dim);
-        const expected_start = expected_end -| expected_dim;
-        const wide_radius = @max(snap_radius, expected_dim / 4);
-        const new_start = try snapToWeightedPeak(gradient, expected_start, wide_radius, @max(@as(f64, @floatFromInt(expected_dim)) * 0.01, 1.0));
-
-        const end_target = new_start + expected_dim;
-        const dim_std = if (dims.len > 1) stdDevUsize(dims) else 3.0;
-        const end_radius = @max(@as(usize, @intFromFloat(dim_std * 1.5)) + 2, @as(usize, 4));
-        const second_start_limit = if (edge_positions[2] > 3) edge_positions[2] - 3 else 0;
-        const end_lo = @max(new_start + expected_dim / 2, if (end_target > end_radius) end_target - end_radius else 0);
-        const end_hi = @min(second_start_limit, end_target + end_radius + 1);
-        const new_end = if (end_hi > end_lo)
-            end_lo + argMax(gradient[end_lo..end_hi])
-        else
-            end_target;
-        edge_positions[0] = new_start;
-        edge_positions[1] = new_end;
-    }
-}
-
 pub fn measureCrossStripEdges(
     allocator: std.mem.Allocator,
     gradient_signed: []const f64,
@@ -1984,11 +1625,71 @@ pub fn extractRebatePixels(
     );
 }
 
+/// The rebate for measuring Dmin, in a gap between neighbouring frames: the
+/// middle gap, or failing that the nearest gap whose rebate overlaps no
+/// frame. A rebate never covers picture; with no such gap there is none.
 pub fn computeInterFrameRebate(frames: []const FrameRect) ?RebateRect {
     if (frames.len < 2) return null;
-    const gap_idx = (frames.len - 1) / 2;
-    const f0 = frames[gap_idx];
-    const f1 = frames[gap_idx + 1];
+    const middle = (frames.len - 1) / 2;
+    for (0..frames.len - 1) |distance| {
+        for ([_]?usize{ middle + distance, if (distance > 0 and middle >= distance) middle - distance else null }) |candidate| {
+            const gap = candidate orelse continue;
+            if (gap + 1 >= frames.len) continue;
+            const rebate = gapRebate(frames[gap], frames[gap + 1]) orelse continue;
+            if (rebateClearOfFrames(rebate, frames)) return rebate;
+        }
+    }
+    return null;
+}
+
+/// The rebate's box overlaps none of the frames.
+pub fn rebateClearOfFrames(rebate: RebateRect, frames: []const FrameRect) bool {
+    const rebate_corners = rectCorners(rebate.cx, rebate.cy, rebate.w, rebate.h, rebate.angle);
+    for (frames) |frame| {
+        if (convexQuadsOverlap(rebate_corners, rectCorners(frame.cx, frame.cy, frame.w, frame.h, frame.angle))) return false;
+    }
+    return true;
+}
+
+fn rectCorners(cx: f64, cy: f64, w: f64, h: f64, angle: f64) [4][2]f64 {
+    const c = @cos(angle);
+    const s = @sin(angle);
+    var corners: [4][2]f64 = undefined;
+    for ([_][2]f64{ .{ -0.5, -0.5 }, .{ 0.5, -0.5 }, .{ 0.5, 0.5 }, .{ -0.5, 0.5 } }, &corners) |unit, *corner| {
+        const dx = unit[0] * w;
+        const dy = unit[1] * h;
+        corner.* = .{ cx + dx * c - dy * s, cy + dx * s + dy * c };
+    }
+    return corners;
+}
+
+/// Separating-axis test; quads that only touch do not overlap.
+fn convexQuadsOverlap(a: [4][2]f64, b: [4][2]f64) bool {
+    for ([_][4][2]f64{ a, b }) |quad| {
+        for (0..4) |index| {
+            const p = quad[index];
+            const q = quad[(index + 1) % 4];
+            const axis = [2]f64{ q[1] - p[1], p[0] - q[0] };
+            var a_lo = std.math.inf(f64);
+            var a_hi = -std.math.inf(f64);
+            var b_lo = std.math.inf(f64);
+            var b_hi = -std.math.inf(f64);
+            for (a, b) |pa, pb| {
+                const va = pa[0] * axis[0] + pa[1] * axis[1];
+                const vb = pb[0] * axis[0] + pb[1] * axis[1];
+                a_lo = @min(a_lo, va);
+                a_hi = @max(a_hi, va);
+                b_lo = @min(b_lo, vb);
+                b_hi = @max(b_hi, vb);
+            }
+            if (a_hi <= b_lo or b_hi <= a_lo) return false;
+        }
+    }
+    return true;
+}
+
+/// The rebate in the gap between two neighbouring frames, inset from both.
+fn gapRebate(f0: FrameRect, f1: FrameRect) ?RebateRect {
     const dcx = f1.cx - f0.cx;
     const dcy = f1.cy - f0.cy;
     const is_vertical = @abs(dcy) > @abs(dcx);
@@ -2290,23 +1991,6 @@ fn gradientBlurKernelSize(len: usize) usize {
     return kernel_size;
 }
 
-fn computeAbsGradientBlurred(allocator: std.mem.Allocator, profile: []const f64) ![]f64 {
-    if (profile.len == 0) return error.InvalidDetectFramesInput;
-    const gradient = try allocator.alloc(f64, profile.len);
-    errdefer allocator.free(gradient);
-    if (profile.len == 1) {
-        gradient[0] = 0.0;
-        return gradient;
-    }
-    gradient[0] = 0.0;
-    for (1..profile.len - 1) |index| {
-        gradient[index] = @abs((profile[index + 1] - profile[index - 1]) / 2.0);
-    }
-    gradient[profile.len - 1] = 0.0;
-    try gaussianBlur1dInPlaceWithKernel(allocator, gradient, gradientBlurKernelSize(profile.len));
-    return gradient;
-}
-
 fn computeSignedGradientBlurred(allocator: std.mem.Allocator, profile: []const f64) ![]f64 {
     const gradient = try allocator.alloc(f64, profile.len);
     errdefer allocator.free(gradient);
@@ -2330,16 +2014,6 @@ fn computeAbsGradient(profile: []const f64, output: []f64) void {
         output[index] = @abs((profile[index + 1] - profile[index - 1]) / 2.0);
     }
     output[profile.len - 1] = 0.0;
-}
-
-fn averageGradients(allocator: std.mem.Allocator, a: []const f64, b: []const f64, c: []const f64) ![]f64 {
-    if (a.len == 0 or a.len != b.len or a.len != c.len) return error.InvalidDetectFramesInput;
-    const out = try allocator.alloc(f64, a.len);
-    errdefer allocator.free(out);
-    for (out, a, b, c) |*value, av, bv, cv| {
-        value.* = (av + bv + cv) / 3.0;
-    }
-    return out;
 }
 
 const AngleGradientSet = struct {
@@ -2641,11 +2315,10 @@ fn framesFromStripEdges(
     return frames;
 }
 
-/// Places every frame across the strip on its measured cross edges. With
-/// `measure_width`, the frames' width is measured too, within the format's
-/// `width_variation`: each frame's within the band, then all at the strip's
-/// median, as one camera's gate made them all. Otherwise the width follows
-/// the frame's length at the format's aspect.
+/// Places every frame across the strip on its measured cross edges, and
+/// measures the frames' width within the format's `width_variation`: each
+/// frame's within the band, then all at the strip's median, as one
+/// camera's gate made them all.
 fn refineCrossStripAxisAligned(
     allocator: std.mem.Allocator,
     gray: []const f64,
@@ -2654,7 +2327,6 @@ fn refineCrossStripAxisAligned(
     format: FilmFormat,
     strip_info: StripAnalysis,
     frames: []FrameRect,
-    measure_width: bool,
 ) !void {
     if (gray.len != width * height or frames.len != strip_info.n_frames) return error.InvalidDetectFramesInput;
     const line_len = if (strip_info.is_vertical) width else height;
@@ -2666,7 +2338,7 @@ fn refineCrossStripAxisAligned(
 
     var strip_cross_dim: ?f64 = null;
     const variation = format.width_variation;
-    if (measure_width and variation > 0.0 and frames.len <= max_fit_frames) {
+    if (variation > 0.0 and frames.len <= max_fit_frames) {
         var widths: [max_fit_frames]f64 = undefined;
         var count: usize = 0;
         for (frames) |frame| {
@@ -2862,86 +2534,6 @@ fn gaussianKernel(allocator: std.mem.Allocator, kernel_size: usize) ![]f64 {
         weight.* /= total;
     }
     return kernel;
-}
-
-const dtw_inf: f64 = 1e18;
-
-const DtwParent = struct {
-    i: usize = 0,
-    j: usize = 0,
-};
-
-fn dtwIndex(i: usize, j: usize, columns: usize) usize {
-    return i * columns + j;
-}
-
-fn resizeArea1d(allocator: std.mem.Allocator, input: []const f64, output_len: usize) ![]f64 {
-    if (input.len == 0 or output_len == 0) return error.InvalidDtwInput;
-    const output = try allocator.alloc(f64, output_len);
-    errdefer allocator.free(output);
-    const scale = @as(f64, @floatFromInt(output_len)) / @as(f64, @floatFromInt(input.len));
-    for (output, 0..) |*out, out_index| {
-        const start = @as(f64, @floatFromInt(out_index)) / scale;
-        const end = @as(f64, @floatFromInt(out_index + 1)) / scale;
-        const first: usize = @intFromFloat(@floor(start));
-        const last_exclusive: usize = @min(input.len, @as(usize, @intFromFloat(@ceil(end))));
-        var total: f64 = 0.0;
-        var weight_total: f64 = 0.0;
-        for (first..last_exclusive) |source| {
-            const source_start = @as(f64, @floatFromInt(source));
-            const source_end = source_start + 1.0;
-            const weight = @max(0.0, @min(end, source_end) - @max(start, source_start));
-            total += input[source] * weight;
-            weight_total += weight;
-        }
-        out.* = if (weight_total > 0.0) total / weight_total else input[@min(first, input.len - 1)];
-    }
-    return output;
-}
-
-fn normalizeMax(values: []f64) void {
-    var max_value: f64 = 0.0;
-    for (values) |value| {
-        max_value = @max(max_value, value);
-    }
-    if (max_value <= 0.0) return;
-    for (values) |*value| {
-        value.* /= max_value;
-    }
-}
-
-fn buildDtwTemplate(allocator: std.mem.Allocator, frame_count: usize, frame_dim: usize, gap: usize) ![]f64 {
-    const len = frame_count * (frame_dim + 2) + if (frame_count > 0) (frame_count - 1) * gap else 0;
-    const template = try allocator.alloc(f64, len);
-    errdefer allocator.free(template);
-    var index: usize = 0;
-    for (0..frame_count) |frame_index| {
-        template[index] = 1.0;
-        index += 1;
-        @memset(template[index .. index + frame_dim], 0.0);
-        index += frame_dim;
-        template[index] = 1.0;
-        index += 1;
-        if (frame_index < frame_count - 1) {
-            @memset(template[index .. index + gap], 0.0);
-            index += gap;
-        }
-    }
-    return template;
-}
-
-fn nearestAlignedIndex(alignment: []const ?usize, target: usize) !usize {
-    var best_distance: usize = std.math.maxInt(usize);
-    var best_value: ?usize = null;
-    for (alignment, 0..) |maybe_value, index| {
-        const value = maybe_value orelse continue;
-        const distance = if (index > target) index - target else target - index;
-        if (distance < best_distance) {
-            best_distance = distance;
-            best_value = value;
-        }
-    }
-    return best_value orelse error.InvalidDtwAlignment;
 }
 
 fn monotonicNowNs() u64 {
@@ -3600,68 +3192,6 @@ fn argMax(values: []const f64) usize {
     return best_index;
 }
 
-fn firstProminentPeak(values: []const f64) ?usize {
-    if (values.len < 3) return null;
-    const threshold = maxSlice(values) * 0.3;
-    for (1..values.len - 1) |index| {
-        if (isProminentPeak(values, index, threshold)) return index;
-    }
-    return null;
-}
-
-fn lastProminentPeak(values: []const f64) ?usize {
-    if (values.len < 3) return null;
-    const threshold = maxSlice(values) * 0.3;
-    var result: ?usize = null;
-    for (1..values.len - 1) |index| {
-        if (isProminentPeak(values, index, threshold)) result = index;
-    }
-    return result;
-}
-
-fn isProminentPeak(values: []const f64, index: usize, threshold: f64) bool {
-    if (!(values[index] > values[index - 1] and values[index] > values[index + 1])) return false;
-    const height = values[index];
-
-    var left_bound: usize = 0;
-    var left_scan = index;
-    while (left_scan > 0) {
-        left_scan -= 1;
-        if (values[left_scan] > height) {
-            left_bound = left_scan + 1;
-            break;
-        }
-    }
-    var left_min = height;
-    for (values[left_bound..index]) |value| {
-        left_min = @min(left_min, value);
-    }
-
-    var right_bound: usize = values.len - 1;
-    var right_scan = index + 1;
-    while (right_scan < values.len) : (right_scan += 1) {
-        if (values[right_scan] > height) {
-            right_bound = right_scan - 1;
-            break;
-        }
-    }
-    var right_min = height;
-    for (values[index + 1 .. right_bound + 1]) |value| {
-        right_min = @min(right_min, value);
-    }
-
-    const prominence = height - @max(left_min, right_min);
-    return prominence >= threshold;
-}
-
-fn maxSlice(values: []const f64) f64 {
-    var result = values[0];
-    for (values[1..]) |value| {
-        result = @max(result, value);
-    }
-    return result;
-}
-
 fn subpixelPeak(values: []const f64, lo: usize, hi: usize) f64 {
     const index = lo + argMax(values[lo..hi]);
     if (index > lo and index - lo < hi - lo - 1) {
@@ -3674,84 +3204,6 @@ fn subpixelPeak(values: []const f64, lo: usize, hi: usize) f64 {
         }
     }
     return @floatFromInt(index);
-}
-
-fn weightedPeakValue(value: f64, index: usize, target: usize, sigma: f64) f64 {
-    const distance = if (index > target)
-        @as(f64, @floatFromInt(index - target))
-    else
-        @as(f64, @floatFromInt(target - index));
-    return value * std.math.exp(-0.5 * std.math.pow(f64, distance / sigma, 2.0));
-}
-
-fn frameStarts(allocator: std.mem.Allocator, edge_positions: []const usize, frame_count: usize) ![]usize {
-    const starts = try allocator.alloc(usize, frame_count);
-    errdefer allocator.free(starts);
-    for (starts, 0..) |*start, frame_index| {
-        start.* = edge_positions[2 * frame_index];
-    }
-    return starts;
-}
-
-fn frameDimsRange(
-    allocator: std.mem.Allocator,
-    edge_positions: []const usize,
-    start_frame: usize,
-    end_frame_exclusive: usize,
-) ![]usize {
-    const count = end_frame_exclusive - start_frame;
-    const dims = try allocator.alloc(usize, count);
-    errdefer allocator.free(dims);
-    for (dims, start_frame..) |*dim, frame_index| {
-        const start = edge_positions[2 * frame_index];
-        const end = edge_positions[2 * frame_index + 1];
-        dim.* = end - start;
-    }
-    return dims;
-}
-
-fn framePitchesRange(
-    allocator: std.mem.Allocator,
-    starts: []const usize,
-    start_index: usize,
-    end_index_exclusive: usize,
-) ![]usize {
-    const count = end_index_exclusive - start_index;
-    const pitches = try allocator.alloc(usize, count);
-    errdefer allocator.free(pitches);
-    for (pitches, start_index..) |*pitch, index| {
-        pitch.* = starts[index + 1] - starts[index];
-    }
-    return pitches;
-}
-
-fn medianTrunc(allocator: std.mem.Allocator, values: []const usize) !usize {
-    if (values.len == 0) return error.InvalidTerminalRepairInput;
-    const sorted = try allocator.dupe(usize, values);
-    defer allocator.free(sorted);
-    std.sort.pdq(usize, sorted, {}, lessThanUsize);
-    const mid = sorted.len / 2;
-    if (sorted.len % 2 == 1) return sorted[mid];
-    const median = (@as(f64, @floatFromInt(sorted[mid - 1])) + @as(f64, @floatFromInt(sorted[mid]))) / 2.0;
-    return @intFromFloat(median);
-}
-
-fn stdDevUsize(values: []const usize) f64 {
-    var total: f64 = 0.0;
-    for (values) |value| {
-        total += @floatFromInt(value);
-    }
-    const mean = total / @as(f64, @floatFromInt(values.len));
-    var sum_sq: f64 = 0.0;
-    for (values) |value| {
-        const diff = @as(f64, @floatFromInt(value)) - mean;
-        sum_sq += diff * diff;
-    }
-    return @sqrt(sum_sq / @as(f64, @floatFromInt(values.len)));
-}
-
-fn lessThanUsize(_: void, lhs: usize, rhs: usize) bool {
-    return lhs < rhs;
 }
 
 fn medianSortedF64(values: []const f64) f64 {
@@ -4717,38 +4169,6 @@ test "rejects invalid strip profile inputs" {
     try std.testing.expectError(error.InvalidFrameProfileBuffer, computeStripProfiles(std.testing.allocator, &pixel, 0, 1, true));
     try std.testing.expectError(error.InvalidFrameProfileBuffer, computeStripProfiles(std.testing.allocator, &pixel, 2, 1, true));
     try std.testing.expectError(error.InvalidFrameProfileBand, computeStripProfiles(std.testing.allocator, &pixel, 1, 1, true));
-}
-
-test "rejects invalid DTW inputs" {
-    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{}, 1, format_35mm, 1, .{}));
-    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 0, format_35mm, 1, .{}));
-    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 1, format_35mm, 0, .{}));
-    try std.testing.expectError(error.InvalidDtwInput, alignPitchDtw(std.testing.allocator, &.{1.0}, 1, format_35mm, 1, .{ .max_len = 0 }));
-}
-
-test "rejects invalid gradient snap inputs" {
-    var out = [_]usize{0};
-    try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{}, &.{1}, &out, 10.0));
-    try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{1.0}, &.{1}, &.{}, 10.0));
-    try std.testing.expectError(error.InvalidGradientSnapInput, snapEdgesToGradients(&.{1.0}, &.{1}, &out, 0.0));
-}
-
-test "rejects invalid weighted peak inputs" {
-    try std.testing.expectError(error.InvalidWeightedPeakInput, snapToWeightedPeak(&.{}, 0, 1, 1.0));
-    try std.testing.expectError(error.InvalidWeightedPeakInput, snapToWeightedPeak(&.{1.0}, 0, 1, 0.0));
-}
-
-test "rejects invalid size correction inputs" {
-    var positions = [_]usize{ 0, 1 };
-    try std.testing.expectError(error.InvalidSizeCorrectionInput, applySizeConsistencyCorrection(&.{}, &positions, 1, 10.0));
-    try std.testing.expectError(error.InvalidSizeCorrectionInput, applySizeConsistencyCorrection(&.{1.0}, &positions, 1, 0.0));
-}
-
-test "rejects invalid terminal frame repair inputs" {
-    var positions = [_]usize{ 0, 1 };
-    try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{}, &positions, 1, 10.0, 1, 10.0));
-    try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{1.0}, &positions, 1, 0.0, 1, 10.0));
-    try std.testing.expectError(error.InvalidTerminalRepairInput, repairTerminalFrames(std.testing.allocator, &.{1.0}, &positions, 1, 10.0, 1, 0.0));
 }
 
 test "rejects invalid cross-strip inputs" {

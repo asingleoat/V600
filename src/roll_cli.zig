@@ -207,6 +207,7 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
     var worst_iou: f64 = 1.0;
     var offset_sum: f64 = 0.0;
     var offset_max: f64 = 0.0;
+    var rebate_overlaps: usize = 0;
     for (strips.paths) |strip| {
         const number = v600.roll.stripNumber(strip) orelse continue;
         const framing = try roll.loadFraming(io, strip);
@@ -218,21 +219,31 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
         defer if (exported) |rects| allocator.free(rects);
         const known = if (framing) |owned| owned.frames else exported orelse continue;
 
-        const detected = roll.detectStripFrames(strip, .{}) catch |err| blk: {
+        const detection = roll.detectStripFrames(strip, .{}) catch |err| blk: {
             try stdout.print("{s}: detection failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
-            break :blk try allocator.alloc(v600.roll.FrameRect, 0);
+            break :blk v600.roll.StripDetection{ .frames = try allocator.alloc(v600.roll.FrameRect, 0), .rebate = null };
         };
+        const detected = detection.frames;
         defer allocator.free(detected);
         const matches = try allocator.alloc(v600.roll.FrameMatch, known.len);
         defer allocator.free(matches);
         v600.roll.matchFrames(known, detected, px_per_mm, matches);
 
-        try stdout.print("{s}: {d} frame{s} {s}, {d} detected\n", .{
+        // A rebate must measure film base, not picture.
+        const rebate_note = if (detection.rebate) |rebate|
+            (if (v600.roll.rebateClearOfFrames(rebate, known)) "rebate clear of them" else "rebate OVERLAPS them")
+        else
+            "no rebate";
+        if (detection.rebate) |rebate| {
+            if (!v600.roll.rebateClearOfFrames(rebate, known)) rebate_overlaps += 1;
+        }
+        try stdout.print("{s}: {d} frame{s} {s}, {d} detected, {s}\n", .{
             std.fs.path.basename(strip),
             known.len,
             if (known.len == 1) "" else "s",
             if (framing != null) "placed by hand" else "verified",
             detected.len,
+            rebate_note,
         });
         for (matches, 1..) |match, index| {
             count += 1;
@@ -268,7 +279,7 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
         try stdout.print("No strip has frames placed by hand or listed in --verified.\n", .{});
         return;
     }
-    try stdout.print("{d} frames: IoU mean {d:.3}, worst {d:.3}; {d} off (IoU below {d:.2}); centre error mean {d:.2} mm, max {d:.2} mm\n", .{
+    try stdout.print("{d} frames: IoU mean {d:.3}, worst {d:.3}; {d} off (IoU below {d:.2}); centre error mean {d:.2} mm, max {d:.2} mm; {d} rebate{s} overlapping known frames\n", .{
         count,
         iou_sum / @as(f64, @floatFromInt(count)),
         worst_iou,
@@ -276,6 +287,8 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
         check_frames_good_iou,
         offset_sum / @as(f64, @floatFromInt(count)),
         offset_max,
+        rebate_overlaps,
+        if (rebate_overlaps == 1) "" else "s",
     });
 }
 

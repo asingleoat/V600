@@ -358,7 +358,10 @@ pub const Roll = struct {
         if (framing == null) {
             for (detected.?.frames, rects) |frame, *rect| rect.* = self.fullResolutionFrame(frame, to_full);
         }
-        const detected_rebate = if (detected) |result| (if (result.rebate) |rebate| try workflow.fullResolutionRebate(rebate, preview.info.preview_scale) else null) else null;
+        var detected_rebate = if (detected) |result| (if (result.rebate) |rebate| try workflow.fullResolutionRebate(rebate, preview.info.preview_scale) else null) else null;
+        // Detection placed its rebate clear of its own frames; hand-placed
+        // frames can still cover it, and then it measures picture.
+        if (framing != null and detected_rebate != null and !rebateClearOfFrames(detected_rebate.?, rects)) detected_rebate = null;
         const rebate_rect = if (framing) |owned| owned.rebate orelse detected_rebate else detected_rebate;
         const use_roll_dmin = rebate_rect == null and self.dmin != null;
 
@@ -442,9 +445,10 @@ pub const Roll = struct {
         };
     }
 
-    /// The frames auto-detection finds on the strip, as `processStrip`
-    /// exports them without a framing file. The caller frees the slice.
-    pub fn detectStripFrames(self: *const Roll, strip_path: []const u8, options: ProcessOptions) ![]FrameRect {
+    /// The frames and rebate auto-detection finds on the strip, as
+    /// `processStrip` exports them without a framing file. The caller frees
+    /// the frames.
+    pub fn detectStripFrames(self: *const Roll, strip_path: []const u8, options: ProcessOptions) !StripDetection {
         const allocator = self.allocator;
         const preview = try workflow.loadQuickPreview(allocator, strip_path, options.preview_size);
         defer preview.deinit(allocator);
@@ -452,8 +456,10 @@ pub const Roll = struct {
         defer detected.deinit(allocator);
         const to_full = 1.0 / preview.info.preview_scale;
         const rects = try allocator.alloc(FrameRect, detected.frames.len);
+        errdefer allocator.free(rects);
         for (detected.frames, rects) |frame, *rect| rect.* = self.fullResolutionFrame(frame, to_full);
-        return rects;
+        const rebate = if (detected.rebate) |found| try workflow.fullResolutionRebate(found, preview.info.preview_scale) else null;
+        return .{ .frames = rects, .rebate = rebate };
     }
 
     /// The frames the strip's last export cut, from the crop each exported
@@ -1019,6 +1025,27 @@ fn rectIou(a: FrameRect, b: FrameRect) f64 {
     return intersection / (a.w * a.h + b.w * b.h - intersection);
 }
 
+pub const StripDetection = struct {
+    frames: []FrameRect,
+    rebate: ?RebateOriginRect,
+};
+
+/// A full-resolution rebate overlaps none of the frames (angles in degrees).
+pub fn rebateClearOfFrames(rebate: frames.RebateOriginRect, rects: []const FrameRect) bool {
+    var radian_frames: [64]frames.FrameRect = undefined;
+    if (rects.len > radian_frames.len) return false;
+    for (rects, radian_frames[0..rects.len]) |rect, *frame| {
+        frame.* = .{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h, .angle = std.math.degreesToRadians(rect.angle) };
+    }
+    return frames.rebateClearOfFrames(.{
+        .cx = rebate.x + rebate.w / 2.0,
+        .cy = rebate.y + rebate.h / 2.0,
+        .w = rebate.w,
+        .h = rebate.h,
+        .angle = rebate.angle,
+    }, radian_frames[0..rects.len]);
+}
+
 const MarkerJson = struct {
     frames: usize,
     dmin_source: []const u8,
@@ -1580,13 +1607,14 @@ test "a strip needs exporting until exported, and again when its saved frames ch
     (try roll.processStrip(io, strip, options)).deinit(allocator);
     try std.testing.expect(!roll.needsExport(io, strip));
 
-    // Deleting the hand frames asks for an export from detection.
+    // Deleting the hand frames asks for an export from detection, which
+    // places no 36 mm frame on this 15 mm strip; it stays due.
     const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, framing_suffix });
     defer allocator.free(framing_path);
     try std.Io.Dir.cwd().deleteFile(io, framing_path);
     try std.testing.expect(roll.needsExport(io, strip));
-    (try roll.processStrip(io, strip, options)).deinit(allocator);
-    try std.testing.expect(!roll.needsExport(io, strip));
+    try std.testing.expectError(error.NoFrameFitsStrip, roll.processStrip(io, strip, options));
+    try std.testing.expect(roll.needsExport(io, strip));
 }
 
 test "framing files round-trip and bad ones are rejected" {

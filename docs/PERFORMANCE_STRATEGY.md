@@ -147,9 +147,10 @@ Preview load, export, caches:
 
 `auto_detect`:
 
-- Nine passes (shared grayscale, run-length components, run-based horizontal
-  close, CLAHE maps, parallel rotation/CLAHE/angle work, portable SIMD, DTW
-  `diff * diff`, boundary preallocation): adopted, exact.
+- Passes (shared grayscale, run-length components, run-based horizontal
+  close, CLAHE maps, parallel rotation/CLAHE/angle work, portable SIMD,
+  boundary preallocation): adopted, exact. The DTW pitch alignment they also
+  sped up has since been replaced by a dynamic-program fit (a few ms).
 - Parallel binary close: rejected and removed; regressed four-scan average.
 - Exact vertical run morphology: rejected; slower than rolling counts.
 - SIMD vertical morphology counts: rejected; `film_close_us` regressed to
