@@ -83,6 +83,16 @@ Open:
     (KODAKGOLD_200_0 strip 1 frame 4). Strength and spectrum are measured
     on the negative, before inversion.
   - Above 3% coverage the cap drops all cleaning for the frame.
+  - Faint surface dust is missed: a speck must lie 25 local standard
+    deviations below its IR background, about 70 levels on the 8-bit
+    3200 dpi IR. A speck 14 levels deep, 7 times the pixel noise, in the
+    sky of KODAKGOLD_200_120_0 strip 1 frame 2 passed the ratio test but
+    not that one. `ir_threshold` sets both tests and moves them opposite
+    ways.
+  - Dust on the film when the picture was taken (dark specks in the
+    positive, a hair at the frame edge) is in the dyes, so the IR cannot
+    see it; it reads slightly brighter there, with less dye. Removing it
+    needs a detector on the RGB, which that IR brightening could confirm.
 - `v600-ui --process-interaction-smoke` (not a build step) fails with
   ProcessInteractionSmokeFailed.
 - Loading an image, auto-detect, and export in the Process view copy the
