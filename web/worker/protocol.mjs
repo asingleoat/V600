@@ -180,7 +180,6 @@ export const requiredIrInpaintCacheKeyPaths = Object.freeze([
   ["inpaint", "value_kind"],
   ["inpaint", "padding"],
   ["inpaint", "grain_padding"],
-  ["inpaint", "grain_sigma"],
   ["inpaint", "noise_hash"],
   ["backend", "kind"],
   ["backend", "precision"],

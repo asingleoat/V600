@@ -2,7 +2,7 @@
   "name": "estimate-local-grain-smoke",
   "operation": "estimate_local_grain",
   "python_oracle": "scratchndent.processing.defects.ir_removal.estimate_local_grain: cv2.dilate(MORPH_ELLIPSE), cv2.GaussianBlur sigma=2.5, np.std, np.hanning, np.fft.fft2/fftshift radial spectrum",
-  "generated_by": "python3 fixture generator in nix shell (2026-05-15); expected values regenerated from the Zig implementation (2026-10-02): grain spectrum rings in physical frequency, so non-square regions shape grain isotropically, and the grain/picture low-pass by normalized convolution over clean pixels only",
+  "generated_by": "python3 fixture generator in nix shell (2026-05-15); expected values regenerated from the Zig implementation (2026-10-02): grain spectrum rings in physical frequency, so non-square regions shape grain isotropically, and the grain/picture low-pass by normalized convolution over clean pixels only; one synthetic grain field shared by the channels, scaled to the surround's channel-mean grain",
   "shape": [
     12,
     14,
@@ -691,9 +691,9 @@
     0.0
   ],
   "expected_grain_std": [
-    0.06402359902858734,
-    0.04652094841003418,
-    0.0738123282790184
+    0.05970058590173721,
+    0.04337975010275841,
+    0.06882835924625397
   ],
   "expected_signal": [
     0.5088961124420166,

@@ -260,7 +260,6 @@ const irInpaintInput = {
     value_kind: "uint16",
     padding: 0,
     grain_padding: 0,
-    grain_sigma: 0,
     noise_hash: null,
   },
   backend: {

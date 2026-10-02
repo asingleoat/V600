@@ -312,7 +312,6 @@ function irInpaintCacheInput(rgbMaskKey, overrides = {}) {
     value_kind: "uint16",
     padding: 0,
     grain_padding: 0,
-    grain_sigma: 0,
     noise_hash: null,
     ...overrides.inpaint,
   };
@@ -688,7 +687,7 @@ try {
       },
     },
     options: {
-      ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v2",
+      ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v1",
       ir_inpaint_grain_options: {
         width: grainWidth,
         height: grainHeight,

@@ -252,7 +252,11 @@ deliberately, not by accident.
 - Parameters are defined at 800 dpi. Linear parameters scale by
   `dpi / 800`, area parameters by `(dpi / 800)^2`, at the dpi of the image
   they act on: the defect mask's sizes by the IR page's dpi (6400 dpi RGB
-  has a 3200 dpi IR pass), inpaint padding and grain sizes by the RGB's.
+  has a 3200 dpi IR pass), inpaint padding by the RGB's. Grain is told
+  from the picture at a fixed 2.5 px: a wider low-pass takes picture edges
+  for grain. The synthetic grain is one field shared by the channels,
+  scaled to the surround's channel-mean grain: it errs toward too little
+  colour, since colour noise shows where luma grain passes as film.
 
 ### Config and files
 

@@ -144,22 +144,13 @@ export function defaultIrMaskResizeOptions({ image }) {
   };
 }
 
-export function defaultIrInpaintGrainOptions({ image, padding = 16, grainPadding = 8, grainSigma = 2.5 }) {
+export function defaultIrInpaintGrainOptions({ image, padding = 16, grainPadding = 8 }) {
   return {
     width: image.width,
     height: image.height,
     padding,
     grain_padding: grainPadding,
-    grain_sigma: grainSigma,
   };
-}
-
-// Grain around a defect is told from the picture at 2.5 px and measured in
-// a ring 8 px wide, both at 800 dpi, as src/processing/workflow.zig
-// irCleanOptionsForConfig scales them for the RGB.
-export function grainSettingsForDpi(dpi) {
-  const scale = Number.isFinite(dpi) && dpi > 0 ? dpi / 800 : 1;
-  return { grainPadding: Math.trunc(8 * scale), grainSigma: 2.5 * scale };
 }
 
 export function defaultIrEstimateConfig(overrides = {}) {

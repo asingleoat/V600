@@ -2645,11 +2645,8 @@ pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Overr
 /// The defect mask is built on the IR page, which is often scanned at a
 /// lower resolution than the RGB (6400 dpi RGB has a 3200 dpi IR pass), so
 /// its sizes scale with the IR's dpi; inpainting runs on the RGB, so its
-/// padding and grain sizes scale with the RGB's.
+/// padding scales with the RGB's.
 pub fn irCleanOptionsForConfig(rgb_dpi: ?u32, ir_dpi: ?u32, overrides: []const config.Override) ir_processing.IrCleanOptions {
-    // Grain around a defect is told from the picture at 2.5 px, measured in
-    // a ring 8 px wide, both at 800 dpi like the configured sizes.
-    const rgb_scale = if (rgb_dpi) |dpi| (if (dpi > 0) @as(f64, @floatFromInt(dpi)) / 800.0 else 1.0) else 1.0;
     return .{
         .defect_mask = .{
             .threshold = config.getParam("ir_threshold", ir_dpi, overrides).?.asFloat(),
@@ -2663,8 +2660,7 @@ pub fn irCleanOptionsForConfig(rgb_dpi: ?u32, ir_dpi: ?u32, overrides: []const c
         },
         .inpaint = .{
             .padding = @intFromFloat(config.getParam("inpaint_padding", rgb_dpi, overrides).?.asFloat()),
-            .grain_padding = @intFromFloat(8.0 * rgb_scale),
-            .grain_sigma = 2.5 * rgb_scale,
+            .grain_padding = 8,
             .value_kind = .uint16,
         },
     };
@@ -2692,8 +2688,6 @@ test "IR clean options size the mask by the IR's dpi and the inpaint by the RGB'
     try std.testing.expectEqual(@as(usize, 48), options.defect_mask.min_area);
     try std.testing.expectEqual(@as(usize, 1205), options.defect_mask.blur_size);
     try std.testing.expectEqual(@as(usize, 128), options.inpaint.padding);
-    try std.testing.expectEqual(@as(usize, 64), options.inpaint.grain_padding);
-    try std.testing.expectEqual(@as(f64, 20.0), options.inpaint.grain_sigma);
     try std.testing.expectEqual(@as(?u32, null), irDpi(null, 0.5));
 }
 

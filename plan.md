@@ -78,9 +78,10 @@ Open:
     can pass the threshold, so real detail gets filled (foliage on
     KODAKGOLD_200_0 strip 1). Removing the IR's correlation with the red
     channel before thresholding would stop it.
-  - Synthetic grain is independent per channel, where scan grain correlates
-    0.3-0.45 between channels, and its coarse part (4-16 px at 6400 dpi) is
-    about 60% of the surround's.
+  - Synthetic grain's size mix is off after inversion: its finest part is
+    about 1.25x the surround's and its 1-4 px part about half
+    (KODAKGOLD_200_0 strip 1 frame 4). Strength and spectrum are measured
+    on the negative, before inversion.
   - Above 3% coverage the cap drops all cleaning for the frame.
 - `v600-ui --process-interaction-smoke` (not a build step) fails with
   ProcessInteractionSmokeFailed.

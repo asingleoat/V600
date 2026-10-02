@@ -10,7 +10,6 @@ extern "C" int v600_estimate_local_grain(
     int width,
     int height,
     int grain_padding,
-    double grain_sigma,
     double* grain_std,
     double* signal_out,
     double* spectrum_out,
@@ -21,7 +20,7 @@ extern "C" int v600_estimate_local_grain(
     if (roi_rgb == nullptr || roi_mask == nullptr || grain_std == nullptr ||
         signal_out == nullptr || spectrum_out == nullptr ||
         spectrum_len == nullptr || has_spectrum == nullptr ||
-        width <= 0 || height <= 0 || grain_padding < 0 || !(grain_sigma > 0.0)) {
+        width <= 0 || height <= 0 || grain_padding < 0) {
         return -1;
     }
 
@@ -74,8 +73,8 @@ extern "C" int v600_estimate_local_grain(
         cv::Mat weighted = rgb.mul(known);
         cv::Mat numerator;
         cv::Mat denominator;
-        cv::GaussianBlur(weighted, numerator, cv::Size(0, 0), grain_sigma);
-        cv::GaussianBlur(known, denominator, cv::Size(0, 0), grain_sigma);
+        cv::GaussianBlur(weighted, numerator, cv::Size(0, 0), 2.5);
+        cv::GaussianBlur(known, denominator, cv::Size(0, 0), 2.5);
         signal = rgb.clone();
         for (int y = 0; y < height; ++y) {
             const float* num_row = reinterpret_cast<const float*>(numerator.data + static_cast<size_t>(y) * numerator.step[0]);
@@ -105,6 +104,8 @@ extern "C" int v600_estimate_local_grain(
 
     double sum[3] = {0.0, 0.0, 0.0};
     double sum_sq[3] = {0.0, 0.0, 0.0};
+    double luma_sum = 0.0;
+    double luma_sum_sq = 0.0;
     if (surround_count > 10) {
         for (int y = 0; y < height; ++y) {
             const unsigned char* mask_row = mask_u8.data + static_cast<size_t>(y) * mask_u8.step[0];
@@ -115,20 +116,38 @@ extern "C" int v600_estimate_local_grain(
                 if (dilated_row[x] == 0 || mask_row[x] != 0) {
                     continue;
                 }
+                double luma = 0.0;
                 for (int c = 0; c < 3; ++c) {
                     const float grain = rgb_row[x * 3 + c] - signal_row[x * 3 + c];
                     sum[c] += static_cast<double>(grain);
                     sum_sq[c] += static_cast<double>(grain) * static_cast<double>(grain);
+                    luma += static_cast<double>(grain) / 3.0;
                 }
+                luma_sum += luma;
+                luma_sum_sq += luma * luma;
             }
         }
+        double std_mean = 0.0;
         for (int c = 0; c < 3; ++c) {
             const double mean = sum[c] / static_cast<double>(surround_count);
             double variance = sum_sq[c] / static_cast<double>(surround_count) - mean * mean;
             if (variance < 0.0) {
                 variance = 0.0;
             }
-            grain_std[c] = static_cast<double>(static_cast<float>(std::sqrt(variance)));
+            grain_std[c] = std::sqrt(variance);
+            std_mean += grain_std[c] / 3.0;
+        }
+        // The synthetic grain is one field for all channels, which would add
+        // up to more brightness grain than the film's partly independent
+        // channels: scale it to the surround's channel-mean grain.
+        const double luma_mean = luma_sum / static_cast<double>(surround_count);
+        double luma_variance = luma_sum_sq / static_cast<double>(surround_count) - luma_mean * luma_mean;
+        if (luma_variance < 0.0) {
+            luma_variance = 0.0;
+        }
+        const double shared_scale = std_mean > 0.0 ? std::sqrt(luma_variance) / std_mean : 0.0;
+        for (int c = 0; c < 3; ++c) {
+            grain_std[c] = static_cast<double>(static_cast<float>(grain_std[c] * shared_scale));
         }
     }
 
@@ -266,71 +285,74 @@ extern "C" int v600_synthesize_grain_from_noise(
     const double x_bin = short_side / static_cast<double>(width);
     const double y_bin = short_side / static_cast<double>(height);
 
-    for (int c = 0; c < channels; ++c) {
-        for (int y = 0; y < height; ++y) {
-            double* input_row = reinterpret_cast<double*>(dft_input.data + static_cast<size_t>(y) * dft_input.step[0]);
-            for (int x = 0; x < width; ++x) {
-                input_row[x] = noise[(c * height + y) * width + x];
-            }
+    // One grain field for every channel, scaled by each channel's grain: luma
+    // grain reads as film grain where independent channels read as colour
+    // noise. The first captured noise plane drives it.
+    for (int y = 0; y < height; ++y) {
+        double* input_row = reinterpret_cast<double*>(dft_input.data + static_cast<size_t>(y) * dft_input.step[0]);
+        for (int x = 0; x < width; ++x) {
+            input_row[x] = noise[y * width + x];
         }
+    }
 
-        cv::dft(dft_input, dft_output, cv::DFT_COMPLEX_OUTPUT);
-        for (int y = 0; y < height; ++y) {
-            double* dft_row = reinterpret_cast<double*>(dft_output.data + static_cast<size_t>(y) * dft_output.step[0]);
-            for (int x = 0; x < width; ++x) {
-                const int centered_y = (y + y_shift) % height;
-                const int centered_x = (x + x_shift) % width;
-                const double dy = static_cast<double>(centered_y - cy) * y_bin;
-                const double dx = static_cast<double>(centered_x - cx) * x_bin;
-                const double radius = std::sqrt(dx * dx + dy * dy);
-                double amp = 1.0;
-                if (grain_spectrum != nullptr && spectrum_len > 4) {
-                    if (radius >= static_cast<double>(spectrum_len - 1)) {
-                        amp = std::sqrt(grain_spectrum[spectrum_len - 1] > 0.0 ? grain_spectrum[spectrum_len - 1] : 0.0);
-                    } else {
-                        const int lower = static_cast<int>(std::floor(radius));
-                        const int upper = lower + 1;
-                        const double t = radius - static_cast<double>(lower);
-                        const double low = std::sqrt(grain_spectrum[lower] > 0.0 ? grain_spectrum[lower] : 0.0);
-                        const double high = std::sqrt(grain_spectrum[upper] > 0.0 ? grain_spectrum[upper] : 0.0);
-                        amp = low * (1.0 - t) + high * t;
-                    }
+    cv::dft(dft_input, dft_output, cv::DFT_COMPLEX_OUTPUT);
+    for (int y = 0; y < height; ++y) {
+        double* dft_row = reinterpret_cast<double*>(dft_output.data + static_cast<size_t>(y) * dft_output.step[0]);
+        for (int x = 0; x < width; ++x) {
+            const int centered_y = (y + y_shift) % height;
+            const int centered_x = (x + x_shift) % width;
+            const double dy = static_cast<double>(centered_y - cy) * y_bin;
+            const double dx = static_cast<double>(centered_x - cx) * x_bin;
+            const double radius = std::sqrt(dx * dx + dy * dy);
+            double amp = 1.0;
+            if (grain_spectrum != nullptr && spectrum_len > 4) {
+                if (radius >= static_cast<double>(spectrum_len - 1)) {
+                    amp = std::sqrt(grain_spectrum[spectrum_len - 1] > 0.0 ? grain_spectrum[spectrum_len - 1] : 0.0);
                 } else {
-                    const double safe_radius = radius > 0.0 ? radius : 1.0;
-                    amp = 1.0 / safe_radius;
+                    const int lower = static_cast<int>(std::floor(radius));
+                    const int upper = lower + 1;
+                    const double t = radius - static_cast<double>(lower);
+                    const double low = std::sqrt(grain_spectrum[lower] > 0.0 ? grain_spectrum[lower] : 0.0);
+                    const double high = std::sqrt(grain_spectrum[upper] > 0.0 ? grain_spectrum[upper] : 0.0);
+                    amp = low * (1.0 - t) + high * t;
                 }
-                dft_row[x * 2] *= amp;
-                dft_row[x * 2 + 1] *= amp;
+            } else {
+                const double safe_radius = radius > 0.0 ? radius : 1.0;
+                amp = 1.0 / safe_radius;
             }
+            dft_row[x * 2] *= amp;
+            dft_row[x * 2 + 1] *= amp;
         }
+    }
 
-        cv::dft(dft_output, inverse_output, cv::DFT_INVERSE | cv::DFT_SCALE | cv::DFT_REAL_OUTPUT);
+    cv::dft(dft_output, inverse_output, cv::DFT_INVERSE | cv::DFT_SCALE | cv::DFT_REAL_OUTPUT);
 
-        double sum = 0.0;
-        double sum_sq = 0.0;
-        const int count = width * height;
-        for (int y = 0; y < height; ++y) {
-            const double* row = reinterpret_cast<const double*>(inverse_output.data + static_cast<size_t>(y) * inverse_output.step[0]);
-            for (int x = 0; x < width; ++x) {
-                const double value = row[x];
-                sum += value;
-                sum_sq += value * value;
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    const int count = width * height;
+    for (int y = 0; y < height; ++y) {
+        const double* row = reinterpret_cast<const double*>(inverse_output.data + static_cast<size_t>(y) * inverse_output.step[0]);
+        for (int x = 0; x < width; ++x) {
+            const double value = row[x];
+            sum += value;
+            sum_sq += value * value;
+        }
+    }
+    const double mean = sum / static_cast<double>(count);
+    double variance = sum_sq / static_cast<double>(count) - mean * mean;
+    if (variance < 0.0) {
+        variance = 0.0;
+    }
+    const double noise_std = std::sqrt(variance);
+
+    for (int y = 0; y < height; ++y) {
+        const double* row = reinterpret_cast<const double*>(inverse_output.data + static_cast<size_t>(y) * inverse_output.step[0]);
+        for (int x = 0; x < width; ++x) {
+            double shaped = row[x];
+            if (noise_std > 0.0) {
+                shaped /= noise_std;
             }
-        }
-        const double mean = sum / static_cast<double>(count);
-        double variance = sum_sq / static_cast<double>(count) - mean * mean;
-        if (variance < 0.0) {
-            variance = 0.0;
-        }
-        const double noise_std = std::sqrt(variance);
-
-        for (int y = 0; y < height; ++y) {
-            const double* row = reinterpret_cast<const double*>(inverse_output.data + static_cast<size_t>(y) * inverse_output.step[0]);
-            for (int x = 0; x < width; ++x) {
-                double shaped = row[x];
-                if (noise_std > 0.0) {
-                    shaped /= noise_std;
-                }
+            for (int c = 0; c < channels; ++c) {
                 output[(y * width + x) * channels + c] =
                     static_cast<double>(static_cast<float>(shaped * grain_std[c]));
             }

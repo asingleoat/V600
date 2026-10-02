@@ -76,8 +76,6 @@ pub const IrInpaintGrainOptions = extern struct {
     height: u32,
     padding: u32,
     grain_padding: u32,
-    /// Gaussian sigma separating picture from grain; 0 means 2.5.
-    grain_sigma: f32,
 };
 
 pub const IrAlignOptions = extern struct {
@@ -577,7 +575,6 @@ pub fn inpaintGrainRgb16WithNoise(
         .{
             .padding = @intCast(options.padding),
             .grain_padding = @intCast(options.grain_padding),
-            .grain_sigma = if (options.grain_sigma > 0.0) options.grain_sigma else 2.5,
             .value_kind = .uint16,
         },
     );
@@ -706,7 +703,6 @@ fn validateIrInpaintGrainRequest(rgb_len: usize, mask_len: usize, output_len: us
     if (rgb_len == 0 or mask_len == 0 or output_len == 0) return error.InvalidBuffer;
     if (options.width == 0 or options.height == 0) return error.InvalidDimensions;
     if (options.padding > max_ir_inpaint_padding or options.grain_padding > max_ir_inpaint_padding) return error.InvalidDimensions;
-    if (!std.math.isFinite(options.grain_sigma) or options.grain_sigma < 0.0) return error.InvalidDimensions;
     const pixels = try std.math.mul(usize, @as(usize, options.width), @as(usize, options.height));
     if (pixels != mask_len) return error.InvalidDimensions;
     const rgb_samples = try std.math.mul(usize, pixels, 3);

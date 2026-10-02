@@ -296,7 +296,6 @@ export function buildIrInpaintCacheInput({
   mode = "biharmonic-no-grain",
   padding = 0,
   grainPadding = 0,
-  grainSigma = 0,
   noiseHash = null,
   output = { kind: "cleaned-rgb16", color_space: "scanner-rgb" },
 }) {
@@ -323,7 +322,6 @@ export function buildIrInpaintCacheInput({
       value_kind: "uint16",
       padding,
       grain_padding: grainPadding,
-      grain_sigma: grainSigma,
       noise_hash: noiseHash,
     },
     backend: {

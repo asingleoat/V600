@@ -104,7 +104,6 @@ pub fn estimateLocalGrain(
     width: usize,
     height: usize,
     grain_padding: usize,
-    grain_sigma: f64,
 ) !LocalGrainEstimate {
     if (width == 0 or height == 0 or roi_rgb.len != width * height * 3 or roi_mask.len != width * height) {
         return error.InvalidIrLocalGrainBuffer;
@@ -132,8 +131,8 @@ pub fn estimateLocalGrain(
         }
         const denominator = try allocator.alloc(f32, roi_rgb.len);
         defer allocator.free(denominator);
-        try gaussianBlurRgbSigmaF32(allocator, weighted, width, height, grain_sigma, signal_f32);
-        try gaussianBlurRgbSigmaF32(allocator, known, width, height, grain_sigma, denominator);
+        try gaussianBlurRgbSigmaF32(allocator, weighted, width, height, 2.5, signal_f32);
+        try gaussianBlurRgbSigmaF32(allocator, known, width, height, 2.5, denominator);
         for (signal_f32, denominator, rgb_f32) |*out, den, value| {
             out.* = if (den > 1.0e-3) out.* / den else value;
         }
@@ -161,26 +160,41 @@ pub fn estimateLocalGrain(
     if (surround_count > 10) {
         var sum = [_]f64{ 0.0, 0.0, 0.0 };
         var sum_sq = [_]f64{ 0.0, 0.0, 0.0 };
+        var luma_sum: f64 = 0.0;
+        var luma_sum_sq: f64 = 0.0;
         for (0..height) |y| {
             for (0..width) |x| {
                 const pixel = y * width + x;
                 if (dilated[pixel] == 0 or roi_mask[pixel] != 0) continue;
+                var luma: f64 = 0.0;
                 for (0..3) |channel| {
                     const index = pixel * 3 + channel;
                     const grain = rgb_f32[index] - signal_f32[index];
                     const grain_f64: f64 = @floatCast(grain);
                     sum[channel] += grain_f64;
                     sum_sq[channel] += grain_f64 * grain_f64;
+                    luma += grain_f64 / 3.0;
                 }
+                luma_sum += luma;
+                luma_sum_sq += luma * luma;
             }
         }
         const count_f = @as(f64, @floatFromInt(surround_count));
+        var std_mean: f64 = 0.0;
         for (0..3) |channel| {
             const mean = sum[channel] / count_f;
             var variance = sum_sq[channel] / count_f - mean * mean;
             if (variance < 0.0) variance = 0.0;
-            grain_std[channel] = roundF32(@sqrt(variance));
+            grain_std[channel] = @sqrt(variance);
+            std_mean += grain_std[channel] / 3.0;
         }
+        // The synthetic grain is one field for all channels, which would add
+        // up to more brightness grain than the film's partly independent
+        // channels: scale it to the surround's channel-mean grain.
+        const luma_mean = luma_sum / count_f;
+        const luma_std = @sqrt(@max(luma_sum_sq / count_f - luma_mean * luma_mean, 0.0));
+        const shared_scale = if (std_mean > 0.0) luma_std / std_mean else 0.0;
+        for (&grain_std) |*value| value.* = roundF32(value.* * shared_scale);
     }
 
     const spectrum = try estimateGrainSpectrum(
@@ -311,37 +325,36 @@ pub fn synthesizeGrainFromNoise(
         return error.InvalidIrGrainSynthesisBuffer;
     }
 
+    // One grain field for every channel, scaled by each channel's grain: luma
+    // grain reads as film grain where independent channels read as colour
+    // noise. The first captured noise plane drives it.
     const plane = try allocator.alloc(f64, width * height);
     defer allocator.free(plane);
-    for (0..channels) |channel| {
-        for (0..height) |y| {
-            for (0..width) |x| {
-                plane[y * width + x] = noise[(channel * height + y) * width + x];
-            }
-        }
+    @memcpy(plane, noise[0 .. width * height]);
 
-        const dft = try dft2RealToComplex(allocator, plane, width, height);
-        defer allocator.free(dft);
-        shapeSpectrumInPlace(dft, width, height, grain_spectrum);
+    const dft = try dft2RealToComplex(allocator, plane, width, height);
+    defer allocator.free(dft);
+    shapeSpectrumInPlace(dft, width, height, grain_spectrum);
 
-        try inverseDft2ComplexToReal(allocator, dft, width, height, plane);
-        var sum: f64 = 0.0;
-        var sum_sq: f64 = 0.0;
-        for (plane) |value| {
-            sum += value;
-            sum_sq += value * value;
-        }
-        const count = @as(f64, @floatFromInt(plane.len));
-        const mean = sum / count;
-        var variance = sum_sq / count - mean * mean;
-        if (variance < 0.0) variance = 0.0;
-        const noise_std = @sqrt(variance);
+    try inverseDft2ComplexToReal(allocator, dft, width, height, plane);
+    var sum: f64 = 0.0;
+    var sum_sq: f64 = 0.0;
+    for (plane) |value| {
+        sum += value;
+        sum_sq += value * value;
+    }
+    const count = @as(f64, @floatFromInt(plane.len));
+    const mean = sum / count;
+    var variance = sum_sq / count - mean * mean;
+    if (variance < 0.0) variance = 0.0;
+    const noise_std = @sqrt(variance);
 
-        for (0..height) |y| {
-            for (0..width) |x| {
-                const pixel = y * width + x;
-                var shaped = plane[pixel];
-                if (noise_std > 0.0) shaped /= noise_std;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            const pixel = y * width + x;
+            var shaped = plane[pixel];
+            if (noise_std > 0.0) shaped /= noise_std;
+            for (0..channels) |channel| {
                 output[pixel * channels + channel] = roundF32(shaped * grain_std[channel]);
             }
         }

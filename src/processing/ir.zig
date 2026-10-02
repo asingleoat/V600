@@ -95,8 +95,6 @@ pub const InpaintValueKind = enum {
 pub const InpaintOptions = struct {
     padding: usize = 16,
     grain_padding: usize = 8,
-    /// Gaussian sigma separating picture from grain around a defect.
-    grain_sigma: f64 = 2.5,
     value_kind: InpaintValueKind = .uint16,
 };
 
@@ -858,14 +856,12 @@ pub fn estimateLocalGrain(
     width: usize,
     height: usize,
     grain_padding: usize,
-    grain_sigma: f64,
 ) !LocalGrainEstimate {
     if (width == 0 or height == 0 or roi_rgb.len != width * height * 3 or roi_mask.len != width * height) {
         return error.InvalidIrLocalGrainBuffer;
     }
-    if (!std.math.isFinite(grain_sigma) or grain_sigma <= 0.0) return error.InvalidIrLocalGrainBuffer;
     if (!use_native_ir_helpers) {
-        return ir_pure.estimateLocalGrain(allocator, roi_rgb, roi_mask, width, height, grain_padding, grain_sigma);
+        return ir_pure.estimateLocalGrain(allocator, roi_rgb, roi_mask, width, height, grain_padding);
     }
     if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
         height > @as(usize, @intCast(std.math.maxInt(c_int))) or
@@ -890,7 +886,6 @@ pub fn estimateLocalGrain(
         @intCast(width),
         @intCast(height),
         @intCast(grain_padding),
-        grain_sigma,
         grain_std[0..].ptr,
         signal.ptr,
         if (spectrum_buffer.len > 0) spectrum_buffer.ptr else signal.ptr,
@@ -1208,7 +1203,7 @@ pub fn inpaintBiharmonicWithGrainFromNoiseTimed(
         if (timings) |out| out.inpaint_roi_extract_ns += monotonicNowNs() - roi_started;
 
         const grain_started = monotonicNowNs();
-        const estimate = try estimateLocalGrain(allocator, roi_rgb, roi_mask, roi_width, roi_height, options.grain_padding, options.grain_sigma);
+        const estimate = try estimateLocalGrain(allocator, roi_rgb, roi_mask, roi_width, roi_height, options.grain_padding);
         if (timings) |out| out.local_grain_ns += monotonicNowNs() - grain_started;
         defer estimate.deinit(allocator);
 
@@ -4325,7 +4320,7 @@ fn expectLocalGrainFixture(path: []const u8) !void {
         out.* = if (value != 0.0) 255 else 0;
     }
 
-    const estimate = try estimateLocalGrain(allocator, fixture.input, mask, width, height, fixture.grain_padding, 2.5);
+    const estimate = try estimateLocalGrain(allocator, fixture.input, mask, width, height, fixture.grain_padding);
     defer estimate.deinit(allocator);
 
     try numeric.assertCloseSlices(fixture.expected_grain_std, estimate.grain_std[0..], fixture.tolerance);
@@ -4929,7 +4924,7 @@ test "IR coverage guard validates values and preserves masks under cap" {
 
 test "IR local grain estimation validates dimensions" {
     var mask = [_]u8{0};
-    try std.testing.expectError(error.InvalidIrLocalGrainBuffer, estimateLocalGrain(std.testing.allocator, &.{ 1.0, 2.0 }, &mask, 1, 1, 1, 2.5));
+    try std.testing.expectError(error.InvalidIrLocalGrainBuffer, estimateLocalGrain(std.testing.allocator, &.{ 1.0, 2.0 }, &mask, 1, 1, 1));
 }
 
 test "IR grain synthesis validates dimensions" {
