@@ -30,6 +30,10 @@ const BenchOptions = struct {
     scan_path: []const u8 = default_scan,
     case_filter: []const u8 = "all",
     synthetic_pixels: usize = 1_048_576,
+    /// Film format and frame count for the auto-detect, rebate, and
+    /// detected-frame export cases (0 frames: detection decides).
+    format: []const u8 = "35mm",
+    frames: u32 = 5,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -173,8 +177,8 @@ pub fn main(init: std.process.Init) !void {
         if (shouldRun(options.case_filter, "auto_detect") or shouldRun(options.case_filter, "rebate")) {
             const started = monotonicNowNs();
             auto_result = try workflow.autoDetectPreview(allocator, loaded, .{
-                .format = "35mm",
-                .n_frames = 5,
+                .format = options.format,
+                .n_frames = if (options.frames == 0) null else @as(usize, options.frames),
             });
             const elapsed = monotonicNowNs() - started;
             if (shouldRun(options.case_filter, "auto_detect")) {
@@ -246,8 +250,8 @@ pub fn main(init: std.process.Init) !void {
                 existing
             else blk: {
                 auto_result = try workflow.autoDetectPreview(allocator, loaded, .{
-                    .format = "35mm",
-                    .n_frames = 5,
+                    .format = options.format,
+                    .n_frames = if (options.frames == 0) null else @as(usize, options.frames),
                 });
                 break :blk auto_result.?;
             };
@@ -343,6 +347,11 @@ fn parseArgs(allocator: std.mem.Allocator, init: std.process.Init) !BenchOptions
             options.scan_path = args.next() orelse return error.MissingScanPath;
         } else if (std.mem.eql(u8, arg, "--case")) {
             options.case_filter = args.next() orelse return error.MissingBenchmarkCase;
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            options.format = args.next() orelse return error.MissingFilmFormat;
+        } else if (std.mem.eql(u8, arg, "--frames")) {
+            const value = args.next() orelse return error.MissingFrameCount;
+            options.frames = try std.fmt.parseInt(u32, value, 10);
         } else if (std.mem.eql(u8, arg, "--pixels")) {
             const value = args.next() orelse return error.MissingPixelCount;
             options.synthetic_pixels = try std.fmt.parseInt(usize, value, 10);
