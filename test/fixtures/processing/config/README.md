@@ -25,3 +25,7 @@ Fixtures:
 - `custom-stock-save.toml`: `save_config()` with a config-defined
   `[stocks.custom_c41]` profile, covering Python's manual custom-stock TOML
   workflow.
+
+The `auto_white_balance` lines in the `[render]` section are a Zig-only
+setting added after the Python freeze, written where the Zig serializer
+puts them.

@@ -1150,6 +1150,7 @@ fn appendRenderOptions(builder: *StateBuilder, options: processing_render.Render
     try builder.appendF64(options.exposure_compensation);
     try builder.appendF64(options.color_temp);
     try builder.appendF64(options.color_tint);
+    try builder.appendF64(options.auto_white_balance);
     try builder.appendUsize(options.percentile_sample_limit);
 }
 

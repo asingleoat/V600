@@ -1295,6 +1295,7 @@ pub const State = struct {
                 .exposure_compensation = processingConfigFloat(&self.processing_config, "exposure_compensation"),
                 .color_temp = processingConfigFloat(&self.processing_config, "color_temp"),
                 .color_tint = processingConfigFloat(&self.processing_config, "color_tint"),
+                .auto_white_balance = processingConfigFloat(&self.processing_config, "auto_white_balance"),
             },
             .invert_request = self.processing_gpu_request,
         };

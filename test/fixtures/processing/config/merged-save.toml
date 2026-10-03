@@ -48,6 +48,8 @@ render_contrast = 1.6
 # color_temp = 0.0
 # Color tint: positive=magenta, negative=green
 color_tint = -0.25
+# Per-frame white balance from each channel's black and white points: 0=off, 1=full
+# auto_white_balance = 1.0
 
 # Film stock profiles
 

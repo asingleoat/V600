@@ -469,7 +469,7 @@ try {
       },
     },
     options: {
-      preview_options_layout: "PreviewOptions/v1",
+      preview_options_layout: "PreviewOptions/v2",
       preview_options: previewOptions(),
     },
   });
@@ -497,7 +497,7 @@ try {
       },
     },
     options: {
-      preview_options_layout: "PreviewOptions/v1",
+      preview_options_layout: "PreviewOptions/v2",
       preview_options: previewOptions(),
     },
   }), [exportRawBuffer]);
@@ -797,7 +797,7 @@ try {
       },
     },
     options: {
-      preview_options_layout: "PreviewOptions/v1",
+      preview_options_layout: "PreviewOptions/v2",
       preview_options: previewOptions({ stock: 99 }),
     },
   }), [badRawBuffer]);

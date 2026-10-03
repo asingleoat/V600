@@ -273,6 +273,7 @@ pub const defaults = [_]ParamDefault{
     .{ .name = "exposure_compensation", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "color_temp", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "color_tint", .value = .{ .float = 0.0 }, .section = .render },
+    .{ .name = "auto_white_balance", .value = .{ .float = 1.0 }, .section = .render },
     .{ .name = "preview_size", .value = .{ .integer = 8192 } },
     .{ .name = "clahe_clip", .value = .{ .float = 2.0 } },
 };
@@ -295,6 +296,7 @@ pub const comments = [_]ParamComment{
     .{ .name = "exposure_compensation", .text = "Density-domain exposure shift: positive=brighter" },
     .{ .name = "color_temp", .text = "Color temperature: positive=warmer, negative=cooler" },
     .{ .name = "color_tint", .text = "Color tint: positive=magenta, negative=green" },
+    .{ .name = "auto_white_balance", .text = "Per-frame white balance from each channel's black and white points: 0=off, 1=full" },
     .{ .name = "clahe_clip", .text = "CLAHE clip limit for preview contrast enhancement" },
     .{ .name = "dmin", .text = "Film base density [R, G, B]" },
     .{ .name = "ir_clean", .text = "Enable IR dust/scratch removal" },
@@ -711,7 +713,7 @@ fn appendPythonFloat(out: *std.array_list.Managed(u8), value: f64) !void {
 
 test "preserves processing config default order, values, and types" {
     try std.testing.expectEqual(@as(u32, 800), reference_dpi);
-    try std.testing.expectEqual(@as(usize, 17), defaults.len);
+    try std.testing.expectEqual(@as(usize, 18), defaults.len);
     try std.testing.expectEqualStrings("scratchndent_config.toml", config_file);
 
     try defaultValue("ir_threshold").?.expectEqual(.{ .float = 0.10 });
@@ -729,6 +731,7 @@ test "preserves processing config default order, values, and types" {
     try defaultValue("exposure_compensation").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("color_temp").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("color_tint").?.expectEqual(.{ .float = 0.0 });
+    try defaultValue("auto_white_balance").?.expectEqual(.{ .float = 1.0 });
     try defaultValue("preview_size").?.expectEqual(.{ .integer = 8192 });
     try defaultValue("clahe_clip").?.expectEqual(.{ .float = 2.0 });
 
@@ -744,7 +747,7 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 23), comments.len);
+    try std.testing.expectEqual(@as(usize, 24), comments.len);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);
     try std.testing.expectEqualStrings("Show inverted preview instead of CLAHE", comment("preview_inversion").?);

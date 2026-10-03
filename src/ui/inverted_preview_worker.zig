@@ -258,6 +258,7 @@ pub fn renderOptionsEqual(
         a.exposure_compensation == b.exposure_compensation and
         a.color_temp == b.color_temp and
         a.color_tint == b.color_tint and
+        a.auto_white_balance == b.auto_white_balance and
         a.percentile_sample_limit == b.percentile_sample_limit;
 }
 

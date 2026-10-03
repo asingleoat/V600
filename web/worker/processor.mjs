@@ -155,7 +155,7 @@ async function handleLoadModule(message) {
     requestId: message.request_id,
     capabilities: {
       operations: ["process-preview", "process-export", "process-frame-detect", "process-ir-estimate", "process-ir-align", "process-ir-mask", "process-ir-rgb-mask", "process-ir-inpaint", "process-ir-clean-crop"],
-      preview_options_layout: "PreviewOptions/v1",
+      preview_options_layout: "PreviewOptions/v2",
       frame_detect_options_layout: "FrameDetectOptions/v1",
       ir_estimate_options_layout: "IrEstimateOptions/v1",
       ir_align_options_layout: "IrAlignOptions/v1",

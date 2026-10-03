@@ -23,13 +23,19 @@ eps = 1e-8
 dmin = [dmin_r, dmin_g, dmin_b]
 ```
 
-The display range is global for the image, not per pixel:
+The display range is global for the image, not per pixel, and set per
+channel. Automatic white balance (`auto_white_balance`, default 1, 0 = off)
+moves each channel's black and white point from the shared luminance range
+to that channel's own percentiles:
 
 ```text
-lo = robust low luminance percentile
-hi = robust high luminance percentile
-A = 1 / (hi - lo)
-B = -lo / (hi - lo)
+lo, hi     = robust low/high luminance percentiles
+lo_c, hi_c = the same percentiles of channel c alone
+w          = auto_white_balance
+lo'_c = lo + w*(lo_c - lo)
+hi'_c = hi + w*(hi_c - hi)
+A_c = 1 / (hi'_c - lo'_c)
+B_c = -lo'_c / (hi'_c - lo'_c)
 ```
 
 Current default display options:
@@ -40,6 +46,7 @@ curve_k = 5.0
 exposure_compensation = 0.0
 color_temp = 0.0
 color_tint = 0.0
+auto_white_balance = 1.0
 ```
 
 So default contrast strength is:
@@ -125,15 +132,16 @@ Y = 0.2126*s_r + 0.7152*s_g + 0.0722*s_b
 
 Only `Y > 0.001` participates in the robust display range. The current fast
 path estimates the low/high percentiles from a deterministic `f32` sample. Exact
-mode sorts all positive `f64` luminance values. Once `lo` and `hi` are fixed,
+mode sorts all positive `f64` luminance values. Each channel's own percentiles
+come from the same pixels (the same sample). Once `A_c` and `B_c` are fixed,
 the per-pixel transform below is local and closed form.
 
 ## Per-Channel Display Transform
 
-For one scene-linear channel `s`:
+For one scene-linear channel `s` of channel `c`:
 
 ```text
-x0 = clamp(A*s + B, 0, 1)
+x0 = clamp(A_c*s + B_c, 0, 1)
 ```
 
 Optional color balance, if enabled:
@@ -228,7 +236,7 @@ D_j(raw_j) = max(-log10(max(raw_j / 65535, 1e-8)) - dmin_j, 0)
 
 S_c = max(sum_j M[c,j] * D_j(raw_j), 0)
 
-X_c = clamp(A*S_c + B, 0, 1)
+X_c = clamp(A_c*S_c + B_c, 0, 1)
 
 Y_c = C_2(X_c)
 

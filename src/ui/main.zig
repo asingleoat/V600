@@ -120,6 +120,7 @@ const ProcessUiState = struct {
     exposure_compensation: f32 = 0.0,
     color_temp: f32 = 0.0,
     color_tint: f32 = 0.0,
+    auto_white_balance: f32 = 1.0,
     ir_threshold: f32 = 0.10,
     ir_hair_sensitivity: f32 = 0.10,
     ir_dilate_radius: c_int = 4,
@@ -3679,16 +3680,19 @@ fn drawProcessSettingsControls(
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Color Balance", c.NK_TEXT_LEFT);
+    drawFloatSetting(ctx, model, ui, "Auto WB", "auto_white_balance", &ui.auto_white_balance, 0.0, 1.0, 0.05, "Automatic white balance for each frame: gives every channel its own black and white point so neutral shadows and highlights come out neutral. 1 = full, 0 = off (for scenes whose darkest and brightest parts are not neutral, like sunsets). Temp and tint adjust on top");
     drawColorPad(ctx, model, ui);
     drawFloatSetting(ctx, model, ui, "Temp", "color_temp", &ui.color_temp, -1.0, 1.0, 0.05, "Color temperature, from blue to yellow. 0 is neutral. Same as the horizontal axis of the pad above");
     drawFloatSetting(ctx, model, ui, "Tint", "color_tint", &ui.color_tint, -1.0, 1.0, 0.05, "Tint, from green to magenta. 0 is neutral. Same as the vertical axis of the pad above");
     layoutRow(ctx, 26.0, 1);
-    tooltip(ctx, "Set temperature and tint back to neutral");
+    tooltip(ctx, "Set temperature and tint back to neutral and automatic white balance back to full");
     if (c.nk_button_label(ctx, "Reset Color") != 0) {
         ui.color_temp = 0.0;
         ui.color_tint = 0.0;
+        ui.auto_white_balance = 1.0;
         queueProcessFloatSetting(model, ui, "color_temp", ui.color_temp);
         queueProcessFloatSetting(model, ui, "color_tint", ui.color_tint);
+        queueProcessFloatSetting(model, ui, "auto_white_balance", ui.auto_white_balance);
         commitPendingProcessSettings(model, allocator, io, config_path, ui) catch |err| setProcessUiError(model, err);
     }
 
@@ -3912,6 +3916,7 @@ fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const v600.native_ui.Sta
     ui.exposure_compensation = processSettingFloat(model, "exposure_compensation");
     ui.color_temp = processSettingFloat(model, "color_temp");
     ui.color_tint = processSettingFloat(model, "color_tint");
+    ui.auto_white_balance = processSettingFloat(model, "auto_white_balance");
     ui.ir_threshold = processSettingFloat(model, "ir_threshold");
     ui.ir_hair_sensitivity = processSettingFloat(model, "ir_hair_sensitivity");
     ui.ir_dilate_radius = processSettingInt(model, "ir_dilate_radius");

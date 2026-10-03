@@ -396,7 +396,7 @@ const processPreview = createProcessPreviewMessage({
     options_len: 60,
   },
   options: {
-    preview_options_layout: "PreviewOptions/v1",
+    preview_options_layout: "PreviewOptions/v2",
   },
 });
 assert.equal(processPreview.type, messageTypes.processPreview);
@@ -423,7 +423,7 @@ const processExport = createProcessExportMessage({
     options_len: 60,
   },
   options: {
-    preview_options_layout: "PreviewOptions/v1",
+    preview_options_layout: "PreviewOptions/v2",
   },
 });
 assert.equal(processExport.type, messageTypes.processExport);

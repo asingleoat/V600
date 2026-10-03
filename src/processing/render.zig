@@ -26,6 +26,11 @@ pub const RenderToDisplayOptions = struct {
     exposure_compensation: f64 = 0.0,
     color_temp: f64 = 0.0,
     color_tint: f64 = 0.0,
+    /// Automatic white balance, 0 (off) to 1: how far each channel's black
+    /// and white points move from the shared luminance range to that
+    /// channel's own percentiles, so neutral shadows and highlights render
+    /// neutral whatever the light or the lab left in the negative.
+    auto_white_balance: f64 = 0.0,
     percentile_sample_limit: usize = default_percentile_sample_limit,
 };
 
@@ -136,8 +141,9 @@ pub fn renderToDisplayU16F32(
 }
 
 const DisplayRenderState = struct {
-    range: LuminanceRange,
-    denominator: f64,
+    /// Each channel's black point and white-minus-black span.
+    lo: [3]f64,
+    denominator: [3]f64,
     multipliers: [3]f64,
     apply_color_balance: bool,
     apply_exposure: bool,
@@ -153,6 +159,8 @@ fn displayRenderState(
     options: RenderToDisplayOptions,
 ) !DisplayRenderState {
     const range = try estimateDisplayLuminanceRange(allocator, input, options);
+    try validateWhiteBalance(options.auto_white_balance);
+    const channel_ranges = try channelDisplayRanges(f64, allocator, input, range, options);
 
     var multipliers = [_]f64{ 1.0, 1.0, 1.0 };
     const apply_color_balance = @abs(options.color_temp) > 0.001 or @abs(options.color_tint) > 0.001;
@@ -168,8 +176,12 @@ fn displayRenderState(
 
     _ = options.black_point;
     return .{
-        .range = range,
-        .denominator = range.hi - range.lo,
+        .lo = .{ channel_ranges[0].lo, channel_ranges[1].lo, channel_ranges[2].lo },
+        .denominator = .{
+            channel_ranges[0].hi - channel_ranges[0].lo,
+            channel_ranges[1].hi - channel_ranges[1].lo,
+            channel_ranges[2].hi - channel_ranges[2].lo,
+        },
         .multipliers = multipliers,
         .apply_color_balance = apply_color_balance,
         .apply_exposure = apply_exposure,
@@ -186,6 +198,8 @@ fn displayRenderStateF32(
     options: RenderToDisplayOptions,
 ) !DisplayRenderState {
     const range = try estimateDisplayLuminanceRangeF32(allocator, input, options);
+    try validateWhiteBalance(options.auto_white_balance);
+    const channel_ranges = try channelDisplayRanges(f32, allocator, input, range, options);
 
     var multipliers = [_]f64{ 1.0, 1.0, 1.0 };
     const apply_color_balance = @abs(options.color_temp) > 0.001 or @abs(options.color_tint) > 0.001;
@@ -201,8 +215,12 @@ fn displayRenderStateF32(
 
     _ = options.black_point;
     return .{
-        .range = range,
-        .denominator = range.hi - range.lo,
+        .lo = .{ channel_ranges[0].lo, channel_ranges[1].lo, channel_ranges[2].lo },
+        .denominator = .{
+            channel_ranges[0].hi - channel_ranges[0].lo,
+            channel_ranges[1].hi - channel_ranges[1].lo,
+            channel_ranges[2].hi - channel_ranges[2].lo,
+        },
         .multipliers = multipliers,
         .apply_color_balance = apply_color_balance,
         .apply_exposure = apply_exposure,
@@ -214,12 +232,12 @@ fn displayRenderStateF32(
 }
 
 fn displayUnitValue(value: f64, index: usize, state: DisplayRenderState) f64 {
-    const display = normalizedDisplayValue(value, state);
+    const display = normalizedDisplayValue(value, index % 3, state);
     return displayCurveValue(display, index % 3, state);
 }
 
-fn normalizedDisplayValue(value: f64, state: DisplayRenderState) f64 {
-    return clamp((value - state.range.lo) / state.denominator, 0.0, 1.0);
+fn normalizedDisplayValue(value: f64, channel: usize, state: DisplayRenderState) f64 {
+    return clamp((value - state.lo[channel]) / state.denominator[channel], 0.0, 1.0);
 }
 
 fn displayCurveValue(input: f64, channel: usize, state: DisplayRenderState) f64 {
@@ -253,9 +271,9 @@ fn renderToDisplayU8Lut(input: []const f64, output: []u8, state: DisplayRenderSt
     const scale = @as(f64, @floatFromInt(preview_display_lut_entries - 1));
     var index: usize = 0;
     while (index < input.len) : (index += 3) {
-        output[index] = previewDisplayTableLookupF64(input[index], &table[0], state, scale);
-        output[index + 1] = previewDisplayTableLookupF64(input[index + 1], &table[1], state, scale);
-        output[index + 2] = previewDisplayTableLookupF64(input[index + 2], &table[2], state, scale);
+        output[index] = previewDisplayTableLookupF64(input[index], 0, &table[0], state, scale);
+        output[index + 1] = previewDisplayTableLookupF64(input[index + 1], 1, &table[1], state, scale);
+        output[index + 2] = previewDisplayTableLookupF64(input[index + 2], 2, &table[2], state, scale);
     }
 }
 
@@ -263,8 +281,8 @@ fn renderToDisplayU8LutF32(allocator: std.mem.Allocator, input: []const f32, out
     var table: [3][preview_display_lut_entries]u8 = undefined;
     fillDisplayLutU8(&table, state);
     const lookup = PreviewDisplayF32LookupState{
-        .lo = @floatCast(state.range.lo),
-        .inv_denominator = @floatCast(1.0 / state.denominator),
+        .lo = f32Triple(state.lo),
+        .inv_denominator = inverseF32Triple(state.denominator),
         .scale = @floatFromInt(preview_display_lut_entries - 1),
     };
     const pixel_count = input.len / 3;
@@ -334,9 +352,9 @@ fn renderToDisplayU8LutF32Range(
     var pixel_index = pixel_start;
     while (pixel_index < pixel_end) : (pixel_index += 1) {
         const index = pixel_index * 3;
-        output[index] = previewDisplayTableLookupF32(input[index], &table[0], lookup);
-        output[index + 1] = previewDisplayTableLookupF32(input[index + 1], &table[1], lookup);
-        output[index + 2] = previewDisplayTableLookupF32(input[index + 2], &table[2], lookup);
+        output[index] = previewDisplayTableLookupF32(input[index], 0, &table[0], lookup);
+        output[index + 1] = previewDisplayTableLookupF32(input[index + 1], 1, &table[1], lookup);
+        output[index + 2] = previewDisplayTableLookupF32(input[index + 2], 2, &table[2], lookup);
     }
 }
 
@@ -349,28 +367,30 @@ fn workerCountForPixels(pixel_count: usize, min_pixels: usize) usize {
 
 inline fn previewDisplayTableLookupF64(
     value: f64,
+    channel: usize,
     table: *const [preview_display_lut_entries]u8,
     state: DisplayRenderState,
     scale: f64,
 ) u8 {
-    const normalized = normalizedDisplayValue(value, state);
+    const normalized = normalizedDisplayValue(value, channel, state);
     const table_index: usize = @intFromFloat(@round(normalized * scale));
     return table.*[@min(table_index, preview_display_lut_entries - 1)];
 }
 
 inline fn previewDisplayTableLookupF32(
     value: f32,
+    channel: usize,
     table: *const [preview_display_lut_entries]u8,
     state: PreviewDisplayF32LookupState,
 ) u8 {
-    const normalized = @min(@max((value - state.lo) * state.inv_denominator, 0.0), 1.0);
+    const normalized = @min(@max((value - state.lo[channel]) * state.inv_denominator[channel], 0.0), 1.0);
     const table_index: usize = @intFromFloat(@round(normalized * state.scale));
     return table.*[@min(table_index, preview_display_lut_entries - 1)];
 }
 
 const PreviewDisplayF32LookupState = struct {
-    lo: f32,
-    inv_denominator: f32,
+    lo: [3]f32,
+    inv_denominator: [3]f32,
     scale: f32,
 };
 
@@ -379,12 +399,12 @@ fn renderToDisplayU16Lut(input: []const f64, output: []u16, state: DisplayRender
     fillDisplayLutF32(&table, state);
     const scale = @as(f64, @floatFromInt(export_display_lut_entries - 1));
     for (input, output, 0..) |value, *out, index| {
-        const normalized = normalizedDisplayValue(value, state);
+        const channel = index % 3;
+        const normalized = normalizedDisplayValue(value, channel, state);
         const position = normalized * scale;
         const lower: usize = @intFromFloat(@floor(position));
         const upper = @min(lower + 1, export_display_lut_entries - 1);
         const fraction = position - @as(f64, @floatFromInt(lower));
-        const channel = index % 3;
         const lo: f64 = @floatCast(table[channel][lower]);
         const hi: f64 = @floatCast(table[channel][upper]);
         out.* = displayToU16(lo * (1.0 - fraction) + hi * fraction);
@@ -395,30 +415,31 @@ fn renderToDisplayU16LutF32(input: []const f32, output: []u16, state: DisplayRen
     var table: [3][export_display_lut_entries]f32 = undefined;
     fillDisplayLutF32(&table, state);
     const lookup = ExportDisplayF32LookupState{
-        .lo = @floatCast(state.range.lo),
-        .inv_denominator = @floatCast(1.0 / state.denominator),
+        .lo = f32Triple(state.lo),
+        .inv_denominator = inverseF32Triple(state.denominator),
         .scale = @floatFromInt(export_display_lut_entries - 1),
     };
     var index: usize = 0;
     while (index < input.len) : (index += 3) {
-        output[index] = exportDisplayTableLookupF32(input[index], &table[0], lookup);
-        output[index + 1] = exportDisplayTableLookupF32(input[index + 1], &table[1], lookup);
-        output[index + 2] = exportDisplayTableLookupF32(input[index + 2], &table[2], lookup);
+        output[index] = exportDisplayTableLookupF32(input[index], 0, &table[0], lookup);
+        output[index + 1] = exportDisplayTableLookupF32(input[index + 1], 1, &table[1], lookup);
+        output[index + 2] = exportDisplayTableLookupF32(input[index + 2], 2, &table[2], lookup);
     }
 }
 
 const ExportDisplayF32LookupState = struct {
-    lo: f32,
-    inv_denominator: f32,
+    lo: [3]f32,
+    inv_denominator: [3]f32,
     scale: f32,
 };
 
 inline fn exportDisplayTableLookupF32(
     value: f32,
+    channel: usize,
     table: *const [export_display_lut_entries]f32,
     state: ExportDisplayF32LookupState,
 ) u16 {
-    const normalized = @min(@max((value - state.lo) * state.inv_denominator, 0.0), 1.0);
+    const normalized = @min(@max((value - state.lo[channel]) * state.inv_denominator[channel], 0.0), 1.0);
     const position = normalized * state.scale;
     const lower: usize = @intFromFloat(@floor(position));
     const upper = @min(lower + 1, export_display_lut_entries - 1);
@@ -448,6 +469,60 @@ fn fillDisplayLutF32(table: *[3][export_display_lut_entries]f32, state: DisplayR
     }
 }
 
+fn f32Triple(values: [3]f64) [3]f32 {
+    return .{ @floatCast(values[0]), @floatCast(values[1]), @floatCast(values[2]) };
+}
+
+fn inverseF32Triple(values: [3]f64) [3]f32 {
+    return .{ @floatCast(1.0 / values[0]), @floatCast(1.0 / values[1]), @floatCast(1.0 / values[2]) };
+}
+
+/// Each channel's black and white point: the shared luminance range moved
+/// `auto_white_balance` of the way to the channel's own percentiles, taken
+/// over the same pixels (the same stratified sample when sampling).
+fn channelDisplayRanges(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    input: []const T,
+    range: LuminanceRange,
+    options: RenderToDisplayOptions,
+) ![3]LuminanceRange {
+    var ranges = [_]LuminanceRange{ range, range, range };
+    const strength = options.auto_white_balance;
+    if (strength <= 0.0) return ranges;
+
+    const pixel_count = input.len / 3;
+    const sample_count = percentileSampleCount(pixel_count, options.percentile_sample_limit);
+    const values = try allocator.alloc(f32, sample_count * 3);
+    defer allocator.free(values);
+    var count: usize = 0;
+    for (0..sample_count) |sample_index| {
+        const pixel_index = if (sample_count == pixel_count) sample_index else stratifiedPixelIndex(pixel_count, sample_count, sample_index);
+        const index = pixel_index * 3;
+        const r: f64 = @floatCast(input[index]);
+        const g: f64 = @floatCast(input[index + 1]);
+        const b: f64 = @floatCast(input[index + 2]);
+        if (pixelLuminance(r, g, b) <= 0.001) continue;
+        values[count] = @floatCast(r);
+        values[sample_count + count] = @floatCast(g);
+        values[2 * sample_count + count] = @floatCast(b);
+        count += 1;
+    }
+    if (count == 0) return ranges;
+
+    for (&ranges, 0..) |*channel_range, channel| {
+        const channel_values = values[channel * sample_count ..][0..count];
+        std.sort.pdq(f32, channel_values, {}, lessThanF32);
+        const own_lo = percentileSortedF32(channel_values, options.percentile_lo);
+        const own_hi = percentileSortedF32(channel_values, options.percentile_hi);
+        const lo = range.lo + strength * (own_lo - range.lo);
+        var hi = range.hi + strength * (own_hi - range.hi);
+        if (hi <= lo) hi = lo + 1.0;
+        channel_range.* = .{ .lo = lo, .hi = hi };
+    }
+    return ranges;
+}
+
 fn displayToU16(display: f64) u16 {
     return @intFromFloat(clamp(display * 65535.0, 0.0, 65535.0));
 }
@@ -465,6 +540,10 @@ fn validateRgbInput(input: []const f64) !void {
 fn validateRgbInputF32(input: []const f32) !void {
     if (input.len == 0) return error.InvalidRenderBuffer;
     if (input.len % 3 != 0) return error.InvalidRenderBuffer;
+}
+
+fn validateWhiteBalance(strength: f64) !void {
+    if (!std.math.isFinite(strength) or strength < 0.0 or strength > 1.0) return error.InvalidRenderWhiteBalance;
 }
 
 fn validatePercentile(percentile: f64) !void {

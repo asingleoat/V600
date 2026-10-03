@@ -83,6 +83,7 @@ const elements = {
   exposure: document.querySelector("#exposure"),
   colorTemp: document.querySelector("#color-temp"),
   colorTint: document.querySelector("#color-tint"),
+  autoWhiteBalance: document.querySelector("#auto-white-balance"),
   sampleLimit: document.querySelector("#sample-limit"),
   previewMaxPx: document.querySelector("#preview-max-px"),
   exportIrNeg: document.querySelector("#export-ir-neg"),
@@ -562,6 +563,7 @@ function currentRenderConfig() {
     exposure_compensation: Number.parseFloat(elements.exposure.value),
     color_temp: Number.parseFloat(elements.colorTemp.value),
     color_tint: Number.parseFloat(elements.colorTint.value),
+    auto_white_balance: Number.parseFloat(elements.autoWhiteBalance.value),
   });
 }
 

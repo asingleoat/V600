@@ -24,6 +24,7 @@ export function defaultRenderConfig(overrides = {}) {
     exposure_compensation: 0.0,
     color_temp: 0.0,
     color_tint: 0.0,
+    auto_white_balance: 1.0,
     ...overrides,
   };
 }
@@ -95,6 +96,7 @@ export function defaultPreviewOptions({
     color_temp: renderConfig.color_temp,
     color_tint: renderConfig.color_tint,
     percentile_sample_limit: percentileSampleLimit,
+    auto_white_balance: renderConfig.auto_white_balance,
   };
 }
 

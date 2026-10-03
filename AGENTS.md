@@ -242,6 +242,10 @@ deliberately, not by accident.
 - Order: transmittance, density, Dmin subtraction (from a rebate selection,
   or the full image as fallback), film stock transform, scene-linear RGB,
   tone map, gamut map, sRGB.
+- Display range: each channel gets its own black and white point (its
+  low/high percentiles), moved from the shared luminance range by
+  `auto_white_balance` (default 1, 0 = off): per-frame white balance, since
+  scenes change frame to frame. Temperature and tint adjust on top.
 - Film stocks are 3x10 quadratic polynomials in density space with basis
   `[R, G, B, R^2, G^2, B^2, RG, RB, GB, 1]`. See
   `docs/FILM_STOCK_PROFILES.md`.

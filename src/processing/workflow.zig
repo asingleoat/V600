@@ -2639,6 +2639,7 @@ pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Overr
         .exposure_compensation = config.getParam("exposure_compensation", current_dpi, overrides).?.asFloat(),
         .color_temp = config.getParam("color_temp", current_dpi, overrides).?.asFloat(),
         .color_tint = config.getParam("color_tint", current_dpi, overrides).?.asFloat(),
+        .auto_white_balance = config.getParam("auto_white_balance", current_dpi, overrides).?.asFloat(),
     };
 }
 

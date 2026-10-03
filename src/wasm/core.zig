@@ -45,6 +45,8 @@ pub const PreviewOptions = extern struct {
     color_temp: f32,
     color_tint: f32,
     percentile_sample_limit: u32,
+    /// Automatic white balance strength, 0 (off) to 1.
+    auto_white_balance: f32,
 };
 
 pub const IrMaskOptions = extern struct {
@@ -347,6 +349,7 @@ pub fn previewInvertProvidedDminU16ToU8(
         .exposure_compensation = options.exposure_compensation,
         .color_temp = options.color_temp,
         .color_tint = options.color_tint,
+        .auto_white_balance = options.auto_white_balance,
         .percentile_sample_limit = if (options.percentile_sample_limit == 0)
             render.default_percentile_sample_limit
         else
@@ -387,6 +390,7 @@ pub fn exportInvertProvidedDminU16ToU16(
         .exposure_compensation = options.exposure_compensation,
         .color_temp = options.color_temp,
         .color_tint = options.color_tint,
+        .auto_white_balance = options.auto_white_balance,
         .percentile_sample_limit = if (options.percentile_sample_limit == 0)
             render.default_percentile_sample_limit
         else
@@ -842,6 +846,7 @@ fn defaultPreviewOptions(width: u32, height: u32) PreviewOptions {
         .color_temp = 0.0,
         .color_tint = 0.0,
         .percentile_sample_limit = render.default_percentile_sample_limit,
+        .auto_white_balance = 0.0,
     };
 }
 
