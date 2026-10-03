@@ -149,9 +149,13 @@ u8  = floor(65535 * clamp(y, 0, 1)) >> 8
 
 ## Optimization Targets
 
-The per-pixel work is the toe inversion (one `expm1` and one `log` per
-channel), the crosstalk mix, and one table lookup per channel. The table
-already covers the display curve and sRGB encoding exactly enough for `u16`.
+The toe inversion comes from two tables: 16,384 entries linear in density
+over [1/64, 4] (within `1e-4` decades of the exact inversion), and below that
+256 cells per octave down to 2^-30, picked by the density's floating-point
+bits (within `2e-6`). Densities above 4 are computed exactly. The per-pixel
+work is then two table lookups per channel and the crosstalk mix; the tables
+cover the inversion, the display curve, and sRGB encoding exactly enough for
+`u16` (`max_abs=1`).
 
 A separate target is the raw `u16` density conversion:
 

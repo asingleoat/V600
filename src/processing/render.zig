@@ -130,11 +130,21 @@ const display_table_entries: usize = 8192;
 const curve_table_entries: usize = 16384;
 const curve_table_lo: f64 = 1.0 / 64.0;
 const curve_table_hi: f64 = 4.0;
+// Below the table (film base, and the thin negative of deep shadows; over a
+// third of a strip preview) a second table steps through density by its
+// floating-point bits: 256 cells per octave, linear within each, from 2^-30
+// (under the exact inversion's 1e-9 floor) up to curve_table_lo = 2^-6.
+const low_curve_octaves: u6 = 24;
+const low_curve_cell_bits: u6 = 8;
+const low_curve_entries: usize = (@as(usize, low_curve_octaves) << low_curve_cell_bits) + 1;
+const low_curve_min_exponent: i32 = -30;
+const low_curve_fraction_bits: u6 = 52 - low_curve_cell_bits;
+const low_curve_floor: f64 = 1e-9;
 const display_table_lo: f64 = -8.0;
 const display_table_hi: f64 = 4.0;
 const mid_grey: f64 = 0.18;
 const temp_tint_decades: f64 = 0.15;
-const render_parallel_min_pixels: usize = 1_000_000;
+const render_pixels_per_worker: usize = 1 << 18;
 
 const DisplayTransform = struct {
     scale: [3]f64,
@@ -145,6 +155,7 @@ const DisplayTransform = struct {
     log_offset: [3]f64,
     table: [display_table_entries]f32,
     curve_table: [curve_table_entries]f32,
+    low_curve_table: [low_curve_entries]f32,
 };
 
 fn renderPixels(
@@ -162,7 +173,7 @@ fn renderPixels(
     try buildDisplayTransform(In, allocator, input, options, transform);
 
     const pixel_count = input.len / 3;
-    const worker_count = if (comptime parallelism.enabled) workerCountForPixels(pixel_count, render_parallel_min_pixels) else 1;
+    const worker_count = if (comptime parallelism.enabled) workerCountForPixels(pixel_count, render_pixels_per_worker) else 1;
     if (worker_count <= 1) {
         renderRange(In, Out, input, output, transform, 0, pixel_count);
         return;
@@ -243,11 +254,12 @@ inline fn displayLogExposure(transform: *const DisplayTransform, rgb: anytype) [
 /// Inverts density = gamma * toe * ln(1 + exp(x / toe)): a straight line of
 /// slope gamma with a smooth toe at the film base.
 fn filmLogExposure(density: f64, inv_gamma_toe: f64, toe: f64) f64 {
-    const z = @min(@max(density, 1e-9) * inv_gamma_toe, 50.0);
+    const z = @min(@max(density, low_curve_floor) * inv_gamma_toe, 50.0);
     return toe * @log(std.math.expm1(z));
 }
 
 inline fn curveLookup(transform: *const DisplayTransform, density: f64) f64 {
+    if (density < curve_table_lo) return lowCurveLookup(transform, density);
     const steps = @as(f64, @floatFromInt(curve_table_entries - 1));
     const position = (density - curve_table_lo) * (steps / (curve_table_hi - curve_table_lo));
     if (!(position >= 0.0) or position >= steps) return filmLogExposure(density, transform.inv_gamma_toe, transform.toe);
@@ -256,6 +268,27 @@ inline fn curveLookup(transform: *const DisplayTransform, density: f64) f64 {
     const lo: f64 = transform.curve_table[lower];
     const hi: f64 = transform.curve_table[lower + 1];
     return lo + (hi - lo) * fraction;
+}
+
+/// For densities below curve_table_lo: the biased exponent and the top
+/// mantissa bits pick the cell, the rest of the mantissa is the fraction.
+inline fn lowCurveLookup(transform: *const DisplayTransform, density: f64) f64 {
+    const bits: u64 = @bitCast(@max(density, low_curve_floor));
+    const first_cell = @as(u64, @intCast(1023 + low_curve_min_exponent)) << low_curve_cell_bits;
+    const cell: usize = @intCast((bits >> low_curve_fraction_bits) - first_cell);
+    const fraction_mask = (@as(u64, 1) << low_curve_fraction_bits) - 1;
+    const fraction = @as(f64, @floatFromInt(bits & fraction_mask)) * (1.0 / @as(f64, @floatFromInt(@as(u64, 1) << low_curve_fraction_bits)));
+    const lo: f64 = transform.low_curve_table[cell];
+    const hi: f64 = transform.low_curve_table[cell + 1];
+    return lo + (hi - lo) * fraction;
+}
+
+/// The density at the start of `cell` of the low curve table.
+fn lowCurveCellDensity(cell: usize) f64 {
+    const octave: i32 = @intCast(cell >> low_curve_cell_bits);
+    const step = cell & ((@as(usize, 1) << low_curve_cell_bits) - 1);
+    const base = std.math.ldexp(@as(f64, 1.0), octave + low_curve_min_exponent);
+    return base * (1.0 + @as(f64, @floatFromInt(step)) / @as(f64, @floatFromInt(@as(usize, 1) << low_curve_cell_bits)));
 }
 
 inline fn displayLookup(transform: *const DisplayTransform, log_exposure: f64) f64 {
@@ -273,10 +306,18 @@ inline fn displayLookup(transform: *const DisplayTransform, log_exposure: f64) f
 /// Display value (sRGB-encoded, 0 to 1) for scene-linear exposure `exposure`,
 /// with 18% grey at 18% display light.
 fn displayCurve(exposure: f64, contrast: f64) f64 {
+    return displayCurveWithKey(exposure, contrast, displayCurveKeyPower(contrast));
+}
+
+/// K^p of the display curve, the same for every exposure.
+fn displayCurveKeyPower(contrast: f64) f64 {
     const k = mid_grey * std.math.pow(f64, 1.0 / mid_grey - 1.0, 1.0 / contrast);
+    return std.math.pow(f64, k, contrast);
+}
+
+fn displayCurveWithKey(exposure: f64, contrast: f64, key_power: f64) f64 {
     const ep = std.math.pow(f64, @max(exposure, 0.0), contrast);
-    const kp = std.math.pow(f64, k, contrast);
-    return color.linearToSrgbValue(ep / (ep + kp));
+    return color.linearToSrgbValue(ep / (ep + key_power));
 }
 
 fn buildDisplayTransform(
@@ -296,10 +337,15 @@ fn buildDisplayTransform(
         const fraction = @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(curve_table_entries - 1));
         entry.* = @floatCast(filmLogExposure(curve_table_lo + fraction * (curve_table_hi - curve_table_lo), transform.inv_gamma_toe, transform.toe));
     }
+    // Unclamped: the cell holding the floor starts just below it.
+    for (&transform.low_curve_table, 0..) |*entry, cell| {
+        entry.* = @floatCast(transform.toe * @log(std.math.expm1(lowCurveCellDensity(cell) * transform.inv_gamma_toe)));
+    }
+    const key_power = displayCurveKeyPower(options.contrast);
     for (&transform.table, 0..) |*entry, index| {
         const fraction = @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(display_table_entries - 1));
         const log_exposure = display_table_lo + fraction * (display_table_hi - display_table_lo);
-        entry.* = @floatCast(displayCurve(std.math.pow(f64, 10.0, log_exposure), options.contrast));
+        entry.* = @floatCast(displayCurveWithKey(std.math.pow(f64, 10.0, log_exposure), options.contrast, key_power));
     }
 
     const region = measureRegion(input.len / 3, options.frame_width);
@@ -922,6 +968,20 @@ test "the curve table follows the exact curve inversion" {
     while (density < 4.5) : (density += 0.0003) {
         const exact = filmLogExposure(density, transform.inv_gamma_toe, transform.toe);
         try std.testing.expectApproxEqAbs(exact, curveLookup(transform, density), 1e-4);
+    }
+    // Below the main table, density by density ratio down past the floor,
+    // and at and below zero.
+    try std.testing.expectEqual(lowCurveCellDensity(low_curve_entries - 1), curve_table_lo);
+    density = curve_table_lo;
+    while (density > 1e-12) : (density *= 0.9993) {
+        const exact = filmLogExposure(density, transform.inv_gamma_toe, transform.toe);
+        try std.testing.expectApproxEqAbs(exact, curveLookup(transform, density), 2e-6);
+    }
+    const just_below = std.math.nextAfter(f64, curve_table_lo, 0.0);
+    try std.testing.expectApproxEqAbs(filmLogExposure(just_below, transform.inv_gamma_toe, transform.toe), curveLookup(transform, just_below), 2e-6);
+    for ([_]f64{ 0.0, -0.0, -0.3, -50.0 }) |below| {
+        const floor_value = filmLogExposure(below, transform.inv_gamma_toe, transform.toe);
+        try std.testing.expectApproxEqAbs(floor_value, curveLookup(transform, below), 2e-6);
     }
 }
 
