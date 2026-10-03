@@ -236,8 +236,7 @@ fn benchRenderToDisplay(stdout: anytype, allocator: std.mem.Allocator, input: []
     const start = monotonicNowNs();
     for (0..render_iterations) |_| {
         try render.renderToDisplay(allocator, input, output, .{
-            .contrast = 1.4,
-            .curve_k = 5.0,
+            .contrast = 1.8,
             .percentile_lo = 0.5,
             .percentile_hi = 99.5,
             .exposure_compensation = 0.15,
@@ -258,8 +257,7 @@ fn benchRenderToDisplayU16ThenU8(
     const start = monotonicNowNs();
     for (0..render_iterations) |_| {
         try render.renderToDisplay(allocator, input, output_u16, .{
-            .contrast = 1.4,
-            .curve_k = 5.0,
+            .contrast = 1.8,
             .percentile_lo = 0.5,
             .percentile_hi = 99.5,
             .exposure_compensation = 0.15,
@@ -277,8 +275,7 @@ fn benchRenderToDisplayU8(stdout: anytype, allocator: std.mem.Allocator, input: 
     const start = monotonicNowNs();
     for (0..render_iterations) |_| {
         try render.renderToDisplayU8(allocator, input, output, .{
-            .contrast = 1.4,
-            .curve_k = 5.0,
+            .contrast = 1.8,
             .percentile_lo = 0.5,
             .percentile_hi = 99.5,
             .exposure_compensation = 0.15,

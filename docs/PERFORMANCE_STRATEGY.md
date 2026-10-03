@@ -75,9 +75,9 @@ preview `1738x8192`. `scan_0006_rgbir_800dpi.tiff`: quick preview `1272x6031`.
 
 | Case (`--case`) | Input | Work | Latest | Date |
 | --- | --- | --- | ---: | --- |
-| `render` (`render_synthetic`) | synthetic | 1,048,576 pixels | 155.301 ms | 2026-05-17 |
+| `render` (`render_synthetic`) | synthetic | 1,048,576 pixels | 30.602 ms | 2026-10-02 |
 | `load_preview` | scan_0004 | quick preview | 639072 us | 2026-05-19 |
-| `inverted_preview_f32_breakdown` | scan_0004 | first-use inverted preview, production (serial mirror 123357 us) | 76083 us | 2026-05-19 |
+| `inverted_preview` | scan_0006 | first-use inverted preview | 94002 us | 2026-10-02 |
 | `auto_detect` | scan_0004 | 5 frames, aspect 24:36 | 172900 us | 2026-05-19 |
 | `auto_detect_breakdown` | scan_0004 | staged, parity-checked `detect_us` | 146591 us | 2026-05-19 or later |
 | `rebate` (`rebate_dmin`) | scan_0004 | full-resolution rebate Dmin | 431103 us | 2026-05-19 |
@@ -109,8 +109,13 @@ Major wins (scan_0004 unless noted):
 
 Verdicts as recorded in the log. "Exact" means identical final output.
 
-Render and inversion:
+Render and inversion (the display-table verdicts concern the earlier
+percentile-stretch S-curve, since replaced by the current display transform):
 
+- Characteristic-curve inversion from a 16,384-entry table over density
+  1/64 to 4, exact outside it: adopted, synthetic render `76964 us` to
+  `30602 us` (`2.5x`), final `u16` `max_abs=1` (RMS `0.076` at most) against
+  the exact inversion on real previews.
 - Exact `pdq` sort for render, Dmin, IR, detector percentiles: adopted, exact.
 - 16,384-sample f32 luminance range plus 256-entry display LUT: adopted, `u8`
   `max_abs=1`, RMS `0.364`. Approved by the owner for performance; applies

@@ -2,16 +2,16 @@
   "name": "render-to-display-no-positive-luminance",
   "operation": "render_to_display",
   "python_oracle": "scratchndent.processing.negative.render",
-  "generated_by": "nix-shell --run python3 (2026-05-15)",
+  "generated_by": "nix-shell --run python3 (2026-05-15); expected values regenerated from the Zig display transform (2026-10-02): per-frame channel alignment, characteristic-curve inversion with a toe, dye crosstalk, automatic exposure, log-logistic display curve, sRGB",
   "shape": [
     1,
     3,
     3
   ],
   "tolerance": {
-    "abs": 0.0,
+    "abs": 1.0,
     "rel": 0.0,
-    "reason": "Python oracle numeric parity"
+    "reason": "u16 rounding of libm pow/log/expm1 results across platforms"
   },
   "input": [
     0.0,

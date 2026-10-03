@@ -1789,30 +1789,14 @@ test "inverted positive output matches real-scan Python oracle fixture" {
     };
     const output = try prepareInvertedPositiveOutput(allocator, crop, .{
         .coeffs = film_stocks.kodak_gold_python_coeffs,
-    }, .{
-        .contrast = 1.4,
-        .curve_k = 5.0,
-        .percentile_lo = 0.5,
-        .percentile_hi = 99.5,
-        .exposure_compensation = 0.0,
-        .color_temp = 0.0,
-        .color_tint = 0.0,
-    }, 0);
+    }, .{}, 0);
     defer output.deinit(allocator);
 
     try numeric.assertCloseSlices(value.expected, output.pixels, value.tolerance);
 
     const direct_u16 = try prepareInvertedPositiveOutputU16(allocator, crop, .{
         .coeffs = film_stocks.kodak_gold_python_coeffs,
-    }, .{
-        .contrast = 1.4,
-        .curve_k = 5.0,
-        .percentile_lo = 0.5,
-        .percentile_hi = 99.5,
-        .exposure_compensation = 0.0,
-        .color_temp = 0.0,
-        .color_tint = 0.0,
-    }, 0);
+    }, .{}, 0);
     defer direct_u16.deinit(allocator);
 
     try std.testing.expectEqual(output.pixels.len, direct_u16.pixels.len);

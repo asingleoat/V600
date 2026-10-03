@@ -38,7 +38,6 @@ pub const PreviewOptions = extern struct {
     dmin_b: f32,
     default_light: f32,
     contrast: f32,
-    curve_k: f32,
     percentile_lo: f32,
     percentile_hi: f32,
     exposure_compensation: f32,
@@ -47,7 +46,34 @@ pub const PreviewOptions = extern struct {
     percentile_sample_limit: u32,
     /// Automatic white balance strength, 0 (off) to 1.
     auto_white_balance: f32,
+    /// The film curve: contrast and toe width (0 takes the default).
+    film_gamma: f32,
+    film_toe: f32,
+    /// Dye crosstalk to undo, from 0.
+    dye_crosstalk: f32,
 };
+
+/// Render options from the browser's, with 0 standing for the default where
+/// 0 is not a valid value.
+fn renderOptions(options: PreviewOptions) render.RenderToDisplayOptions {
+    const defaults = render.RenderToDisplayOptions{};
+    return .{
+        .contrast = if (options.contrast > 0.0) options.contrast else defaults.contrast,
+        .percentile_lo = options.percentile_lo,
+        .percentile_hi = options.percentile_hi,
+        .exposure_compensation = options.exposure_compensation,
+        .color_temp = options.color_temp,
+        .color_tint = options.color_tint,
+        .auto_white_balance = options.auto_white_balance,
+        .film_gamma = if (options.film_gamma > 0.0) options.film_gamma else defaults.film_gamma,
+        .film_toe = if (options.film_toe > 0.0) options.film_toe else defaults.film_toe,
+        .dye_crosstalk = options.dye_crosstalk,
+        .percentile_sample_limit = if (options.percentile_sample_limit == 0)
+            render.default_percentile_sample_limit
+        else
+            options.percentile_sample_limit,
+    };
+}
 
 pub const IrMaskOptions = extern struct {
     width: u32,
@@ -341,20 +367,7 @@ pub fn previewInvertProvidedDminU16ToU8(
         lut,
         coeffs,
     );
-    try render.renderToDisplayU8F32(allocator, scene, output, .{
-        .contrast = if (options.contrast > 0.0) options.contrast else 1.4,
-        .curve_k = if (options.curve_k > 0.0) options.curve_k else 5.0,
-        .percentile_lo = options.percentile_lo,
-        .percentile_hi = options.percentile_hi,
-        .exposure_compensation = options.exposure_compensation,
-        .color_temp = options.color_temp,
-        .color_tint = options.color_tint,
-        .auto_white_balance = options.auto_white_balance,
-        .percentile_sample_limit = if (options.percentile_sample_limit == 0)
-            render.default_percentile_sample_limit
-        else
-            options.percentile_sample_limit,
-    });
+    try render.renderToDisplayU8F32(allocator, scene, output, renderOptions(options));
 }
 
 pub fn exportInvertProvidedDminU16ToU16(
@@ -382,20 +395,7 @@ pub fn exportInvertProvidedDminU16ToU16(
         lut,
         coeffs,
     );
-    try render.renderToDisplayU16F32(allocator, scene, output, .{
-        .contrast = if (options.contrast > 0.0) options.contrast else 1.4,
-        .curve_k = if (options.curve_k > 0.0) options.curve_k else 5.0,
-        .percentile_lo = options.percentile_lo,
-        .percentile_hi = options.percentile_hi,
-        .exposure_compensation = options.exposure_compensation,
-        .color_temp = options.color_temp,
-        .color_tint = options.color_tint,
-        .auto_white_balance = options.auto_white_balance,
-        .percentile_sample_limit = if (options.percentile_sample_limit == 0)
-            render.default_percentile_sample_limit
-        else
-            options.percentile_sample_limit,
-    });
+    try render.renderToDisplayU16F32(allocator, scene, output, renderOptions(options));
 }
 
 pub fn detectFramesRgb16(
@@ -838,15 +838,17 @@ fn defaultPreviewOptions(width: u32, height: u32) PreviewOptions {
         .dmin_g = 0.06,
         .dmin_b = 0.07,
         .default_light = 65535.0,
-        .contrast = 1.4,
-        .curve_k = 5.0,
+        .contrast = 1.8,
         .percentile_lo = 0.5,
         .percentile_hi = 99.5,
         .exposure_compensation = 0.0,
         .color_temp = 0.0,
         .color_tint = 0.0,
         .percentile_sample_limit = render.default_percentile_sample_limit,
-        .auto_white_balance = 0.0,
+        .auto_white_balance = 1.0,
+        .film_gamma = 0.55,
+        .film_toe = 0.25,
+        .dye_crosstalk = 0.2,
     };
 }
 
@@ -862,10 +864,10 @@ test "wasm preview core writes deterministic final u8 output" {
     var output_b: [raw.len]u8 = undefined;
     const options = defaultPreviewOptions(2, 2);
     const expected = [_]u8{
-        0,   8,   116,
-        12,  44,  193,
-        111, 141, 255,
-        229, 251, 255,
+        83,  83,  83,
+        108, 96,  103,
+        135, 128, 132,
+        164, 165, 165,
     };
 
     try previewInvertProvidedDminU16ToU8(allocator, &raw, &output_a, options);

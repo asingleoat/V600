@@ -1530,15 +1530,7 @@ test "real scan crop matches Python negative-to-positive pipeline" {
 
     const actual_u16 = try allocator.alloc(u16, value.expected.len);
     defer allocator.free(actual_u16);
-    try render.renderToDisplay(allocator, scene_linear, actual_u16, .{
-        .contrast = 1.4,
-        .curve_k = 5.0,
-        .percentile_lo = 0.5,
-        .percentile_hi = 99.5,
-        .exposure_compensation = 0.0,
-        .color_temp = 0.0,
-        .color_tint = 0.0,
-    });
+    try render.renderToDisplay(allocator, scene_linear, actual_u16, .{});
 
     const actual = try allocator.alloc(f64, value.expected.len);
     defer allocator.free(actual);

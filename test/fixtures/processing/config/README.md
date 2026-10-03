@@ -26,6 +26,10 @@ Fixtures:
   `[stocks.custom_c41]` profile, covering Python's manual custom-stock TOML
   workflow.
 
-The `auto_white_balance` lines in the `[render]` section are a Zig-only
-setting added after the Python freeze, written where the Zig serializer
-puts them.
+Since the Python freeze the Zig app has changed the `[render]` section and
+the built-in stock profiles, and these files were rewritten from the Zig
+serializer to match: `render_curve_k` is gone; `render_contrast` (now 1.8),
+the percentile, exposure, temperature, and tint comments describe the
+current display transform; `auto_white_balance`, `film_gamma`, `film_toe`,
+and `dye_crosstalk` are new; and the commented `kodak_gold` and
+`kodak_portra` rows hold the measured channel balances.

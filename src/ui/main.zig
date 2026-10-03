@@ -113,8 +113,8 @@ const ProcessUiState = struct {
     last_w: f64 = 0.0,
     last_h: f64 = 0.0,
     last_rotation: i32 = v600.native_ui.default_process_output_rotation,
-    render_contrast: f32 = 1.4,
-    render_curve_k: f32 = 5.0,
+    render_contrast: f32 = 1.8,
+    dye_crosstalk: f32 = 0.2,
     render_percentile_lo: f32 = 0.5,
     render_percentile_hi: f32 = 99.5,
     exposure_compensation: f32 = 0.0,
@@ -3672,11 +3672,11 @@ fn drawProcessSettingsControls(
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Render", c.NK_TEXT_LEFT);
-    drawFloatSetting(ctx, model, ui, "Contrast", "render_contrast", &ui.render_contrast, 1.0, 2.0, 0.05, "S-curve contrast strength. 1.0 = no contrast adjustment (linear), higher values darken shadows and brighten highlights for more punch");
-    drawFloatSetting(ctx, model, ui, "Curve k", "render_curve_k", &ui.render_curve_k, 2.0, 10.0, 0.5, "Multiplier for the S-curve steepness. Higher values make the contrast curve sharper at the midpoint. Interacts with Contrast");
-    drawFloatSetting(ctx, model, ui, "Black %", "render_percentile_lo", &ui.render_percentile_lo, 0.0, 5.0, 0.1, "Percentile of image data used as the black point. Higher values clip more shadow detail but can reduce haze in low-contrast scans");
-    drawFloatSetting(ctx, model, ui, "White %", "render_percentile_hi", &ui.render_percentile_hi, 95.0, 100.0, 0.1, "Percentile of image data used as the white point. Lower values clip more highlight detail but can prevent washed-out highlights");
-    drawFloatSetting(ctx, model, ui, "Exposure", "exposure_compensation", &ui.exposure_compensation, -0.5, 2.0, 0.05, "Shift the overall brightness in density space before rendering. Positive values produce a brighter image, negative values darken it");
+    drawFloatSetting(ctx, model, ui, "Contrast", "render_contrast", &ui.render_contrast, 1.0, 3.0, 0.05, "Contrast of the display curve through 18% grey. 1 is gentle; higher values deepen shadows and brighten highlights. The film's own contrast is kept, so a hazy scene stays soft");
+    drawFloatSetting(ctx, model, ui, "Crosstalk", "dye_crosstalk", &ui.dye_crosstalk, 0.0, 0.5, 0.02, "Dye crosstalk to undo: the scan sees each dye partly through the others, which mutes colour. Higher values restore more colour; 0 leaves the scan's colour as it is");
+    drawFloatSetting(ctx, model, ui, "Black %", "render_percentile_lo", &ui.render_percentile_lo, 0.0, 5.0, 0.1, "Percentile of each channel used as its black point for automatic white balance. Higher values ignore more dark outliers");
+    drawFloatSetting(ctx, model, ui, "White %", "render_percentile_hi", &ui.render_percentile_hi, 95.0, 100.0, 0.1, "Percentile of each channel used as its white point for automatic white balance. Lower values ignore more bright outliers such as specular highlights");
+    drawFloatSetting(ctx, model, ui, "Exposure", "exposure_compensation", &ui.exposure_compensation, -3.0, 3.0, 0.1, "Exposure in stops on top of automatic exposure, which puts the frame's average brightness at 18% grey. Positive values brighten");
 
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Color Balance", c.NK_TEXT_LEFT);
@@ -3910,7 +3910,7 @@ fn startProcessingImageAfterRefresh(
 fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const v600.native_ui.State) void {
     ui.preview_size = processSettingInt(model, "preview_size");
     ui.render_contrast = processSettingFloat(model, "render_contrast");
-    ui.render_curve_k = processSettingFloat(model, "render_curve_k");
+    ui.dye_crosstalk = processSettingFloat(model, "dye_crosstalk");
     ui.render_percentile_lo = processSettingFloat(model, "render_percentile_lo");
     ui.render_percentile_hi = processSettingFloat(model, "render_percentile_hi");
     ui.exposure_compensation = processSettingFloat(model, "exposure_compensation");

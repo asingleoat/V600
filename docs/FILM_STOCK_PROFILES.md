@@ -70,22 +70,34 @@ beside frames). Typical Dmin values for Kodak Gold 200:
 After Dmin subtraction, fully unexposed film reads as (0, 0, 0) and
 the remaining density represents actual scene information.
 
-### Stage 4: Polynomial Transform
+### Stage 4: Stock Transform
 
-This is where the film stock profile is applied. The net density is
-transformed through a second-order polynomial to correct for dye
-coupling and channel sensitivity differences:
+This is where the film stock profile is applied. The net density goes
+through a second-order polynomial in density space:
 
-    scene_linear = poly_features(net_density) @ coefficients
+    balanced = poly_features(net_density) @ coefficients
 
-This is the core of what a film stock profile encodes.
+The built-in profiles use only the diagonal: each channel's density scaled
+to green's contrast, measured on real scans (see Built-in Profiles).
 
 ### Stage 5: Display Rendering
 
-The scene-linear values are then rendered for display through
-percentile normalization, color temperature/tint adjustments, exposure
-compensation, and an S-curve for contrast. This stage is controlled by
-user-facing sliders, not the film stock profile.
+The balanced densities are rendered per frame (details and formulas in
+`docs/RENDER_TRANSFORM_CLOSED_FORM.md`):
+
+1. Automatic white balance: red and blue are mapped onto green's density
+   scale through each channel's own black and white points.
+2. The film's characteristic curve is inverted, a straight line of slope
+   `film_gamma` (0.55) with a toe of width `film_toe`, giving log exposure.
+3. Dye crosstalk is undone: colour differences in log exposure grow by
+   1 / (1 - `dye_crosstalk`).
+4. Automatic exposure puts the frame's log-average luminance at 18% grey;
+   exposure compensation (stops) and temperature/tint are gains on that
+   scene-linear light.
+5. A log-logistic display curve through 18% grey (`render_contrast`), then
+   sRGB encoding.
+
+These are render settings, not part of the stock profile.
 
 ## The Polynomial Transform
 
@@ -114,42 +126,36 @@ term; each column to an output channel (R, G, B):
 
 ```
           R_out    G_out    B_out
-    R   [  1.20,  -0.04,   0.00 ]    # row 0
-    G   [ -0.10,   0.95,  -0.06 ]    # row 1
-    B   [  0.00,  -0.04,   0.98 ]    # row 2
-    R^2 [  0.00,   0.00,   0.00 ]    # row 3
-    G^2 [  0.00,   0.00,   0.00 ]    # row 4
-    B^2 [  0.00,   0.00,   0.00 ]    # row 5
-    RG  [  0.00,   0.00,   0.00 ]    # row 6
-    RB  [  0.00,   0.00,   0.00 ]    # row 7
-    GB  [  0.00,   0.00,   0.00 ]    # row 8
-    1   [  0.00,   0.00,   0.00 ]    # row 9
+    R   [  1.3021,  0.00,   0.00 ]    # row 0
+    G   [  0.00,    1.00,   0.00 ]    # row 1
+    B   [  0.00,    0.00,   0.8203 ]  # row 2
+    R^2 [  0.00,    0.00,   0.00 ]    # row 3
+    ...                               # rows 4-9 zero
 ```
 
-(Example: Kodak Gold 200 on Epson V600)
+(Example: the built-in Kodak Gold 200 profile on an Epson V600)
 
 The output for each pixel is:
 
-    R_out = 1.20*R - 0.10*G + 0.00*B + 0.00*R^2 + ... + 0.00
-    G_out = -0.04*R + 0.95*G - 0.04*B + ...
-    B_out = 0.00*R - 0.06*G + 0.98*B + ...
+    R_out = 1.3021*R
+    G_out = G
+    B_out = 0.8203*B
 
 ### What Each Coefficient Group Does
 
 **Diagonal linear terms** (rows 0-2, on-diagonal: R->R, G->G, B->B):
-These scale each channel's density to equalize sensitivity differences.
-After Dmin subtraction, different channels have different density ranges
-because the scanner's spectral filters don't match the film dye
-absorption peaks equally. For example, Kodak Gold's R channel has a
-narrower density range than G after Dmin subtraction, so R->R is 1.20
-(boosted) while G->G is 0.95 (reduced).
+These scale each channel's density to equalize contrast differences.
+After Dmin subtraction, the channels have different density ranges for
+the same scene, because the scanner's filters don't match the film's dye
+absorption peaks equally. On the owner's Kodak Gold scans red's range is
+about 0.77 of green's and blue's about 1.22, so R->R is 1.30 and B->B 0.82.
+With automatic white balance on, each frame's own alignment supersedes
+this; it is the balance left with it off.
 
 **Off-diagonal linear terms** (rows 0-2, off-diagonal: G->R, R->G, etc.):
-These correct for dye coupling. A negative G->R coefficient (-0.10)
-means "subtract some of the green-channel density from the red output."
-This compensates for the scanner's red filter picking up some magenta
-dye absorption that belongs to the green channel. These are kept small
-to avoid introducing shadow color artifacts.
+These would correct for dye coupling channel by channel. The built-in
+profiles leave them at zero: rendering undoes dye crosstalk uniformly
+(`dye_crosstalk`), and per-pair values would need a calibration target.
 
 **Quadratic terms** (rows 3-5: R^2, G^2, B^2):
 These correct for nonlinear dye response. Film dyes have a characteristic
@@ -179,9 +185,9 @@ left at their defaults are written:
 # [stocks.kodak_gold]
 # description = "Kodak Gold 200 on Epson V600"
 # coeffs = [
-#     [  1.2000,  -0.0400,   0.0000],  # R
-#     [ -0.1000,   0.9500,  -0.0600],  # G
-#     [  0.0000,  -0.0400,   0.9800],  # B
+#     [  1.3021,   0.0000,   0.0000],  # R
+#     [  0.0000,   1.0000,   0.0000],  # G
+#     [  0.0000,   0.0000,   0.8203],  # B
 #     [  0.0000,   0.0000,   0.0000],  # R2
 #     [  0.0000,   0.0000,   0.0000],  # G2
 #     [  0.0000,   0.0000,   0.0000],  # B2
@@ -209,25 +215,19 @@ profile editor. The browser webapp supports only the built-in stocks.
 
 ### Kodak Gold 200
 
-wild guess for Gold 200 scanned on an Epson V600 at 3200-6400 DPI,
-balanced for neutrals on real Gold 200 rolls. The Python profile had
-G->G 0.90 and B->B 1.02, which left near-neutral areas about 8/255 short
-of green, a blue-purple cast across shadows and midtones; raising G->G to
-0.95 and lowering B->B to 0.98 removes most of it. A flat green bias
-instead turned shadows green before it fixed the midtones.
-
-Gold has a strong orange mask (high Dmin, especially in B). The
-cross-channel coupling is significant (0.91-0.97 correlation between
-channels), requiring the off-diagonal corrections. The R channel needs
-a 1.20x boost because its usable density range is compressed by the
-mask.
+Channel balance only: R->R 1.3021, G->G 1, B->B 0.8203. Measured on the
+owner's V600 scans as each frame's red and blue density range (0.5th to
+99.5th percentile, after Dmin) over green's, the median per roll, then the
+median over the five normally exposed Gold rolls (84 frames): red 0.768,
+blue 1.219. The ratios vary between rolls (red 0.70 to 0.84, blue 1.14 to
+1.43), which is why rendering also aligns the channels per frame. Earlier
+guessed matrices (the Python profile and its retune) are retired: a live
+copy of one in a config loads as the built-in.
 
 ### Kodak Portra 400
 
-wild guess for Portra 400 on the same scanner. Portra has a less aggressive
-orange mask, better channel separation, and wider exposure latitude.
-The corrections are gentler: diagonal terms are closer to 1.0 and the
-off-diagonal terms are smaller.
+Channel balance only: R->R 1.3532, G->G 1, B->B 0.8681, measured the same
+way from the owner's single Portra strip (two frames), so rough.
 
 ## Creating a Custom Profile
 

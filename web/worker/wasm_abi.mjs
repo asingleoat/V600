@@ -5,7 +5,7 @@
 // stay in lockstep with the extern structs in src/wasm/core.zig; keeping them
 // in one module is what prevents worker/smoke drift.
 
-export const previewOptionsSize = 64;
+export const previewOptionsSize = 72;
 export const frameDetectOptionsSize = 32;
 export const frameDetectRectSize = 40;
 export const frameDetectResultSize = 56;
@@ -120,14 +120,16 @@ export function createWasmAbi(exports) {
     f32(options.dmin_b);
     f32(options.default_light);
     f32(options.contrast);
-    f32(options.curve_k);
     f32(options.percentile_lo);
     f32(options.percentile_hi);
     f32(options.exposure_compensation);
     f32(options.color_temp);
     f32(options.color_tint);
     u32(options.percentile_sample_limit);
-    f32(options.auto_white_balance ?? 0);
+    f32(options.auto_white_balance ?? 1);
+    f32(options.film_gamma ?? 0.55);
+    f32(options.film_toe ?? 0.25);
+    f32(options.dye_crosstalk ?? 0.2);
     if (written() !== previewOptionsSize) throw new Error(`preview option layout wrote ${written()} bytes`);
   }
 

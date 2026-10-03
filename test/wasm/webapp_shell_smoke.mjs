@@ -49,11 +49,6 @@ import { demoRawRgb16Buffer, expectedDemoPreview, rawFixture } from "./demo_fixt
 import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "../../web/tiff.mjs";
 import { assertCloseToFixture, assertDetectedFramesShape, buildAlignmentRgbFixture, frameDetectCount, frameDetectHeight, frameDetectWidth, normalizedToU16, syntheticFrameDetectRawBuffer } from "./helpers.mjs";
 
-// The pinned previews and fixtures here predate automatic white balance.
-function pinnedRender(overrides = {}) {
-  return defaultRenderConfig({ auto_white_balance: 0, ...overrides });
-}
-
 const wasmPath = process.argv[2];
 if (!wasmPath) throw new Error("usage: node test/wasm/webapp_shell_smoke.mjs <v600-wasm-core.wasm>");
 
@@ -77,7 +72,7 @@ try {
     image: { width: 2, height: 2, dpi: null },
     stock: "kodak_gold",
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     preview: { max_px: 4, percentile_sample_limit: 16384 },
   });
@@ -87,7 +82,7 @@ try {
     file,
     image: { width: 2, height: 2, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
   });
 
   assert.match(result.cacheKey, /^sha256:[0-9a-f]{64}$/);
@@ -108,7 +103,7 @@ try {
       file,
       image: { width: 2, height: 2, dpi: null },
       stockId: stockIds.kodakGold,
-      render: pinnedRender(),
+      render: defaultRenderConfig(),
     });
     await raceLoad;
     assert.deepEqual(Array.from(raceResult.rgb8), Array.from(expectedDemoPreview));
@@ -142,7 +137,7 @@ try {
     file,
     image: { width: 2, height: 2, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     frameSelection: manualFrame,
   });
   assert.equal(cropResult.width, 1);
@@ -314,7 +309,7 @@ try {
     image: { width: 4, height: 4, dpi: null },
     stock: "kodak_gold",
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     preview: {
       max_px: 4,
@@ -329,7 +324,7 @@ try {
     file: boundedFile,
     image: { width: 4, height: 4, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     previewMaxPx: 4,
   });
   assert.equal(boundedResult.cacheKey, await previewCacheKey(boundedCacheInput));
@@ -369,7 +364,7 @@ try {
     file,
     image: { width: 2, height: 2, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     variant: exportVariants.invOnly,
   });
   assert.equal(exportResult.width, 2);
@@ -393,7 +388,7 @@ try {
     frame: exportResult.frame,
     variant: exportVariants.invOnly,
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     cacheKey: exportResult.cacheKey,
     output: {
@@ -418,7 +413,7 @@ try {
     file,
     image: { width: 2, height: 2, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     variant: exportVariants.irInv,
   });
   assert.notEqual(irInvResult.cacheKey, exportResult.cacheKey);
@@ -430,7 +425,7 @@ try {
     file,
     image: { width: 2, height: 2, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     frameSelections: [
       normalizeFrameSelection(null, { width: 2, height: 2 }),
@@ -460,7 +455,7 @@ try {
     file,
     image: { width: 2, height: 2, dpi: null },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     variant: exportVariants.irNeg,
   });
   assert.deepEqual(Array.from(irNegResult.rgb16), Array.from(rawFixture));
@@ -471,7 +466,7 @@ try {
     frame: irNegResult.frame,
     variant: exportVariants.irNeg,
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     cacheKey: irNegResult.cacheKey,
     output: {
@@ -716,7 +711,7 @@ try {
     file: cleanExpectedFile,
     image: { width: cleanWidth, height: cleanHeight, dpi: null, page_layout: "rgb" },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     variant: exportVariants.irInv,
   });
@@ -738,7 +733,7 @@ try {
       },
     },
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     dustRemoval: {
       ...defaultDustRemovalConfig(),
@@ -920,7 +915,7 @@ try {
     image: tiffImage,
     stock: "kodak_gold",
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     preview: { max_px: rgbPage.width * rgbPage.height, percentile_sample_limit: 16384 },
   });
@@ -931,7 +926,7 @@ try {
     image: { width: rgbPage.width, height: rgbPage.height, dpi: rgbPage.dpi },
     stock: "kodak_gold",
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
     dmin: [0.05, 0.06, 0.07],
     preview: { max_px: rgbPage.width * rgbPage.height, percentile_sample_limit: 16384 },
   });
@@ -942,7 +937,7 @@ try {
     file: tiffFile,
     image: tiffImage,
     stockId: stockIds.kodakGold,
-    render: pinnedRender(),
+    render: defaultRenderConfig(),
   });
   assert.equal(tiffResult.cacheKey, tiffExpectedKey);
   assert.equal(tiffResult.rgb8.length, rgbPage.data.length);

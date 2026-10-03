@@ -2,16 +2,16 @@
   "name": "render-to-display-adjusted",
   "operation": "render_to_display",
   "python_oracle": "scratchndent.processing.negative.render",
-  "generated_by": "nix-shell --run python3 (2026-05-15)",
+  "generated_by": "nix-shell --run python3 (2026-05-15); expected values regenerated from the Zig display transform (2026-10-02): per-frame channel alignment, characteristic-curve inversion with a toe, dye crosstalk, automatic exposure, log-logistic display curve, sRGB",
   "shape": [
     2,
     3,
     3
   ],
   "tolerance": {
-    "abs": 0.0,
+    "abs": 1.0,
     "rel": 0.0,
-    "reason": "Python oracle numeric parity"
+    "reason": "u16 rounding of libm pow/log/expm1 results across platforms"
   },
   "input": [
     0.01,
@@ -34,23 +34,23 @@
     1.5
   ],
   "expected": [
-    0.0,
-    0.0,
-    0.0,
-    6071.0,
-    3946.0,
-    6375.0,
-    15252.0,
-    20617.0,
-    13173.0,
-    32954.0,
-    27247.0,
-    19385.0,
-    52256.0,
-    57995.0,
-    31710.0,
-    65535.0,
-    65535.0,
-    51422.0
+    4759.0,
+    5403.0,
+    1805.0,
+    10316.0,
+    8734.0,
+    10394.0,
+    15805.0,
+    24474.0,
+    16579.0,
+    31992.0,
+    31111.0,
+    23475.0,
+    50837.0,
+    63223.0,
+    40811.0,
+    64948.0,
+    64225.0,
+    64846.0
   ]
 }

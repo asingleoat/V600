@@ -22,31 +22,35 @@ stock = "custom_c41"
 # inpaint_padding = 16
 
 [render]
-# S-curve contrast strength: 1.0=linear, 2.0=punchy
-# render_contrast = 1.4
-# S-curve steepness multiplier
-# render_curve_k = 5.0
-# Low percentile for display range normalization
+# Display curve contrast through 18% grey: 1=gentle, higher=punchier
+# render_contrast = 1.8
+# Low percentile for each channel's black point (white balance)
 # render_percentile_lo = 0.5
-# High percentile for display range normalization
+# High percentile for each channel's white point (white balance)
 # render_percentile_hi = 99.5
-# Density-domain exposure shift: positive=brighter
+# Exposure in stops on top of automatic exposure: positive=brighter
 # exposure_compensation = 0.0
-# Color temperature: positive=warmer, negative=cooler
+# Color temperature, about half a stop per unit: positive=warmer, negative=cooler
 # color_temp = 0.0
-# Color tint: positive=magenta, negative=green
+# Color tint, about half a stop per unit: positive=magenta, negative=green
 # color_tint = 0.0
 # Per-frame white balance from each channel's black and white points: 0=off, 1=full
 # auto_white_balance = 1.0
+# Film contrast: net density per decade of exposure on the straight part of its curve
+# film_gamma = 0.55
+# Width of the film's toe in decades of exposure
+# film_toe = 0.25
+# Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)
+# dye_crosstalk = 0.2
 
 # Film stock profiles
 
 # [stocks.kodak_gold]
 # description = "Kodak Gold 200 on Epson V600"
 # coeffs = [
-#     [  1.2000,  -0.0400,   0.0000],  # R
-#     [ -0.1000,   0.9500,  -0.0600],  # G
-#     [  0.0000,  -0.0400,   0.9800],  # B
+#     [  1.3021,   0.0000,   0.0000],  # R
+#     [  0.0000,   1.0000,   0.0000],  # G
+#     [  0.0000,   0.0000,   0.8203],  # B
 #     [  0.0000,   0.0000,   0.0000],  # R2
 #     [  0.0000,   0.0000,   0.0000],  # G2
 #     [  0.0000,   0.0000,   0.0000],  # B2
@@ -59,9 +63,9 @@ stock = "custom_c41"
 # [stocks.kodak_portra]
 # description = "Kodak Portra 400 on Epson V600"
 # coeffs = [
-#     [  1.1500,  -0.0300,   0.0000],  # R
-#     [ -0.0800,   0.9300,  -0.0400],  # G
-#     [  0.0000,   0.0000,   1.0000],  # B
+#     [  1.3532,   0.0000,   0.0000],  # R
+#     [  0.0000,   1.0000,   0.0000],  # G
+#     [  0.0000,   0.0000,   0.8681],  # B
 #     [  0.0000,   0.0000,   0.0000],  # R2
 #     [  0.0000,   0.0000,   0.0000],  # G2
 #     [  0.0000,   0.0000,   0.0000],  # B2

@@ -77,7 +77,7 @@ const elements = {
   irMinArea: document.querySelector("#ir-min-area"),
   irMaxCoverage: document.querySelector("#ir-max-coverage"),
   irPadding: document.querySelector("#ir-padding"),
-  curveK: document.querySelector("#curve-k"),
+  dyeCrosstalk: document.querySelector("#dye-crosstalk"),
   percentileLo: document.querySelector("#percentile-lo"),
   percentileHi: document.querySelector("#percentile-hi"),
   exposure: document.querySelector("#exposure"),
@@ -557,7 +557,7 @@ function isTiffName(name) {
 function currentRenderConfig() {
   return defaultRenderConfig({
     contrast: Number.parseFloat(elements.contrast.value),
-    curve_k: Number.parseFloat(elements.curveK.value),
+    dye_crosstalk: Number.parseFloat(elements.dyeCrosstalk.value),
     percentile_lo: Number.parseFloat(elements.percentileLo.value),
     percentile_hi: Number.parseFloat(elements.percentileHi.value),
     exposure_compensation: Number.parseFloat(elements.exposure.value),

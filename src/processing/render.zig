@@ -6,9 +6,6 @@ const parallelism = @import("parallelism.zig");
 
 pub const exact_percentile_sample_limit: usize = 0;
 pub const default_percentile_sample_limit: usize = 16_384;
-pub const preview_display_lut_entries: usize = 256;
-pub const export_display_lut_entries: usize = 1024;
-const render_u8_f32_parallel_min_pixels: usize = 1_000_000;
 
 pub const SigmoidTonemapOptions = struct {
     mid_grey: f64 = 0.18,
@@ -18,19 +15,31 @@ pub const SigmoidTonemapOptions = struct {
 };
 
 pub const RenderToDisplayOptions = struct {
-    contrast: f64 = 1.4,
-    black_point: f64 = 0.0,
-    curve_k: f64 = 5.0,
+    /// Contrast of the display curve, a log-logistic through 18% grey: its
+    /// exponent, so 1 is gentle and higher is punchier.
+    contrast: f64 = 1.8,
     percentile_lo: f64 = 0.5,
     percentile_hi: f64 = 99.5,
+    /// Exposure in stops on top of the automatic exposure.
     exposure_compensation: f64 = 0.0,
+    /// Warmer (positive) or cooler: about half a stop per unit, red against
+    /// blue.
     color_temp: f64 = 0.0,
+    /// Magenta (positive) or green: about half a stop per unit on green.
     color_tint: f64 = 0.0,
-    /// Automatic white balance, 0 (off) to 1: how far each channel's black
-    /// and white points move from the shared luminance range to that
-    /// channel's own percentiles, so neutral shadows and highlights render
+    /// Automatic white balance, 0 (off) to 1: how far red and blue move from
+    /// the stock's average balance onto green's density scale through their
+    /// own black and white points, so neutral shadows and highlights render
     /// neutral whatever the light or the lab left in the negative.
-    auto_white_balance: f64 = 0.0,
+    auto_white_balance: f64 = 1.0,
+    /// The film's contrast: net density per decade of exposure on the
+    /// straight part of its characteristic curve.
+    film_gamma: f64 = 0.55,
+    /// Width of the film's toe, in decades of exposure.
+    film_toe: f64 = 0.25,
+    /// Dye crosstalk the scan sees, from 0: colour differences in log
+    /// exposure grow by 1 / (1 - dye_crosstalk).
+    dye_crosstalk: f64 = 0.2,
     percentile_sample_limit: usize = default_percentile_sample_limit,
 };
 
@@ -62,19 +71,7 @@ pub fn renderToDisplay(
     output: []u16,
     options: RenderToDisplayOptions,
 ) !void {
-    try validateRgbInput(input);
-    if (input.len != output.len) return error.InvalidRenderBuffer;
-    try validatePercentile(options.percentile_lo);
-    try validatePercentile(options.percentile_hi);
-
-    const state = try displayRenderState(allocator, input, options);
-    if (shouldUseExactDisplayCurve(input, options)) {
-        for (input, output, 0..) |value, *out, index| {
-            out.* = displayToU16(displayUnitValue(value, index, state));
-        }
-        return;
-    }
-    renderToDisplayU16Lut(input, output, state);
+    try renderPixels(f64, u16, allocator, input, output, options);
 }
 
 pub fn renderToDisplayU8(
@@ -83,19 +80,7 @@ pub fn renderToDisplayU8(
     output: []u8,
     options: RenderToDisplayOptions,
 ) !void {
-    try validateRgbInput(input);
-    if (input.len != output.len) return error.InvalidRenderBuffer;
-    try validatePercentile(options.percentile_lo);
-    try validatePercentile(options.percentile_hi);
-
-    const state = try displayRenderState(allocator, input, options);
-    if (shouldUseExactDisplayCurve(input, options)) {
-        for (input, output, 0..) |value, *out, index| {
-            out.* = @intCast(displayToU16(displayUnitValue(value, index, state)) >> 8);
-        }
-        return;
-    }
-    renderToDisplayU8Lut(input, output, state);
+    try renderPixels(f64, u8, allocator, input, output, options);
 }
 
 pub fn renderToDisplayU8F32(
@@ -104,19 +89,7 @@ pub fn renderToDisplayU8F32(
     output: []u8,
     options: RenderToDisplayOptions,
 ) !void {
-    try validateRgbInputF32(input);
-    if (input.len != output.len) return error.InvalidRenderBuffer;
-    try validatePercentile(options.percentile_lo);
-    try validatePercentile(options.percentile_hi);
-
-    const state = try displayRenderStateF32(allocator, input, options);
-    if (shouldUseExactDisplayCurveF32(input, options)) {
-        for (input, output, 0..) |value, *out, index| {
-            out.* = @intCast(displayToU16(displayUnitValue(@floatCast(value), index, state)) >> 8);
-        }
-        return;
-    }
-    try renderToDisplayU8LutF32(allocator, input, output, state);
+    try renderPixels(f32, u8, allocator, input, output, options);
 }
 
 pub fn renderToDisplayU16F32(
@@ -125,237 +98,281 @@ pub fn renderToDisplayU16F32(
     output: []u16,
     options: RenderToDisplayOptions,
 ) !void {
-    try validateRgbInputF32(input);
-    if (input.len != output.len) return error.InvalidRenderBuffer;
-    try validatePercentile(options.percentile_lo);
-    try validatePercentile(options.percentile_hi);
-
-    const state = try displayRenderStateF32(allocator, input, options);
-    if (shouldUseExactDisplayCurveF32(input, options)) {
-        for (input, output, 0..) |value, *out, index| {
-            out.* = displayToU16(displayUnitValue(@floatCast(value), index, state));
-        }
-        return;
-    }
-    renderToDisplayU16LutF32(input, output, state);
+    try renderPixels(f32, u16, allocator, input, output, options);
 }
 
-const DisplayRenderState = struct {
-    /// Each channel's black point and white-minus-black span.
-    lo: [3]f64,
-    denominator: [3]f64,
-    multipliers: [3]f64,
-    apply_color_balance: bool,
-    apply_exposure: bool,
-    exposure_gamma: f64,
-    apply_contrast: bool,
-    contrast_k: f64,
-    curve: ContrastCurveConstants,
+// The display transform, for the net density the inversion leaves (after
+// Dmin and the stock's channel balance), per pixel:
+//   1. red and blue onto green's density scale (automatic white balance);
+//   2. the film's characteristic curve inverted, a straight line of slope
+//      film_gamma with a softplus toe: log10 exposure;
+//   3. dye crosstalk undone: colour differences around the pixel's mean log
+//      exposure grow by 1 / (1 - dye_crosstalk);
+//   4. exposure (automatic, to an 18% log-average, plus compensation) and
+//      temperature/tint as log offsets, so gains on scene-linear light;
+//   5. a log-logistic display curve through 18% grey, then sRGB encoding,
+//      from a table over log exposure.
+
+const display_table_entries: usize = 8192;
+// The curve inversion is near-logarithmic at low density, so the table
+// starts above it; densities outside the table are computed exactly.
+const curve_table_entries: usize = 16384;
+const curve_table_lo: f64 = 1.0 / 64.0;
+const curve_table_hi: f64 = 4.0;
+const display_table_lo: f64 = -8.0;
+const display_table_hi: f64 = 4.0;
+const mid_grey: f64 = 0.18;
+const temp_tint_decades: f64 = 0.15;
+const render_parallel_min_pixels: usize = 1_000_000;
+
+const DisplayTransform = struct {
+    scale: [3]f64,
+    offset: [3]f64,
+    inv_gamma_toe: f64,
+    toe: f64,
+    chroma_gain: f64,
+    log_offset: [3]f64,
+    table: [display_table_entries]f32,
+    curve_table: [curve_table_entries]f32,
 };
 
-fn displayRenderState(
+fn renderPixels(
+    comptime In: type,
+    comptime Out: type,
     allocator: std.mem.Allocator,
-    input: []const f64,
+    input: []const In,
+    output: []Out,
     options: RenderToDisplayOptions,
-) !DisplayRenderState {
-    const range = try estimateDisplayLuminanceRange(allocator, input, options);
-    try validateWhiteBalance(options.auto_white_balance);
-    const channel_ranges = try channelDisplayRanges(f64, allocator, input, range, options);
-
-    var multipliers = [_]f64{ 1.0, 1.0, 1.0 };
-    const apply_color_balance = @abs(options.color_temp) > 0.001 or @abs(options.color_tint) > 0.001;
-    if (apply_color_balance) {
-        multipliers = colorBalanceMultipliers(options.color_temp, options.color_tint);
-    }
-    const apply_exposure = @abs(options.exposure_compensation) > 0.001;
-    const exposure_gamma = if (apply_exposure) 1.0 / (1.0 + options.exposure_compensation) else 1.0;
-
-    const apply_contrast = options.contrast > 1.001 and (options.contrast - 1.0) * options.curve_k > 0.1;
-    const contrast_k = (options.contrast - 1.0) * options.curve_k;
-    const curve: ContrastCurveConstants = if (apply_contrast) contrastCurveConstants(contrast_k) else .{ .lo = 0.0, .hi = 1.0 };
-
-    _ = options.black_point;
-    return .{
-        .lo = .{ channel_ranges[0].lo, channel_ranges[1].lo, channel_ranges[2].lo },
-        .denominator = .{
-            channel_ranges[0].hi - channel_ranges[0].lo,
-            channel_ranges[1].hi - channel_ranges[1].lo,
-            channel_ranges[2].hi - channel_ranges[2].lo,
-        },
-        .multipliers = multipliers,
-        .apply_color_balance = apply_color_balance,
-        .apply_exposure = apply_exposure,
-        .exposure_gamma = exposure_gamma,
-        .apply_contrast = apply_contrast,
-        .contrast_k = contrast_k,
-        .curve = curve,
-    };
-}
-
-fn displayRenderStateF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    options: RenderToDisplayOptions,
-) !DisplayRenderState {
-    const range = try estimateDisplayLuminanceRangeF32(allocator, input, options);
-    try validateWhiteBalance(options.auto_white_balance);
-    const channel_ranges = try channelDisplayRanges(f32, allocator, input, range, options);
-
-    var multipliers = [_]f64{ 1.0, 1.0, 1.0 };
-    const apply_color_balance = @abs(options.color_temp) > 0.001 or @abs(options.color_tint) > 0.001;
-    if (apply_color_balance) {
-        multipliers = colorBalanceMultipliers(options.color_temp, options.color_tint);
-    }
-    const apply_exposure = @abs(options.exposure_compensation) > 0.001;
-    const exposure_gamma = if (apply_exposure) 1.0 / (1.0 + options.exposure_compensation) else 1.0;
-
-    const apply_contrast = options.contrast > 1.001 and (options.contrast - 1.0) * options.curve_k > 0.1;
-    const contrast_k = (options.contrast - 1.0) * options.curve_k;
-    const curve: ContrastCurveConstants = if (apply_contrast) contrastCurveConstants(contrast_k) else .{ .lo = 0.0, .hi = 1.0 };
-
-    _ = options.black_point;
-    return .{
-        .lo = .{ channel_ranges[0].lo, channel_ranges[1].lo, channel_ranges[2].lo },
-        .denominator = .{
-            channel_ranges[0].hi - channel_ranges[0].lo,
-            channel_ranges[1].hi - channel_ranges[1].lo,
-            channel_ranges[2].hi - channel_ranges[2].lo,
-        },
-        .multipliers = multipliers,
-        .apply_color_balance = apply_color_balance,
-        .apply_exposure = apply_exposure,
-        .exposure_gamma = exposure_gamma,
-        .apply_contrast = apply_contrast,
-        .contrast_k = contrast_k,
-        .curve = curve,
-    };
-}
-
-fn displayUnitValue(value: f64, index: usize, state: DisplayRenderState) f64 {
-    const display = normalizedDisplayValue(value, index % 3, state);
-    return displayCurveValue(display, index % 3, state);
-}
-
-fn normalizedDisplayValue(value: f64, channel: usize, state: DisplayRenderState) f64 {
-    return clamp((value - state.lo[channel]) / state.denominator[channel], 0.0, 1.0);
-}
-
-fn displayCurveValue(input: f64, channel: usize, state: DisplayRenderState) f64 {
-    var display = input;
-    if (state.apply_color_balance) {
-        display = @max(display * state.multipliers[channel], 0.0);
-    }
-    if (state.apply_exposure) {
-        display = std.math.pow(f64, display, state.exposure_gamma);
-    }
-    if (state.apply_contrast) {
-        const raw = logistic(state.contrast_k, display);
-        display = (raw - state.curve.lo) / (state.curve.hi - state.curve.lo);
-    }
-    return clamp(display, 0.0, 1.0);
-}
-
-fn shouldUseExactDisplayCurve(input: []const f64, options: RenderToDisplayOptions) bool {
-    const pixel_count = input.len / 3;
-    return percentileSampleCount(pixel_count, options.percentile_sample_limit) == pixel_count;
-}
-
-fn shouldUseExactDisplayCurveF32(input: []const f32, options: RenderToDisplayOptions) bool {
-    const pixel_count = input.len / 3;
-    return percentileSampleCount(pixel_count, options.percentile_sample_limit) == pixel_count;
-}
-
-fn renderToDisplayU8Lut(input: []const f64, output: []u8, state: DisplayRenderState) void {
-    var table: [3][preview_display_lut_entries]u8 = undefined;
-    fillDisplayLutU8(&table, state);
-    const scale = @as(f64, @floatFromInt(preview_display_lut_entries - 1));
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        output[index] = previewDisplayTableLookupF64(input[index], 0, &table[0], state, scale);
-        output[index + 1] = previewDisplayTableLookupF64(input[index + 1], 1, &table[1], state, scale);
-        output[index + 2] = previewDisplayTableLookupF64(input[index + 2], 2, &table[2], state, scale);
-    }
-}
-
-fn renderToDisplayU8LutF32(allocator: std.mem.Allocator, input: []const f32, output: []u8, state: DisplayRenderState) !void {
-    var table: [3][preview_display_lut_entries]u8 = undefined;
-    fillDisplayLutU8(&table, state);
-    const lookup = PreviewDisplayF32LookupState{
-        .lo = f32Triple(state.lo),
-        .inv_denominator = inverseF32Triple(state.denominator),
-        .scale = @floatFromInt(preview_display_lut_entries - 1),
-    };
-    const pixel_count = input.len / 3;
-    if (comptime !parallelism.enabled) {
-        renderToDisplayU8LutF32Range(input, output, &table, lookup, 0, pixel_count);
-        return;
-    }
-    const worker_count = workerCountForPixels(pixel_count, render_u8_f32_parallel_min_pixels);
-    if (worker_count > 1) {
-        try renderToDisplayU8LutF32Parallel(allocator, input, output, &table, lookup, worker_count);
-    } else {
-        renderToDisplayU8LutF32Range(input, output, &table, lookup, 0, pixel_count);
-    }
-}
-
-const RenderU8F32RangeContext = struct {
-    input: []const f32,
-    output: []u8,
-    table: *const [3][preview_display_lut_entries]u8,
-    lookup: PreviewDisplayF32LookupState,
-    pixel_start: usize,
-    pixel_end: usize,
-};
-
-fn renderToDisplayU8LutF32Parallel(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    output: []u8,
-    table: *const [3][preview_display_lut_entries]u8,
-    lookup: PreviewDisplayF32LookupState,
-    worker_count: usize,
 ) !void {
+    if (input.len == 0 or input.len % 3 != 0 or input.len != output.len) return error.InvalidRenderBuffer;
+    try validateRenderOptions(options);
+    const transform = try allocator.create(DisplayTransform);
+    defer allocator.destroy(transform);
+    try buildDisplayTransform(In, allocator, input, options, transform);
+
+    const pixel_count = input.len / 3;
+    const worker_count = if (comptime parallelism.enabled) workerCountForPixels(pixel_count, render_parallel_min_pixels) else 1;
+    if (worker_count <= 1) {
+        renderRange(In, Out, input, output, transform, 0, pixel_count);
+        return;
+    }
+    const Context = RenderContext(In, Out);
     const threads = try allocator.alloc(std.Thread, worker_count);
     defer allocator.free(threads);
-    const contexts = try allocator.alloc(RenderU8F32RangeContext, worker_count);
+    const contexts = try allocator.alloc(Context, worker_count);
     defer allocator.free(contexts);
-    const pixel_count = input.len / 3;
     var started: usize = 0;
     errdefer for (threads[0..started]) |thread| thread.join();
     for (0..worker_count) |worker_index| {
         contexts[worker_index] = .{
             .input = input,
             .output = output,
-            .table = table,
-            .lookup = lookup,
+            .transform = transform,
             .pixel_start = pixel_count * worker_index / worker_count,
             .pixel_end = pixel_count * (worker_index + 1) / worker_count,
         };
-        threads[worker_index] = try std.Thread.spawn(.{}, renderToDisplayU8LutF32Worker, .{&contexts[worker_index]});
+        threads[worker_index] = try std.Thread.spawn(.{}, Context.run, .{&contexts[worker_index]});
         started += 1;
     }
     for (threads) |thread| thread.join();
 }
 
-fn renderToDisplayU8LutF32Worker(context: *const RenderU8F32RangeContext) void {
-    renderToDisplayU8LutF32Range(context.input, context.output, context.table, context.lookup, context.pixel_start, context.pixel_end);
+fn RenderContext(comptime In: type, comptime Out: type) type {
+    return struct {
+        input: []const In,
+        output: []Out,
+        transform: *const DisplayTransform,
+        pixel_start: usize,
+        pixel_end: usize,
+
+        fn run(context: *const @This()) void {
+            renderRange(In, Out, context.input, context.output, context.transform, context.pixel_start, context.pixel_end);
+        }
+    };
 }
 
-fn renderToDisplayU8LutF32Range(
-    input: []const f32,
-    output: []u8,
-    table: *const [3][preview_display_lut_entries]u8,
-    lookup: PreviewDisplayF32LookupState,
+fn renderRange(
+    comptime In: type,
+    comptime Out: type,
+    input: []const In,
+    output: []Out,
+    transform: *const DisplayTransform,
     pixel_start: usize,
     pixel_end: usize,
 ) void {
-    var pixel_index = pixel_start;
-    while (pixel_index < pixel_end) : (pixel_index += 1) {
-        const index = pixel_index * 3;
-        output[index] = previewDisplayTableLookupF32(input[index], 0, &table[0], lookup);
-        output[index + 1] = previewDisplayTableLookupF32(input[index + 1], 1, &table[1], lookup);
-        output[index + 2] = previewDisplayTableLookupF32(input[index + 2], 2, &table[2], lookup);
+    for (pixel_start..pixel_end) |pixel| {
+        const index = pixel * 3;
+        const x = displayLogExposure(transform, .{ input[index], input[index + 1], input[index + 2] });
+        inline for (0..3) |channel| {
+            const display = displayLookup(transform, x[channel] + transform.log_offset[channel]);
+            output[index + channel] = switch (Out) {
+                u16 => displayToU16(display),
+                u8 => @intCast(displayToU16(display) >> 8),
+                else => @compileError("render output must be u8 or u16"),
+            };
+        }
     }
+}
+
+/// Log10 exposure of one pixel after channel alignment, curve inversion,
+/// and crosstalk, before exposure and temperature/tint.
+inline fn displayLogExposure(transform: *const DisplayTransform, rgb: anytype) [3]f64 {
+    var x: [3]f64 = undefined;
+    inline for (0..3) |channel| {
+        const density = @as(f64, rgb[channel]) * transform.scale[channel] + transform.offset[channel];
+        x[channel] = curveLookup(transform, density);
+    }
+    const mean = (x[0] + x[1] + x[2]) / 3.0;
+    inline for (0..3) |channel| {
+        x[channel] = mean + transform.chroma_gain * (x[channel] - mean);
+    }
+    return x;
+}
+
+/// Inverts density = gamma * toe * ln(1 + exp(x / toe)): a straight line of
+/// slope gamma with a smooth toe at the film base.
+fn filmLogExposure(density: f64, inv_gamma_toe: f64, toe: f64) f64 {
+    const z = @min(@max(density, 1e-9) * inv_gamma_toe, 50.0);
+    return toe * @log(std.math.expm1(z));
+}
+
+inline fn curveLookup(transform: *const DisplayTransform, density: f64) f64 {
+    const steps = @as(f64, @floatFromInt(curve_table_entries - 1));
+    const position = (density - curve_table_lo) * (steps / (curve_table_hi - curve_table_lo));
+    if (!(position >= 0.0) or position >= steps) return filmLogExposure(density, transform.inv_gamma_toe, transform.toe);
+    const lower: usize = @intFromFloat(position);
+    const fraction = position - @as(f64, @floatFromInt(lower));
+    const lo: f64 = transform.curve_table[lower];
+    const hi: f64 = transform.curve_table[lower + 1];
+    return lo + (hi - lo) * fraction;
+}
+
+inline fn displayLookup(transform: *const DisplayTransform, log_exposure: f64) f64 {
+    const steps = @as(f64, @floatFromInt(display_table_entries - 1));
+    const position = (log_exposure - display_table_lo) * (steps / (display_table_hi - display_table_lo));
+    if (!(position > 0.0)) return transform.table[0];
+    if (position >= steps) return transform.table[display_table_entries - 1];
+    const lower: usize = @intFromFloat(position);
+    const fraction = position - @as(f64, @floatFromInt(lower));
+    const lo: f64 = transform.table[lower];
+    const hi: f64 = transform.table[lower + 1];
+    return lo + (hi - lo) * fraction;
+}
+
+/// Display value (sRGB-encoded, 0 to 1) for scene-linear exposure `exposure`,
+/// with 18% grey at 18% display light.
+fn displayCurve(exposure: f64, contrast: f64) f64 {
+    const k = mid_grey * std.math.pow(f64, 1.0 / mid_grey - 1.0, 1.0 / contrast);
+    const ep = std.math.pow(f64, @max(exposure, 0.0), contrast);
+    const kp = std.math.pow(f64, k, contrast);
+    return color.linearToSrgbValue(ep / (ep + kp));
+}
+
+fn buildDisplayTransform(
+    comptime In: type,
+    allocator: std.mem.Allocator,
+    input: []const In,
+    options: RenderToDisplayOptions,
+    transform: *DisplayTransform,
+) !void {
+    transform.scale = .{ 1.0, 1.0, 1.0 };
+    transform.offset = .{ 0.0, 0.0, 0.0 };
+    transform.inv_gamma_toe = 1.0 / (options.film_gamma * options.film_toe);
+    transform.toe = options.film_toe;
+    transform.chroma_gain = 1.0 / (1.0 - options.dye_crosstalk);
+    transform.log_offset = .{ 0.0, 0.0, 0.0 };
+    for (&transform.curve_table, 0..) |*entry, index| {
+        const fraction = @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(curve_table_entries - 1));
+        entry.* = @floatCast(filmLogExposure(curve_table_lo + fraction * (curve_table_hi - curve_table_lo), transform.inv_gamma_toe, transform.toe));
+    }
+    for (&transform.table, 0..) |*entry, index| {
+        const fraction = @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(display_table_entries - 1));
+        const log_exposure = display_table_lo + fraction * (display_table_hi - display_table_lo);
+        entry.* = @floatCast(displayCurve(std.math.pow(f64, 10.0, log_exposure), options.contrast));
+    }
+
+    const pixel_count = input.len / 3;
+    const sample_count = percentileSampleCount(pixel_count, options.percentile_sample_limit);
+    const values = try allocator.alloc(f32, sample_count * 3);
+    defer allocator.free(values);
+    const pixels = try allocator.alloc(usize, sample_count);
+    defer allocator.free(pixels);
+    var count: usize = 0;
+    for (0..sample_count) |sample_index| {
+        const pixel = if (sample_count == pixel_count) sample_index else stratifiedPixelIndex(pixel_count, sample_count, sample_index);
+        const index = pixel * 3;
+        const r: f64 = @as(f64, input[index]);
+        const g: f64 = @as(f64, input[index + 1]);
+        const b: f64 = @as(f64, input[index + 2]);
+        if (!(pixelLuminance(r, g, b) > 0.001)) continue;
+        values[count] = @floatCast(r);
+        values[sample_count + count] = @floatCast(g);
+        values[2 * sample_count + count] = @floatCast(b);
+        pixels[count] = pixel;
+        count += 1;
+    }
+
+    // Automatic white balance: red and blue onto green's density scale
+    // through each channel's own black and white point.
+    if (count > 0 and options.auto_white_balance > 0.0) {
+        var lo: [3]f64 = undefined;
+        var hi: [3]f64 = undefined;
+        for (0..3) |channel| {
+            const channel_values = values[channel * sample_count ..][0..count];
+            const sorted = try allocator.dupe(f32, channel_values);
+            defer allocator.free(sorted);
+            std.sort.pdq(f32, sorted, {}, lessThanF32);
+            lo[channel] = percentileSortedF32(sorted, options.percentile_lo);
+            hi[channel] = percentileSortedF32(sorted, options.percentile_hi);
+        }
+        const green_span = hi[1] - lo[1];
+        for ([_]usize{ 0, 2 }) |channel| {
+            const span = hi[channel] - lo[channel];
+            if (!(span > 1e-9) or !(green_span > 1e-9)) continue;
+            const scale = green_span / span;
+            const offset = lo[1] - scale * lo[channel];
+            transform.scale[channel] = 1.0 + options.auto_white_balance * (scale - 1.0);
+            transform.offset[channel] = options.auto_white_balance * offset;
+        }
+    }
+
+    // Automatic exposure: the log-average luminance of scene-linear light
+    // goes to 18%.
+    var log_sum: f64 = 0.0;
+    var log_count: usize = 0;
+    for (pixels[0..count]) |pixel| {
+        const index = pixel * 3;
+        const x = displayLogExposure(transform, .{ input[index], input[index + 1], input[index + 2] });
+        const luminance = pixelLuminance(
+            std.math.pow(f64, 10.0, x[0]),
+            std.math.pow(f64, 10.0, x[1]),
+            std.math.pow(f64, 10.0, x[2]),
+        );
+        if (!(luminance > 0.0) or !std.math.isFinite(luminance)) continue;
+        log_sum += @log10(luminance);
+        log_count += 1;
+    }
+    const key_log = if (log_count > 0) log_sum / @as(f64, @floatFromInt(log_count)) else @log10(mid_grey);
+    const exposure = @log10(mid_grey) - key_log + options.exposure_compensation * @log10(2.0);
+
+    const temp = temp_tint_decades * options.color_temp;
+    const tint = temp_tint_decades * options.color_tint;
+    const shifts = [3]f64{ temp, -tint, -temp };
+    const shift_mean = pixelLuminance(shifts[0], shifts[1], shifts[2]);
+    for (&transform.log_offset, shifts) |*offset, shift| {
+        offset.* = exposure + shift - shift_mean;
+    }
+}
+
+fn validateRenderOptions(options: RenderToDisplayOptions) !void {
+    try validatePercentile(options.percentile_lo);
+    try validatePercentile(options.percentile_hi);
+    try validateWhiteBalance(options.auto_white_balance);
+    const finite = std.math.isFinite;
+    if (!finite(options.contrast) or options.contrast <= 0.0) return error.InvalidRenderContrast;
+    if (!finite(options.exposure_compensation) or !finite(options.color_temp) or !finite(options.color_tint)) return error.InvalidRenderAdjustment;
+    if (!finite(options.film_gamma) or options.film_gamma <= 0.0 or !finite(options.film_toe) or options.film_toe <= 0.0) return error.InvalidRenderFilmCurve;
+    if (!finite(options.dye_crosstalk) or options.dye_crosstalk < 0.0 or options.dye_crosstalk >= 0.95) return error.InvalidRenderCrosstalk;
 }
 
 fn workerCountForPixels(pixel_count: usize, min_pixels: usize) usize {
@@ -363,164 +380,6 @@ fn workerCountForPixels(pixel_count: usize, min_pixels: usize) usize {
     const cpu_count = std.Thread.getCpuCount() catch 1;
     if (cpu_count <= 1) return 1;
     return @min(cpu_count - 1, pixel_count / min_pixels);
-}
-
-inline fn previewDisplayTableLookupF64(
-    value: f64,
-    channel: usize,
-    table: *const [preview_display_lut_entries]u8,
-    state: DisplayRenderState,
-    scale: f64,
-) u8 {
-    const normalized = normalizedDisplayValue(value, channel, state);
-    const table_index: usize = @intFromFloat(@round(normalized * scale));
-    return table.*[@min(table_index, preview_display_lut_entries - 1)];
-}
-
-inline fn previewDisplayTableLookupF32(
-    value: f32,
-    channel: usize,
-    table: *const [preview_display_lut_entries]u8,
-    state: PreviewDisplayF32LookupState,
-) u8 {
-    const normalized = @min(@max((value - state.lo[channel]) * state.inv_denominator[channel], 0.0), 1.0);
-    const table_index: usize = @intFromFloat(@round(normalized * state.scale));
-    return table.*[@min(table_index, preview_display_lut_entries - 1)];
-}
-
-const PreviewDisplayF32LookupState = struct {
-    lo: [3]f32,
-    inv_denominator: [3]f32,
-    scale: f32,
-};
-
-fn renderToDisplayU16Lut(input: []const f64, output: []u16, state: DisplayRenderState) void {
-    var table: [3][export_display_lut_entries]f32 = undefined;
-    fillDisplayLutF32(&table, state);
-    const scale = @as(f64, @floatFromInt(export_display_lut_entries - 1));
-    for (input, output, 0..) |value, *out, index| {
-        const channel = index % 3;
-        const normalized = normalizedDisplayValue(value, channel, state);
-        const position = normalized * scale;
-        const lower: usize = @intFromFloat(@floor(position));
-        const upper = @min(lower + 1, export_display_lut_entries - 1);
-        const fraction = position - @as(f64, @floatFromInt(lower));
-        const lo: f64 = @floatCast(table[channel][lower]);
-        const hi: f64 = @floatCast(table[channel][upper]);
-        out.* = displayToU16(lo * (1.0 - fraction) + hi * fraction);
-    }
-}
-
-fn renderToDisplayU16LutF32(input: []const f32, output: []u16, state: DisplayRenderState) void {
-    var table: [3][export_display_lut_entries]f32 = undefined;
-    fillDisplayLutF32(&table, state);
-    const lookup = ExportDisplayF32LookupState{
-        .lo = f32Triple(state.lo),
-        .inv_denominator = inverseF32Triple(state.denominator),
-        .scale = @floatFromInt(export_display_lut_entries - 1),
-    };
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        output[index] = exportDisplayTableLookupF32(input[index], 0, &table[0], lookup);
-        output[index + 1] = exportDisplayTableLookupF32(input[index + 1], 1, &table[1], lookup);
-        output[index + 2] = exportDisplayTableLookupF32(input[index + 2], 2, &table[2], lookup);
-    }
-}
-
-const ExportDisplayF32LookupState = struct {
-    lo: [3]f32,
-    inv_denominator: [3]f32,
-    scale: f32,
-};
-
-inline fn exportDisplayTableLookupF32(
-    value: f32,
-    channel: usize,
-    table: *const [export_display_lut_entries]f32,
-    state: ExportDisplayF32LookupState,
-) u16 {
-    const normalized = @min(@max((value - state.lo[channel]) * state.inv_denominator[channel], 0.0), 1.0);
-    const position = normalized * state.scale;
-    const lower: usize = @intFromFloat(@floor(position));
-    const upper = @min(lower + 1, export_display_lut_entries - 1);
-    const fraction = position - @as(f32, @floatFromInt(lower));
-    const lo = table.*[lower];
-    const hi = table.*[upper];
-    return displayToU16(@floatCast(lo * (1.0 - fraction) + hi * fraction));
-}
-
-fn fillDisplayLutU8(table: *[3][preview_display_lut_entries]u8, state: DisplayRenderState) void {
-    const denominator = @as(f64, @floatFromInt(preview_display_lut_entries - 1));
-    for (0..3) |channel| {
-        for (&table[channel], 0..) |*entry, index| {
-            const input = @as(f64, @floatFromInt(index)) / denominator;
-            entry.* = @intCast(displayToU16(displayCurveValue(input, channel, state)) >> 8);
-        }
-    }
-}
-
-fn fillDisplayLutF32(table: *[3][export_display_lut_entries]f32, state: DisplayRenderState) void {
-    const denominator = @as(f64, @floatFromInt(export_display_lut_entries - 1));
-    for (0..3) |channel| {
-        for (&table[channel], 0..) |*entry, index| {
-            const input = @as(f64, @floatFromInt(index)) / denominator;
-            entry.* = @floatCast(displayCurveValue(input, channel, state));
-        }
-    }
-}
-
-fn f32Triple(values: [3]f64) [3]f32 {
-    return .{ @floatCast(values[0]), @floatCast(values[1]), @floatCast(values[2]) };
-}
-
-fn inverseF32Triple(values: [3]f64) [3]f32 {
-    return .{ @floatCast(1.0 / values[0]), @floatCast(1.0 / values[1]), @floatCast(1.0 / values[2]) };
-}
-
-/// Each channel's black and white point: the shared luminance range moved
-/// `auto_white_balance` of the way to the channel's own percentiles, taken
-/// over the same pixels (the same stratified sample when sampling).
-fn channelDisplayRanges(
-    comptime T: type,
-    allocator: std.mem.Allocator,
-    input: []const T,
-    range: LuminanceRange,
-    options: RenderToDisplayOptions,
-) ![3]LuminanceRange {
-    var ranges = [_]LuminanceRange{ range, range, range };
-    const strength = options.auto_white_balance;
-    if (strength <= 0.0) return ranges;
-
-    const pixel_count = input.len / 3;
-    const sample_count = percentileSampleCount(pixel_count, options.percentile_sample_limit);
-    const values = try allocator.alloc(f32, sample_count * 3);
-    defer allocator.free(values);
-    var count: usize = 0;
-    for (0..sample_count) |sample_index| {
-        const pixel_index = if (sample_count == pixel_count) sample_index else stratifiedPixelIndex(pixel_count, sample_count, sample_index);
-        const index = pixel_index * 3;
-        const r: f64 = @floatCast(input[index]);
-        const g: f64 = @floatCast(input[index + 1]);
-        const b: f64 = @floatCast(input[index + 2]);
-        if (pixelLuminance(r, g, b) <= 0.001) continue;
-        values[count] = @floatCast(r);
-        values[sample_count + count] = @floatCast(g);
-        values[2 * sample_count + count] = @floatCast(b);
-        count += 1;
-    }
-    if (count == 0) return ranges;
-
-    for (&ranges, 0..) |*channel_range, channel| {
-        const channel_values = values[channel * sample_count ..][0..count];
-        std.sort.pdq(f32, channel_values, {}, lessThanF32);
-        const own_lo = percentileSortedF32(channel_values, options.percentile_lo);
-        const own_hi = percentileSortedF32(channel_values, options.percentile_hi);
-        const lo = range.lo + strength * (own_lo - range.lo);
-        var hi = range.hi + strength * (own_hi - range.hi);
-        if (hi <= lo) hi = lo + 1.0;
-        channel_range.* = .{ .lo = lo, .hi = hi };
-    }
-    return ranges;
 }
 
 fn displayToU16(display: f64) u16 {
@@ -819,33 +678,6 @@ fn lessThanF32(_: void, lhs: f32, rhs: f32) bool {
     return lhs < rhs;
 }
 
-fn colorBalanceMultipliers(color_temp: f64, color_tint: f64) [3]f64 {
-    var r_mul = 1.0 + color_temp * 0.5;
-    var b_mul = 1.0 - color_temp * 0.5;
-    var g_mul = 1.0 - color_tint * 0.5;
-    const lum_scale = 0.2126 * r_mul + 0.7152 * g_mul + 0.0722 * b_mul;
-    r_mul /= lum_scale;
-    g_mul /= lum_scale;
-    b_mul /= lum_scale;
-    return .{ r_mul, g_mul, b_mul };
-}
-
-const ContrastCurveConstants = struct {
-    lo: f64,
-    hi: f64,
-};
-
-fn contrastCurveConstants(k: f64) ContrastCurveConstants {
-    return .{
-        .lo = logistic(k, 0.0),
-        .hi = logistic(k, 1.0),
-    };
-}
-
-fn logistic(k: f64, value: f64) f64 {
-    return 1.0 / (1.0 + @exp(-k * (value - 0.5)));
-}
-
 fn clamp(value: f64, lo: f64, hi: f64) f64 {
     return @min(@max(value, lo), hi);
 }
@@ -902,75 +734,147 @@ test "apply sRGB gamma matches Python render fixture" {
     try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
 }
 
-test "render to display baseline matches Python fixture" {
+const fixture_adjusted_options = RenderToDisplayOptions{
+    .contrast = 1.25,
+    .percentile_lo = 5.0,
+    .percentile_hi = 95.0,
+    .exposure_compensation = 0.35,
+    .color_temp = 0.4,
+    .color_tint = -0.25,
+};
+
+test "render to display baseline matches its regression fixture" {
     try expectRenderDisplayFixture("test/fixtures/processing/numeric/render-to-display-baseline.json", .{
-        .contrast = 1.4,
-        .black_point = 0.0,
-        .curve_k = 5.0,
         .percentile_lo = 10.0,
         .percentile_hi = 90.0,
-        .exposure_compensation = 0.0,
-        .color_temp = 0.0,
-        .color_tint = 0.0,
     });
 }
 
-test "render to display adjustments match Python fixture" {
-    try expectRenderDisplayFixture("test/fixtures/processing/numeric/render-to-display-adjusted.json", .{
-        .contrast = 1.25,
-        .black_point = 0.1,
-        .curve_k = 4.0,
-        .percentile_lo = 5.0,
-        .percentile_hi = 95.0,
-        .exposure_compensation = 0.35,
-        .color_temp = 0.4,
-        .color_tint = -0.25,
-    });
+test "render to display adjustments match their regression fixture" {
+    try expectRenderDisplayFixture("test/fixtures/processing/numeric/render-to-display-adjusted.json", fixture_adjusted_options);
 }
 
-test "render to display handles no positive luminance like Python" {
-    try expectRenderDisplayFixture("test/fixtures/processing/numeric/render-to-display-no-positive-luminance.json", .{
-        .contrast = 1.4,
-        .curve_k = 5.0,
-        .percentile_lo = 0.5,
-        .percentile_hi = 99.5,
-        .exposure_compensation = 0.0,
-        .color_temp = 0.0,
-        .color_tint = 0.0,
-    });
+test "render to display handles no positive luminance" {
+    try expectRenderDisplayFixture("test/fixtures/processing/numeric/render-to-display-no-positive-luminance.json", .{});
 }
 
-test "render to display validates buffers and percentiles" {
+test "render to display validates buffers and options" {
     var out: [3]u16 = undefined;
-    try std.testing.expectError(error.InvalidRenderBuffer, renderToDisplay(std.testing.allocator, &.{ 0.1, 0.2 }, &out, .{}));
-    try std.testing.expectError(error.InvalidRenderPercentile, renderToDisplay(std.testing.allocator, &.{ 0.1, 0.2, 0.3 }, &out, .{ .percentile_lo = -1.0 }));
+    const allocator = std.testing.allocator;
+    const rgb = [_]f64{ 0.1, 0.2, 0.3 };
+    try std.testing.expectError(error.InvalidRenderBuffer, renderToDisplay(allocator, &.{ 0.1, 0.2 }, &out, .{}));
+    try std.testing.expectError(error.InvalidRenderPercentile, renderToDisplay(allocator, &rgb, &out, .{ .percentile_lo = -1.0 }));
+    try std.testing.expectError(error.InvalidRenderContrast, renderToDisplay(allocator, &rgb, &out, .{ .contrast = 0.0 }));
+    try std.testing.expectError(error.InvalidRenderFilmCurve, renderToDisplay(allocator, &rgb, &out, .{ .film_gamma = 0.0 }));
+    try std.testing.expectError(error.InvalidRenderCrosstalk, renderToDisplay(allocator, &rgb, &out, .{ .dye_crosstalk = 0.95 }));
+    try std.testing.expectError(error.InvalidRenderWhiteBalance, renderToDisplay(allocator, &rgb, &out, .{ .auto_white_balance = 1.5 }));
 }
 
-test "render to display u8 matches shifted u16 preview output" {
+fn greyRamp(comptime count: usize, red_scale: f64, red_offset: f64, blue_scale: f64, blue_offset: f64) [count * 3]f64 {
+    var rgb: [count * 3]f64 = undefined;
+    for (0..count) |pixel| {
+        const density = 0.05 + 1.2 * @as(f64, @floatFromInt(pixel)) / @as(f64, @floatFromInt(count - 1));
+        rgb[pixel * 3] = red_scale * density + red_offset;
+        rgb[pixel * 3 + 1] = density;
+        rgb[pixel * 3 + 2] = blue_scale * density + blue_offset;
+    }
+    return rgb;
+}
+
+fn maxChannelSpread(rgb: []const u16) u16 {
+    var spread: u16 = 0;
+    var index: usize = 0;
+    while (index < rgb.len) : (index += 3) {
+        const lo = @min(rgb[index], @min(rgb[index + 1], rgb[index + 2]));
+        const hi = @max(rgb[index], @max(rgb[index + 1], rgb[index + 2]));
+        spread = @max(spread, hi - lo);
+    }
+    return spread;
+}
+
+test "a neutral density ramp renders neutral" {
+    const rgb = greyRamp(64, 1.0, 0.0, 1.0, 0.0);
+    var out: [rgb.len]u16 = undefined;
+    try renderToDisplay(std.testing.allocator, &rgb, &out, .{});
+    try std.testing.expectEqual(@as(u16, 0), maxChannelSpread(&out));
+}
+
+test "automatic white balance removes a per-channel density scale and offset" {
+    // Red at a lower contrast and blue at a higher one than green, each with
+    // its own offset: what the scanner and the light do to a grey scene.
+    const rgb = greyRamp(256, 0.77, 0.03, 1.22, -0.02);
+    var balanced: [rgb.len]u16 = undefined;
+    var unbalanced: [rgb.len]u16 = undefined;
+    try renderToDisplay(std.testing.allocator, &rgb, &balanced, .{ .percentile_lo = 0.0, .percentile_hi = 100.0 });
+    try renderToDisplay(std.testing.allocator, &rgb, &unbalanced, .{ .percentile_lo = 0.0, .percentile_hi = 100.0, .auto_white_balance = 0.0 });
+    try std.testing.expect(maxChannelSpread(&balanced) <= 2);
+    try std.testing.expect(maxChannelSpread(&unbalanced) > 2000);
+}
+
+test "automatic exposure renders a uniform grey at 18 percent and compensation in stops" {
+    var rgb: [12]f64 = undefined;
+    @memset(&rgb, 0.6);
+    var out: [12]u16 = undefined;
+    try renderToDisplay(std.testing.allocator, &rgb, &out, .{});
+    const grey = displayToU16(color.linearToSrgbValue(mid_grey));
+    for (out) |sample| try std.testing.expect(@abs(@as(i32, sample) - @as(i32, grey)) <= 1);
+
+    try renderToDisplay(std.testing.allocator, &rgb, &out, .{ .exposure_compensation = 1.0 });
+    const brighter = displayToU16(displayCurve(2.0 * mid_grey, 1.8));
+    for (out) |sample| try std.testing.expect(@abs(@as(i32, sample) - @as(i32, brighter)) <= 1);
+}
+
+test "crosstalk grows colour differences in log exposure by one over one minus it" {
+    var transform: DisplayTransform = undefined;
+    transform.scale = .{ 1.0, 1.0, 1.0 };
+    transform.offset = .{ 0.0, 0.0, 0.0 };
+    transform.inv_gamma_toe = 1.0 / (0.55 * 0.25);
+    transform.toe = 0.25;
+    transform.chroma_gain = 1.0;
+    const pixel = [3]f64{ 0.9, 0.6, 0.4 };
+    const plain = displayLogExposure(&transform, pixel);
+    transform.chroma_gain = 1.0 / (1.0 - 0.2);
+    const unmixed = displayLogExposure(&transform, pixel);
+    const mean = (plain[0] + plain[1] + plain[2]) / 3.0;
+    for (plain, unmixed) |before, after| {
+        try std.testing.expectApproxEqAbs((before - mean) / 0.8, after - mean, 1e-12);
+    }
+    // Far above the toe the curve is a straight line of slope gamma.
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), filmLogExposure(1.1, transform.inv_gamma_toe, transform.toe), 1e-3);
+}
+
+test "the curve table follows the exact curve inversion" {
+    const transform = try std.testing.allocator.create(DisplayTransform);
+    defer std.testing.allocator.destroy(transform);
+    var rgb = [_]f64{ 0.1, 0.5, 0.9 };
+    try buildDisplayTransform(f64, std.testing.allocator, &rgb, .{}, transform);
+    var density: f64 = 0.0;
+    while (density < 4.5) : (density += 0.0003) {
+        const exact = filmLogExposure(density, transform.inv_gamma_toe, transform.toe);
+        try std.testing.expectApproxEqAbs(exact, curveLookup(transform, density), 1e-4);
+    }
+}
+
+test "render paths agree: u8 is the u16 output shifted, f32 within one level" {
     const allocator = std.testing.allocator;
     var fixture = try numeric.loadJsonFixture(allocator, std.testing.io, "test/fixtures/processing/numeric/render-to-display-adjusted.json");
     defer fixture.deinit();
-
     const value = fixture.value();
-    const options = RenderToDisplayOptions{
-        .contrast = 1.25,
-        .black_point = 0.1,
-        .curve_k = 4.0,
-        .percentile_lo = 5.0,
-        .percentile_hi = 95.0,
-        .exposure_compensation = 0.35,
-        .color_temp = 0.4,
-        .color_tint = -0.25,
-    };
+
     const expected_u16 = try allocator.alloc(u16, value.expected.len);
     defer allocator.free(expected_u16);
-    try renderToDisplay(allocator, value.input, expected_u16, options);
+    try renderToDisplay(allocator, value.input, expected_u16, fixture_adjusted_options);
 
-    const actual = try allocator.alloc(u8, value.expected.len);
-    defer allocator.free(actual);
-    try renderToDisplayU8(allocator, value.input, actual, options);
+    const preview = try allocator.alloc(u8, value.expected.len);
+    defer allocator.free(preview);
+    try renderToDisplayU8(allocator, value.input, preview, fixture_adjusted_options);
+    for (expected_u16, preview) |sample, byte| try std.testing.expectEqual(@as(u8, @intCast(sample >> 8)), byte);
 
-    for (expected_u16, actual) |sample, preview| {
-        try std.testing.expectEqual(@as(u8, @intCast(sample >> 8)), preview);
-    }
+    const input_f32 = try allocator.alloc(f32, value.input.len);
+    defer allocator.free(input_f32);
+    for (value.input, input_f32) |sample, *out| out.* = @floatCast(sample);
+    const from_f32 = try allocator.alloc(u16, value.expected.len);
+    defer allocator.free(from_f32);
+    try renderToDisplayU16F32(allocator, input_f32, from_f32, fixture_adjusted_options);
+    for (expected_u16, from_f32) |a, b| try std.testing.expect(@abs(@as(i32, a) - @as(i32, b)) <= 1);
 }

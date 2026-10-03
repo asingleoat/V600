@@ -31,10 +31,10 @@ const rawFixture = new Uint16Array([
   33000, 27000, 21000,
 ]);
 const expectedPreview = new Uint8Array([
-  0, 8, 116,
-  12, 44, 193,
-  111, 141, 255,
-  229, 251, 255,
+  83, 83, 83,
+  108, 96, 103,
+  135, 128, 132,
+  164, 165, 165,
 ]);
 const irWidth = 9;
 const irHeight = 9;
@@ -65,8 +65,7 @@ function writePreviewOptions(ptr, overrides = {}) {
     dminG: 0.06,
     dminB: 0.07,
     defaultLight: 65535.0,
-    contrast: 1.4,
-    curveK: 5.0,
+    contrast: 1.8,
     percentileLo: 0.5,
     percentileHi: 99.5,
     exposureCompensation: 0.0,
@@ -84,7 +83,6 @@ function writePreviewOptions(ptr, overrides = {}) {
     dmin_b: options.dminB,
     default_light: options.defaultLight,
     contrast: options.contrast,
-    curve_k: options.curveK,
     percentile_lo: options.percentileLo,
     percentile_hi: options.percentileHi,
     exposure_compensation: options.exposureCompensation,

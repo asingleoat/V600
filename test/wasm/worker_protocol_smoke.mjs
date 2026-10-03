@@ -94,8 +94,7 @@ function sampleCacheInput(overrides = {}) {
         ir_min_area: 24,
       },
       render: {
-        contrast: 1.4,
-        curve_k: 5.0,
+        contrast: 1.8,
         percentile_lo: 0.5,
         percentile_hi: 99.5,
         exposure_compensation: 0.0,
@@ -105,8 +104,7 @@ function sampleCacheInput(overrides = {}) {
       custom_stocks: {},
     },
     render: {
-      contrast: 1.4,
-      curve_k: 5.0,
+      contrast: 1.8,
       percentile_lo: 0.5,
       percentile_hi: 99.5,
       exposure_compensation: 0.0,
@@ -396,7 +394,7 @@ const processPreview = createProcessPreviewMessage({
     options_len: 60,
   },
   options: {
-    preview_options_layout: "PreviewOptions/v2",
+    preview_options_layout: "PreviewOptions/v3",
   },
 });
 assert.equal(processPreview.type, messageTypes.processPreview);
@@ -423,7 +421,7 @@ const processExport = createProcessExportMessage({
     options_len: 60,
   },
   options: {
-    preview_options_layout: "PreviewOptions/v2",
+    preview_options_layout: "PreviewOptions/v3",
   },
 });
 assert.equal(processExport.type, messageTypes.processExport);

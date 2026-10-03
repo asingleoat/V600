@@ -33,10 +33,10 @@ const rawFixture = new Uint16Array([
   33000, 27000, 21000,
 ]);
 const expectedPreview = new Uint8Array([
-  0, 8, 116,
-  12, 44, 193,
-  111, 141, 255,
-  229, 251, 255,
+  83, 83, 83,
+  108, 96, 103,
+  135, 128, 132,
+  164, 165, 165,
 ]);
 const irWidth = 9;
 const irHeight = 9;
@@ -61,8 +61,7 @@ function previewOptions(overrides = {}) {
     dmin_g: 0.06,
     dmin_b: 0.07,
     default_light: 65535.0,
-    contrast: 1.4,
-    curve_k: 5.0,
+    contrast: 1.8,
     percentile_lo: 0.5,
     percentile_hi: 99.5,
     exposure_compensation: 0.0,
@@ -135,8 +134,7 @@ function cacheInput() {
       custom_stocks: {},
     },
     render: {
-      contrast: 1.4,
-      curve_k: 5.0,
+      contrast: 1.8,
       percentile_lo: 0.5,
       percentile_hi: 99.5,
       exposure_compensation: 0.0,
@@ -469,7 +467,7 @@ try {
       },
     },
     options: {
-      preview_options_layout: "PreviewOptions/v2",
+      preview_options_layout: "PreviewOptions/v3",
       preview_options: previewOptions(),
     },
   });
@@ -497,7 +495,7 @@ try {
       },
     },
     options: {
-      preview_options_layout: "PreviewOptions/v2",
+      preview_options_layout: "PreviewOptions/v3",
       preview_options: previewOptions(),
     },
   }), [exportRawBuffer]);
@@ -797,7 +795,7 @@ try {
       },
     },
     options: {
-      preview_options_layout: "PreviewOptions/v2",
+      preview_options_layout: "PreviewOptions/v3",
       preview_options: previewOptions({ stock: 99 }),
     },
   }), [badRawBuffer]);

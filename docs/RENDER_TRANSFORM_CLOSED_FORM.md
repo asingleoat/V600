@@ -1,8 +1,8 @@
 # Render Transform Closed Form
 
 This document describes the current Zig preview/export display transform as
-closed-form scalar expressions for one pixel, assuming global calibration values
-have already been selected.
+closed-form scalar expressions for one pixel, once the per-image values (each
+channel's black and white point and the exposure key) have been measured.
 
 The useful algebraic optimization targets are the final quantized forms:
 
@@ -23,36 +23,19 @@ eps = 1e-8
 dmin = [dmin_r, dmin_g, dmin_b]
 ```
 
-The display range is global for the image, not per pixel, and set per
-channel. Automatic white balance (`auto_white_balance`, default 1, 0 = off)
-moves each channel's black and white point from the shared luminance range
-to that channel's own percentiles:
-
-```text
-lo, hi     = robust low/high luminance percentiles
-lo_c, hi_c = the same percentiles of channel c alone
-w          = auto_white_balance
-lo'_c = lo + w*(lo_c - lo)
-hi'_c = hi + w*(hi_c - hi)
-A_c = 1 / (hi'_c - lo'_c)
-B_c = -lo'_c / (hi'_c - lo'_c)
-```
-
 Current default display options:
 
 ```text
-contrast = 1.4
-curve_k = 5.0
-exposure_compensation = 0.0
-color_temp = 0.0
-color_tint = 0.0
-auto_white_balance = 1.0
-```
-
-So default contrast strength is:
-
-```text
-k = (contrast - 1) * curve_k = 2.0
+contrast = 1.8              display curve exponent
+percentile_lo = 0.5         each channel's black point
+percentile_hi = 99.5        each channel's white point
+exposure_compensation = 0   stops
+color_temp = 0
+color_tint = 0
+auto_white_balance = 1
+film_gamma = 0.55           density per decade of exposure
+film_toe = 0.25             decades of exposure
+dye_crosstalk = 0.2
 ```
 
 ## Negative Inversion
@@ -60,230 +43,120 @@ k = (contrast - 1) * curve_k = 2.0
 Normalize raw transmittance and convert to net density:
 
 ```text
-t_r = max(r0 / L, eps)
-t_g = max(g0 / L, eps)
-t_b = max(b0 / L, eps)
-
-d_r = max(-log10(t_r) - dmin_r, 0)
-d_g = max(-log10(t_g) - dmin_g, 0)
-d_b = max(-log10(t_b) - dmin_b, 0)
+t_c = max(c0 / L, eps)
+d_c = max(-log10(t_c) - dmin_c, 0)
 ```
 
-Equivalently, for positive raw values above the epsilon floor:
+## Stock Channel Balance
+
+The built-in stocks are diagonal: each channel's net density scaled to
+green's contrast, measured on the owner's scans (see
+`docs/FILM_STOCK_PROFILES.md`). For Kodak Gold:
 
 ```text
-d_c = max(log10(L) - log10(raw_c) - dmin_c, 0)
+s_r = 1.3021 * d_r
+s_g = d_g
+s_b = 0.8203 * d_b
 ```
-
-## Built-In Linear Stock Transform
-
-The built-in stocks currently use only linear density terms. For Kodak Gold:
-
-```text
-s_r = max( 1.20*d_r - 0.10*d_g + 0.00*d_b, 0)
-s_g = max(-0.04*d_r + 0.90*d_g - 0.04*d_b, 0)
-s_b = max( 0.00*d_r - 0.06*d_g + 1.02*d_b, 0)
-```
-
-For Kodak Portra:
-
-```text
-s_r = max( 1.15*d_r - 0.08*d_g + 0.00*d_b, 0)
-s_g = max(-0.03*d_r + 0.93*d_g + 0.00*d_b, 0)
-s_b = max( 0.00*d_r - 0.04*d_g + 1.00*d_b, 0)
-```
-
-In matrix form:
-
-```text
-s_c = max(sum_j M[c,j] * d_j, 0)
-```
-
-where `c` is output channel and `j` is density channel.
-
-## General Custom Stock Transform
 
 Custom stock profiles may use the full quadratic basis:
 
 ```text
-basis = [
-  d_r,
-  d_g,
-  d_b,
-  d_r*d_r,
-  d_g*d_g,
-  d_b*d_b,
-  d_r*d_g,
-  d_r*d_b,
-  d_g*d_b,
-  1
-]
-
+basis = [d_r, d_g, d_b, d_r^2, d_g^2, d_b^2, d_r*d_g, d_r*d_b, d_g*d_b, 1]
 s_c = max(sum_i coeff[i,c] * basis[i], 0)
 ```
 
-## Display Range Selection
+## Per-Image Measurements
 
-For each pixel in the image, luminance is:
+Pixels with `Y = 0.2126*s_r + 0.7152*s_g + 0.0722*s_b > 0.001` take part. The
+fast path uses a deterministic stratified sample (16,384 pixels by default);
+exact mode uses every pixel.
 
-```text
-Y = 0.2126*s_r + 0.7152*s_g + 0.0722*s_b
-```
-
-Only `Y > 0.001` participates in the robust display range. The current fast
-path estimates the low/high percentiles from a deterministic `f32` sample. Exact
-mode sorts all positive `f64` luminance values. Each channel's own percentiles
-come from the same pixels (the same sample). Once `A_c` and `B_c` are fixed,
-the per-pixel transform below is local and closed form.
-
-## Per-Channel Display Transform
-
-For one scene-linear channel `s` of channel `c`:
+Each channel's black and white point are its own percentiles:
 
 ```text
-x0 = clamp(A_c*s + B_c, 0, 1)
+lo_c = percentile(s_c, percentile_lo)
+hi_c = percentile(s_c, percentile_hi)
 ```
 
-Optional color balance, if enabled:
+Automatic white balance moves red and blue onto green's density scale through
+those points, `w` of the way (green is unchanged):
 
 ```text
-r_mul0 = 1 + 0.5*color_temp
-b_mul0 = 1 - 0.5*color_temp
-g_mul0 = 1 - 0.5*color_tint
-
-lum_scale = 0.2126*r_mul0 + 0.7152*g_mul0 + 0.0722*b_mul0
-
-m_r = r_mul0 / lum_scale
-m_g = g_mul0 / lum_scale
-m_b = b_mul0 / lum_scale
-
-x1_c = max(x0_c * m_c, 0)
+k_c = (hi_g - lo_g) / (hi_c - lo_c)
+a_c = 1 + w*(k_c - 1)
+o_c = w*(lo_g - k_c*lo_c)
 ```
 
-For current default preview/export settings:
+## Per-Pixel Transform
+
+Aligned density, then log10 exposure through the inverted characteristic
+curve, a straight line of slope `film_gamma` with a softplus toe of width
+`film_toe`:
 
 ```text
-m_r = m_g = m_b = 1
-x1 = x0
+u_c = a_c*s_c + o_c
+x_c = film_toe * ln(expm1(max(u_c, 1e-9) / (film_gamma*film_toe)))
 ```
 
-Optional exposure, if enabled:
+The forward curve is `u = film_gamma*film_toe*ln(1 + exp(x/film_toe))`: far
+above the toe `x = u / film_gamma`.
+
+Dye crosstalk: colour differences around the pixel's mean log exposure grow
+by `g = 1 / (1 - dye_crosstalk)`:
 
 ```text
-gamma = 1 / (1 + exposure_compensation)
-x2 = x1^gamma
+m = (x_r + x_g + x_b) / 3
+x'_c = m + g*(x_c - m)
 ```
 
-For current default preview/export settings:
+Exposure and temperature/tint are log10 offsets, so gains on scene-linear
+light. The exposure puts the log-average luminance of the measured pixels at
+18% grey:
 
 ```text
-gamma = 1
-x2 = x1
+key = mean over pixels of log10(0.2126*10^x'_r + 0.7152*10^x'_g + 0.0722*10^x'_b)
+e = log10(0.18) - key + exposure_compensation*log10(2)
+
+t = 0.15*color_temp, n = 0.15*color_tint
+shift = [t, -n, -t]
+f_c = e + shift_c - (0.2126*shift_r + 0.7152*shift_g + 0.0722*shift_b)
+
+E_c = 10^(x'_c + f_c)
 ```
 
-Contrast curve:
+Display curve, a log-logistic through 18% grey (18% scene light displays as
+18% light), then sRGB encoding:
 
 ```text
-sigma_k(x) = 1 / (1 + exp(-k*(x - 0.5)))
-
-curve_lo = sigma_k(0)
-curve_hi = sigma_k(1)
-
-C_k(x) = (sigma_k(x) - curve_lo) / (curve_hi - curve_lo)
+p = contrast
+K = 0.18 * (1/0.18 - 1)^(1/p)
+y_c = srgb(E_c^p / (E_c^p + K^p))
 ```
 
-For current defaults:
-
-```text
-k = 2
-sigma_2(x) = 1 / (1 + exp(1 - 2*x))
-
-C_2(x) = (sigma_2(x) - sigma_2(0)) / (sigma_2(1) - sigma_2(0))
-```
-
-Final display unit value:
-
-```text
-y = clamp(C_k(x2), 0, 1)
-```
+`y` comes from an 8192-entry table over `x'_c + f_c` in [-8, 4] decades with
+linear interpolation; below the table it is 0 and above it the table's last
+value.
 
 ## Final Quantization Targets
 
-Export-shaped display output:
-
 ```text
-u16 = floor(65535 * y)
-```
-
-Preview output:
-
-```text
-u8 = floor(65535 * y) >> 8
-```
-
-Equivalent preview interpretation:
-
-```text
-u8 = floor(floor(65535 * y) / 256)
-```
-
-## Fully Inlined Default Preview Form
-
-For current default preview settings with a built-in linear stock:
-
-```text
-D_j(raw_j) = max(-log10(max(raw_j / 65535, 1e-8)) - dmin_j, 0)
-
-S_c = max(sum_j M[c,j] * D_j(raw_j), 0)
-
-X_c = clamp(A_c*S_c + B_c, 0, 1)
-
-Y_c = C_2(X_c)
-
-u8_c = floor(65535 * clamp(Y_c, 0, 1)) >> 8
-```
-
-The corresponding export-shaped target is:
-
-```text
-u16_c = floor(65535 * clamp(Y_c, 0, 1))
+u16 = floor(65535 * clamp(y, 0, 1))
+u8  = floor(65535 * clamp(y, 0, 1)) >> 8
 ```
 
 ## Optimization Targets
 
-The most isolated approximation target is:
+The per-pixel work is the toe inversion (one `expm1` and one `log` per
+channel), the crosstalk mix, and one table lookup per channel. The table
+already covers the display curve and sRGB encoding exactly enough for `u16`.
+
+A separate target is the raw `u16` density conversion:
 
 ```text
-C_k(x), where x in [0, 1]
+d_c = max(log10(65535) - log10(raw_c) - dmin_c, 0)
 ```
 
-For default settings this is specifically:
-
-```text
-C_2(x)
-```
-
-For final-output accuracy tests, compare:
-
-```text
-Q8(C_2(x))  against exact preview output
-Q16(C_2(x)) against exact export-shaped output
-```
-
-where:
-
-```text
-Q8(z)  = floor(65535 * clamp(z, 0, 1)) >> 8
-Q16(z) = floor(65535 * clamp(z, 0, 1))
-```
-
-A second independent target is the raw `u16` density conversion:
-
-```text
-D_j(raw_j) = max(log10(65535) - log10(raw_j) - dmin_j, 0)
-```
-
-for `raw_j > 0`, with the existing epsilon floor for zero or tiny values.
-
-That target is naturally a `u16 -> f32/f64 density` lookup table, because the
-input domain has only 65536 possible raw values.
+for `raw_c > 0`, with the epsilon floor for zero or tiny values. That is
+naturally a `u16 -> f32/f64` lookup table, because the input domain has only
+65536 values.

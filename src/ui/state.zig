@@ -1289,13 +1289,15 @@ pub const State = struct {
             .dmin = self.processing.dmin,
             .render_options = .{
                 .contrast = processingConfigFloat(&self.processing_config, "render_contrast"),
-                .curve_k = processingConfigFloat(&self.processing_config, "render_curve_k"),
                 .percentile_lo = processingConfigFloat(&self.processing_config, "render_percentile_lo"),
                 .percentile_hi = processingConfigFloat(&self.processing_config, "render_percentile_hi"),
                 .exposure_compensation = processingConfigFloat(&self.processing_config, "exposure_compensation"),
                 .color_temp = processingConfigFloat(&self.processing_config, "color_temp"),
                 .color_tint = processingConfigFloat(&self.processing_config, "color_tint"),
                 .auto_white_balance = processingConfigFloat(&self.processing_config, "auto_white_balance"),
+                .film_gamma = processingConfigFloat(&self.processing_config, "film_gamma"),
+                .film_toe = processingConfigFloat(&self.processing_config, "film_toe"),
+                .dye_crosstalk = processingConfigFloat(&self.processing_config, "dye_crosstalk"),
             },
             .invert_request = self.processing_gpu_request,
         };

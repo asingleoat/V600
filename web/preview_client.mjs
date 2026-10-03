@@ -146,7 +146,7 @@ export class WebPreviewClient {
         },
       },
       options: {
-        preview_options_layout: "PreviewOptions/v2",
+        preview_options_layout: "PreviewOptions/v3",
         preview_options: defaultPreviewOptions({
           width: previewGeometry.width,
           height: previewGeometry.height,
@@ -232,7 +232,7 @@ export class WebPreviewClient {
         },
       },
       options: {
-        preview_options_layout: "PreviewOptions/v2",
+        preview_options_layout: "PreviewOptions/v3",
         preview_options: defaultPreviewOptions({
           width: crop.width,
           height: crop.height,

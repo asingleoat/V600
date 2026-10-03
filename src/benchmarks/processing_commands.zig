@@ -61,9 +61,7 @@ pub fn main(init: std.process.Init) !void {
         shouldRun(options.case_filter, "load_preview_breakdown") or
         shouldRun(options.case_filter, "inverted_preview") or
         shouldRun(options.case_filter, "process_result_cache_repeat") or
-        shouldRun(options.case_filter, "inverted_preview_f32_breakdown") or
         shouldRun(options.case_filter, "preview_render_u8_vs_u16") or
-        shouldRun(options.case_filter, "preview_render_breakdown") or
         shouldRun(options.case_filter, "preview_render_quantile_tradeoff") or
         shouldRun(options.case_filter, "inverted_preview_cpu_vs_gpu") or
         shouldRun(options.case_filter, "invert_negative_preview_cpu_vs_simd") or
@@ -146,17 +144,11 @@ pub fn main(init: std.process.Init) !void {
             try benchProcessResultCacheRepeat(allocator, init.io, stdout, options.scan_path, loaded);
         }
 
-        if (shouldRun(options.case_filter, "inverted_preview_f32_breakdown")) {
-            try benchInvertedPreviewF32Breakdown(allocator, stdout, options.scan_path, loaded);
-        }
 
         if (shouldRun(options.case_filter, "preview_render_u8_vs_u16")) {
             try benchPreviewRenderU8Pair(allocator, stdout, options.scan_path, loaded);
         }
 
-        if (shouldRun(options.case_filter, "preview_render_breakdown")) {
-            try benchPreviewRenderBreakdown(allocator, stdout, options.scan_path, loaded);
-        }
 
         if (shouldRun(options.case_filter, "preview_render_quantile_tradeoff")) {
             try benchPreviewRenderQuantileTradeoff(allocator, stdout, options.scan_path, loaded);
@@ -389,8 +381,7 @@ fn benchSyntheticRender(
 
     const started = monotonicNowNs();
     try render.renderToDisplay(allocator, input, output, .{
-        .contrast = 1.4,
-        .curve_k = 5.0,
+        .contrast = 1.8,
         .percentile_lo = 0.5,
         .percentile_hi = 99.5,
         .exposure_compensation = 0.15,
@@ -820,29 +811,6 @@ fn benchInvertedPreviewPair(
     );
 }
 
-const PreviewF32OutputBreakdown = struct {
-    table_build_ns: u64,
-    write_ns: u64,
-};
-
-const PreviewF32MathOutputBreakdown = struct {
-    table_build_ns: u64,
-    write_ns: u64,
-};
-
-const PreviewF32DisplayState = struct {
-    range: render.LuminanceRange,
-    denominator: f64,
-    multipliers: [3]f64,
-    apply_color_balance: bool,
-    apply_exposure: bool,
-    exposure_gamma: f64,
-    apply_contrast: bool,
-    contrast_k: f64,
-    curve_lo: f64,
-    curve_hi: f64,
-};
-
 const AutoDetectComparison = struct {
     frame_max_abs: f64 = 0.0,
     rebate_max_abs: f64 = 0.0,
@@ -977,269 +945,6 @@ fn compareAutoDetectScalar(reference: f64, measured: f64, max_abs: *f64, mismatc
     if (diff > 1e-9) mismatches.* += 1;
 }
 
-fn benchInvertedPreviewF32Breakdown(
-    allocator: std.mem.Allocator,
-    stdout: anytype,
-    scan_path: []const u8,
-    loaded: workflow.QuickPreview,
-) !void {
-    const sample_count = try std.math.mul(usize, try std.math.mul(usize, loaded.preview_width, loaded.preview_height), 3);
-    if (loaded.preview_raw.len != sample_count) return error.InvalidPreviewBuffer;
-    if (!film_stocks.usesOnlyLinearTerms(film_stocks.kodak_gold_coeffs)) return error.BenchmarkRequiresLinearStock;
-
-    var production_cache = workflow.InvertedPreviewCache{};
-    defer production_cache.deinit(allocator);
-    const production_started = monotonicNowNs();
-    const production = (try workflow.renderInvertedPreviewRgb8(allocator, loaded, &production_cache, .{
-        .stock = benchmark_stock,
-        .dmin = benchmark_dmin,
-    })) orelse {
-        try stdout.print("inverted_preview_f32_breakdown,{s},{d},{d},{d},0,skipped_unavailable\n", .{
-            scan_path,
-            loaded.preview_width,
-            loaded.preview_height,
-            loaded.preview_width * loaded.preview_height,
-        });
-        return;
-    };
-    const production_elapsed = monotonicNowNs() - production_started;
-    defer allocator.free(production);
-
-    const benchmark_dmin_f32 = dminToF32(benchmark_dmin);
-
-    const lut_started = monotonicNowNs();
-    const density_lut = try inversion.DensityLutF32.initF32(allocator, benchmark_dmin_f32, 65535.0);
-    const lut_elapsed = monotonicNowNs() - lut_started;
-    defer density_lut.deinit(allocator);
-
-    const scene_alloc_started = monotonicNowNs();
-    const scene = try allocator.alloc(f32, sample_count);
-    const scene_alloc_elapsed = monotonicNowNs() - scene_alloc_started;
-    defer allocator.free(scene);
-
-    const invert_started = monotonicNowNs();
-    try inversion.invertNegativeProvidedDminU16WithDensityLutF32OutputF32(
-        loaded.preview_raw,
-        scene,
-        density_lut,
-        film_stocks.kodak_gold_coeffs,
-    );
-    const invert_elapsed = monotonicNowNs() - invert_started;
-
-    const render_options: render.RenderToDisplayOptions = .{};
-    const range_started = monotonicNowNs();
-    const range = try render.estimateDisplayLuminanceRangeF32(allocator, scene, render_options);
-    const range_elapsed = monotonicNowNs() - range_started;
-
-    const output_alloc_started = monotonicNowNs();
-    const manual = try allocator.alloc(u8, sample_count);
-    const output_alloc_elapsed = monotonicNowNs() - output_alloc_started;
-    defer allocator.free(manual);
-
-    const render_breakdown = try renderF32PreviewOutputWithRangeF32Math(manual, scene, render_options, range);
-    const manual_elapsed = lut_elapsed + scene_alloc_elapsed + invert_elapsed + range_elapsed +
-        output_alloc_elapsed + render_breakdown.table_build_ns + render_breakdown.write_ns;
-    const diff = try compareU8(production, manual);
-
-    const exact = try allocator.alloc(u8, sample_count);
-    defer allocator.free(exact);
-    const exact_breakdown = try renderF32PreviewOutputWithRange(exact, scene, render_options, range);
-    const exact_diff = try compareU8(production, exact);
-
-    try stdout.print(
-        "inverted_preview_f32_breakdown,{s},{d},{d},{d},{d},production_us={d};manual_total_us={d};lut_build_us={d};scene_alloc_us={d};invert_us={d};range_us={d};output_alloc_us={d};display_lut_us={d};output_write_us={d};invert_pct_x1000={d};range_pct_x1000={d};output_write_pct_x1000={d};max_abs={d};rms={d:.6};mse={d:.9};mismatches={d};checksum_production={d};checksum_manual={d};exact_output_write_us={d};exact_max_abs={d};exact_rms={d:.6};exact_mse={d:.9};exact_mismatches={d};exact_checksum={d};lo={d:.9};hi={d:.9}\n",
-        .{
-            scan_path,
-            loaded.preview_width,
-            loaded.preview_height,
-            loaded.preview_width * loaded.preview_height,
-            manual_elapsed / std.time.ns_per_us,
-            production_elapsed / std.time.ns_per_us,
-            manual_elapsed / std.time.ns_per_us,
-            lut_elapsed / std.time.ns_per_us,
-            scene_alloc_elapsed / std.time.ns_per_us,
-            invert_elapsed / std.time.ns_per_us,
-            range_elapsed / std.time.ns_per_us,
-            output_alloc_elapsed / std.time.ns_per_us,
-            render_breakdown.table_build_ns / std.time.ns_per_us,
-            render_breakdown.write_ns / std.time.ns_per_us,
-            pctX1000(invert_elapsed / std.time.ns_per_us, manual_elapsed / std.time.ns_per_us),
-            pctX1000(range_elapsed / std.time.ns_per_us, manual_elapsed / std.time.ns_per_us),
-            pctX1000(render_breakdown.write_ns / std.time.ns_per_us, manual_elapsed / std.time.ns_per_us),
-            diff.max_abs,
-            diff.rms,
-            diff.mse,
-            diff.mismatches,
-            checksumU8(production),
-            checksumU8(manual),
-            exact_breakdown.write_ns / std.time.ns_per_us,
-            exact_diff.max_abs,
-            exact_diff.rms,
-            exact_diff.mse,
-            exact_diff.mismatches,
-            checksumU8(exact),
-            range.lo,
-            range.hi,
-        },
-    );
-}
-
-fn renderF32PreviewOutputWithRange(
-    output: []u8,
-    input: []const f32,
-    options: render.RenderToDisplayOptions,
-    range: render.LuminanceRange,
-) !PreviewF32OutputBreakdown {
-    if (input.len == 0 or input.len % 3 != 0 or input.len != output.len) return error.InvalidRenderBuffer;
-    const pixel_count = input.len / 3;
-    if (options.percentile_sample_limit == render.exact_percentile_sample_limit or
-        pixel_count <= options.percentile_sample_limit)
-    {
-        return error.UnsupportedExactCurveBreakdown;
-    }
-
-    const state = previewF32DisplayState(range, options);
-    var table: [3][render.preview_display_lut_entries]u8 = undefined;
-
-    const table_started = monotonicNowNs();
-    fillPreviewDisplayLutU8(&table, state);
-    const table_elapsed = monotonicNowNs() - table_started;
-
-    const write_started = monotonicNowNs();
-    const scale = @as(f64, @floatFromInt(render.preview_display_lut_entries - 1));
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        output[index] = previewF32TableLookup(input[index], &table[0], state, scale);
-        output[index + 1] = previewF32TableLookup(input[index + 1], &table[1], state, scale);
-        output[index + 2] = previewF32TableLookup(input[index + 2], &table[2], state, scale);
-    }
-    const write_elapsed = monotonicNowNs() - write_started;
-
-    return .{
-        .table_build_ns = table_elapsed,
-        .write_ns = write_elapsed,
-    };
-}
-
-inline fn previewF32TableLookup(
-    value: f32,
-    table: *const [render.preview_display_lut_entries]u8,
-    state: PreviewF32DisplayState,
-    scale: f64,
-) u8 {
-    const normalized = clamp((@as(f64, @floatCast(value)) - state.range.lo) / state.denominator, 0.0, 1.0);
-    const table_index: usize = @intFromFloat(@round(normalized * scale));
-    return table.*[@min(table_index, render.preview_display_lut_entries - 1)];
-}
-
-fn renderF32PreviewOutputWithRangeF32Math(
-    output: []u8,
-    input: []const f32,
-    options: render.RenderToDisplayOptions,
-    range: render.LuminanceRange,
-) !PreviewF32MathOutputBreakdown {
-    if (input.len == 0 or input.len % 3 != 0 or input.len != output.len) return error.InvalidRenderBuffer;
-    const pixel_count = input.len / 3;
-    if (options.percentile_sample_limit == render.exact_percentile_sample_limit or
-        pixel_count <= options.percentile_sample_limit)
-    {
-        return error.UnsupportedExactCurveBreakdown;
-    }
-
-    const state = previewF32DisplayState(range, options);
-    var table: [3][render.preview_display_lut_entries]u8 = undefined;
-    const table_started = monotonicNowNs();
-    fillPreviewDisplayLutU8(&table, state);
-    const table_elapsed = monotonicNowNs() - table_started;
-
-    const write_started = monotonicNowNs();
-    const f32_state = PreviewF32MathState{
-        .lo = @floatCast(state.range.lo),
-        .inv_denominator = @floatCast(1.0 / state.denominator),
-        .scale = @floatFromInt(render.preview_display_lut_entries - 1),
-    };
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        output[index] = previewF32MathTableLookup(input[index], &table[0], f32_state);
-        output[index + 1] = previewF32MathTableLookup(input[index + 1], &table[1], f32_state);
-        output[index + 2] = previewF32MathTableLookup(input[index + 2], &table[2], f32_state);
-    }
-    const write_elapsed = monotonicNowNs() - write_started;
-
-    return .{
-        .table_build_ns = table_elapsed,
-        .write_ns = write_elapsed,
-    };
-}
-
-const PreviewF32MathState = struct {
-    lo: f32,
-    inv_denominator: f32,
-    scale: f32,
-};
-
-inline fn previewF32MathTableLookup(
-    value: f32,
-    table: *const [render.preview_display_lut_entries]u8,
-    state: PreviewF32MathState,
-) u8 {
-    const normalized = @min(@max((value - state.lo) * state.inv_denominator, 0.0), 1.0);
-    const table_index: usize = @intFromFloat(@round(normalized * state.scale));
-    return table.*[@min(table_index, render.preview_display_lut_entries - 1)];
-}
-
-fn previewF32DisplayState(range: render.LuminanceRange, options: render.RenderToDisplayOptions) PreviewF32DisplayState {
-    const apply_color_balance = @abs(options.color_temp) > 0.001 or @abs(options.color_tint) > 0.001;
-    const multipliers = if (apply_color_balance)
-        colorBalanceMultipliers(options.color_temp, options.color_tint)
-    else
-        [_]f64{ 1.0, 1.0, 1.0 };
-    const apply_exposure = @abs(options.exposure_compensation) > 0.001;
-    const exposure_gamma = if (apply_exposure) 1.0 / (1.0 + options.exposure_compensation) else 1.0;
-    const apply_contrast = options.contrast > 1.001 and (options.contrast - 1.0) * options.curve_k > 0.1;
-    const contrast_k = (options.contrast - 1.0) * options.curve_k;
-    const curve_lo = if (apply_contrast) logistic(contrast_k, 0.0) else 0.0;
-    const curve_hi = if (apply_contrast) logistic(contrast_k, 1.0) else 1.0;
-    _ = options.black_point;
-    return .{
-        .range = range,
-        .denominator = range.hi - range.lo,
-        .multipliers = multipliers,
-        .apply_color_balance = apply_color_balance,
-        .apply_exposure = apply_exposure,
-        .exposure_gamma = exposure_gamma,
-        .apply_contrast = apply_contrast,
-        .contrast_k = contrast_k,
-        .curve_lo = curve_lo,
-        .curve_hi = curve_hi,
-    };
-}
-
-fn fillPreviewDisplayLutU8(table: *[3][render.preview_display_lut_entries]u8, state: PreviewF32DisplayState) void {
-    const denominator = @as(f64, @floatFromInt(render.preview_display_lut_entries - 1));
-    for (0..3) |channel| {
-        for (&table[channel], 0..) |*entry, index| {
-            const input = @as(f64, @floatFromInt(index)) / denominator;
-            entry.* = @intCast(displayToU16(previewDisplayCurveValue(input, channel, state)) >> 8);
-        }
-    }
-}
-
-fn previewDisplayCurveValue(input: f64, channel: usize, state: PreviewF32DisplayState) f64 {
-    var display = input;
-    if (state.apply_color_balance) {
-        display = @max(display * state.multipliers[channel], 0.0);
-    }
-    if (state.apply_exposure) {
-        display = std.math.pow(f64, display, state.exposure_gamma);
-    }
-    if (state.apply_contrast) {
-        const raw = logistic(state.contrast_k, display);
-        display = (raw - state.curve_lo) / (state.curve_hi - state.curve_lo);
-    }
-    return clamp(display, 0.0, 1.0);
-}
-
 fn benchPreviewRenderU8Pair(
     allocator: std.mem.Allocator,
     stdout: anytype,
@@ -1302,78 +1007,6 @@ fn benchPreviewRenderU8Pair(
     );
 }
 
-const RenderBreakdown = struct {
-    allocate_us: u64,
-    luminance_us: u64,
-    sort_us: u64,
-    percentile_us: u64,
-    transform_us: u64,
-    total_us: u64,
-    positive_count: usize,
-    lo: f64,
-    hi: f64,
-};
-
-fn benchPreviewRenderBreakdown(
-    allocator: std.mem.Allocator,
-    stdout: anytype,
-    scan_path: []const u8,
-    loaded: workflow.QuickPreview,
-) !void {
-    const sample_count = try std.math.mul(usize, try std.math.mul(usize, loaded.preview_width, loaded.preview_height), 3);
-    if (loaded.preview_raw.len != sample_count) return error.InvalidPreviewBuffer;
-
-    const raw_f64 = try allocator.alloc(f64, loaded.preview_raw.len);
-    defer allocator.free(raw_f64);
-    for (loaded.preview_raw, raw_f64) |sample, *out| {
-        out.* = @floatFromInt(sample);
-    }
-
-    const scene = try allocator.alloc(f64, raw_f64.len);
-    defer allocator.free(scene);
-    _ = try inversion.invertNegative(allocator, raw_f64, scene, .{
-        .dmin = benchmark_dmin,
-        .coeffs = film_stocks.kodak_gold_coeffs,
-    });
-
-    const reference = try allocator.alloc(u8, sample_count);
-    defer allocator.free(reference);
-    const exact_options: render.RenderToDisplayOptions = .{ .percentile_sample_limit = render.exact_percentile_sample_limit };
-    try render.renderToDisplayU8(allocator, scene, reference, exact_options);
-
-    const measured = try allocator.alloc(u8, sample_count);
-    defer allocator.free(measured);
-    const breakdown = try renderDisplayU8Breakdown(allocator, scene, measured, exact_options);
-    const diff = try compareU8(reference, measured);
-    if (diff.max_abs != 0) return error.RenderBreakdownMismatch;
-
-    const order_stats_us = breakdown.luminance_us + breakdown.sort_us + breakdown.percentile_us;
-    try stdout.print(
-        "preview_render_breakdown,{s},{d},{d},{d},{d},total_us={d};allocate_us={d};luminance_us={d};sort_us={d};percentile_us={d};order_stats_us={d};transform_us={d};positive_count={d};lo={d:.9};hi={d:.9};order_stats_pct_x1000={d};transform_pct_x1000={d};max_abs={d};checksum={d}\n",
-        .{
-            scan_path,
-            loaded.preview_width,
-            loaded.preview_height,
-            loaded.preview_width * loaded.preview_height,
-            breakdown.total_us,
-            breakdown.total_us,
-            breakdown.allocate_us,
-            breakdown.luminance_us,
-            breakdown.sort_us,
-            breakdown.percentile_us,
-            order_stats_us,
-            breakdown.transform_us,
-            breakdown.positive_count,
-            breakdown.lo,
-            breakdown.hi,
-            pctX1000(order_stats_us, breakdown.total_us),
-            pctX1000(breakdown.transform_us, breakdown.total_us),
-            diff.max_abs,
-            checksumU8(measured),
-        },
-    );
-}
-
 fn benchPreviewRenderQuantileTradeoff(
     allocator: std.mem.Allocator,
     stdout: anytype,
@@ -1399,8 +1032,9 @@ fn benchPreviewRenderQuantileTradeoff(
     const exact = try allocator.alloc(u8, sample_count);
     defer allocator.free(exact);
     const exact_options: render.RenderToDisplayOptions = .{ .percentile_sample_limit = render.exact_percentile_sample_limit };
-    const exact_breakdown = try renderDisplayU8Breakdown(allocator, scene, exact, exact_options);
-    const exact_elapsed_us = exact_breakdown.total_us;
+    const exact_started = monotonicNowNs();
+    try render.renderToDisplayU8(allocator, scene, exact, exact_options);
+    const exact_elapsed_us = (monotonicNowNs() - exact_started) / std.time.ns_per_us;
     try stdout.print(
         "preview_render_quantile_tradeoff,{s},{d},{d},{d},{d},mode=exact_f64;sample_limit={d};exact_us={d};scratch_bytes={d};max_abs=0;rms=0;mismatches=0;mismatch_pct_x1000=0;checksum={d}\n",
         .{
@@ -1449,93 +1083,6 @@ fn benchPreviewRenderQuantileTradeoff(
     }
 }
 
-fn renderDisplayU8Breakdown(
-    allocator: std.mem.Allocator,
-    input: []const f64,
-    output: []u8,
-    options: render.RenderToDisplayOptions,
-) !RenderBreakdown {
-    if (input.len == 0 or input.len % 3 != 0 or input.len != output.len) return error.InvalidRenderBuffer;
-    const total_started = monotonicNowNs();
-    const pixel_count = input.len / 3;
-    const allocate_started = monotonicNowNs();
-    const positive = try allocator.alloc(f64, pixel_count);
-    const allocate_elapsed = monotonicNowNs() - allocate_started;
-    defer allocator.free(positive);
-
-    const luminance_started = monotonicNowNs();
-    var count: usize = 0;
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        const luminance = 0.2126 * input[index] + 0.7152 * input[index + 1] + 0.0722 * input[index + 2];
-        if (luminance > 0.001) {
-            positive[count] = luminance;
-            count += 1;
-        }
-    }
-    const luminance_elapsed = monotonicNowNs() - luminance_started;
-
-    var lo: f64 = 0.0;
-    var hi: f64 = 1.0;
-    var sort_elapsed: u64 = 0;
-    var percentile_elapsed: u64 = 0;
-    if (count != 0) {
-        const values = positive[0..count];
-        const sort_started = monotonicNowNs();
-        std.sort.pdq(f64, values, {}, lessThanF64);
-        sort_elapsed = monotonicNowNs() - sort_started;
-
-        const percentile_started = monotonicNowNs();
-        lo = percentileSorted(values, options.percentile_lo);
-        hi = percentileSorted(values, options.percentile_hi);
-        if (hi <= lo) hi = lo + 1.0;
-        percentile_elapsed = monotonicNowNs() - percentile_started;
-    }
-
-    const transform_started = monotonicNowNs();
-    const denominator = hi - lo;
-    const apply_color_balance = @abs(options.color_temp) > 0.001 or @abs(options.color_tint) > 0.001;
-    const multipliers = if (apply_color_balance)
-        colorBalanceMultipliers(options.color_temp, options.color_tint)
-    else
-        [_]f64{ 1.0, 1.0, 1.0 };
-    const apply_exposure = @abs(options.exposure_compensation) > 0.001;
-    const exposure_gamma = if (apply_exposure) 1.0 / (1.0 + options.exposure_compensation) else 1.0;
-    const apply_contrast = options.contrast > 1.001 and (options.contrast - 1.0) * options.curve_k > 0.1;
-    const contrast_k = (options.contrast - 1.0) * options.curve_k;
-    const curve_lo = if (apply_contrast) logistic(contrast_k, 0.0) else 0.0;
-    const curve_hi = if (apply_contrast) logistic(contrast_k, 1.0) else 1.0;
-
-    for (input, output, 0..) |value, *out, sample_index| {
-        var display = clamp((value - lo) / denominator, 0.0, 1.0);
-        if (apply_color_balance) {
-            display = @max(display * multipliers[sample_index % 3], 0.0);
-        }
-        if (apply_exposure) {
-            display = std.math.pow(f64, display, exposure_gamma);
-        }
-        if (apply_contrast) {
-            const raw = logistic(contrast_k, display);
-            display = (raw - curve_lo) / (curve_hi - curve_lo);
-        }
-        out.* = @intCast(displayToU16(display) >> 8);
-    }
-    const transform_elapsed = monotonicNowNs() - transform_started;
-    const total_elapsed = monotonicNowNs() - total_started;
-
-    return .{
-        .allocate_us = allocate_elapsed / std.time.ns_per_us,
-        .luminance_us = luminance_elapsed / std.time.ns_per_us,
-        .sort_us = sort_elapsed / std.time.ns_per_us,
-        .percentile_us = percentile_elapsed / std.time.ns_per_us,
-        .transform_us = transform_elapsed / std.time.ns_per_us,
-        .total_us = total_elapsed / std.time.ns_per_us,
-        .positive_count = count,
-        .lo = lo,
-        .hi = hi,
-    };
-}
-
 fn percentileSorted(values: []const f64, percentile: f64) f64 {
     const rank = (@as(f64, @floatFromInt(values.len - 1)) * percentile) / 100.0;
     const lower: usize = @intFromFloat(@floor(rank));
@@ -1544,23 +1091,8 @@ fn percentileSorted(values: []const f64, percentile: f64) f64 {
     return values[lower] * (1.0 - fraction) + values[upper] * fraction;
 }
 
-fn colorBalanceMultipliers(color_temp: f64, color_tint: f64) [3]f64 {
-    var r_mul = 1.0 + color_temp * 0.5;
-    var b_mul = 1.0 - color_temp * 0.5;
-    var g_mul = 1.0 - color_tint * 0.5;
-    const lum_scale = 0.2126 * r_mul + 0.7152 * g_mul + 0.0722 * b_mul;
-    r_mul /= lum_scale;
-    g_mul /= lum_scale;
-    b_mul /= lum_scale;
-    return .{ r_mul, g_mul, b_mul };
-}
-
 fn displayToU16(display: f64) u16 {
     return @intFromFloat(clamp(display * 65535.0, 0.0, 65535.0));
-}
-
-fn logistic(k: f64, value: f64) f64 {
-    return 1.0 / (1.0 + @exp(-k * (value - 0.5)));
 }
 
 fn clamp(value: f64, lo: f64, hi: f64) f64 {

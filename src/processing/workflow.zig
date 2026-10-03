@@ -2633,13 +2633,15 @@ fn noOutputExportResult(allocator: std.mem.Allocator) !ExportWorkflowResult {
 pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Override) render.RenderToDisplayOptions {
     return .{
         .contrast = config.getParam("render_contrast", current_dpi, overrides).?.asFloat(),
-        .curve_k = config.getParam("render_curve_k", current_dpi, overrides).?.asFloat(),
         .percentile_lo = config.getParam("render_percentile_lo", current_dpi, overrides).?.asFloat(),
         .percentile_hi = config.getParam("render_percentile_hi", current_dpi, overrides).?.asFloat(),
         .exposure_compensation = config.getParam("exposure_compensation", current_dpi, overrides).?.asFloat(),
         .color_temp = config.getParam("color_temp", current_dpi, overrides).?.asFloat(),
         .color_tint = config.getParam("color_tint", current_dpi, overrides).?.asFloat(),
         .auto_white_balance = config.getParam("auto_white_balance", current_dpi, overrides).?.asFloat(),
+        .film_gamma = config.getParam("film_gamma", current_dpi, overrides).?.asFloat(),
+        .film_toe = config.getParam("film_toe", current_dpi, overrides).?.asFloat(),
+        .dye_crosstalk = config.getParam("dye_crosstalk", current_dpi, overrides).?.asFloat(),
     };
 }
 

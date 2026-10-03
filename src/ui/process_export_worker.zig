@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const processing_config = @import("../processing/config.zig");
 const processing_events = @import("../processing/events.zig");
 const processing_export = @import("../processing/export.zig");
+const processing_film_stocks = @import("../processing/film_stocks.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
 const processing_workflow = @import("../processing/workflow.zig");
@@ -588,8 +589,7 @@ fn fakeExportAssertGpuRequest(context: *Context) !void {
 fn fakeExportAssertBuiltinStockCoeffs(context: *Context) !void {
     try std.testing.expectEqualStrings("kodak_gold", context.active_stock.?);
     try std.testing.expect(context.stock_coeffs != null);
-    try std.testing.expectEqual(@as(f64, 1.20), context.stock_coeffs.?[0][0]);
-    try std.testing.expectEqual(@as(f64, -0.06), context.stock_coeffs.?[1][2]);
+    try std.testing.expectEqual(processing_film_stocks.kodak_gold_coeffs, context.stock_coeffs.?);
     context.result = .{
         .message = try context.allocator.dupe(u8, "builtin stock coeffs observed"),
         .files = try context.allocator.alloc([]u8, 0),

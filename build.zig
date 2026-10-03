@@ -314,13 +314,6 @@ pub fn build(b: *std.Build) void {
     const bench_color_step = b.step("bench-color", "Run headless processing color-path benchmarks");
     bench_color_step.dependOn(&bench_color_cmd.step);
 
-    const bench_render_curves = addV600Program(b, root_module, target, optimize, "bench-render-curves", "src/benchmarks/render_curves.zig");
-    const bench_render_curves_cmd = b.addRunArtifact(bench_render_curves);
-    if (b.args) |args| {
-        bench_render_curves_cmd.addArgs(args);
-    }
-    const bench_render_curves_step = b.step("bench-render-curves", "Benchmark preview display curve approximations");
-    bench_render_curves_step.dependOn(&bench_render_curves_cmd.step);
 
     const bench_gpu_readiness_cmd = b.addRunArtifact(bench_color);
     bench_gpu_readiness_cmd.addArg("--gpu-readiness-gate");

@@ -17,14 +17,16 @@ export const frameFormatIds = Object.freeze({
 
 export function defaultRenderConfig(overrides = {}) {
   return {
-    contrast: 1.4,
-    curve_k: 5.0,
+    contrast: 1.8,
     percentile_lo: 0.5,
     percentile_hi: 99.5,
     exposure_compensation: 0.0,
     color_temp: 0.0,
     color_tint: 0.0,
     auto_white_balance: 1.0,
+    film_gamma: 0.55,
+    film_toe: 0.25,
+    dye_crosstalk: 0.2,
     ...overrides,
   };
 }
@@ -89,7 +91,6 @@ export function defaultPreviewOptions({
     dmin_b: dmin[2],
     default_light: 65535.0,
     contrast: renderConfig.contrast,
-    curve_k: renderConfig.curve_k,
     percentile_lo: renderConfig.percentile_lo,
     percentile_hi: renderConfig.percentile_hi,
     exposure_compensation: renderConfig.exposure_compensation,
@@ -97,6 +98,9 @@ export function defaultPreviewOptions({
     color_tint: renderConfig.color_tint,
     percentile_sample_limit: percentileSampleLimit,
     auto_white_balance: renderConfig.auto_white_balance,
+    film_gamma: renderConfig.film_gamma,
+    film_toe: renderConfig.film_toe,
+    dye_crosstalk: renderConfig.dye_crosstalk,
   };
 }
 

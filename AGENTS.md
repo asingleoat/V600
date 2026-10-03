@@ -69,7 +69,7 @@ the preview/scan worker smokes) only run with `V600_HARDWARE_SMOKE=1`; their
 `*-skip` variants check that they stay off otherwise.
 
 Benchmarks: `zig build -Doptimize=ReleaseFast bench-processing-commands`
-(user-visible Process latency), plus `bench-color`, `bench-render-curves`,
+(user-visible Process latency), plus `bench-color`,
 `bench-ir-inpaint`, `bench-gpu-readiness`. WebGPU tools need `-Dwebgpu=true`
 and the `WGPU_NATIVE_*` environment variables from the `webgpu` dev shell.
 
@@ -240,12 +240,16 @@ deliberately, not by accident.
 - Input is 16-bit RGB plus optional IR. IR is usually scanned at lower
   resolution (1:2 or 1:4) and must be aligned before use.
 - Order: transmittance, density, Dmin subtraction (from a rebate selection,
-  or the full image as fallback), film stock transform, scene-linear RGB,
-  tone map, gamut map, sRGB.
-- Display range: each channel gets its own black and white point (its
-  low/high percentiles), moved from the shared luminance range by
-  `auto_white_balance` (default 1, 0 = off): per-frame white balance, since
-  scenes change frame to frame. Temperature and tint adjust on top.
+  or the full image as fallback), film stock transform (channel balance in
+  density), then per frame: automatic white balance (red and blue onto
+  green's density scale through each channel's own black and white points;
+  `auto_white_balance`, default 1), characteristic-curve inversion
+  (`film_gamma` 0.55, softplus toe `film_toe` 0.25) to log exposure, dye
+  crosstalk undone (`dye_crosstalk` 0.2), automatic exposure (log-average to
+  18% grey, plus compensation in stops; temperature/tint as gains), a
+  log-logistic display curve through 18% grey (`render_contrast` 1.8), sRGB.
+  Scene contrast is kept, not stretched per frame. Formulas:
+  `docs/RENDER_TRANSFORM_CLOSED_FORM.md`.
 - Film stocks are 3x10 quadratic polynomials in density space with basis
   `[R, G, B, R^2, G^2, B^2, RG, RB, GB, 1]`. See
   `docs/FILM_STOCK_PROFILES.md`.

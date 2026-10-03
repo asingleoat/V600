@@ -30,9 +30,22 @@ pub const identity_coeffs: Coefficients = .{
     zero_row,
 };
 
-/// Green gain up and blue gain down from the Python profile, which left
-/// neutrals with a blue-purple cast (green about 8/255 low).
-pub const kodak_gold_coeffs: Coefficients = .{
+/// Channel balance only: scanner net density per channel scaled to green's
+/// contrast, from the median per-frame ratio of each channel's density range
+/// to green's (0.5th to 99.5th percentile): the median over the owner's five
+/// normally exposed Kodak Gold 200 rolls on a V600 of each roll's median (84
+/// frames: red 0.768, blue 1.219), inverted and rounded to the four decimals
+/// a saved config keeps.
+/// Rendering undoes crosstalk and, with automatic white balance, aligns each
+/// frame's channels itself; this balance is what is left with it off.
+pub const kodak_gold_coeffs: Coefficients = diagonalCoeffs(1.3021, 1.0, 0.8203);
+
+/// As Kodak Gold, from the owner's one Portra 400 strip (two frames: red
+/// 0.739, blue 1.152), so a rough balance; rounded the same way.
+pub const kodak_portra_coeffs: Coefficients = diagonalCoeffs(1.3532, 1.0, 0.8681);
+
+/// The guessed Kodak Gold matrix before the measured balance.
+pub const kodak_gold_guessed_coeffs: Coefficients = .{
     .{ 1.20, -0.04, 0.0 },
     .{ -0.10, 0.95, -0.06 },
     .{ 0.0, -0.04, 0.98 },
@@ -59,7 +72,8 @@ pub const kodak_gold_python_coeffs: Coefficients = .{
     zero_row,
 };
 
-pub const kodak_portra_coeffs: Coefficients = .{
+/// The guessed Kodak Portra matrix before the measured balance.
+pub const kodak_portra_guessed_coeffs: Coefficients = .{
     .{ 1.15, -0.03, 0.0 },
     .{ -0.08, 0.93, -0.04 },
     .{ 0.0, 0.0, 1.00 },
@@ -77,14 +91,30 @@ pub const builtin_stocks = [_]BuiltinStock{
         .name = "kodak_gold",
         .description = "Kodak Gold 200 on Epson V600",
         .coeffs = kodak_gold_coeffs,
-        .retired = &.{kodak_gold_python_coeffs},
+        .retired = &.{ kodak_gold_python_coeffs, kodak_gold_guessed_coeffs },
     },
     .{
         .name = "kodak_portra",
         .description = "Kodak Portra 400 on Epson V600",
         .coeffs = kodak_portra_coeffs,
+        .retired = &.{kodak_portra_guessed_coeffs},
     },
 };
+
+fn diagonalCoeffs(red: f64, green: f64, blue: f64) Coefficients {
+    return .{
+        .{ red, 0.0, 0.0 },
+        .{ 0.0, green, 0.0 },
+        .{ 0.0, 0.0, blue },
+        zero_row,
+        zero_row,
+        zero_row,
+        zero_row,
+        zero_row,
+        zero_row,
+        zero_row,
+    };
+}
 
 const zero_row = [_]f64{ 0.0, 0.0, 0.0 };
 
@@ -266,13 +296,16 @@ test "preserves selected identity and stock polynomial outputs" {
     try expectChannels(.{ 0.2, 0.3, 0.4 }, applyLinearTerms(identity_coeffs, .{
         0.2, 0.3, 0.4,
     }));
-    try expectChannels(.{ 1.20, -0.04, 0.0 }, applyBasis(kodak_gold_coeffs, .{
+    try expectChannels(.{ 1.3021, 0.0, 0.0 }, applyBasis(kodak_gold_coeffs, .{
         1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     }));
-    try expectChannels(.{ -0.10, 0.95, -0.06 }, applyBasis(kodak_gold_coeffs, .{
+    try expectChannels(.{ 0.0, 1.0, 0.0 }, applyBasis(kodak_gold_coeffs, .{
         0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     }));
-    try expectChannels(.{ 1.15, -0.03, 0.0 }, applyBasis(kodak_portra_coeffs, .{
+    try expectChannels(.{ 1.20, -0.04, 0.0 }, applyBasis(kodak_gold_guessed_coeffs, .{
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    }));
+    try expectChannels(.{ 1.3532, 0.0, 0.0 }, applyBasis(kodak_portra_coeffs, .{
         1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     }));
 }

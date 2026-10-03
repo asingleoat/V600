@@ -1143,14 +1143,15 @@ fn appendConfigValue(builder: *StateBuilder, value: processing_config.Value) !vo
 
 fn appendRenderOptions(builder: *StateBuilder, options: processing_render.RenderToDisplayOptions) !void {
     try builder.appendF64(options.contrast);
-    try builder.appendF64(options.black_point);
-    try builder.appendF64(options.curve_k);
     try builder.appendF64(options.percentile_lo);
     try builder.appendF64(options.percentile_hi);
     try builder.appendF64(options.exposure_compensation);
     try builder.appendF64(options.color_temp);
     try builder.appendF64(options.color_tint);
     try builder.appendF64(options.auto_white_balance);
+    try builder.appendF64(options.film_gamma);
+    try builder.appendF64(options.film_toe);
+    try builder.appendF64(options.dye_crosstalk);
     try builder.appendUsize(options.percentile_sample_limit);
 }
 

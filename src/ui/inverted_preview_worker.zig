@@ -251,14 +251,15 @@ pub fn renderOptionsEqual(
     b: processing_render.RenderToDisplayOptions,
 ) bool {
     return a.contrast == b.contrast and
-        a.black_point == b.black_point and
-        a.curve_k == b.curve_k and
         a.percentile_lo == b.percentile_lo and
         a.percentile_hi == b.percentile_hi and
         a.exposure_compensation == b.exposure_compensation and
         a.color_temp == b.color_temp and
         a.color_tint == b.color_tint and
         a.auto_white_balance == b.auto_white_balance and
+        a.film_gamma == b.film_gamma and
+        a.film_toe == b.film_toe and
+        a.dye_crosstalk == b.dye_crosstalk and
         a.percentile_sample_limit == b.percentile_sample_limit;
 }
 

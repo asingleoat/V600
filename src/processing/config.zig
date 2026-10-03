@@ -266,14 +266,16 @@ pub const defaults = [_]ParamDefault{
     .{ .name = "ir_blur_size", .value = .{ .integer = 301 }, .section = .dust_removal, .dpi_scale = .linear },
     .{ .name = "ir_max_coverage", .value = .{ .float = 0.03 }, .section = .dust_removal },
     .{ .name = "inpaint_padding", .value = .{ .integer = 16 }, .section = .dust_removal, .dpi_scale = .linear },
-    .{ .name = "render_contrast", .value = .{ .float = 1.4 }, .section = .render },
-    .{ .name = "render_curve_k", .value = .{ .float = 5.0 }, .section = .render },
+    .{ .name = "render_contrast", .value = .{ .float = 1.8 }, .section = .render },
     .{ .name = "render_percentile_lo", .value = .{ .float = 0.5 }, .section = .render },
     .{ .name = "render_percentile_hi", .value = .{ .float = 99.5 }, .section = .render },
     .{ .name = "exposure_compensation", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "color_temp", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "color_tint", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "auto_white_balance", .value = .{ .float = 1.0 }, .section = .render },
+    .{ .name = "film_gamma", .value = .{ .float = 0.55 }, .section = .render },
+    .{ .name = "film_toe", .value = .{ .float = 0.25 }, .section = .render },
+    .{ .name = "dye_crosstalk", .value = .{ .float = 0.2 }, .section = .render },
     .{ .name = "preview_size", .value = .{ .integer = 8192 } },
     .{ .name = "clahe_clip", .value = .{ .float = 2.0 } },
 };
@@ -289,14 +291,16 @@ pub const comments = [_]ParamComment{
     .{ .name = "ir_blur_size", .text = "Background blur kernel in pixels at 800 DPI" },
     .{ .name = "ir_max_coverage", .text = "Sanity cap: max fraction of image flagged as defects" },
     .{ .name = "inpaint_padding", .text = "Context padding in pixels at 800 DPI" },
-    .{ .name = "render_contrast", .text = "S-curve contrast strength: 1.0=linear, 2.0=punchy" },
-    .{ .name = "render_curve_k", .text = "S-curve steepness multiplier" },
-    .{ .name = "render_percentile_lo", .text = "Low percentile for display range normalization" },
-    .{ .name = "render_percentile_hi", .text = "High percentile for display range normalization" },
-    .{ .name = "exposure_compensation", .text = "Density-domain exposure shift: positive=brighter" },
-    .{ .name = "color_temp", .text = "Color temperature: positive=warmer, negative=cooler" },
-    .{ .name = "color_tint", .text = "Color tint: positive=magenta, negative=green" },
+    .{ .name = "render_contrast", .text = "Display curve contrast through 18% grey: 1=gentle, higher=punchier" },
+    .{ .name = "render_percentile_lo", .text = "Low percentile for each channel's black point (white balance)" },
+    .{ .name = "render_percentile_hi", .text = "High percentile for each channel's white point (white balance)" },
+    .{ .name = "exposure_compensation", .text = "Exposure in stops on top of automatic exposure: positive=brighter" },
+    .{ .name = "color_temp", .text = "Color temperature, about half a stop per unit: positive=warmer, negative=cooler" },
+    .{ .name = "color_tint", .text = "Color tint, about half a stop per unit: positive=magenta, negative=green" },
     .{ .name = "auto_white_balance", .text = "Per-frame white balance from each channel's black and white points: 0=off, 1=full" },
+    .{ .name = "film_gamma", .text = "Film contrast: net density per decade of exposure on the straight part of its curve" },
+    .{ .name = "film_toe", .text = "Width of the film's toe in decades of exposure" },
+    .{ .name = "dye_crosstalk", .text = "Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)" },
     .{ .name = "clahe_clip", .text = "CLAHE clip limit for preview contrast enhancement" },
     .{ .name = "dmin", .text = "Film base density [R, G, B]" },
     .{ .name = "ir_clean", .text = "Enable IR dust/scratch removal" },
@@ -713,7 +717,7 @@ fn appendPythonFloat(out: *std.array_list.Managed(u8), value: f64) !void {
 
 test "preserves processing config default order, values, and types" {
     try std.testing.expectEqual(@as(u32, 800), reference_dpi);
-    try std.testing.expectEqual(@as(usize, 18), defaults.len);
+    try std.testing.expectEqual(@as(usize, 20), defaults.len);
     try std.testing.expectEqualStrings("scratchndent_config.toml", config_file);
 
     try defaultValue("ir_threshold").?.expectEqual(.{ .float = 0.10 });
@@ -724,14 +728,16 @@ test "preserves processing config default order, values, and types" {
     try defaultValue("ir_blur_size").?.expectEqual(.{ .integer = 301 });
     try defaultValue("ir_max_coverage").?.expectEqual(.{ .float = 0.03 });
     try defaultValue("inpaint_padding").?.expectEqual(.{ .integer = 16 });
-    try defaultValue("render_contrast").?.expectEqual(.{ .float = 1.4 });
-    try defaultValue("render_curve_k").?.expectEqual(.{ .float = 5.0 });
+    try defaultValue("render_contrast").?.expectEqual(.{ .float = 1.8 });
     try defaultValue("render_percentile_lo").?.expectEqual(.{ .float = 0.5 });
     try defaultValue("render_percentile_hi").?.expectEqual(.{ .float = 99.5 });
     try defaultValue("exposure_compensation").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("color_temp").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("color_tint").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("auto_white_balance").?.expectEqual(.{ .float = 1.0 });
+    try defaultValue("film_gamma").?.expectEqual(.{ .float = 0.55 });
+    try defaultValue("film_toe").?.expectEqual(.{ .float = 0.25 });
+    try defaultValue("dye_crosstalk").?.expectEqual(.{ .float = 0.2 });
     try defaultValue("preview_size").?.expectEqual(.{ .integer = 8192 });
     try defaultValue("clahe_clip").?.expectEqual(.{ .float = 2.0 });
 
@@ -747,7 +753,7 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 24), comments.len);
+    try std.testing.expectEqual(@as(usize, 26), comments.len);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);
     try std.testing.expectEqualStrings("Show inverted preview instead of CLAHE", comment("preview_inversion").?);
@@ -780,7 +786,7 @@ test "scales processing params with Python get_param semantics" {
     try getParam("ir_blur_size", 1600, &.{}).?.expectEqual(.{ .integer = 603 });
     try getParam("ir_blur_size", 400, &.{}).?.expectEqual(.{ .integer = 151 });
 
-    try getParam("render_contrast", 1600, &.{}).?.expectEqual(.{ .float = 1.4 });
+    try getParam("render_contrast", 1600, &.{}).?.expectEqual(.{ .float = 1.8 });
     try getParam("ir_dilate_radius", null, &.{}).?.expectEqual(.{ .integer = 4 });
     try getParam("ir_dilate_radius", 0, &.{}).?.expectEqual(.{ .integer = 4 });
     try std.testing.expect(getParam("missing", 800, &.{}) == null);
@@ -858,7 +864,7 @@ test "parses and preserves config-defined film stock profiles" {
 
     const gold = loaded.availableStock("kodak_gold").?;
     try std.testing.expectEqualStrings("Kodak Gold 200 on Epson V600", gold.descriptionSlice().?);
-    try std.testing.expectEqual(@as(f64, 1.20), gold.coeffs[0][0]);
+    try std.testing.expectEqual(film_stocks.kodak_gold_coeffs[0][0], gold.coeffs[0][0]);
     try std.testing.expect(loaded.availableStock("missing") == null);
 
     const actual = try serialize(allocator, loaded);
@@ -876,13 +882,13 @@ test "incomplete built-in stock profiles fall back to compiled coefficients" {
     const gold = loaded.availableStock("kodak_gold").?;
     try std.testing.expect(gold.has_coeffs);
     try std.testing.expectEqualStrings("Runtime profile without coefficients", gold.descriptionSlice().?);
-    try std.testing.expectEqual(@as(f64, 1.20), gold.coeffs[0][0]);
-    try std.testing.expectEqual(@as(f64, -0.06), gold.coeffs[1][2]);
+    try std.testing.expectEqual(@as(f64, 1.3021), gold.coeffs[0][0]);
+    try std.testing.expectEqual(@as(f64, 0.0), gold.coeffs[1][2]);
 
     const actual = try serialize(allocator, loaded);
     defer allocator.free(actual);
     try std.testing.expect(std.mem.indexOf(u8, actual, "Runtime profile without coefficients") == null);
-    try std.testing.expect(std.mem.indexOf(u8, actual, "[  1.2000,  -0.0400,   0.0000],  # R") != null);
+    try std.testing.expect(std.mem.indexOf(u8, actual, "[  1.3021,   0.0000,   0.0000],  # R") != null);
 }
 
 test "unedited copies of built-in profiles follow the compiled coefficients" {
@@ -904,7 +910,7 @@ test "unedited copies of built-in profiles follow the compiled coefficients" {
     const saved = try serialize(allocator, loaded);
     defer allocator.free(saved);
     try std.testing.expect(std.mem.indexOf(u8, saved, "# [stocks.kodak_gold]\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "#     [ -0.1000,   0.9500,  -0.0600],  # G\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "#     [  0.0000,   1.0000,   0.0000],  # G\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, saved, "\n[stocks.kodak_portra]\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, saved, "0.9000") == null);
 
