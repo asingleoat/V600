@@ -865,16 +865,14 @@ test "automatic exposure renders a uniform grey at 18 percent and compensation i
 }
 
 test "crosstalk grows colour differences in log exposure by one over one minus it" {
-    var transform: DisplayTransform = undefined;
-    transform.scale = .{ 1.0, 1.0, 1.0 };
-    transform.offset = .{ 0.0, 0.0, 0.0 };
-    transform.inv_gamma_toe = 1.0 / (0.55 * 0.25);
-    transform.toe = 0.25;
-    transform.chroma_gain = 1.0;
+    const transform = try std.testing.allocator.create(DisplayTransform);
+    defer std.testing.allocator.destroy(transform);
+    var neutral = [_]f64{ 0.5, 0.5, 0.5 };
+    try buildDisplayTransform(f64, std.testing.allocator, &neutral, .{ .dye_crosstalk = 0.0 }, transform);
     const pixel = [3]f64{ 0.9, 0.6, 0.4 };
-    const plain = displayLogExposure(&transform, pixel);
+    const plain = displayLogExposure(transform, pixel);
     transform.chroma_gain = 1.0 / (1.0 - 0.2);
-    const unmixed = displayLogExposure(&transform, pixel);
+    const unmixed = displayLogExposure(transform, pixel);
     const mean = (plain[0] + plain[1] + plain[2]) / 3.0;
     for (plain, unmixed) |before, after| {
         try std.testing.expectApproxEqAbs((before - mean) / 0.8, after - mean, 1e-12);
