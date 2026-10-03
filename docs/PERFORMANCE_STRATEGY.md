@@ -75,16 +75,18 @@ preview `1738x8192`. `scan_0006_rgbir_800dpi.tiff`: quick preview `1272x6031`.
 
 | Case (`--case`) | Input | Work | Latest | Date |
 | --- | --- | --- | ---: | --- |
-| `render` (`render_synthetic`) | synthetic | 1,048,576 pixels | 30.602 ms | 2026-10-02 |
+| `render` (`render_synthetic`) | synthetic | 1,048,576 pixels | 14.154 ms | 2026-10-03 |
 | `load_preview` | scan_0004 | quick preview | 639072 us | 2026-05-19 |
-| `inverted_preview` | scan_0006 | first-use inverted preview | 94002 us | 2026-10-02 |
+| `inverted_preview` | scan_0006 | first-use inverted preview | 60998 us | 2026-10-03 |
 | `auto_detect` | scan_0004 | 5 frames, aspect 24:36 | 172900 us | 2026-05-19 |
 | `auto_detect_breakdown` | scan_0004 | staged, parity-checked `detect_us` | 146591 us | 2026-05-19 or later |
 | `rebate` (`rebate_dmin`) | scan_0004 | full-resolution rebate Dmin | 431103 us | 2026-05-19 |
 | `export_inv_only` | scan_0006 | one 764x1145 frame, one file | 323.828 ms | 2026-05-17 |
 | `export_all` | scan_0006 | one 764x1145 frame, three files | 2364.064 ms | 2026-05-17 |
 | `export_detected_frames` | scan_0004 | 5 full-resolution frames, `inv_only`, 5 workers | 665669 us | 2026-05-19 |
-| `export_detected_frames_ir_all_breakdown` | scan_0004 | 5 frames, 15 files, IR align | 30366888 us | undated |
+| `export_detected_frames_ir_all_breakdown` | scan_0004 | 5 frames, 15 files, IR align | 13366626 us | 2026-10-03 |
+| `export_detected_frames_ir_all_breakdown` | 6x7 strip, 6400 dpi (Mac) | 2 frames, 6 files, `--format 6x7 --frames 0` | 88883402 us | 2026-10-03 |
+| `export_detected_frames_ir_all_breakdown` | 35mm strip, 6400 dpi (Mac) | 5 frames, 15 files | 52392648 us | 2026-10-03 |
 
 Major wins (scan_0004 unless noted):
 
@@ -99,7 +101,13 @@ Major wins (scan_0004 unless noted):
 - `export_detected_frames`: `5981208 us` to `665669 us` (`8.986x`); that
   baseline was already parallel (serial `18125889 us`).
 - `export_detected_frames_ir_all_breakdown`: `190808106 us` to
-  `30366888 us` wall; not exact (f32 adaptive dust).
+  `30366888 us` wall; not exact (f32 adaptive dust). Then the IR passes in
+  parallel and a parallel TIFF writer, exact up to the render table below:
+  scan_0004 `34952197 us` to `13366626 us` (`2.61x`); on the Mac a 6400 dpi
+  6x7 strip `243550453 us` to `88883402 us` (`2.74x`), a 35mm strip
+  `99645089 us` to `52392648 us` (`1.90x`).
+- `inverted_preview` after the current display transform: `94801 us` to
+  `60998 us` (`1.55x`), low-density curve table and smaller render bands.
 - `process_rgb_page_cache_sequence`: `1932655 us` to `1120225 us` (`1.725x`).
 - `process_result_cache_repeat`: `701955 us` to `15230 us` (`46.090x`).
 - Scanner capability reuse: native preview smoke `46437116 us` to
@@ -116,6 +124,16 @@ percentile-stretch S-curve, since replaced by the current display transform):
   1/64 to 4, exact outside it: adopted, synthetic render `76964 us` to
   `30602 us` (`2.5x`), final `u16` `max_abs=1` (RMS `0.076` at most) against
   the exact inversion on real previews.
+- A second table below 1/64, 256 cells per octave indexed by the density's
+  bits: adopted. Strip previews had 37% of channel values there (film base,
+  thin shadows), each paying `expm1` and `log`. Render on scan_0006's
+  preview `32.5` to `19.7` ns per pixel on one thread; against the previous
+  build, final `u16` `max_abs=1` (RMS `0.0253`, `0.064%` of samples, at
+  most) on three 6400 dpi frames and two whole 800 dpi strips; `u8`
+  `max_abs=1`.
+- Render threads per 256Ki pixels instead of per million (a strip preview
+  had 7 of 31), and the display curve's constant `K^p` computed once per
+  table: adopted, exact.
 - Exact `pdq` sort for render, Dmin, IR, detector percentiles: adopted, exact.
 - 16,384-sample f32 luminance range plus 256-entry display LUT: adopted, `u8`
   `max_abs=1`, RMS `0.364`. Approved by the owner for performance; applies
@@ -149,6 +167,9 @@ Preview load, export, caches:
 - Rebate Dmin cropped from TIFF samples: adopted, same Dmin.
 - Native `RgbPageCache` (1 GiB, two slots, LRU) and result caches (quick
   preview, Dmin, auto-detect, inverted preview): adopted, exact replay.
+- Deflate TIFF strips compressed on all cores with zlib and written raw in
+  order: adopted, same pixels, files `0.4%` smaller than libtiff's libdeflate
+  output; the 6x7 strip's six 1.45 GB files `75.6 s` to `31.3 s`.
 
 `auto_detect`:
 
@@ -194,6 +215,28 @@ IR cleaning (`ir.zig`):
 - `f32_down4_coarse`: parked, non-default, pending an owner decision.
   `1.279x` export wall, IoU `99.281%`, final TIFF RMS `83.164927`, mismatch
   rate `2.729%`.
+
+Measured on the 6x7 strip above unless noted; all exact (the six exported
+TIFFs decode identically, or equal tests against the one-pass code):
+
+- Morphology over row bands in parallel: adopted; close `26.7 s` to
+  `3.5 s`, dilate `8.8 s` to `1.2 s`.
+- f32 Gaussian, vertical pass in 64-column tiles down all rows (the kernel
+  window stays in cache) and horizontal pass on four interleaved vectors:
+  adopted; one 7000x8600 pass with a 1205 kernel on 9 threads, vertical
+  `3.9 s` to `0.7 s`, horizontal `1.3 s` to `1.1 s`; adaptive dust `44.5 s`
+  to `16.0 s`. Tiles one output row at a time: no gain (memory-bound).
+- Meijering filters and eigenvalues over row bands: adopted, `9.7 s` to
+  `1.8 s`.
+- ECC preparation (maxima, grey, u8 copy, resizes) over row bands on the
+  native side; `ir_pure` stays single-threaded for Wasm: adopted, IR
+  alignment `7.8 s` to `1.2 s`.
+- Defect fills in parallel by levels (a fill waits only for fills whose
+  padded regions it touches): adopted; one frame's fills `18.6 s` to `6.1 s`
+  on the Mac. macOS's OpenBLAS takes one lock per BLAS call, so SuperLU runs
+  at most four solves at once there (nine at once took `10.1 s`); Linux runs
+  every thread (`2.0 s` on 16). Per-thread arenas and one-thread OpenBLAS
+  changed nothing.
 
 GPU, browser, scanner:
 
@@ -329,9 +372,14 @@ split.
 - RGB TIFF page reads: about `314019 us` in `load_preview_breakdown` and
   `load_full_us=325067` in export on scan_0004. The native page cache avoids
   repeats; first reads and CLI runs still pay it.
-- RGB+IR export is the slowest command (`30366888 us`). Adaptive dust leads
-  (`83048463 us` aggregate), then close and dilate. `f32_down4_coarse` awaits
+- RGB+IR export is the slowest command (`13366626 us` on scan_0004).
+  Adaptive dust leads (`27518442 us` aggregate), then line detection and
+  close. On the Mac 6x7 strip, writing leads (`31345250 us`, zlib), then
+  adaptive dust and the fills (about `16 s` each). `f32_down4_coarse` awaits
   a decision.
+- Row-band passes take every core even when frames export in parallel: on
+  scan_0004 (5 frames at once) line detection went from `6.1 s` to `6.7 s`
+  aggregate while the export as a whole sped up `2.61x`.
 - `auto_detect`: film extent is the largest stage (`47.4%` average after the
   eighth pass); binary close is its largest substage.
 - Adaptive dust variants were judged by mask overlap with the f64 detector:

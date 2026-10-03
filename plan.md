@@ -81,6 +81,13 @@ Open:
   one-off scripts used so far.
 - The Kodak Portra balance comes from two frames; re-measure it once more
   Portra is scanned.
+- Export speed on macOS: SuperLU's BLAS there is an OpenBLAS with one lock
+  around its buffer pool, so dust fills run at most four solves at once (a
+  6x7 frame's fills take 6.1 s, against 2.0 s on 16 Linux threads). SuperLU
+  on Accelerate or its internal BLAS would lift that, at a rounding-level
+  change to the fills. The TIFF writer uses zlib because libdeflate is not on
+  the link line; libdeflate is faster at the same ratio, and writing is now
+  the largest stage of a 6x7 export (31 s of 89 s for six files).
 - `companion-smoke` fails on macOS: its fake `scanimage` drives the Linux
   scanner path. It should skip there.
 - IR dust removal, open points from its audit:
