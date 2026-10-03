@@ -395,7 +395,10 @@ pub fn exportInvertProvidedDminU16ToU16(
         lut,
         coeffs,
     );
-    try render.renderToDisplayU16F32(allocator, scene, output, renderOptions(options));
+    // Exports render one frame crop: measure its colour inside the frame.
+    var render_options = renderOptions(options);
+    render_options.frame_width = options.width;
+    try render.renderToDisplayU16F32(allocator, scene, output, render_options);
 }
 
 pub fn detectFramesRgb16(

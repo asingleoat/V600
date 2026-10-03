@@ -248,8 +248,9 @@ deliberately, not by accident.
   crosstalk undone (`dye_crosstalk` 0.2), automatic exposure (log-average to
   18% grey, plus compensation in stops; temperature/tint as gains), a
   log-logistic display curve through 18% grey (`render_contrast` 1.8), sRGB.
-  Scene contrast is kept, not stretched per frame. Formulas:
-  `docs/RENDER_TRANSFORM_CLOSED_FORM.md`.
+  Scene contrast is kept, not stretched per frame. A frame crop's white
+  balance and exposure are measured on its inner 95% each way, clear of
+  film-border slivers. Formulas: `docs/RENDER_TRANSFORM_CLOSED_FORM.md`.
 - Film stocks are 3x10 quadratic polynomials in density space with basis
   `[R, G, B, R^2, G^2, B^2, RG, RB, GB, 1]`. See
   `docs/FILM_STOCK_PROFILES.md`.

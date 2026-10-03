@@ -41,7 +41,18 @@ pub const RenderToDisplayOptions = struct {
     /// exposure grow by 1 / (1 - dye_crosstalk).
     dye_crosstalk: f64 = 0.2,
     percentile_sample_limit: usize = default_percentile_sample_limit,
+    /// The width of the frame being rendered, when the image is one frame:
+    /// the white balance and exposure are then measured inside it, leaving
+    /// out the slivers of film border a frame crop takes in. 0 measures the
+    /// whole image.
+    frame_width: usize = 0,
 };
+
+/// The share of a frame's width and height left out on each side when
+/// measuring it (`RenderToDisplayOptions.frame_width`): enough for the film
+/// border slivers of real crops; more starts to drop picture (5% shifted a
+/// Portra frame's balance as much as its edge lettering did).
+const frame_measure_inset: f64 = 0.025;
 
 pub fn sigmoidTonemapValue(value: f64, options: SigmoidTonemapOptions) f64 {
     if (value <= 0.0) return options.black_point;
@@ -291,15 +302,17 @@ fn buildDisplayTransform(
         entry.* = @floatCast(displayCurve(std.math.pow(f64, 10.0, log_exposure), options.contrast));
     }
 
-    const pixel_count = input.len / 3;
-    const sample_count = percentileSampleCount(pixel_count, options.percentile_sample_limit);
+    const region = measureRegion(input.len / 3, options.frame_width);
+    const region_count = region.width * region.height;
+    const sample_count = percentileSampleCount(region_count, options.percentile_sample_limit);
     const values = try allocator.alloc(f32, sample_count * 3);
     defer allocator.free(values);
     const pixels = try allocator.alloc(usize, sample_count);
     defer allocator.free(pixels);
     var count: usize = 0;
     for (0..sample_count) |sample_index| {
-        const pixel = if (sample_count == pixel_count) sample_index else stratifiedPixelIndex(pixel_count, sample_count, sample_index);
+        const region_index = if (sample_count == region_count) sample_index else stratifiedPixelIndex(region_count, sample_count, sample_index);
+        const pixel = (region.y + region_index / region.width) * region.stride + region.x + region_index % region.width;
         const index = pixel * 3;
         const r: f64 = @as(f64, input[index]);
         const g: f64 = @as(f64, input[index + 1]);
@@ -362,6 +375,33 @@ fn buildDisplayTransform(
     for (&transform.log_offset, shifts) |*offset, shift| {
         offset.* = exposure + shift - shift_mean;
     }
+}
+
+const MeasureRegion = struct {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    stride: usize,
+};
+
+fn measureRegion(pixel_count: usize, frame_width: usize) MeasureRegion {
+    if (frame_width == 0 or pixel_count % frame_width != 0) {
+        return .{ .x = 0, .y = 0, .width = pixel_count, .height = 1, .stride = pixel_count };
+    }
+    const frame_height = pixel_count / frame_width;
+    const inset_x: usize = @intFromFloat(@floor(@as(f64, @floatFromInt(frame_width)) * frame_measure_inset));
+    const inset_y: usize = @intFromFloat(@floor(@as(f64, @floatFromInt(frame_height)) * frame_measure_inset));
+    if (2 * inset_x >= frame_width or 2 * inset_y >= frame_height) {
+        return .{ .x = 0, .y = 0, .width = frame_width, .height = frame_height, .stride = frame_width };
+    }
+    return .{
+        .x = inset_x,
+        .y = inset_y,
+        .width = frame_width - 2 * inset_x,
+        .height = frame_height - 2 * inset_y,
+        .stride = frame_width,
+    };
 }
 
 fn validateRenderOptions(options: RenderToDisplayOptions) !void {
@@ -841,6 +881,38 @@ test "crosstalk grows colour differences in log exposure by one over one minus i
     }
     // Far above the toe the curve is a straight line of slope gamma.
     try std.testing.expectApproxEqAbs(@as(f64, 2.0), filmLogExposure(1.1, transform.inv_gamma_toe, transform.toe), 1e-3);
+}
+
+test "a frame's colour is measured inside it, not on the film border" {
+    // A 200x100 neutral ramp with a strongly coloured 2 px border all round.
+    const width = 200;
+    const height = 100;
+    var rgb: [width * height * 3]f64 = undefined;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            const index = (y * width + x) * 3;
+            const density = 0.05 + 1.2 * @as(f64, @floatFromInt(x)) / @as(f64, @floatFromInt(width - 1));
+            const border = x < 2 or y < 2 or x >= width - 2 or y >= height - 2;
+            rgb[index] = if (border) 2.5 else density;
+            rgb[index + 1] = if (border) 0.01 else density;
+            rgb[index + 2] = if (border) 0.01 else density;
+        }
+    }
+    var whole: [rgb.len]u16 = undefined;
+    var framed: [rgb.len]u16 = undefined;
+    try renderToDisplay(std.testing.allocator, &rgb, &whole, .{ .percentile_lo = 0.0, .percentile_hi = 100.0 });
+    try renderToDisplay(std.testing.allocator, &rgb, &framed, .{ .percentile_lo = 0.0, .percentile_hi = 100.0, .frame_width = width });
+    // Inside the border the measured frame stays neutral; measured whole, the
+    // border's red tilts it.
+    const inner_spread = struct {
+        fn of(out: []const u16) u16 {
+            var spread: u16 = 0;
+            for (2..height - 2) |y| spread = @max(spread, maxChannelSpread(out[(y * width + 2) * 3 .. (y * width + width - 2) * 3]));
+            return spread;
+        }
+    }.of;
+    try std.testing.expect(inner_spread(&framed) <= 2);
+    try std.testing.expect(inner_spread(&whole) > 2000);
 }
 
 test "the curve table follows the exact curve inversion" {

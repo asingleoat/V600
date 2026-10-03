@@ -50,6 +50,12 @@ Confirmed by the owner, 2026-09-28:
   the film plane at exposure time is part of the picture (dark specks in
   the positive, invisible to the IR); removing it belongs in downstream
   image editing, not in scanning or scan processing. (2026-10-02)
+- Frame orientation stays manual (per roll, edited by hand): whether a frame
+  is portrait or landscape needs the picture's content recognized, which is
+  more trouble than it is worth to automate. (2026-10-02)
+- UNKNOWNSTOCK_0 is from a disposable camera whose film stock is unknown; it
+  keeps the Kodak Gold profile and automatic white balance handles its
+  balance (its blue range is about green's, against Gold's 1.2x). (2026-10-02)
 
 Recorded in the May-July log; correct anything that is wrong:
 
@@ -69,6 +75,14 @@ Open:
 
 ### Bugs
 
+- Colour tuning has no repeatable check on real frames, the way framing has
+  `roll check-frames`: a `roll check-colour` reporting casts per tone band,
+  channel density ratios, and dust-fill statistics would replace the
+  one-off scripts used so far.
+- The Kodak Portra balance comes from two frames; re-measure it once more
+  Portra is scanned.
+- `companion-smoke` fails on macOS: its fake `scanimage` drives the Linux
+  scanner path. It should skip there.
 - IR dust removal, open points from its audit:
   - Alignment applies whatever translation ECC returns:
     `AlignOptions.max_offset` is never used and the correlation is not

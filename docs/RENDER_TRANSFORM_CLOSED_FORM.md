@@ -70,7 +70,9 @@ s_c = max(sum_i coeff[i,c] * basis[i], 0)
 
 Pixels with `Y = 0.2126*s_r + 0.7152*s_g + 0.0722*s_b > 0.001` take part. The
 fast path uses a deterministic stratified sample (16,384 pixels by default);
-exact mode uses every pixel.
+exact mode uses every pixel. When the image is one frame crop (exports), only
+its inner 95% in each direction is measured, leaving out the slivers of film
+border a crop takes in; previews of a whole strip measure everything.
 
 Each channel's black and white point are its own percentiles:
 

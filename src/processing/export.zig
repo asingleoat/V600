@@ -510,6 +510,14 @@ pub fn applyRotationU16(
     return .{ .width = out_width, .height = out_height, .channels = channels, .pixels = output };
 }
 
+/// Render options for one frame crop: its colour statistics come from inside
+/// the frame, not the film border at its edges.
+fn frameRenderOptions(options: render.RenderToDisplayOptions, width: usize) render.RenderToDisplayOptions {
+    var frame = options;
+    frame.frame_width = width;
+    return frame;
+}
+
 pub fn prepareRgbNegativeOutput(allocator: std.mem.Allocator, raw_crop: Image, rotation: i32) !Image {
     return applyRotation(allocator, raw_crop.pixels, raw_crop.width, raw_crop.height, raw_crop.channels, rotation);
 }
@@ -625,7 +633,7 @@ pub fn prepareInvertedPositiveOutput(
 
     const rendered_u16 = try allocator.alloc(u16, crop.pixels.len);
     defer allocator.free(rendered_u16);
-    try render.renderToDisplay(allocator, scene_linear, rendered_u16, render_options);
+    try render.renderToDisplay(allocator, scene_linear, rendered_u16, frameRenderOptions(render_options, crop.width));
 
     const rendered = try allocator.alloc(f64, crop.pixels.len);
     defer allocator.free(rendered);
@@ -680,7 +688,7 @@ pub fn prepareInvertedPositiveOutputU16WithTimings(
     const rendered_u16 = try allocator.alloc(u16, crop.pixels.len);
     errdefer allocator.free(rendered_u16);
     const render_started = monotonicNowNs();
-    try render.renderToDisplay(allocator, scene_linear, rendered_u16, render_options);
+    try render.renderToDisplay(allocator, scene_linear, rendered_u16, frameRenderOptions(render_options, crop.width));
     if (timings) |out| out.render_ns += monotonicNowNs() - render_started;
 
     if (rotation != 90 and rotation != 180 and rotation != 270) {
@@ -721,7 +729,7 @@ fn prepareInvertedPositiveOutputU16F32DensityLutWithTimings(
     const rendered_u16 = try allocator.alloc(u16, crop.pixels.len);
     errdefer allocator.free(rendered_u16);
     const render_started = monotonicNowNs();
-    try render.renderToDisplayU16F32(allocator, scene_linear, rendered_u16, render_options);
+    try render.renderToDisplayU16F32(allocator, scene_linear, rendered_u16, frameRenderOptions(render_options, crop.width));
     if (timings) |out| out.render_ns += monotonicNowNs() - render_started;
 
     if (rotation != 90 and rotation != 180 and rotation != 270) {
@@ -752,7 +760,7 @@ fn prepareInvertedSceneF32OutputU16WithTimings(
     const rendered_u16 = try allocator.alloc(u16, scene_linear.pixels.len);
     errdefer allocator.free(rendered_u16);
     const render_started = monotonicNowNs();
-    try render.renderToDisplayU16F32(allocator, scene_linear.pixels, rendered_u16, render_options);
+    try render.renderToDisplayU16F32(allocator, scene_linear.pixels, rendered_u16, frameRenderOptions(render_options, scene_linear.width));
     if (timings) |out| out.render_ns += monotonicNowNs() - render_started;
 
     if (rotation != 90 and rotation != 180 and rotation != 270) {
