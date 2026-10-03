@@ -1,7 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const c = @cImport({
     @cInclude("tiffio.h");
+    @cInclude("zlib.h");
     @cInclude("time.h");
 });
 
@@ -527,7 +529,121 @@ fn writeImageDirectory(
         try setAsciiField(tiff, c.TIFFTAG_DATETIME, datetime_z.ptr);
     }
 
-    try writeImageData(tiff, image, rows_per_strip);
+    const parallel_deflate = options.compression == .deflate and builtin.cpu.arch.endian() == .little and
+        (image.bits_per_sample == 8 or image.bits_per_sample == 16);
+    if (parallel_deflate) {
+        try writeDeflateStripsParallel(allocator, tiff, image, rows_per_strip);
+    } else {
+        try writeImageData(tiff, image, rows_per_strip);
+    }
+}
+
+/// Deflate with horizontal differencing, as libtiff encodes it (zlib level
+/// 6 on each strip's differenced rows), but strips compressed on several
+/// threads and handed to libtiff as raw strips in order. Exports are
+/// hundreds of megabytes, and libtiff compresses one strip at a time.
+fn writeDeflateStripsParallel(allocator: std.mem.Allocator, tiff: *c.TIFF, image: ImageView, rows_per_strip: u32) !void {
+    const scanline = image.data.len / @max(image.height, 1);
+    const strip_bytes = @as(usize, rows_per_strip) * scanline;
+    const strip_count = (image.data.len + strip_bytes - 1) / strip_bytes;
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const worker_count = @max(1, @min(strip_count, if (cpu_count > 1) cpu_count - 1 else 1));
+    const batch = @min(strip_count, worker_count * 2);
+    const bound: usize = c.compressBound(@intCast(strip_bytes));
+
+    const slots = try allocator.alloc(DeflateSlot, batch);
+    defer allocator.free(slots);
+    const buffers = try allocator.alloc(u8, batch * (strip_bytes + bound));
+    defer allocator.free(buffers);
+    for (slots, 0..) |*slot, index| {
+        const base = index * (strip_bytes + bound);
+        slot.* = .{ .scratch = buffers[base..][0..strip_bytes], .compressed = buffers[base + strip_bytes ..][0..bound] };
+    }
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+
+    var first: usize = 0;
+    while (first < strip_count) : (first += batch) {
+        const count = @min(batch, strip_count - first);
+        for (slots[0..count], first..) |*slot, strip| {
+            const offset = strip * strip_bytes;
+            slot.source = image.data[offset..][0..@min(strip_bytes, image.data.len - offset)];
+            slot.scanline = scanline;
+            slot.samples_per_pixel = image.samples_per_pixel;
+            slot.bits_per_sample = image.bits_per_sample;
+            slot.compressed_len = 0;
+            slot.failed = false;
+        }
+        const workers = @min(worker_count, count);
+        var started: usize = 0;
+        errdefer for (threads[0..started]) |thread| thread.join();
+        for (0..workers) |worker| {
+            threads[worker] = try std.Thread.spawn(.{}, compressDeflateSlots, .{ slots[0..count], worker, workers });
+            started += 1;
+        }
+        for (threads[0..workers]) |thread| thread.join();
+        for (slots[0..count], first..) |slot, strip| {
+            if (slot.failed) return error.TiffWriteFailed;
+            if (c.TIFFWriteRawStrip(tiff, @intCast(strip), @constCast(slot.compressed.ptr), @intCast(slot.compressed_len)) < 0) {
+                return error.TiffWriteFailed;
+            }
+        }
+    }
+    if (c.TIFFWriteDirectory(tiff) == 0) return error.TiffWriteFailed;
+}
+
+const DeflateSlot = struct {
+    source: []const u8 = &.{},
+    scratch: []u8,
+    compressed: []u8,
+    compressed_len: usize = 0,
+    scanline: usize = 0,
+    samples_per_pixel: u16 = 0,
+    bits_per_sample: u16 = 0,
+    failed: bool = false,
+};
+
+fn compressDeflateSlots(slots: []DeflateSlot, worker: usize, workers: usize) void {
+    var index = worker;
+    while (index < slots.len) : (index += workers) {
+        const slot = &slots[index];
+        const scratch = slot.scratch[0..slot.source.len];
+        horizontalDifference(slot.source, scratch, slot.scanline, slot.samples_per_pixel, slot.bits_per_sample);
+        var compressed_len: c.uLongf = @intCast(slot.compressed.len);
+        if (c.compress2(slot.compressed.ptr, &compressed_len, scratch.ptr, @intCast(scratch.len), 6) != c.Z_OK) {
+            slot.failed = true;
+            continue;
+        }
+        slot.compressed_len = @intCast(compressed_len);
+    }
+}
+
+/// libtiff's horizontal predictor: each sample minus the same channel of
+/// the pixel before it, row by row, wrapping.
+fn horizontalDifference(source: []const u8, output: []u8, scanline: usize, samples_per_pixel: u16, bits_per_sample: u16) void {
+    var row: usize = 0;
+    while (row < source.len) : (row += scanline) {
+        const in_row = source[row..][0..scanline];
+        const out_row = output[row..][0..scanline];
+        switch (bits_per_sample) {
+            16 => {
+                const stride: usize = samples_per_pixel;
+                const samples = scanline / 2;
+                for (0..samples) |i| {
+                    const value = std.mem.readInt(u16, in_row[i * 2 ..][0..2], .little);
+                    const previous = if (i >= stride) std.mem.readInt(u16, in_row[(i - stride) * 2 ..][0..2], .little) else 0;
+                    std.mem.writeInt(u16, out_row[i * 2 ..][0..2], value -% previous, .little);
+                }
+            },
+            8 => {
+                const stride: usize = samples_per_pixel;
+                for (0..scanline) |i| {
+                    out_row[i] = in_row[i] -% (if (i >= stride) in_row[i - stride] else 0);
+                }
+            },
+            else => unreachable,
+        }
+    }
 }
 
 fn setImageFields(tiff: *c.TIFF, image: ImageView, rows_per_strip: u32, compression: Compression) !void {
@@ -1254,6 +1370,33 @@ test "deflate TIFFs round-trip 16-bit RGB across strips with metadata, DPI, and 
 
     const stat = try std.Io.Dir.cwd().statFile(std.testing.io, path, .{});
     try std.testing.expect(stat.size < samples.len * 2);
+}
+
+test "deflate TIFFs round-trip 8-bit RGB with an odd width across strips" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/deflate8.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(path);
+    const width = 1999;
+    const height = 1500;
+    const samples = try allocator.alloc(u8, width * height * 3);
+    defer allocator.free(samples);
+    var prng = std.Random.DefaultPrng.init(800);
+    for (samples, 0..) |*sample, index| {
+        sample.* = @truncate((index / 3) % width + prng.random().uintLessThan(u8, 16));
+    }
+    try writeImage(allocator, path, .{
+        .width = width,
+        .height = height,
+        .samples_per_pixel = 3,
+        .bits_per_sample = 8,
+        .data = samples,
+    }, .{ .compression = .deflate });
+    const image = try loadRgbPage(allocator, path);
+    defer image.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, samples, image.data);
 }
 
 test "reads Python write_tiff exported frame metadata fixture" {
