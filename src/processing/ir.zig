@@ -96,6 +96,8 @@ pub const InpaintOptions = struct {
     padding: usize = 16,
     grain_padding: usize = 8,
     value_kind: InpaintValueKind = .uint16,
+    /// Threads for filling independent defects at once (same result).
+    worker_count: usize = 1,
 };
 
 pub const IrCleanOptions = struct {
@@ -174,7 +176,19 @@ pub fn alignIr(
         return .{ .tx = tx, .ty = ty, .shifted = false };
     }
 
-    applyTranslation(f64, ir, ir_width, ir_height, output, tx, ty);
+    const Shift = struct {
+        ir: []const f64,
+        width: usize,
+        height: usize,
+        output: []f64,
+        tx: f64,
+        ty: f64,
+
+        fn rows(shift: @This(), row_start: usize, row_end: usize) void {
+            applyTranslationRows(f64, shift.ir, shift.width, shift.height, shift.output, shift.tx, shift.ty, row_start, row_end);
+        }
+    };
+    try parallelism.forRowBands(allocator, ir_height, Shift{ .ir = ir, .width = ir_width, .height = ir_height, .output = output, .tx = tx, .ty = ty }, Shift.rows);
     return .{
         .tx = tx,
         .ty = ty,
@@ -712,21 +726,9 @@ fn meijeringLineResponseWithBackend(
         } else {
             try hessianGaussian(allocator, source, width, height, @floatFromInt(sigma), hrr, hrc, hcc);
         }
+        try parallelism.forRowBands(allocator, height, MeijeringValues{ .hrr = hrr, .hrc = hrc, .hcc = hcc, .values = values, .width = width }, MeijeringValues.rows);
         var max_value: f64 = 0.0;
-        for (0..image.len) |index| {
-            const trace_half = (hrr[index] + hcc[index]) * 0.5;
-            const delta_half = (hrr[index] - hcc[index]) * 0.5;
-            const root = @sqrt(hrc[index] * hrc[index] + delta_half * delta_half);
-            const eig0 = trace_half + root;
-            const eig1 = trace_half - root;
-            const alpha = 1.0 / 3.0;
-            const val0 = eig0 + alpha * eig1;
-            const val1 = alpha * eig0 + eig1;
-            const selected = if (@abs(val0) >= @abs(val1)) val0 else val1;
-            const value = @max(selected, 0.0);
-            values[index] = value;
-            max_value = @max(max_value, value);
-        }
+        for (values) |value| max_value = @max(max_value, value);
         if (max_value > 0.0) {
             for (values, output) |value, *out| {
                 out.* = @max(out.*, value / max_value);
@@ -734,6 +736,29 @@ fn meijeringLineResponseWithBackend(
         }
     }
 }
+
+const MeijeringValues = struct {
+    hrr: []const f64,
+    hrc: []const f64,
+    hcc: []const f64,
+    values: []f64,
+    width: usize,
+
+    fn rows(pass: MeijeringValues, row_start: usize, row_end: usize) void {
+        for (row_start * pass.width..row_end * pass.width) |index| {
+            const trace_half = (pass.hrr[index] + pass.hcc[index]) * 0.5;
+            const delta_half = (pass.hrr[index] - pass.hcc[index]) * 0.5;
+            const root = @sqrt(pass.hrc[index] * pass.hrc[index] + delta_half * delta_half);
+            const eig0 = trace_half + root;
+            const eig1 = trace_half - root;
+            const alpha = 1.0 / 3.0;
+            const val0 = eig0 + alpha * eig1;
+            const val1 = alpha * eig0 + eig1;
+            const selected = if (@abs(val0) >= @abs(val1)) val0 else val1;
+            pass.values[index] = @max(selected, 0.0);
+        }
+    }
+};
 
 pub fn applyMaskMorphology(
     allocator: std.mem.Allocator,
@@ -1169,89 +1194,210 @@ pub fn inpaintBiharmonicWithGrainFromNoiseTimed(
         return 0;
     }
 
+    // Each component's fill reads the image around it, so one depends on
+    // an earlier one only when either lies in the other's padded region.
+    // Components on one level have no such link and fill in parallel; the
+    // levels go in order, so every fill sees what a one-by-one pass shows it.
+    const plans = try allocator.alloc(InpaintPlan, components.items.len);
+    defer allocator.free(plans);
     var noise_offset: usize = 0;
-    for (components.items) |component| {
+    var max_level: usize = 0;
+    for (components.items, plans, 0..) |component, *plan, index| {
         const x0 = component.left -| options.padding;
         const y0 = component.top -| options.padding;
         const x1 = addClampedLimit(component.right, options.padding, width);
         const y1 = addClampedLimit(component.bottom, options.padding, height);
-        const roi_width = x1 - x0;
-        const roi_height = y1 - y0;
-        const roi_pixels = roi_width * roi_height;
-        const roi_values = roi_pixels * channels;
+        const roi_values = (x1 - x0) * (y1 - y0) * channels;
         if (captured_noise.len - noise_offset < roi_values) return error.InvalidIrInpaintNoise;
-
-        const roi_rgb = try allocator.alloc(f64, roi_values);
-        defer allocator.free(roi_rgb);
-        const roi_mask = try allocator.alloc(u8, roi_pixels);
-        defer allocator.free(roi_mask);
-
-        const roi_started = monotonicNowNs();
-        for (0..roi_height) |ry| {
-            for (0..roi_width) |rx| {
-                const source_pixel = (y0 + ry) * width + (x0 + rx);
-                const roi_pixel = ry * roi_width + rx;
-                roi_mask[roi_pixel] = if (labels[source_pixel] == component.label) 255 else 0;
-                for (0..channels) |channel| {
-                    roi_rgb[roi_pixel * channels + channel] = normalizedStorageValue(
-                        output[source_pixel * channels + channel],
-                        options.value_kind,
-                    );
-                }
-            }
-        }
-        if (timings) |out| out.inpaint_roi_extract_ns += monotonicNowNs() - roi_started;
-
-        const grain_started = monotonicNowNs();
-        const estimate = try estimateLocalGrain(allocator, roi_rgb, roi_mask, roi_width, roi_height, options.grain_padding);
-        if (timings) |out| out.local_grain_ns += monotonicNowNs() - grain_started;
-        defer estimate.deinit(allocator);
-
-        const repaired_signal = try allocator.alloc(f64, roi_values);
-        defer allocator.free(repaired_signal);
-        const biharmonic_started = monotonicNowNs();
-        try biharmonicInpaint(allocator, estimate.signal, roi_mask, roi_width, roi_height, channels, repaired_signal);
-        for (repaired_signal) |*value| {
-            value.* = roundF32(value.*);
-        }
-        if (timings) |out| out.biharmonic_ns += monotonicNowNs() - biharmonic_started;
-
-        const grain = try allocator.alloc(f64, roi_values);
-        defer allocator.free(grain);
-        const component_noise = captured_noise[noise_offset..][0..roi_values];
+        plan.* = .{ .component = component, .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1, .noise_offset = noise_offset };
         noise_offset += roi_values;
-        const synth_started = monotonicNowNs();
-        try synthesizeGrainFromNoise(
-            allocator,
-            component_noise,
-            roi_width,
-            roi_height,
-            estimate.grain_std[0..],
-            estimate.spectrum,
-            channels,
-            grain,
-        );
-        if (timings) |out| out.grain_synthesis_ns += monotonicNowNs() - synth_started;
+        for (plans[0..index]) |earlier| {
+            if (inpaintPlansConflict(earlier, plan.*)) plan.level = @max(plan.level, earlier.level + 1);
+        }
+        max_level = @max(max_level, plan.level);
+    }
+    if (noise_offset != captured_noise.len) return error.InvalidIrInpaintNoise;
 
-        const writeback_started = monotonicNowNs();
-        for (0..roi_height) |ry| {
-            for (0..roi_width) |rx| {
-                const roi_pixel = ry * roi_width + rx;
-                if (roi_mask[roi_pixel] == 0) continue;
-                const dest_pixel = (y0 + ry) * width + (x0 + rx);
-                for (0..channels) |channel| {
-                    const index = roi_pixel * channels + channel;
-                    const repaired_with_grain = roundF32(repaired_signal[index] + grain[index]);
-                    const scaled = roundF32(repaired_with_grain * storageMax(options.value_kind));
-                    output[dest_pixel * channels + channel] = castClippedStorageValue(scaled, options.value_kind);
-                }
+    const job: InpaintJob = .{
+        .labels = labels,
+        .output = output,
+        .width = width,
+        .captured_noise = captured_noise,
+        .options = options,
+    };
+    const level_plans = try allocator.alloc(usize, plans.len);
+    defer allocator.free(level_plans);
+    for (0..max_level + 1) |level| {
+        var count: usize = 0;
+        for (plans, 0..) |plan, index| {
+            if (plan.level == level) {
+                level_plans[count] = index;
+                count += 1;
             }
         }
-        if (timings) |out| out.masked_writeback_ns += monotonicNowNs() - writeback_started;
+        try inpaintLevel(allocator, job, plans, level_plans[0..count], timings);
     }
-
-    if (noise_offset != captured_noise.len) return error.InvalidIrInpaintNoise;
     return components.items.len;
+}
+
+const InpaintPlan = struct {
+    component: MaskComponent,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    noise_offset: usize,
+    level: usize = 0,
+};
+
+const InpaintJob = struct {
+    labels: []const usize,
+    output: []f64,
+    width: usize,
+    captured_noise: []const f64,
+    options: InpaintOptions,
+};
+
+fn inpaintPlansConflict(a: InpaintPlan, b: InpaintPlan) bool {
+    return boxTouchesRegion(a.component, b) or boxTouchesRegion(b.component, a);
+}
+
+fn boxTouchesRegion(component: MaskComponent, plan: InpaintPlan) bool {
+    return component.left < plan.x1 and component.right >= plan.x0 and component.top < plan.y1 and component.bottom >= plan.y0;
+}
+
+fn inpaintLevel(
+    allocator: std.mem.Allocator,
+    job: InpaintJob,
+    plans: []const InpaintPlan,
+    indices: []const usize,
+    timings: ?*IrCleanTimings,
+) !void {
+    const worker_count = if (comptime parallelism.enabled) @min(job.options.worker_count, indices.len) else 1;
+    if (worker_count <= 1) {
+        for (indices) |index| try inpaintComponent(allocator, job, plans[index], timings);
+        return;
+    }
+    const Worker = struct {
+        allocator: std.mem.Allocator,
+        job: InpaintJob,
+        plans: []const InpaintPlan,
+        indices: []const usize,
+        next: *std.atomic.Value(usize),
+        timings: IrCleanTimings = .{},
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            while (true) {
+                const slot = self.next.fetchAdd(1, .monotonic);
+                if (slot >= self.indices.len) return;
+                inpaintComponent(self.allocator, self.job, self.plans[self.indices[slot]], &self.timings) catch |err| {
+                    self.err = err;
+                    return;
+                };
+            }
+        }
+    };
+    var next = std.atomic.Value(usize).init(0);
+    const workers = try allocator.alloc(Worker, worker_count);
+    defer allocator.free(workers);
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+    var started: usize = 0;
+    errdefer for (threads[0..started]) |thread| thread.join();
+    for (workers, threads) |*worker, *thread| {
+        worker.* = .{ .allocator = allocator, .job = job, .plans = plans, .indices = indices, .next = &next };
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{worker});
+        started += 1;
+    }
+    for (threads) |thread| thread.join();
+    for (workers) |worker| {
+        if (worker.err) |err| return err;
+        if (timings) |out| out.add(worker.timings);
+    }
+}
+
+fn inpaintComponent(allocator: std.mem.Allocator, job: InpaintJob, plan: InpaintPlan, timings: ?*IrCleanTimings) !void {
+    const channels: usize = 3;
+    const component = plan.component;
+    const labels = job.labels;
+    const output = job.output;
+    const width = job.width;
+    const captured_noise = job.captured_noise;
+    const options = job.options;
+    const x0 = plan.x0;
+    const y0 = plan.y0;
+    const roi_width = plan.x1 - plan.x0;
+    const roi_height = plan.y1 - plan.y0;
+    const roi_pixels = roi_width * roi_height;
+    const roi_values = roi_pixels * channels;
+
+    const roi_rgb = try allocator.alloc(f64, roi_values);
+    defer allocator.free(roi_rgb);
+    const roi_mask = try allocator.alloc(u8, roi_pixels);
+    defer allocator.free(roi_mask);
+
+    const roi_started = monotonicNowNs();
+    for (0..roi_height) |ry| {
+        for (0..roi_width) |rx| {
+            const source_pixel = (y0 + ry) * width + (x0 + rx);
+            const roi_pixel = ry * roi_width + rx;
+            roi_mask[roi_pixel] = if (labels[source_pixel] == component.label) 255 else 0;
+            for (0..channels) |channel| {
+                roi_rgb[roi_pixel * channels + channel] = normalizedStorageValue(
+                    output[source_pixel * channels + channel],
+                    options.value_kind,
+                );
+            }
+        }
+    }
+    if (timings) |out| out.inpaint_roi_extract_ns += monotonicNowNs() - roi_started;
+
+    const grain_started = monotonicNowNs();
+    const estimate = try estimateLocalGrain(allocator, roi_rgb, roi_mask, roi_width, roi_height, options.grain_padding);
+    if (timings) |out| out.local_grain_ns += monotonicNowNs() - grain_started;
+    defer estimate.deinit(allocator);
+
+    const repaired_signal = try allocator.alloc(f64, roi_values);
+    defer allocator.free(repaired_signal);
+    const biharmonic_started = monotonicNowNs();
+    try biharmonicInpaint(allocator, estimate.signal, roi_mask, roi_width, roi_height, channels, repaired_signal);
+    for (repaired_signal) |*value| {
+        value.* = roundF32(value.*);
+    }
+    if (timings) |out| out.biharmonic_ns += monotonicNowNs() - biharmonic_started;
+
+    const grain = try allocator.alloc(f64, roi_values);
+    defer allocator.free(grain);
+    const component_noise = captured_noise[plan.noise_offset..][0..roi_values];
+    const synth_started = monotonicNowNs();
+    try synthesizeGrainFromNoise(
+        allocator,
+        component_noise,
+        roi_width,
+        roi_height,
+        estimate.grain_std[0..],
+        estimate.spectrum,
+        channels,
+        grain,
+    );
+    if (timings) |out| out.grain_synthesis_ns += monotonicNowNs() - synth_started;
+
+    const writeback_started = monotonicNowNs();
+    for (0..roi_height) |ry| {
+        for (0..roi_width) |rx| {
+            const roi_pixel = ry * roi_width + rx;
+            if (roi_mask[roi_pixel] == 0) continue;
+            const dest_pixel = (y0 + ry) * width + (x0 + rx);
+            for (0..channels) |channel| {
+                const index = roi_pixel * channels + channel;
+                const repaired_with_grain = roundF32(repaired_signal[index] + grain[index]);
+                const scaled = roundF32(repaired_with_grain * storageMax(options.value_kind));
+                output[dest_pixel * channels + channel] = castClippedStorageValue(scaled, options.value_kind);
+            }
+        }
+    }
+    if (timings) |out| out.masked_writeback_ns += monotonicNowNs() - writeback_started;
 }
 
 pub fn inpaintBiharmonicWithGrain(
@@ -1667,7 +1813,11 @@ fn validateAlignmentInputs(
 }
 
 pub fn applyTranslation(comptime T: type, ir: []const T, width: usize, height: usize, output: []T, tx: f64, ty: f64) void {
-    for (0..height) |y| {
+    applyTranslationRows(T, ir, width, height, output, tx, ty, 0, height);
+}
+
+fn applyTranslationRows(comptime T: type, ir: []const T, width: usize, height: usize, output: []T, tx: f64, ty: f64, row_start: usize, row_end: usize) void {
+    for (row_start..row_end) |y| {
         for (0..width) |x| {
             const sample_x = @as(f64, @floatFromInt(x)) + tx;
             const sample_y = @as(f64, @floatFromInt(y)) + ty;
@@ -2497,6 +2647,27 @@ fn gaussianHorizontalRowsF32(
             }
             output[row + x] = sum;
         }
+        // Four neighbouring vectors at a time: each output's sum is one
+        // chain of dependent adds, so interleaving independent chains keeps
+        // the adder busy without changing any output's order of terms.
+        while (x + gaussian_horizontal_vectors * gaussian_simd_width_f32 <= x_interior_end) : (x += gaussian_horizontal_vectors * gaussian_simd_width_f32) {
+            const base = row + x;
+            var sums: [gaussian_horizontal_vectors]GaussianVecF32 = undefined;
+            inline for (0..gaussian_horizontal_vectors) |v| {
+                sums[v] = loadGaussianVecF32(input, base + v * gaussian_simd_width_f32) * @as(GaussianVecF32, @splat(center_weight));
+            }
+            var d: usize = 1;
+            while (d <= radius) : (d += 1) {
+                const weight: GaussianVecF32 = @splat(pair_weights[d - 1]);
+                inline for (0..gaussian_horizontal_vectors) |v| {
+                    const at = base + v * gaussian_simd_width_f32;
+                    sums[v] += (loadGaussianVecF32(input, at - d) + loadGaussianVecF32(input, at + d)) * weight;
+                }
+            }
+            inline for (0..gaussian_horizontal_vectors) |v| {
+                storeGaussianVecF32(output, base + v * gaussian_simd_width_f32, sums[v]);
+            }
+        }
         while (x + gaussian_simd_width_f32 <= x_interior_end) : (x += gaussian_simd_width_f32) {
             const base = row + x;
             var sum = loadGaussianVecF32(input, base) * @as(GaussianVecF32, @splat(center_weight));
@@ -2541,53 +2712,74 @@ fn gaussianVerticalRowsF32(
     row_end: usize,
 ) void {
     const y_interior_end = if (height > radius) height - radius else 0;
+    // A tile of columns down all the rows, then the next tile: the kernel's
+    // window over one tile stays in cache as it slides down, where a whole
+    // image row's window does not. Every output still sums the same terms in
+    // the same order.
+    var x: usize = 0;
+    while (x + gaussian_vertical_tile <= width) : (x += gaussian_vertical_tile) {
+        for (row_start..row_end) |y| {
+            const interior = y >= @min(radius, height) and y < y_interior_end;
+            gaussianVerticalTileF32(input, output, width, height, radius, center_weight, pair_weights, y, y * width + x, x, interior, gaussian_vertical_tile_vectors);
+        }
+    }
+    while (x + gaussian_simd_width_f32 <= width) : (x += gaussian_simd_width_f32) {
+        for (row_start..row_end) |y| {
+            const interior = y >= @min(radius, height) and y < y_interior_end;
+            gaussianVerticalTileF32(input, output, width, height, radius, center_weight, pair_weights, y, y * width + x, x, interior, 1);
+        }
+    }
     for (row_start..row_end) |y| {
         const row = y * width;
-        if (y < @min(radius, height) or y >= y_interior_end) {
-            var x: usize = 0;
-            while (x + gaussian_simd_width_f32 <= width) : (x += gaussian_simd_width_f32) {
-                var sum = loadGaussianVecF32(input, row + x) * @as(GaussianVecF32, @splat(center_weight));
-                var d: usize = 1;
-                while (d <= radius) : (d += 1) {
-                    const delta: i32 = @intCast(d);
-                    const sy_top = reflect101Index(@as(i32, @intCast(y)) - delta, height);
-                    const sy_bottom = reflect101Index(@as(i32, @intCast(y)) + delta, height);
-                    const pair = loadGaussianVecF32(input, sy_top * width + x) + loadGaussianVecF32(input, sy_bottom * width + x);
-                    sum += pair * @as(GaussianVecF32, @splat(pair_weights[d - 1]));
-                }
-                storeGaussianVecF32(output, row + x, sum);
+        const interior = y >= @min(radius, height) and y < y_interior_end;
+        for (x..width) |column| {
+            var sum: f32 = input[row + column] * center_weight;
+            var d: usize = 1;
+            while (d <= radius) : (d += 1) {
+                const top = if (interior) y - d else reflect101Index(@as(i32, @intCast(y)) - @as(i32, @intCast(d)), height);
+                const bottom = if (interior) y + d else reflect101Index(@as(i32, @intCast(y)) + @as(i32, @intCast(d)), height);
+                sum += (input[top * width + column] + input[bottom * width + column]) * pair_weights[d - 1];
             }
-            while (x < width) : (x += 1) {
-                var sum: f32 = input[row + x] * center_weight;
-                var d: usize = 1;
-                while (d <= radius) : (d += 1) {
-                    const delta: i32 = @intCast(d);
-                    const sy_top = reflect101Index(@as(i32, @intCast(y)) - delta, height);
-                    const sy_bottom = reflect101Index(@as(i32, @intCast(y)) + delta, height);
-                    sum += (input[sy_top * width + x] + input[sy_bottom * width + x]) * pair_weights[d - 1];
-                }
-                output[row + x] = sum;
-            }
-        } else {
-            var x: usize = 0;
-            while (x + gaussian_simd_width_f32 <= width) : (x += gaussian_simd_width_f32) {
-                var sum = loadGaussianVecF32(input, row + x) * @as(GaussianVecF32, @splat(center_weight));
-                var d: usize = 1;
-                while (d <= radius) : (d += 1) {
-                    const pair = loadGaussianVecF32(input, (y - d) * width + x) + loadGaussianVecF32(input, (y + d) * width + x);
-                    sum += pair * @as(GaussianVecF32, @splat(pair_weights[d - 1]));
-                }
-                storeGaussianVecF32(output, row + x, sum);
-            }
-            while (x < width) : (x += 1) {
-                var sum: f32 = input[row + x] * center_weight;
-                var d: usize = 1;
-                while (d <= radius) : (d += 1) {
-                    sum += (input[(y - d) * width + x] + input[(y + d) * width + x]) * pair_weights[d - 1];
-                }
-                output[row + x] = sum;
-            }
+            output[row + column] = sum;
         }
+    }
+}
+
+const gaussian_vertical_tile_vectors: usize = 8;
+const gaussian_horizontal_vectors: usize = 4;
+const gaussian_vertical_tile: usize = gaussian_vertical_tile_vectors * gaussian_simd_width_f32;
+
+inline fn gaussianVerticalTileF32(
+    input: []const f32,
+    output: []f32,
+    width: usize,
+    height: usize,
+    radius: usize,
+    center_weight: f32,
+    pair_weights: []const f32,
+    y: usize,
+    base: usize,
+    x: usize,
+    interior: bool,
+    comptime vectors: usize,
+) void {
+    var sums: [vectors]GaussianVecF32 = undefined;
+    inline for (0..vectors) |v| {
+        sums[v] = loadGaussianVecF32(input, base + v * gaussian_simd_width_f32) * @as(GaussianVecF32, @splat(center_weight));
+    }
+    var d: usize = 1;
+    while (d <= radius) : (d += 1) {
+        const top = if (interior) y - d else reflect101Index(@as(i32, @intCast(y)) - @as(i32, @intCast(d)), height);
+        const bottom = if (interior) y + d else reflect101Index(@as(i32, @intCast(y)) + @as(i32, @intCast(d)), height);
+        const weight: GaussianVecF32 = @splat(pair_weights[d - 1]);
+        inline for (0..vectors) |v| {
+            const offset = x + v * gaussian_simd_width_f32;
+            const pair = loadGaussianVecF32(input, top * width + offset) + loadGaussianVecF32(input, bottom * width + offset);
+            sums[v] += pair * weight;
+        }
+    }
+    inline for (0..vectors) |v| {
+        storeGaussianVecF32(output, base + v * gaussian_simd_width_f32, sums[v]);
     }
 }
 
@@ -2799,10 +2991,23 @@ fn gaussianFilterAxis(
     defer allocator.free(kernel);
     const radius: usize = kernel.len / 2;
 
-    switch (axis) {
-        .x => gaussianFilterAxisX(input, width, height, output, kernel, radius),
-        .y => gaussianFilterAxisY(input, width, height, output, kernel, radius),
-    }
+    const Pass = struct {
+        input: []const f64,
+        width: usize,
+        height: usize,
+        output: []f64,
+        kernel: []const f64,
+        radius: usize,
+        axis: Axis,
+
+        fn rows(pass: @This(), row_start: usize, row_end: usize) void {
+            switch (pass.axis) {
+                .x => gaussianFilterAxisX(pass.input, pass.width, pass.height, pass.output, pass.kernel, pass.radius, row_start, row_end),
+                .y => gaussianFilterAxisY(pass.input, pass.width, pass.height, pass.output, pass.kernel, pass.radius, row_start, row_end),
+            }
+        }
+    };
+    try parallelism.forRowBands(allocator, height, Pass{ .input = input, .width = width, .height = height, .output = output, .kernel = kernel, .radius = radius, .axis = axis }, Pass.rows);
 }
 
 fn gaussianFilterAxisScalar(
@@ -2872,10 +3077,12 @@ fn gaussianFilterAxisX(
     output: []f64,
     kernel: []const f64,
     radius: usize,
+    row_start: usize,
+    row_end: usize,
 ) void {
     const left_end = @min(radius, width);
     const interior_end = if (width > radius) width - radius else 0;
-    for (0..height) |y| {
+    for (row_start..row_end) |y| {
         const row = y * width;
         var x: usize = 0;
         while (x < left_end) : (x += 1) {
@@ -2902,9 +3109,11 @@ fn gaussianFilterAxisY(
     output: []f64,
     kernel: []const f64,
     radius: usize,
+    row_start: usize,
+    row_end: usize,
 ) void {
     const radius_i: i32 = @intCast(radius);
-    for (0..height) |y| {
+    for (row_start..row_end) |y| {
         const out_row = y * width;
         var x: usize = 0;
         while (x + gaussian_simd_width <= width) : (x += gaussian_simd_width) {
@@ -3102,33 +3311,66 @@ fn reflect101Index(index: i32, len: usize) usize {
 }
 
 fn dilateMask(allocator: std.mem.Allocator, input: []const u8, width: usize, height: usize, output: []u8, radius: usize) !void {
-    const spans = try ellipseKernelRowSpans(allocator, radius);
-    defer allocator.free(spans);
-    const height_i: i32 = @intCast(height);
-    @memset(output, 0);
-    for (0..height) |y| {
-        const y_i: i32 = @intCast(y);
-        const out_row = output[y * width ..][0..width];
-        for (spans) |span| {
-            const sy = y_i + span.y_offset;
-            if (sy < 0 or sy >= height_i) continue;
-            applyDilationSpan(input[@as(usize, @intCast(sy)) * width ..][0..width], out_row, span.x_min, span.x_max);
-        }
-    }
+    try morphologyMask(allocator, input, width, height, output, radius, .dilate);
 }
 
 fn erodeMask(allocator: std.mem.Allocator, input: []const u8, width: usize, height: usize, output: []u8, radius: usize) !void {
+    try morphologyMask(allocator, input, width, height, output, radius, .erode);
+}
+
+const MorphologyOp = enum { dilate, erode };
+
+/// Each output row reads only input rows, so row bands run in parallel and
+/// give the same mask as one pass.
+fn morphologyMask(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    width: usize,
+    height: usize,
+    output: []u8,
+    radius: usize,
+    op: MorphologyOp,
+) !void {
     const spans = try ellipseKernelRowSpans(allocator, radius);
     defer allocator.free(spans);
+    const Pass = struct {
+        input: []const u8,
+        width: usize,
+        height: usize,
+        output: []u8,
+        spans: []const KernelRowSpan,
+        op: MorphologyOp,
+
+        fn rows(pass: @This(), row_start: usize, row_end: usize) void {
+            morphologyRows(pass.input, pass.width, pass.height, pass.output, pass.spans, pass.op, row_start, row_end);
+        }
+    };
+    try parallelism.forRowBands(allocator, height, Pass{ .input = input, .width = width, .height = height, .output = output, .spans = spans, .op = op }, Pass.rows);
+}
+
+fn morphologyRows(
+    input: []const u8,
+    width: usize,
+    height: usize,
+    output: []u8,
+    spans: []const KernelRowSpan,
+    op: MorphologyOp,
+    row_start: usize,
+    row_end: usize,
+) void {
     const height_i: i32 = @intCast(height);
-    @memset(output, 255);
-    for (0..height) |y| {
+    @memset(output[row_start * width .. row_end * width], if (op == .dilate) 0 else 255);
+    for (row_start..row_end) |y| {
         const y_i: i32 = @intCast(y);
         const out_row = output[y * width ..][0..width];
         for (spans) |span| {
             const sy = y_i + span.y_offset;
             if (sy < 0 or sy >= height_i) continue;
-            applyErosionSpan(input[@as(usize, @intCast(sy)) * width ..][0..width], out_row, span.x_min, span.x_max);
+            const in_row = input[@as(usize, @intCast(sy)) * width ..][0..width];
+            switch (op) {
+                .dilate => applyDilationSpan(in_row, out_row, span.x_min, span.x_max),
+                .erode => applyErosionSpan(in_row, out_row, span.x_min, span.x_max),
+            }
         }
     }
 }
@@ -4635,9 +4877,14 @@ test "ellipse row spans match dense ellipse kernels" {
 }
 
 test "optimized morphology spans match scalar row-span reference" {
+    // The small image runs on one thread; the tall one is split into row
+    // bands across threads.
+    try expectMorphologyMatchesReference(19, 13, &.{ 0, 1, 2, 4, 6 });
+    try expectMorphologyMatchesReference(97, 700, &.{ 6, 24 });
+}
+
+fn expectMorphologyMatchesReference(width: usize, height: usize, radii: []const usize) !void {
     const allocator = std.testing.allocator;
-    const width = 19;
-    const height = 13;
     const input = try allocator.alloc(u8, width * height);
     defer allocator.free(input);
     for (input, 0..) |*value, index| {
@@ -4655,7 +4902,6 @@ test "optimized morphology spans match scalar row-span reference" {
     defer allocator.free(fast);
     const reference = try allocator.alloc(u8, input.len);
     defer allocator.free(reference);
-    const radii = [_]usize{ 0, 1, 2, 4, 6 };
     for (radii) |radius| {
         try dilateMask(allocator, input, width, height, fast, radius);
         try dilateMaskReference(allocator, input, width, height, reference, radius);
@@ -4731,6 +4977,80 @@ test "line defect SIMD Meijering matches scalar reference mask" {
     try detectLineDefects(allocator, n_sigma, width, height, simd, options);
     try detectLineDefectsScalarReference(allocator, n_sigma, width, height, reference, options);
     try std.testing.expectEqualSlices(u8, reference, simd);
+}
+
+test "Meijering passes split into row bands match one pass over every row" {
+    const allocator = std.testing.allocator;
+    const width = 97;
+    const height = 700;
+    const image = try allocator.alloc(f64, width * height);
+    defer allocator.free(image);
+    var prng = std.Random.DefaultPrng.init(4985);
+    for (image) |*value| value.* = prng.random().float(f64) * 3.0 - 1.5;
+    const kernel = try scipyGaussianCorrelateKernel(allocator, 4.0, 8.0, 1);
+    defer allocator.free(kernel);
+    const radius = kernel.len / 2;
+
+    const banded = try allocator.alloc(f64, image.len);
+    defer allocator.free(banded);
+    const whole = try allocator.alloc(f64, image.len);
+    defer allocator.free(whole);
+    for ([_]Axis{ .x, .y }) |axis| {
+        try gaussianFilterAxis(allocator, image, width, height, banded, 4.0, 8.0, 1, axis);
+        switch (axis) {
+            .x => gaussianFilterAxisX(image, width, height, whole, kernel, radius, 0, height),
+            .y => gaussianFilterAxisY(image, width, height, whole, kernel, radius, 0, height),
+        }
+        try std.testing.expectEqualSlices(f64, whole, banded);
+    }
+
+    const hrc = try allocator.alloc(f64, image.len);
+    defer allocator.free(hrc);
+    for (hrc, image) |*value, source| value.* = source * 0.5 - 0.1;
+    const values = MeijeringValues{ .hrr = image, .hrc = hrc, .hcc = whole, .values = banded, .width = width };
+    try parallelism.forRowBands(allocator, height, values, MeijeringValues.rows);
+    const reference = try allocator.alloc(f64, image.len);
+    defer allocator.free(reference);
+    var one_pass = values;
+    one_pass.values = reference;
+    one_pass.rows(0, height);
+    try std.testing.expectEqualSlices(f64, reference, banded);
+}
+
+test "banded ECC preparation gives the pure estimator's translation" {
+    const allocator = std.testing.allocator;
+    const ir_width = 160;
+    const ir_height = 640;
+    for ([_]usize{ 1, 2 }) |rgb_factor| {
+        const rgb_width = ir_width * rgb_factor;
+        const rgb_height = ir_height * rgb_factor;
+        const rgb = try allocator.alloc(f64, rgb_width * rgb_height * 3);
+        defer allocator.free(rgb);
+        const ir = try allocator.alloc(f64, ir_width * ir_height);
+        defer allocator.free(ir);
+        for (0..rgb_height) |y| {
+            for (0..rgb_width) |x| {
+                const fx = @as(f64, @floatFromInt(x)) / @as(f64, @floatFromInt(rgb_factor));
+                const fy = @as(f64, @floatFromInt(y)) / @as(f64, @floatFromInt(rgb_factor));
+                const value = 30000.0 + 12000.0 * @sin(fx * 0.11) * @cos(fy * 0.05);
+                for (0..3) |channel| rgb[(y * rgb_width + x) * 3 + channel] = value * (1.0 - 0.1 * @as(f64, @floatFromInt(channel)));
+            }
+        }
+        for (0..ir_height) |y| {
+            for (0..ir_width) |x| {
+                const fx = @as(f64, @floatFromInt(x)) + 3.4;
+                const fy = @as(f64, @floatFromInt(y)) - 2.2;
+                ir[y * ir_width + x] = 30000.0 + 12000.0 * @sin(fx * 0.11) * @cos(fy * 0.05);
+            }
+        }
+        const banded = try ir_native.estimateTranslationEcc(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height);
+        const pure = try ir_pure.estimateTranslationEcc(f64, allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height, 0.125, 200, 1.0e-6);
+        try std.testing.expectEqual(pure, banded);
+        try std.testing.expect(pure.iterations > 1);
+
+        rgb[rgb.len / 2] = std.math.nan(f64);
+        try std.testing.expectError(error.InvalidBuffer, ir_native.estimateTranslationEcc(allocator, rgb, rgb_width, rgb_height, ir, ir_width, ir_height));
+    }
 }
 
 test "filters connected components below minimum area like Python fixture" {
@@ -4899,6 +5219,92 @@ test "IR line detection validates options" {
     try std.testing.expectError(error.InvalidIrLineBuffer, detectLineDefects(std.testing.allocator, &.{ 1.0, 2.0 }, 1, 1, &out, .{}));
     try std.testing.expectError(error.InvalidIrLineOption, detectLineDefects(std.testing.allocator, &.{1.0}, 1, 1, &out, .{ .threshold = 0.0 }));
     try std.testing.expectError(error.InvalidIrLineOption, detectLineDefects(std.testing.allocator, &.{1.0}, 1, 1, &out, .{ .scale = 2.0 }));
+}
+
+test "tiled Gaussian passes match the scalar sum in the same order" {
+    const allocator = std.testing.allocator;
+    // Width 213: vertically three 64-column tiles, two 8-wide vectors, and a
+    // 5-column tail; horizontally the 139 interior columns are four groups
+    // of four vectors, one vector, and three single columns.
+    const width = 213;
+    const height = 120;
+    const radius = 37;
+    const input = try allocator.alloc(f32, width * height);
+    defer allocator.free(input);
+    var prng = std.Random.DefaultPrng.init(37);
+    for (input) |*value| value.* = prng.random().float(f32);
+    var weights: [radius]f32 = undefined;
+    for (&weights, 1..) |*w, d| w.* = @exp(-@as(f32, @floatFromInt(d * d)) / 400.0) / 30.0;
+    const center: f32 = 1.0 / 30.0;
+
+    const tiled = try allocator.alloc(f32, input.len);
+    defer allocator.free(tiled);
+    gaussianVerticalRowsF32(input, tiled, width, height, radius, center, &weights, 0, height);
+    for (0..height) |y| {
+        for (0..width) |x| {
+            var sum: f32 = input[y * width + x] * center;
+            var d: usize = 1;
+            while (d <= radius) : (d += 1) {
+                const top = reflect101Index(@as(i32, @intCast(y)) - @as(i32, @intCast(d)), height);
+                const bottom = reflect101Index(@as(i32, @intCast(y)) + @as(i32, @intCast(d)), height);
+                sum += (input[top * width + x] + input[bottom * width + x]) * weights[d - 1];
+            }
+            try std.testing.expectEqual(sum, tiled[y * width + x]);
+        }
+    }
+
+    gaussianHorizontalRowsF32(input, tiled, width, radius, center, &weights, 0, height);
+    for (0..height) |y| {
+        for (0..width) |x| {
+            var sum: f32 = input[y * width + x] * center;
+            var d: usize = 1;
+            while (d <= radius) : (d += 1) {
+                const left = reflect101Index(@as(i32, @intCast(x)) - @as(i32, @intCast(d)), width);
+                const right = reflect101Index(@as(i32, @intCast(x)) + @as(i32, @intCast(d)), width);
+                sum += (input[y * width + left] + input[y * width + right]) * weights[d - 1];
+            }
+            try std.testing.expectEqual(sum, tiled[y * width + x]);
+        }
+    }
+}
+
+test "parallel defect fills match the one-by-one fill" {
+    const allocator = std.testing.allocator;
+    const width = 240;
+    const height = 200;
+    const rgb = try allocator.alloc(f64, width * height * 3);
+    defer allocator.free(rgb);
+    var prng = std.Random.DefaultPrng.init(244);
+    for (rgb, 0..) |*value, index| {
+        const pixel = index / 3;
+        value.* = 20000.0 + @as(f64, @floatFromInt((pixel % width) * 40 + (pixel / width) * 25)) + prng.random().float(f64) * 900.0;
+    }
+    // Scattered specks, some close enough to share a padded region, so some
+    // fills must wait for others and some run side by side.
+    const mask = try allocator.alloc(u8, width * height);
+    defer allocator.free(mask);
+    @memset(mask, 0);
+    const specks = [_][2]usize{ .{ 20, 20 }, .{ 30, 24 }, .{ 120, 40 }, .{ 200, 30 }, .{ 60, 150 }, .{ 70, 160 }, .{ 180, 170 }, .{ 120, 120 }, .{ 128, 126 }, .{ 220, 100 } };
+    for (specks) |speck| {
+        for (speck[1] - 3..speck[1] + 4) |y| {
+            for (speck[0] - 3..speck[0] + 4) |x| mask[y * width + x] = 255;
+        }
+    }
+    const options = InpaintOptions{ .padding = 12, .grain_padding = 4 };
+    const noise_len = try requiredInpaintNoiseLen(allocator, mask, width, height, options.padding);
+    const noise = try allocator.alloc(f64, noise_len);
+    defer allocator.free(noise);
+    for (noise) |*value| value.* = prng.random().floatNorm(f64);
+
+    const one_by_one = try allocator.alloc(f64, rgb.len);
+    defer allocator.free(one_by_one);
+    const parallel = try allocator.alloc(f64, rgb.len);
+    defer allocator.free(parallel);
+    try std.testing.expectEqual(@as(usize, specks.len), try inpaintBiharmonicWithGrainFromNoise(allocator, rgb, mask, width, height, one_by_one, noise, options));
+    var parallel_options = options;
+    parallel_options.worker_count = 4;
+    _ = try inpaintBiharmonicWithGrainFromNoise(allocator, rgb, mask, width, height, parallel, noise, parallel_options);
+    try std.testing.expectEqualSlices(f64, one_by_one, parallel);
 }
 
 test "IR morphology validates dimensions" {

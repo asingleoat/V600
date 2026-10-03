@@ -26,20 +26,7 @@ fn rgbToIrGrayU8(
     const rgb_pixels = rgb_width * rgb_height;
     const gray_rgb = try allocator.alloc(u8, rgb_pixels);
     defer allocator.free(gray_rgb);
-    var max_value: T = 0.0;
-    for (rgb) |sample| {
-        if (!std.math.isFinite(sample)) return error.InvalidBuffer;
-        if (sample > max_value) max_value = sample;
-    }
-    const denominator = @as(f64, @floatCast(max_value)) / 255.0 + 1.0e-10;
-    for (0..rgb_pixels) |pixel| {
-        const base = pixel * 3;
-        const r = scaledU8(T, rgb[base], denominator);
-        const g = scaledU8(T, rgb[base + 1], denominator);
-        const b = scaledU8(T, rgb[base + 2], denominator);
-        const gray = (@as(u32, r) * 77 + @as(u32, g) * 150 + @as(u32, b) * 29 + 128) >> 8;
-        gray_rgb[pixel] = @intCast(gray);
-    }
+    rgbToGrayU8Range(T, rgb, u8Denominator(T, try maxFiniteSample(T, rgb)), gray_rgb, 0, rgb_pixels);
     if (rgb_width == ir_width and rgb_height == ir_height) {
         @memcpy(output, gray_rgb);
     } else {
@@ -48,13 +35,39 @@ fn rgbToIrGrayU8(
 }
 
 fn samplesToU8(comptime T: type, input: []const T, output: []u8) !void {
+    samplesToU8Range(T, input, u8Denominator(T, try maxFiniteSample(T, input)), output, 0, input.len);
+}
+
+// The pieces below make up the ECC preparation above; the native build runs
+// them over bands of rows in parallel, so the estimate is the same.
+
+/// The largest sample, or an error if any is not finite.
+pub fn maxFiniteSample(comptime T: type, samples: []const T) !T {
     var max_value: T = 0.0;
-    for (input) |sample| {
+    for (samples) |sample| {
         if (!std.math.isFinite(sample)) return error.InvalidBuffer;
         if (sample > max_value) max_value = sample;
     }
-    const denominator = @as(f64, @floatCast(max_value)) / 255.0 + 1.0e-10;
-    for (input, output) |sample, *out| {
+    return max_value;
+}
+
+pub fn u8Denominator(comptime T: type, max_value: T) f64 {
+    return @as(f64, @floatCast(max_value)) / 255.0 + 1.0e-10;
+}
+
+pub fn rgbToGrayU8Range(comptime T: type, rgb: []const T, denominator: f64, gray: []u8, pixel_start: usize, pixel_end: usize) void {
+    for (pixel_start..pixel_end) |pixel| {
+        const base = pixel * 3;
+        const r = scaledU8(T, rgb[base], denominator);
+        const g = scaledU8(T, rgb[base + 1], denominator);
+        const b = scaledU8(T, rgb[base + 2], denominator);
+        const value = (@as(u32, r) * 77 + @as(u32, g) * 150 + @as(u32, b) * 29 + 128) >> 8;
+        gray[pixel] = @intCast(value);
+    }
+}
+
+pub fn samplesToU8Range(comptime T: type, input: []const T, denominator: f64, output: []u8, start: usize, end: usize) void {
+    for (input[start..end], output[start..end]) |sample, *out| {
         out.* = scaledU8(T, sample, denominator);
     }
 }
@@ -66,9 +79,13 @@ fn scaledU8(comptime T: type, sample: T, denominator: f64) u8 {
     return @intFromFloat(@floor(scaled));
 }
 fn areaResizeU8(input: []const u8, in_width: usize, in_height: usize, output: []u8, out_width: usize, out_height: usize) void {
+    areaResizeU8Rows(input, in_width, in_height, output, out_width, out_height, 0, out_height);
+}
+
+pub fn areaResizeU8Rows(input: []const u8, in_width: usize, in_height: usize, output: []u8, out_width: usize, out_height: usize, row_start: usize, row_end: usize) void {
     const scale_x = @as(f64, @floatFromInt(in_width)) / @as(f64, @floatFromInt(out_width));
     const scale_y = @as(f64, @floatFromInt(in_height)) / @as(f64, @floatFromInt(out_height));
-    for (0..out_height) |out_y| {
+    for (row_start..row_end) |out_y| {
         const y0: usize = @intFromFloat(@floor(@as(f64, @floatFromInt(out_y)) * scale_y));
         const y1: usize = @max(y0 + 1, @as(usize, @intFromFloat(@floor(@as(f64, @floatFromInt(out_y + 1)) * scale_y))));
         for (0..out_width) |out_x| {
@@ -917,18 +934,39 @@ pub fn estimateTranslationEcc(
     defer allocator.free(ir_u8);
     try samplesToU8(T, ir, ir_u8);
 
-    const small_width = @max(@as(usize, 1), @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(ir_width)) * ecc_scale))));
-    const small_height = @max(@as(usize, 1), @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(ir_height)) * ecc_scale))));
-    if (small_width < 2 or small_height < 2) return error.InvalidDimensions;
-    const small_pixels = small_width * small_height;
-
-    const template_u8 = try allocator.alloc(u8, small_pixels);
+    const small = try eccSmallSize(ir_width, ir_height, ecc_scale);
+    const template_u8 = try allocator.alloc(u8, small.width * small.height);
     defer allocator.free(template_u8);
-    const image_u8 = try allocator.alloc(u8, small_pixels);
+    const image_u8 = try allocator.alloc(u8, small.width * small.height);
     defer allocator.free(image_u8);
-    areaResizeU8(gray_ir, ir_width, ir_height, template_u8, small_width, small_height);
-    areaResizeU8(ir_u8, ir_width, ir_height, image_u8, small_width, small_height);
+    areaResizeU8(gray_ir, ir_width, ir_height, template_u8, small.width, small.height);
+    areaResizeU8(ir_u8, ir_width, ir_height, image_u8, small.width, small.height);
+    return estimateTranslationEccSmall(allocator, template_u8, image_u8, small.width, small.height, ecc_scale, max_iterations, epsilon);
+}
 
+pub const EccSize = struct { width: usize, height: usize };
+
+/// The size ECC runs at: the IR page scaled by `ecc_scale`.
+pub fn eccSmallSize(ir_width: usize, ir_height: usize, ecc_scale: f64) !EccSize {
+    const width = @max(@as(usize, 1), @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(ir_width)) * ecc_scale))));
+    const height = @max(@as(usize, 1), @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(ir_height)) * ecc_scale))));
+    if (width < 2 or height < 2) return error.InvalidDimensions;
+    return .{ .width = width, .height = height };
+}
+
+/// ECC of the scaled IR (`image_u8`) against the scaled RGB grey
+/// (`template_u8`); the translation comes back at IR resolution.
+pub fn estimateTranslationEccSmall(
+    allocator: std.mem.Allocator,
+    template_u8: []const u8,
+    image_u8: []const u8,
+    small_width: usize,
+    small_height: usize,
+    ecc_scale: f64,
+    max_iterations: u32,
+    epsilon: f64,
+) !TranslationEstimate {
+    const small_pixels = small_width * small_height;
     const template_f = try allocator.alloc(f32, small_pixels);
     defer allocator.free(template_f);
     const image_f = try allocator.alloc(f32, small_pixels);

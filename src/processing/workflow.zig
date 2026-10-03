@@ -1042,6 +1042,7 @@ pub fn processExportFromTiff(
     if (options.timings) |timings| timings.plan_parallel_ns += monotonicNowNs() - plan_started;
     const ir_adaptive_worker_count = adaptiveDustWorkerCountForOptions(options, parallel_decision);
     ir_clean_options.defect_mask.adaptive_worker_count = ir_adaptive_worker_count;
+    ir_clean_options.inpaint.worker_count = ir_adaptive_worker_count;
 
     const frame_processing_started = monotonicNowNs();
     if (jobs.len <= 1 or !options.parallel_frames or parallel_decision.worker_count <= 1) {
@@ -1305,6 +1306,7 @@ fn processExportDirectRgbCropFromLoadedPage(
     if (options.timings) |timings| timings.plan_parallel_ns += monotonicNowNs() - plan_started;
     const ir_adaptive_worker_count = adaptiveDustWorkerCountForOptions(options, parallel_decision);
     ir_clean_options.defect_mask.adaptive_worker_count = ir_adaptive_worker_count;
+    ir_clean_options.inpaint.worker_count = ir_adaptive_worker_count;
 
     const shared = DirectRgbFrameExportShared{
         .rgb_page = loaded.rgb,

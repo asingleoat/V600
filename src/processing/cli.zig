@@ -470,7 +470,11 @@ fn runExport(
     const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0;
-    const ir_clean_options = workflow.irCleanOptionsForConfig(current_dpi, workflow.irDpi(current_dpi, ir_scale_x), overrides);
+    // Frames go one at a time here, so each may use every core.
+    var ir_clean_options = workflow.irCleanOptionsForConfig(current_dpi, workflow.irDpi(current_dpi, ir_scale_x), overrides);
+    const inner_workers = @max(1, (std.Thread.getCpuCount() catch 1) -| 1);
+    ir_clean_options.defect_mask.adaptive_worker_count = inner_workers;
+    ir_clean_options.inpaint.worker_count = inner_workers;
     var written = std.array_list.Managed([]u8).init(allocator);
     defer {
         for (written.items) |name| allocator.free(name);
