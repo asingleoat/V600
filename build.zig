@@ -1,20 +1,49 @@
 const std = @import("std");
 
-const opencv_object_command = "c++ -std=c++17 -fPIC -fno-exceptions $(pkg-config --cflags opencv4) -c \"$1\" -o \"$2\"";
-
 const NativeObjectSpec = struct {
-    command: []const u8,
+    cxx: bool = false,
+    flags: []const u8,
+    /// pkg-config packages whose cflags the source needs.
+    packages: []const u8 = "",
     label: []const u8,
     source: []const u8,
     output: []const u8,
 };
 
+const opencv_flags = "-std=c++17 -fPIC -fno-exceptions";
+
 const root_native_objects = [_]NativeObjectSpec{
-    .{ .command = opencv_object_command, .label = "compile-opencv-ir", .source = "src/processing/opencv_ir.cpp", .output = "opencv_ir.o" },
-    .{ .command = opencv_object_command, .label = "compile-opencv-preview", .source = "src/processing/opencv_preview.cpp", .output = "opencv_preview.o" },
-    .{ .command = "cc -std=c99 -fPIC $(pkg-config --cflags libjpeg) -c \"$1\" -o \"$2\"", .label = "compile-jpeg-encode", .source = "src/processing/jpeg_encode.c", .output = "jpeg_encode.o" },
-    .{ .command = "cc -std=c99 -fPIC -c \"$1\" -o \"$2\"", .label = "compile-superlu-sparse", .source = "src/processing/superlu_sparse.c", .output = "superlu_sparse.o" },
+    .{ .cxx = true, .flags = opencv_flags, .packages = "opencv4", .label = "compile-opencv-ir", .source = "src/processing/opencv_ir.cpp", .output = "opencv_ir.o" },
+    .{ .cxx = true, .flags = opencv_flags, .packages = "opencv4", .label = "compile-opencv-preview", .source = "src/processing/opencv_preview.cpp", .output = "opencv_preview.o" },
+    .{ .flags = "-std=c99 -fPIC", .packages = "libjpeg", .label = "compile-jpeg-encode", .source = "src/processing/jpeg_encode.c", .output = "jpeg_encode.o" },
+    .{ .flags = "-std=c99 -fPIC", .label = "compile-superlu-sparse", .source = "src/processing/superlu_sparse.c", .output = "superlu_sparse.o" },
 };
+
+/// The compilers and pkg-config the native helpers build with: the dev
+/// shell's, or for the static Linux build the musl toolchain's, which the
+/// Nix build names in `$CC`, `$CXX`, and `$PKG_CONFIG`.
+const Toolchain = struct {
+    cc: []const u8 = "cc",
+    cxx: []const u8 = "c++",
+    pkg_config: []const u8 = "pkg-config",
+    /// Extra C++ flags, each with a leading space.
+    cxx_flags: []const u8 = "",
+};
+
+const static_toolchain = Toolchain{
+    .cc = "\"$CC\"",
+    .cxx = "\"$CXX\"",
+    .pkg_config = "\"$PKG_CONFIG\"",
+    .cxx_flags = " -DCEREALGRAIN_LIBSTDCXX",
+};
+
+/// The musl GCC toolchain's runtime archives the C++ helpers and OpenCV
+/// need: the C++ library, then GCC's, which holds the unwinder and the CPU
+/// detection OpenCV dispatches its kernels by.
+const static_runtime_archives = [_][]const u8{ "libstdc++.a", "libgcc.a" };
+
+/// The libraries the processing code links, by pkg-config name.
+const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib", "opencv4", "superlu" };
 
 const UiSmokeSpec = struct {
     arg: []const u8,
@@ -93,15 +122,24 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const enable_ui = b.option(bool, "ui", "Build the SDL3/Nuklear native UI") orelse false;
     const enable_webgpu = b.option(bool, "webgpu", "Build the optional WebGPU processing backend") orelse false;
+    const static = b.option(bool, "static", "Link the CLI fully statically (Linux musl targets; built by the flake's cli-static package)") orelse false;
+    if (static) {
+        const result = target.result;
+        if (result.os.tag != .linux or !result.abi.isMusl()) {
+            std.process.fatal("-Dstatic=true needs a Linux musl target, such as -Dtarget=x86_64-linux-musl", .{});
+        }
+        if (enable_ui) std.process.fatal("-Dstatic=true builds the CLI only: the native UI loads its display libraries at run time", .{});
+    }
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "webgpu", enable_webgpu);
     build_options.addOption(bool, "native_libs", true);
 
-    const root_module = addRootModule(b, target, optimize, build_options, enable_webgpu, null);
+    const root_module = addRootModule(b, target, optimize, build_options, enable_webgpu, null, static);
 
     const exe = b.addExecutable(.{
         .name = "cerealgrain",
+        .linkage = if (static) .static else null,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -145,7 +183,7 @@ pub fn build(b: *std.Build) void {
         const bundle_options = b.addOptions();
         bundle_options.addOption(bool, "webgpu", false);
         bundle_options.addOption(bool, "native_libs", true);
-        const bundle_root = addRootModule(b, bundle_target, .ReleaseFast, bundle_options, false, true);
+        const bundle_root = addRootModule(b, bundle_target, .ReleaseFast, bundle_options, false, true, false);
         const bundle_ui = addUiExecutable(b, bundle_target, .ReleaseFast, bundle_root, true);
         // The CLI goes in too, so testers can send `scanner probe` output.
         const bundle_cli = b.addExecutable(.{
@@ -331,11 +369,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_wasm_core_tests.step);
 }
 
-fn compileNativeObject(b: *std.Build, spec: NativeObjectSpec) std.Build.LazyPath {
+fn compileNativeObject(b: *std.Build, spec: NativeObjectSpec, toolchain: Toolchain) std.Build.LazyPath {
+    const compiler = if (spec.cxx) toolchain.cxx else toolchain.cc;
+    const flags = if (spec.cxx) b.fmt("{s}{s}", .{ spec.flags, toolchain.cxx_flags }) else spec.flags;
+    const command = if (spec.packages.len == 0)
+        b.fmt("{s} {s} -c \"$1\" -o \"$2\"", .{ compiler, flags })
+    else
+        b.fmt("{s} {s} $({s} --cflags {s}) -c \"$1\" -o \"$2\"", .{ compiler, flags, toolchain.pkg_config, spec.packages });
     const cmd = b.addSystemCommand(&.{
         "sh",
         "-c",
-        spec.command,
+        command,
         spec.label,
     });
     cmd.addFileArg(b.path(spec.source));
@@ -404,6 +448,7 @@ fn addRootModule(
     build_options: *std.Build.Step.Options,
     enable_webgpu: bool,
     strip: ?bool,
+    static: bool,
 ) *std.Build.Module {
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -413,6 +458,13 @@ fn addRootModule(
     });
     root_module.addOptions("build_options", build_options);
     root_module.linkSystemLibrary("c", .{});
+    if (static) {
+        linkStaticLibraries(b, root_module);
+        for (root_native_objects) |spec| {
+            root_module.addObjectFile(compileNativeObject(b, spec, static_toolchain));
+        }
+        return root_module;
+    }
     root_module.linkSystemLibrary("libtiff-4", .{});
     root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
@@ -445,9 +497,37 @@ fn addRootModule(
     }
 
     for (root_native_objects) |spec| {
-        root_module.addObjectFile(compileNativeObject(b, spec));
+        root_module.addObjectFile(compileNativeObject(b, spec, .{}));
     }
     return root_module;
+}
+
+/// Links the static libraries the Nix static build provides, with the flags
+/// `pkg-config --static` gives (Zig's own pkg-config use leaves out the
+/// private dependencies a static link needs), then the toolchain runtimes.
+fn linkStaticLibraries(b: *std.Build, module: *std.Build.Module) void {
+    const pkg_config = b.graph.environ_map.get("PKG_CONFIG") orelse "pkg-config";
+    var argv: std.ArrayList([]const u8) = .empty;
+    argv.appendSlice(b.allocator, &.{ pkg_config, "--static", "--cflags", "--libs" }) catch @panic("OOM");
+    argv.appendSlice(b.allocator, &static_packages) catch @panic("OOM");
+    var words = std.mem.tokenizeAny(u8, b.run(argv.items), " \t\r\n");
+    while (words.next()) |word| {
+        if (std.mem.startsWith(u8, word, "-I")) {
+            module.addIncludePath(.{ .cwd_relative = word[2..] });
+        } else if (std.mem.startsWith(u8, word, "-L")) {
+            module.addLibraryPath(.{ .cwd_relative = word[2..] });
+        } else if (std.mem.startsWith(u8, word, "-l")) {
+            module.linkSystemLibrary(word[2..], .{ .use_pkg_config = .no, .preferred_link_mode = .static });
+        } else if (std.mem.endsWith(u8, word, ".a")) {
+            module.addObjectFile(.{ .cwd_relative = word });
+        }
+    }
+    const cxx = b.graph.environ_map.get("CXX") orelse std.process.fatal("-Dstatic=true needs $CXX, the musl C++ compiler", .{});
+    for (static_runtime_archives) |name| {
+        const path = std.mem.trim(u8, b.run(&.{ cxx, b.fmt("-print-file-name={s}", .{name}) }), " \t\r\n");
+        if (!std.fs.path.isAbsolute(path)) std.process.fatal("{s} has no {s}", .{ cxx, name });
+        module.addObjectFile(.{ .cwd_relative = path });
+    }
 }
 
 fn addUiExecutable(
@@ -458,11 +538,12 @@ fn addUiExecutable(
     strip: ?bool,
 ) *std.Build.Step.Compile {
     const nuklear_obj = compileNativeObject(b, .{
-        .command = "cc -std=c99 -fPIC $(pkg-config --cflags nuklear) -c \"$1\" -o \"$2\"",
+        .flags = "-std=c99 -fPIC",
+        .packages = "nuklear",
         .label = "compile-nuklear",
         .source = "src/ui/nuklear_impl.c",
         .output = "nuklear_impl.o",
-    });
+    }, .{});
 
     const ui_module = b.createModule(.{
         .root_source_file = b.path("src/ui/main.zig"),

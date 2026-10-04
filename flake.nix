@@ -78,6 +78,79 @@ EOF
             in
             !(generatedDir || generatedFile);
         };
+      # A fully static CLI for any x86-64 Linux: musl, every C and C++ library
+      # linked in, for x86-64-v3 CPUs (Haswell and later). nixpkgs' static
+      # OpenCV pulls in OpenCL, OpenMP, and media libraries with no static
+      # build, so OpenCV is built with only the modules the helpers use.
+      staticCliPackage = pkgs:
+        let
+          s = pkgs.pkgsStatic;
+          opencv = s.stdenv.mkDerivation {
+            pname = "opencv-minimal";
+            version = pkgs.opencv.version;
+            src = pkgs.opencv.src;
+            nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
+            buildInputs = [ s.libjpeg s.zlib ];
+            cmakeFlags = [
+              "-DBUILD_LIST=core,imgproc,imgcodecs"
+              "-DOPENCV_GENERATE_PKGCONFIG=ON"
+              "-DBUILD_TESTS=OFF" "-DBUILD_PERF_TESTS=OFF" "-DBUILD_EXAMPLES=OFF" "-DBUILD_opencv_apps=OFF"
+              "-DBUILD_ZLIB=OFF" "-DBUILD_JPEG=OFF" "-DWITH_JPEG=ON"
+              "-DWITH_PNG=OFF" "-DWITH_TIFF=OFF" "-DWITH_WEBP=OFF" "-DWITH_OPENJPEG=OFF" "-DWITH_JASPER=OFF"
+              "-DWITH_OPENEXR=OFF" "-DWITH_AVIF=OFF" "-DWITH_IMGCODEC_GIF=OFF"
+              "-DWITH_OPENCL=OFF" "-DWITH_OPENMP=OFF" "-DWITH_TBB=OFF" "-DWITH_IPP=OFF" "-DWITH_ITT=OFF"
+              "-DWITH_EIGEN=OFF" "-DWITH_LAPACK=OFF" "-DWITH_PROTOBUF=OFF" "-DWITH_FFMPEG=OFF"
+              "-DWITH_GSTREAMER=OFF" "-DWITH_GTK=OFF" "-DWITH_QT=OFF" "-DWITH_V4L=OFF" "-DWITH_VA=OFF"
+              "-DWITH_1394=OFF" "-DWITH_ADE=OFF" "-DWITH_QUIRC=OFF" "-DWITH_OBSENSOR=OFF" "-DWITH_KLEIDICV=OFF"
+              "-DENABLE_PRECOMPILED_HEADERS=OFF" "-DCV_TRACE=OFF"
+            ];
+            # OpenCV joins its prefix to the absolute install dirs Nix passes.
+            postInstall = ''
+              sed -i 's|''${exec_prefix}//nix|/nix|g; s|''${prefix}//nix|/nix|g' $out/lib/pkgconfig/opencv4.pc
+              mkdir -p $out/lib/opencv4/3rdparty
+            '';
+          };
+          # Its Fortran interface does not build static, and its pkg-config
+          # file names its prefix twice.
+          superlu = s.superlu.overrideAttrs (old: {
+            cmakeFlags = (old.cmakeFlags or [ ]) ++ [ "-Denable_fortran=OFF" ];
+            postInstall = (old.postInstall or "") + ''
+              sed -i "s|$out/$out|$out|g" $out/lib/pkgconfig/superlu.pc
+            '';
+          });
+        in
+        s.stdenv.mkDerivation {
+          pname = "cerealgrain-cli";
+          version = "0.1.0";
+          src = cleanSource pkgs;
+          nativeBuildInputs = [ pkgs.zig s.buildPackages.pkg-config pkgs.nukeReferences ];
+          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg opencv superlu ];
+          # OpenCV's build information names the compilers and libraries it
+          # was built with; nothing is loaded from the store at run time.
+          allowedReferences = [ ];
+          buildPhase = ''
+            runHook preBuild
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
+            mkdir -p "$ZIG_LOCAL_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR"
+            zig build -Dstatic=true -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Doptimize=ReleaseFast \
+              --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
+              --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 zig-out/bin/cerealgrain "$out/bin/cerealgrain"
+            nuke-refs "$out/bin/cerealgrain"
+            runHook postInstall
+          '';
+          # The static stdenv records the libraries for static linking
+          # against this package; an executable has no use for that.
+          postFixup = ''
+            rm -r "$out/nix-support"
+          '';
+          meta.mainProgram = "cerealgrain";
+        };
     in
     {
       packages = forAllSystems (pkgs:
@@ -126,6 +199,8 @@ EOF
           inherit cli ui;
           webgpuNative = pkgs.wgpu-native;
           default = ui;
+        } // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+          cli-static = staticCliPackage pkgs;
         });
 
       checks = forAllSystems (pkgs:

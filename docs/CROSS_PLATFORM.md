@@ -6,7 +6,7 @@ What runs where, and what each missing platform needs.
 
 | Platform | Scanner | Processing CLI | Native UI | Packaging |
 | --- | --- | --- | --- | --- |
-| Linux | SANE via patched epkowa; exercised on a V600 | Yes | SDL3/Nuklear | `packages.cli`, `packages.ui` |
+| Linux | SANE via patched epkowa; exercised on a V600 | Yes | SDL3/Nuklear | `packages.cli`, `packages.ui`; `packages.cli-static` (x86-64, fully static) |
 | macOS | Epson Interpreter bundle over libusb; exercised on a V600 | Yes (arm64) | SDL3/Nuklear (arm64) | `zig build app-bundle` (CerealGrain.app, ad hoc signed) |
 | Windows | Not planned | Not wired | Not wired | Not wired |
 | Browser | Through the Linux companion (`cerealgrain serve`) only | Webapp (Wasm); checked in Chrome and Chromium | Browser UI in `web/` | `zig build wasm-webapp` |
@@ -22,6 +22,30 @@ companion.
 - No default build or check path may require WebGPU or scanner hardware.
 - GPU acceleration targets WebGPU through nixpkgs `wgpu-native`, behind a
   backend boundary that could later use Google Dawn. CPU stays the default.
+
+## Linux
+
+### A static CLI
+
+`nix build .#cli-static`, on x86-64 Linux, builds a CLI with nothing to
+install: musl and every C and C++ library linked in
+(`result/bin/cerealgrain`, about 33 MB, no references into the Nix store),
+for x86-64-v3 CPUs (Haswell, Zen, and later). Its frames and exports match
+the dev-shell build's pixel for pixel; an export takes about 8% longer.
+
+- nixpkgs' static OpenCV pulls in OpenCL, OpenMP, and media libraries that
+  have no static build, so the package builds OpenCV with only the modules
+  the helpers use (core, imgproc, imgcodecs with JPEG). SuperLU's Fortran
+  interface is left out the same way.
+- The package runs `zig build -Dstatic=true -Dtarget=x86_64-linux-musl
+  -Dcpu=x86_64_v3`, which compiles the C and C++ helpers with the musl
+  toolchain in `$CC` and `$CXX` and links what `$PKG_CONFIG --static` lists,
+  then libstdc++ and libgcc.
+- Scanning still runs `scanimage` and its wrappers, ImageMagick, and
+  `tiffcp` from the host; processing, rolls, and export need nothing else.
+  `serve` needs the staged webapp (`--webapp-dir`).
+- The native UI has no static build: SDL loads the display server's and the
+  GPU's libraries at run time, which a static musl program cannot.
 
 ## macOS
 

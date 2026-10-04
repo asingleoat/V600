@@ -10,6 +10,10 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+// The dynamic build links OpenCV's shared libraries but not libstdc++ itself,
+// so the allocation operators and the one libstdc++ helper used come from
+// here. The static build links libstdc++ and defines CEREALGRAIN_LIBSTDCXX.
+#ifndef CEREALGRAIN_LIBSTDCXX
 void* operator new(std::size_t size) {
     void* ptr = std::malloc(size == 0 ? 1 : size);
     if (ptr == nullptr) {
@@ -43,6 +47,7 @@ void __throw_length_error(const char*) {
     std::abort();
 }
 }  // namespace std
+#endif
 
 namespace {
 

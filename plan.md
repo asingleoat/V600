@@ -27,6 +27,8 @@ As of 2026-09-28, on branch `zig-rewrite`:
   roll strip by strip (preview, film area, one LUT per roll, full scan) and
   export each strip in the background with a review page. Exercised on the
   V600 from the CLI and the UI's Scan Strip at 800 dpi.
+- Linux: `nix build .#cli-static` makes a fully static x86-64 CLI (musl);
+  the native UI is not static.
 - Windows: not wired.
 - Browser webapp: processing and export in WebAssembly, built from the same
   Zig processing code. Node smokes plus a manual headless Chrome/Chromium

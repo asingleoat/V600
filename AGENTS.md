@@ -54,6 +54,7 @@ diffs for this before committing.
     zig build wasm-webapp                     # stage the webapp in zig-out/webapp
     zig build run -- serve                    # companion: serves zig-out/webapp on 127.0.0.1:8433
     zig build app-bundle                      # macOS: zig-out/CerealGrain.app and a zip to share
+    nix build .#cli-static                    # x86-64 Linux: a fully static CLI in result/bin
 
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,

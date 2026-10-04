@@ -35,7 +35,8 @@ to (see `docs/SCANNER_COMPANION.md`):
 ## Platform support
 
 - Linux: scanner through the patched epkowa SANE backend, processing CLI,
-  and native UI. Scanning has been exercised on a V600.
+  and native UI. Scanning has been exercised on a V600. `nix build
+  .#cli-static` makes a fully static CLI that runs on any x86-64 Linux.
 - macOS: scanner through Epson's Interpreter bundle over libusb, with
   per-channel gamma LUTs fitted to the film; CLI and native UI. Scanning has
   been exercised on a V600 from Apple Silicon. `zig build app-bundle` makes a
