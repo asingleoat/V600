@@ -79,6 +79,7 @@ in pkgs.mkShell {
     # Zig rewrite toolchain
     zigPkg
     zlsPkg
+    git # build.zig embeds the commit
 
     # Scanner build deps
     gcc

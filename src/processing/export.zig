@@ -1069,7 +1069,7 @@ fn writeU16Tiff(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(samples),
-    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime, .software = tiff.software });
 }
 
 fn writePrintCopy(
@@ -1104,7 +1104,7 @@ fn writeU16TiffSamples(
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(image.pixels),
-    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime, .software = tiff.software });
 }
 
 fn exportMetadataJson(

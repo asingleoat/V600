@@ -4,7 +4,9 @@
 # load commands pointed there, and everything is signed ad hoc: no identity,
 # so nothing in the signature names a person. Run by `zig build app-bundle`.
 #
-# usage: macos_app_bundle.sh <cerealgrain-ui> <cerealgrain> <output dir>
+# usage: macos_app_bundle.sh <cerealgrain-ui> <cerealgrain> <output dir> <version>
+#
+# The version is the commit's short hash, which build.zig reads from git.
 set -eu
 # codesign, ditto, and plutil are macOS's own; a Nix shell may not list them.
 PATH=$PATH:/usr/bin:/bin
@@ -12,12 +14,17 @@ PATH=$PATH:/usr/bin:/bin
 exe=$1
 cli=$2
 out=$3
+version=$4
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
 app=$out/CerealGrain.app
 frameworks=$app/Contents/Frameworks
-version=0.1.0
+# macOS compares bundle versions by CFBundleVersion, a number: the commit count.
 build=$(git -C "$repo" rev-list --count HEAD 2>/dev/null || echo 0)
+case $version in
+  unknown) echo "app-bundle: the build could not read the commit from git" >&2; exit 1 ;;
+  *-dirty) echo "app-bundle: warning: building from uncommitted changes ($version)" >&2 ;;
+esac
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -129,6 +136,45 @@ while [ -s "$work/queue" ]; do
   done < "$work/current"
 done
 
+# The third_party/ folder holding each library's license, by library name
+# (a second copy carries a store-hash prefix).
+license_dir() {
+  case $1 in
+    *libSDL3.*) echo sdl3 ;;
+    *libopencv_*) echo opencv ;;
+    *libtiff.*) echo libtiff ;;
+    *libjpeg.*) echo libjpeg-turbo ;;
+    *libpng16.*) echo libpng ;;
+    *libwebp.* | *libwebpdemux.* | *libwebpmux.* | *libsharpyuv.*) echo libwebp ;;
+    *libLerc.*) echo lerc ;;
+    *libopenjp2.*) echo openjpeg ;;
+    *liblzma.*) echo xz ;;
+    *libzstd.*) echo zstd ;;
+    *libdeflate.*) echo libdeflate ;;
+    *libz.*) echo zlib ;;
+    *libsuperlu.*) echo superlu ;;
+    *libblas.*) echo openblas ;;
+    *libgfortran.* | *libquadmath.* | *libgcc_s.*) echo gcc-runtime ;;
+    *libusb-1.0.*) echo libusb ;;
+    *libintl.*) echo libintl ;;
+    *libiconv.* | *libcharset.*) echo libiconv ;;
+    *) return 1 ;;
+  esac
+}
+# Every shipped library needs its license (third_party/README.md lists them).
+licenses=$app/Contents/Resources/Licenses
+mkdir -p "$licenses"
+cp "$repo/LICENSE" "$licenses/CerealGrain-LICENSE.txt"
+cp -R "$repo/third_party/." "$licenses/"
+for library in "$frameworks"/*; do
+  name=$(basename "$library")
+  dir=$(license_dir "$name") || {
+    echo "app-bundle: no license known for $name: add it to third_party/ and to license_dir" >&2
+    exit 1
+  }
+  [ -d "$licenses/$dir" ] || { echo "app-bundle: third_party/$dir is missing" >&2; exit 1; }
+done
+
 for library in "$frameworks"/* "$app/Contents/MacOS/cerealgrain"; do
   quiet codesign --force --sign - "$library"
 done
@@ -152,8 +198,9 @@ fi
 mkdir "$work/CerealGrain"
 ditto "$app" "$work/CerealGrain/CerealGrain.app"
 cp "$here/macos_app_readme.txt" "$work/CerealGrain/Read Me.txt"
+ditto "$licenses" "$work/CerealGrain/Licenses"
 rm -f "$out"/CerealGrain-*-macos-arm64.zip
-zip=$out/CerealGrain-$version-$build-macos-arm64.zip
+zip=$out/CerealGrain-$version-macos-arm64.zip
 ditto -c -k --sequesterRsrc --keepParent "$work/CerealGrain" "$zip"
 
 echo "app-bundle: $app ($(ls "$frameworks" | wc -l | tr -d ' ') libraries, $(du -sh "$app" | cut -f1))"

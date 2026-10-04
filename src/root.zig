@@ -1,5 +1,8 @@
 const std = @import("std");
 
+/// The commit the program was built from: git's short hash, with "-dirty"
+/// for uncommitted changes (see build.zig).
+pub const version = @import("build_options").version;
 pub const scanner = @import("scanner.zig");
 pub const processing = @import("processing.zig");
 pub const app_state = @import("app_state.zig");

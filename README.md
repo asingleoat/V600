@@ -128,6 +128,16 @@ opt-in via `CEREALGRAIN_HARDWARE_SMOKE=1` and never run implicitly.
     scanner.py, scan.py, v600/, scratchndent/
                             original Python implementation (reference only)
 
+## License
+
+CerealGrain's own code is under the MIT license (`LICENSE`). The macOS app
+and the static Linux CLI also contain libraries by others under their own
+licenses (permissive, LGPL, or GPL with GCC's runtime exception);
+`third_party/` holds their license texts
+and says which ships where. `lut_capturexhc1.pcapng` is a recording of
+Epson's software talking to a scanner, kept as reference data; the MIT
+license does not cover it.
+
 ## Documentation
 
 - [Plan](plan.md) — current state, decisions, backlog

@@ -325,6 +325,16 @@ deliberately, not by accident.
   output); no defensive checks on internal calls.
 - `web/` is plain ES modules loaded directly by the browser: `const`/`let`,
   camelCase, `async`/`await`, no framework, no build step.
+- The version is the commit: build.zig reads git's short hash, with
+  `-dirty` for uncommitted changes to tracked files, on every build
+  (`cerealgrain version`, the window title, the probe output, and every
+  TIFF's Software tag). Nix builds pass `-Dversion`. Nothing is bumped by
+  hand.
+- Licenses: ours is MIT (`LICENSE`); `third_party/` holds the license texts
+  of every library the macOS app and the static CLI ship, indexed in its
+  README. A newly shipped library needs its license there, and
+  `zig build app-bundle` fails until `license_dir` in
+  `scripts/macos_app_bundle.sh` maps it.
 
 ## Docs
 

@@ -1,0 +1,22 @@
+SuperLU includes COLAMD (SRC/colamd.c, colamd.h), which carries this
+copyright and these terms:
+
+Copyright and License:
+
+Copyright (c) 1998-2007, Timothy A. Davis, All Rights Reserved.
+COLAMD is also available under alternate licenses, contact T. Davis
+for details.
+
+THIS MATERIAL IS PROVIDED AS IS, WITH ABSOLUTELY NO WARRANTY
+EXPRESSED OR IMPLIED.  ANY USE IS AT YOUR OWN RISK.
+
+Permission is hereby granted to use, copy, modify, and/or distribute
+this program, provided that the Copyright, this License, and the
+Availability of the original version is retained on all copies and made
+accessible to the end-user of any code or package that includes COLAMD
+or any modified version of COLAMD. 
+
+Availability:
+
+The colamd/symamd library is available at http://www.suitesparse.com
+Appears as ACM Algorithm 836.

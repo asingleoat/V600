@@ -93,10 +93,13 @@ pub const ImageList = struct {
     }
 };
 
+/// The Software tag of every scan and export: the program and its commit.
+pub const software = "CerealGrain " ++ @import("build_options").version;
+
 pub const ScannerMetadata = struct {
     make: []const u8 = "EPSON",
     model: []const u8 = "Epson Scanner",
-    software: []const u8 = "CerealGrain (SANE)",
+    software: []const u8 = software,
     dpi: ?u32 = null,
     datetime: ?[]const u8 = null,
     custom_luts_applied: bool = false,
@@ -113,6 +116,7 @@ pub const WriteImageOptions = struct {
     dpi: ?u32 = null,
     /// TIFF DateTime, "YYYY:MM:DD HH:MM:SS".
     datetime: ?[]const u8 = null,
+    software: ?[]const u8 = null,
 };
 
 pub fn readDpi(allocator: std.mem.Allocator, path: []const u8) !?u32 {
@@ -527,6 +531,11 @@ fn writeImageDirectory(
         const datetime_z = try allocator.dupeZ(u8, datetime);
         defer allocator.free(datetime_z);
         try setAsciiField(tiff, c.TIFFTAG_DATETIME, datetime_z.ptr);
+    }
+    if (options.software) |name| {
+        const software_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(software_z);
+        try setAsciiField(tiff, c.TIFFTAG_SOFTWARE, software_z.ptr);
     }
 
     const parallel_deflate = options.compression == .deflate and builtin.cpu.arch.endian() == .little and
@@ -1084,9 +1093,9 @@ test "writes scanner TIFF metadata including DPI and custom LUT marker" {
     const model = (try readAsciiTag(allocator, path, c.TIFFTAG_MODEL, "Model")).?;
     defer allocator.free(model);
     try std.testing.expectEqualStrings("Epson Perfection V600 Photo", model);
-    const software = (try readAsciiTag(allocator, path, c.TIFFTAG_SOFTWARE, "Software")).?;
-    defer allocator.free(software);
-    try std.testing.expectEqualStrings("CerealGrain (SANE)", software);
+    const software_tag = (try readAsciiTag(allocator, path, c.TIFFTAG_SOFTWARE, "Software")).?;
+    defer allocator.free(software_tag);
+    try std.testing.expectEqualStrings("CerealGrain (SANE)", software_tag);
     const datetime = (try readAsciiTag(allocator, path, c.TIFFTAG_DATETIME, "DateTime")).?;
     defer allocator.free(datetime);
     try std.testing.expectEqualStrings("2026:05:15 12:34:56", datetime);

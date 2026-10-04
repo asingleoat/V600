@@ -27,7 +27,7 @@ pub const freeDevices = linux.freeDevices;
 
 pub const platform_name = "macos";
 pub const backend_name = "interpreter";
-pub const tiff_software = "CerealGrain";
+pub const tiff_software = tiff.software;
 pub const device_name = "epson-interpreter";
 
 const thumbnail_max_height: u32 = 256;

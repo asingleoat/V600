@@ -8,6 +8,9 @@
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-darwin" "x86_64-darwin" ];
+      # The build reads the commit from git; the Nix sandbox has no .git, so
+      # packages pass the flake's own.
+      version = self.shortRev or self.dirtyShortRev or "unknown";
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems (system:
           f (import nixpkgs { inherit system; }));
@@ -121,7 +124,7 @@ EOF
         in
         s.stdenv.mkDerivation {
           pname = "cerealgrain-cli";
-          version = "0.1.0";
+          inherit version;
           src = cleanSource pkgs;
           nativeBuildInputs = [ pkgs.zig s.buildPackages.pkg-config pkgs.nukeReferences ];
           buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg opencv superlu ];
@@ -133,7 +136,7 @@ EOF
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-cache"
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
             mkdir -p "$ZIG_LOCAL_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR"
-            zig build -Dstatic=true -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Doptimize=ReleaseFast \
+            zig build -Dstatic=true -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Doptimize=ReleaseFast -Dversion=${version} \
               --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
               --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
             runHook postBuild
@@ -142,6 +145,8 @@ EOF
             runHook preInstall
             install -Dm755 zig-out/bin/cerealgrain "$out/bin/cerealgrain"
             nuke-refs "$out/bin/cerealgrain"
+            install -Dm644 LICENSE "$out/share/licenses/cerealgrain/CerealGrain-LICENSE.txt"
+            cp -R third_party/. "$out/share/licenses/cerealgrain/"
             runHook postInstall
           '';
           # The static stdenv records the libraries for static linking
@@ -159,7 +164,7 @@ EOF
           mkPackage = { enableUi }:
             pkgs.stdenv.mkDerivation {
               pname = if enableUi then "cerealgrain-ui" else "cerealgrain-cli";
-              version = "0.1.0";
+              inherit version;
               src = cleanSource pkgs;
               nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc ];
               buildInputs = [
@@ -178,7 +183,7 @@ EOF
                 export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-cache"
                 export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
                 mkdir -p "$ZIG_LOCAL_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR"
-                zig build ${pkgs.lib.optionalString enableUi "-Dui=true"} -Doptimize=ReleaseSafe \
+                zig build ${pkgs.lib.optionalString enableUi "-Dui=true"} -Doptimize=ReleaseSafe -Dversion=${version} \
                   --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
                   --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
                 runHook postBuild
@@ -252,6 +257,7 @@ EOF
             zls
             stdenv.cc
             pkg-config
+            git # build.zig embeds the commit
             exiftool
             imagemagick
             nodejs

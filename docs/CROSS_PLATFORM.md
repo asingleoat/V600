@@ -29,7 +29,8 @@ companion.
 
 `nix build .#cli-static`, on x86-64 Linux, builds a CLI with nothing to
 install: musl and every C and C++ library linked in
-(`result/bin/cerealgrain`, about 33 MB, no references into the Nix store),
+(`result/bin/cerealgrain`, about 33 MB, no references into the Nix store;
+its libraries' licenses in `result/share/licenses/cerealgrain`),
 for x86-64-v3 CPUs (Haswell, Zen, and later). Its frames and exports match
 the dev-shell build's pixel for pixel; an export takes about 8% longer.
 
@@ -121,9 +122,16 @@ second.
 `zig build app-bundle`, on a Mac in the dev shell and with no other options,
 builds the UI on its own (ReleaseFast, stripped, for the oldest Apple Silicon
 CPU and macOS 14), then `scripts/macos_app_bundle.sh` assembles
-`zig-out/CerealGrain.app` and
-`zig-out/CerealGrain-<version>-<build>-macos-arm64.zip`: the
-app plus `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers.
+`zig-out/CerealGrain.app` and `zig-out/CerealGrain-<commit>-macos-arm64.zip`:
+the app, `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers, and
+`Licenses`.
+
+- The version is the commit's short hash, which the build reads from git
+  (`-dirty` when tracked files have uncommitted changes; the step warns).
+  `CFBundleVersion` is the commit count, the number macOS compares.
+- `LICENSE` and `third_party/` go into `Contents/Resources/Licenses` and the
+  zip's `Licenses`. The step fails if a library in `Contents/Frameworks` has
+  no license folder (`license_dir` in the script).
 
 - The libraries the UI loads from Nix (28, about 48 MB; the zip is about
   19 MB) are copied into `Contents/Frameworks` and their load commands

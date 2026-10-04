@@ -570,7 +570,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const window = c.SDL_CreateWindow(
-        "CerealGrain",
+        "CerealGrain " ++ cerealgrain.version,
         initial_width,
         initial_height,
         c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,

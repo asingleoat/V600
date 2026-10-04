@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (std.mem.eql(u8, command, "version")) {
-        std.debug.print("cerealgrain scanner foundation\n", .{});
+        std.debug.print("cerealgrain {s}\n", .{cerealgrain.version});
     } else if (std.mem.eql(u8, command, "scanner-contract")) {
         std.debug.print("default dpi: {d}\n", .{cerealgrain.scanner.contracts.ScanRequest.default_dpi});
         std.debug.print("rgb+ir TIFF pages: RGB={d} thumbnail={d} IR={d}\n", .{
@@ -115,6 +115,7 @@ fn handleScannerHost(
         writeReportStatus(&timing_report, "scanner devices", "ok", null, null);
     } else if (std.mem.eql(u8, subcommand, "probe")) {
         try writeReportContext(&timing_report, .{ .command = "scanner probe" });
+        try stdout.print("cerealgrain: {s}\n", .{cerealgrain.version});
         _ = runtime.probe(stdout) catch |err| {
             writeReportStatus(&timing_report, "scanner probe", "error", @errorName(err), null);
             return err;

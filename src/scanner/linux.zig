@@ -97,7 +97,7 @@ pub const FailureKind = events.FailureKind;
 pub const WrapperAvailability = sane.WrapperAvailability;
 
 pub const cache_header = "v600-scanner-device-cache-v1";
-pub const tiff_software = "CerealGrain (SANE)";
+pub const tiff_software = tiff.software ++ " (SANE)";
 const custom_lut_marker = tiff.scanner_custom_lut_marker;
 
 pub const TiffMetadataTag = enum(u16) {
@@ -1883,7 +1883,7 @@ test "maps TIFF metadata tags to Python SANE parity values" {
     try std.testing.expectEqualStrings("Epson Perfection V600 Photo", tags[1].value);
     try std.testing.expectEqual(TiffMetadataTag.software, tags[2].tag);
     try std.testing.expectEqualStrings("305", tiffTagNumber(tags[2].tag));
-    try std.testing.expectEqualStrings("CerealGrain (SANE)", tags[2].value);
+    try std.testing.expectEqualStrings(tiff_software, tags[2].value);
 
     const fallback = tiffMetadataTags(.{ .model = "" });
     try std.testing.expectEqualStrings("Epson Scanner", fallback[1].value);

@@ -41,4 +41,10 @@ Quit Epson Scan 2 and any Epson Scanner Monitor running in the menu bar or
 in Activity Monitor; only one program can use the scanner at a time.
 
 This is a beta. Please send problems, odd results, and crashes to whoever
-gave you this app, with the steps that led there.
+gave you this app, with the steps that led there. Find the version to give
+in the window's title bar (a short code such as 3f2a9c1).
+
+Licenses
+CerealGrain is free software under the MIT license. It includes libraries by
+others under their own licenses; the Licenses folder has them all, and
+Licenses/README.md says which is which.

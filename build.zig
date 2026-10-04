@@ -131,7 +131,12 @@ pub fn build(b: *std.Build) void {
         if (enable_ui) std.process.fatal("-Dstatic=true builds the CLI only: the native UI loads its display libraries at run time", .{});
     }
 
+    // Read from git on every build, so the binaries always name the commit
+    // they were built from. Nix builds have no .git and pass -Dversion.
+    const version = b.option([]const u8, "version", "The version to embed; by default the commit's short hash, with -dirty for uncommitted changes") orelse gitVersion(b);
+
     const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "webgpu", enable_webgpu);
     build_options.addOption(bool, "native_libs", true);
 
@@ -181,6 +186,7 @@ pub fn build(b: *std.Build) void {
             .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.apple_m1 },
         });
         const bundle_options = b.addOptions();
+        bundle_options.addOption([]const u8, "version", version);
         bundle_options.addOption(bool, "webgpu", false);
         bundle_options.addOption(bool, "native_libs", true);
         const bundle_root = addRootModule(b, bundle_target, .ReleaseFast, bundle_options, false, true, false);
@@ -202,12 +208,14 @@ pub fn build(b: *std.Build) void {
         bundle_cmd.addArtifactArg(bundle_ui);
         bundle_cmd.addArtifactArg(bundle_cli);
         bundle_cmd.addArg(b.getInstallPath(.prefix, ""));
+        bundle_cmd.addArg(version);
         bundle_cmd.has_side_effects = true;
         const bundle_step = b.step("app-bundle", "Build zig-out/CerealGrain.app and a zip of it to share (macOS, Apple Silicon)");
         bundle_step.dependOn(&bundle_cmd.step);
     }
 
     const wasm_build_options = b.addOptions();
+    wasm_build_options.addOption([]const u8, "version", version);
     wasm_build_options.addOption(bool, "webgpu", false);
     wasm_build_options.addOption(bool, "native_libs", false);
     const wasm_optimize: std.builtin.OptimizeMode = switch (optimize) {
@@ -564,6 +572,19 @@ fn addUiExecutable(
         .name = "cerealgrain-ui",
         .root_module = ui_module,
     });
+}
+
+/// The checkout's commit as git's short hash, with "-dirty" when tracked
+/// files differ from it (untracked files do not count, as in Nix), or
+/// "unknown" outside a git checkout.
+fn gitVersion(b: *std.Build) []const u8 {
+    const root = b.build_root.path orelse ".";
+    var code: u8 = undefined;
+    const hash = b.runAllowFail(&.{ "git", "-C", root, "rev-parse", "--short=7", "HEAD" }, &code, .ignore) catch return "unknown";
+    const short = std.mem.trim(u8, hash, " \t\r\n");
+    const status = b.runAllowFail(&.{ "git", "-C", root, "status", "--porcelain", "--untracked-files=no" }, &code, .ignore) catch return short;
+    if (std.mem.trim(u8, status, " \t\r\n").len == 0) return short;
+    return b.fmt("{s}-dirty", .{short});
 }
 
 /// Zig takes the Nix dev shell's library paths only when building for the
