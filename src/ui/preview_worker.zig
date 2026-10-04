@@ -665,7 +665,7 @@ test "preview worker consumes queued command without blocking UI state" {
 
     var model = ui_state.State.init("scans", "frames", 0);
     model.scannerConnected(0, 0, 2.7, 9.54);
-    try std.testing.expect(model.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(model.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakePreviewSuccess);
     defer worker.deinit();
@@ -705,7 +705,7 @@ test "preview worker reuses connected scanner capabilities" {
         .tpu_width_in = 3.0,
         .tpu_height_in = 9.0,
     });
-    try std.testing.expect(model.queuePreviewScan("/tmp/v600-native-preview-cached.tiff"));
+    try std.testing.expect(model.queuePreviewScan("/tmp/cerealgrain-native-preview-cached.tiff"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakePreviewRequiresCachedCapabilities);
     defer worker.deinit();
@@ -734,7 +734,7 @@ test "preview worker leaves scan-start command for scan worker" {
     var model = ui_state.State.init("scans", "frames", 0);
     model.scannerConnected(1000, 500, 10.0, 5.0);
     model.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
-    try std.testing.expect(model.queueScanStart(".zig-cache/v600-scan.cancel"));
+    try std.testing.expect(model.queueScanStart(".zig-cache/cerealgrain-scan.cancel"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakePreviewSuccess);
     defer worker.deinit();
@@ -755,7 +755,7 @@ test "preview worker surfaces execution failure to UI state" {
 
     var model = ui_state.State.init("scans", "frames", 0);
     model.scannerConnected(0, 0, 2.7, 9.54);
-    try std.testing.expect(model.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(model.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakePreviewFailure);
     defer worker.deinit();

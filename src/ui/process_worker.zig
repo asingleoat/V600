@@ -711,7 +711,7 @@ fn logWorkerStarted(context: *const Context) void {
     if (builtin.is_test) return;
     switch (context.operation) {
         .load_image => std.debug.print(
-            "[v600 process] start load path={s} generation={d} preview_size={d}\n",
+            "[cerealgrain process] start load path={s} generation={d} preview_size={d}\n",
             .{ context.path, context.generation, context.preview_size },
         ),
         .auto_detect => {
@@ -721,7 +721,7 @@ fn logWorkerStarted(context: *const Context) void {
             else
                 "auto";
             std.debug.print(
-                "[v600 process] start auto-detect path={s} generation={d} preview={d}x{d} format={s} frames={s} scale={d:.2} rotation={d}\n",
+                "[cerealgrain process] start auto-detect path={s} generation={d} preview={d}x{d} format={s} frames={s} scale={d:.2} rotation={d}\n",
                 .{
                     context.path,
                     context.generation,
@@ -735,7 +735,7 @@ fn logWorkerStarted(context: *const Context) void {
             );
         },
         .rebate => std.debug.print(
-            "[v600 process] start rebate path={s} generation={d}\n",
+            "[cerealgrain process] start rebate path={s} generation={d}\n",
             .{ context.path, context.generation },
         ),
     }
@@ -746,14 +746,14 @@ fn logAutoDetectComplete(context: *const Context, result: processing_workflow.Au
     var elapsed_buffer: [32]u8 = undefined;
     const elapsed = formatElapsed(&elapsed_buffer, elapsed_ms);
     std.debug.print(
-        "[v600 process] auto-detect detector complete path={s} elapsed={s} frames={d} aspect={s} rebate={s}\n",
+        "[cerealgrain process] auto-detect detector complete path={s} elapsed={s} frames={d} aspect={s} rebate={s}\n",
         .{ context.path, elapsed, result.frames.len, result.aspect, if (result.rebate != null) "yes" else "no" },
     );
 }
 
 fn logAutoDetectRebateStart(context: *const Context) void {
     if (builtin.is_test) return;
-    std.debug.print("[v600 process] auto-detect computing suggested-rebate Dmin path={s}\n", .{context.path});
+    std.debug.print("[cerealgrain process] auto-detect computing suggested-rebate Dmin path={s}\n", .{context.path});
 }
 
 fn logWorkerFailed(context: *const Context) void {
@@ -761,7 +761,7 @@ fn logWorkerFailed(context: *const Context) void {
     var elapsed_buffer: [32]u8 = undefined;
     const elapsed = formatElapsed(&elapsed_buffer, elapsedMsBetween(context.started_ms, context.finished_ms));
     std.debug.print(
-        "[v600 process] failed {s} path={s} elapsed={s} error={s}\n",
+        "[cerealgrain process] failed {s} path={s} elapsed={s} error={s}\n",
         .{ context.operation.label(), context.path, elapsed, if (context.error_detail.len == 0) "worker failed" else context.error_detail },
     );
 }
@@ -771,7 +771,7 @@ fn logWorkerApplyFailed(context: *const Context, err: anyerror) void {
     var elapsed_buffer: [32]u8 = undefined;
     const elapsed = formatElapsed(&elapsed_buffer, elapsedMsBetween(context.started_ms, context.finished_ms));
     std.debug.print(
-        "[v600 process] apply failed {s} path={s} elapsed={s} error={s}\n",
+        "[cerealgrain process] apply failed {s} path={s} elapsed={s} error={s}\n",
         .{ context.operation.label(), context.path, elapsed, @errorName(err) },
     );
 }
@@ -781,7 +781,7 @@ fn logWorkerFinished(context: *const Context, applied: bool) void {
     var elapsed_buffer: [32]u8 = undefined;
     const elapsed = formatElapsed(&elapsed_buffer, elapsedMsBetween(context.started_ms, context.finished_ms));
     std.debug.print(
-        "[v600 process] finish {s} path={s} elapsed={s} applied={s}\n",
+        "[cerealgrain process] finish {s} path={s} elapsed={s} applied={s}\n",
         .{ context.operation.label(), context.path, elapsed, if (applied) "yes" else "stale" },
     );
 }
@@ -1057,7 +1057,7 @@ test "rebate edits leave a resident RGB page in the cache" {
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateWithoutRgbPage);
     defer worker.deinit();
-    try std.testing.expect(try worker.startRebateFromState(&model, "scratchndent_config.toml"));
+    try std.testing.expect(try worker.startRebateFromState(&model, "processing.toml"));
     try waitForPoll(&worker, &model);
     try std.testing.expectApproxEqAbs(0.8, model.processing.dmin.?[1], 0.0);
 }
@@ -1095,7 +1095,7 @@ test "process worker reuses cached rebate Dmin and persists config without worke
     defer tmp.cleanup();
     const config_path = try std.fmt.allocPrint(
         allocator,
-        ".zig-cache/tmp/{s}/scratchndent_config.toml",
+        ".zig-cache/tmp/{s}/processing.toml",
         .{tmp.sub_path[0..]},
     );
     defer allocator.free(config_path);
@@ -1156,7 +1156,7 @@ test "process worker rejects duplicate incompatible starts while running" {
     defer worker.deinit();
     try std.testing.expect(try worker.startLoadIndex(&model, 0, 8192));
     try std.testing.expect(!(try worker.startLoadIndex(&model, 0, 8192)));
-    try std.testing.expect(!(try worker.startAutoDetectFromState(&model, "scratchndent_config.toml", .{}, 0.0, ui_state.default_process_output_rotation)));
+    try std.testing.expect(!(try worker.startAutoDetectFromState(&model, "processing.toml", .{}, 0.0, ui_state.default_process_output_rotation)));
     try std.testing.expectEqualStrings("Processing busy, please wait...", model.processing.progress);
     try waitForPoll(&worker, &model);
 }
@@ -1176,7 +1176,7 @@ test "process worker exposes active operation diagnostics" {
     defer worker.deinit();
     try std.testing.expect(try worker.startAutoDetectFromState(
         &model,
-        "scratchndent_config.toml",
+        "processing.toml",
         .{ .format = "35mm", .n_frames = 6 },
         0.5,
         ui_state.default_process_output_rotation,
@@ -1205,7 +1205,7 @@ test "process worker runs pending auto-detect once and applies Dmin" {
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeAutoDetectSuccess);
     defer worker.deinit();
-    try std.testing.expect(try worker.startAutoDetectFromState(&model, "scratchndent_config.toml", .{}, 0.0, ui_state.default_process_output_rotation));
+    try std.testing.expect(try worker.startAutoDetectFromState(&model, "processing.toml", .{}, 0.0, ui_state.default_process_output_rotation));
     try waitForPoll(&worker, &model);
     try std.testing.expectEqual(@as(usize, 1), model.process_selection_count);
     try std.testing.expect(model.process_rebate_rect != null);
@@ -1219,7 +1219,7 @@ test "process worker reuses cached auto-detect result and persists Dmin" {
     defer tmp.cleanup();
     const config_path = try std.fmt.allocPrint(
         allocator,
-        ".zig-cache/tmp/{s}/scratchndent_config.toml",
+        ".zig-cache/tmp/{s}/processing.toml",
         .{tmp.sub_path[0..]},
     );
     defer allocator.free(config_path);
@@ -1285,7 +1285,7 @@ test "process worker applies explicit rebate Dmin result to matching image" {
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateSuccess);
     defer worker.deinit();
-    try std.testing.expect(try worker.startRebateFromState(&model, "scratchndent_config.toml"));
+    try std.testing.expect(try worker.startRebateFromState(&model, "processing.toml"));
     try waitForPoll(&worker, &model);
     try std.testing.expectApproxEqAbs(0.4, model.processing.dmin.?[0], 0.0);
     try std.testing.expectEqualStrings("Dmin computed", model.processing.progress);

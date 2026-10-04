@@ -1,5 +1,5 @@
 {
-  "software": "v600-zig",
+  "software": "cerealgrain",
   "device": "epkowa:interpreter:001:017",
   "model": "Epson Perfection V600 Photo",
   "source": "tpu",
@@ -7,12 +7,12 @@
   "requested_dpi": 400,
   "effective_dpi": 400,
   "depth": 16,
-  "output": "/tmp/v600-zig-progress-smoke.tiff",
+  "output": "/tmp/cerealgrain-progress-smoke.tiff",
   "custom_luts_applied": false,
   "tiff_metadata": {
     "make": "EPSON",
     "model": "Epson Perfection V600 Photo",
-    "software": "epdaughter-sane"
+    "software": "CerealGrain (SANE)"
   },
   "argv": [
     "scanimage-v600",
@@ -38,6 +38,6 @@
     "-y",
     "5.1",
     "-o",
-    "/tmp/v600-zig-progress-smoke.tiff"
+    "/tmp/cerealgrain-progress-smoke.tiff"
   ]
 }

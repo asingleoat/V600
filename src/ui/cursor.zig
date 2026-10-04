@@ -1,7 +1,7 @@
 //! Mouse cursor shapes for the image canvases: crosshair over the image, move
 //! over a selection, resize over edge handles, pointer over rotation handles.
 
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 const c = @import("sdl_nuklear.zig").c;
 const selection_geometry = @import("selection_geometry.zig");
 
@@ -47,7 +47,7 @@ pub fn deinit() void {
     }
 }
 
-pub fn forScanEdit(mode: v600.native_ui.PreviewSelectionEditMode) Shape {
+pub fn forScanEdit(mode: cerealgrain.native_ui.PreviewSelectionEditMode) Shape {
     return switch (mode) {
         .move => .move,
         .north, .south => .resize_ns,

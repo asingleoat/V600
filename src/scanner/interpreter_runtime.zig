@@ -26,7 +26,7 @@ pub const freeDevices = linux.freeDevices;
 
 pub const platform_name = "macos";
 pub const backend_name = "interpreter";
-pub const tiff_software = "epdaughter";
+pub const tiff_software = "CerealGrain";
 pub const device_name = "epson-interpreter";
 
 const thumbnail_max_height: u32 = 256;
@@ -428,7 +428,7 @@ pub const Runtime = struct {
         const kind_name = if (options.request.kind == .rgb_ir) "rgb+ir" else @tagName(options.request.kind);
         try out.print(
             \\{{
-            \\  "software": "v600-zig",
+            \\  "software": "cerealgrain",
             \\  "backend": "{s}",
             \\  "device": "{s}",
             \\  "model": "{s}",

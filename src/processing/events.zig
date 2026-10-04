@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const schema = "v600.processing.event.v1";
+pub const schema = "cerealgrain.processing.event.v1";
 
 pub const EventName = enum {
     export_start,
@@ -189,11 +189,11 @@ test "processing export events serialize as JSONL" {
     try writeExportComplete(&out, .{ .file_count = 1, .output_dir = "frames" });
     try writeExportCancelled(&out, .{ .detail = "cancel file observed" });
     try std.testing.expectEqualStrings(
-        \\{"event":"export-start","schema":"v600.processing.event.v1","frame_count":2,"output_dir":"frames"}
-        \\{"event":"export-progress","schema":"v600.processing.event.v1","message":"Processing 2 frames..."}
-        \\{"event":"file-written","schema":"v600.processing.event.v1","file":"roll_01.tif"}
-        \\{"event":"export-complete","schema":"v600.processing.event.v1","file_count":1,"output_dir":"frames"}
-        \\{"event":"export-cancelled","schema":"v600.processing.event.v1","detail":"cancel file observed"}
+        \\{"event":"export-start","schema":"cerealgrain.processing.event.v1","frame_count":2,"output_dir":"frames"}
+        \\{"event":"export-progress","schema":"cerealgrain.processing.event.v1","message":"Processing 2 frames..."}
+        \\{"event":"file-written","schema":"cerealgrain.processing.event.v1","file":"roll_01.tif"}
+        \\{"event":"export-complete","schema":"cerealgrain.processing.event.v1","file_count":1,"output_dir":"frames"}
+        \\{"event":"export-cancelled","schema":"cerealgrain.processing.event.v1","detail":"cancel file observed"}
         \\
     , buffer.items);
 }

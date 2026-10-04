@@ -22,8 +22,8 @@ firmware/
 zig-out/
 
 # Config
-epdaughter_config.toml
-scratchndent_config.toml
+scanner.toml
+processing.toml
 
 # Processing outputs
 /frames/

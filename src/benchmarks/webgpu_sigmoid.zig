@@ -1,8 +1,8 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const color = v600.processing.color;
-const webgpu = v600.processing.webgpu;
+const color = cerealgrain.processing.color;
+const webgpu = cerealgrain.processing.webgpu;
 
 const Case = struct {
     name: []const u8,

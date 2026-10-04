@@ -1,8 +1,9 @@
 Scanner config fixtures generated from `v600/config/settings.py`.
 
-These files are small Python-oracle fixtures for `epdaughter_config.toml`
-behavior. They capture exact `save_config()` output, including the leading
-blank line, section order, comments, and the active-vs-commented distinction.
+These files are small Python-oracle fixtures for the scanner config
+(`scanner.toml`; the Python tools named it `epdaughter_config.toml`). They
+capture exact `save_config()` output, including the leading blank line,
+section order, comments, and the active-vs-commented distinction.
 
 Generation commands used during the Zig rewrite:
 

@@ -23,10 +23,10 @@ Add the overlay and module to your NixOS configuration:
     # configuration.nix
     { config, pkgs, ... }:
     {
-      imports = [ /path/to/V600/nixos/v600-scanner.nix ];
+      imports = [ /path/to/cerealgrain/nixos/v600-scanner.nix ];
 
       nixpkgs.overlays = [
-        (import /path/to/V600/nixos/v600-overlay.nix)
+        (import /path/to/cerealgrain/nixos/v600-overlay.nix)
       ];
 
       users.users.yourname.extraGroups = [ "scanner" "lp" ];

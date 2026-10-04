@@ -17,16 +17,16 @@ import {
 import { loadIrPageFromTiff, loadRgb16PageFromTiff } from "../../web/tiff.mjs";
 
 const wasmPath = process.argv[2];
-if (!wasmPath) throw new Error("usage: node test/wasm/webapp_crop_export_bench.mjs <v600-wasm-core.wasm> [--scan path] [--max-frames n] [--variant inv-only|ir-neg|ir-inv]");
+if (!wasmPath) throw new Error("usage: node test/wasm/webapp_crop_export_bench.mjs <cerealgrain-wasm-core.wasm> [--scan path] [--max-frames n] [--variant inv-only|ir-neg|ir-inv]");
 
 const options = parseArgs(process.argv.slice(3));
-const scanPath = options.scan ?? process.env.V600_WASM_BENCH_SCAN ?? defaultScanPath();
+const scanPath = options.scan ?? process.env.CEREALGRAIN_WASM_BENCH_SCAN ?? defaultScanPath();
 if (!scanPath || !fs.existsSync(scanPath)) {
   console.log(JSON.stringify({
     event: "wasm-webapp-crop-export-bench",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     status: "skipped",
-    reason: "no local scan TIFF found; set V600_WASM_BENCH_SCAN or pass --scan",
+    reason: "no local scan TIFF found; set CEREALGRAIN_WASM_BENCH_SCAN or pass --scan",
   }));
   process.exit(0);
 }
@@ -143,7 +143,7 @@ const decision = blocksFrameBudget || materialExportShare
 
 console.log(JSON.stringify({
   event: "wasm-webapp-crop-export-bench",
-  schema: "v600.webapp.event.v1",
+  schema: "cerealgrain.webapp.event.v1",
   status: "ok",
   scan: scanPath,
   file_bytes: scanBytes.byteLength,

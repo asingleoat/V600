@@ -4,13 +4,13 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 const c = @import("sdl_nuklear.zig").c;
 const chrome = @import("chrome.zig");
 
-const Roll = v600.roll.Roll;
-const PreviewBuffer = v600.native_ui_preview_worker.PreviewBuffer;
-const film_lut = v600.scanner.film_lut;
+const Roll = cerealgrain.roll.Roll;
+const PreviewBuffer = cerealgrain.native_ui_preview_worker.PreviewBuffer;
+const film_lut = cerealgrain.scanner.film_lut;
 const layoutRow = chrome.layoutRow;
 const drawText = chrome.drawText;
 const nkBool = chrome.nkBool;
@@ -18,8 +18,8 @@ const tooltip = chrome.tooltip;
 
 const allocator = std.heap.page_allocator;
 const formats = [_][]const u8{ "35mm", "645", "6x6", "6x7", "6x9" };
-pub const preview_output = "/tmp/v600-native-preview.tiff";
-pub const cancel_file = ".zig-cache/v600-native-scan.cancel";
+pub const preview_output = "/tmp/cerealgrain-native-preview.tiff";
+pub const cancel_file = ".zig-cache/cerealgrain-native-scan.cancel";
 
 pub const RollPanel = struct {
     io: std.Io,
@@ -30,10 +30,10 @@ pub const RollPanel = struct {
     default_input_dir: []const u8,
     default_output_dir: []const u8,
     active: ?Roll = null,
-    processor: ?*v600.roll.Processor = null,
+    processor: ?*cerealgrain.roll.Processor = null,
     /// A closed roll's exporter finishing its strip in progress; rolls
     /// cannot be opened until it has, so two big exports never overlap.
-    finishing: ?*v600.roll.Processor = null,
+    finishing: ?*cerealgrain.roll.Processor = null,
     finishing_name_buffer: [64]u8 = undefined,
     finishing_name_len: usize = 0,
     /// Queued strips Close Roll or quitting dropped; they export when the
@@ -69,7 +69,7 @@ pub const RollPanel = struct {
     completed: std.atomic.Value(usize) = .init(0),
     seen_completed: usize = 0,
 
-    pub fn init(io: std.Io, model: *const v600.native_ui.State, config_path: []const u8, processing_config_path: []const u8) RollPanel {
+    pub fn init(io: std.Io, model: *const cerealgrain.native_ui.State, config_path: []const u8, processing_config_path: []const u8) RollPanel {
         var panel = RollPanel{
             .io = io,
             .scans_root = model.scanner.output_dir,
@@ -87,15 +87,15 @@ pub const RollPanel = struct {
     }
 
     /// Reopens the roll named in the scanner config, if any.
-    pub fn restore(self: *RollPanel, model: *v600.native_ui.State) void {
-        const loaded = v600.scanner.config.loadFile(allocator, self.io, self.config_path) catch return;
+    pub fn restore(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
+        const loaded = cerealgrain.scanner.config.loadFile(allocator, self.io, self.config_path) catch return;
         if (!loaded.active.roll or loaded.values.roll.len == 0) return;
         self.activate(model, loaded.values.roll.slice()) catch |err| {
             self.setNotice("Could not reopen roll {s}: {s}", .{ loaded.values.roll.slice(), @errorName(err) });
         };
     }
 
-    pub fn deinit(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn deinit(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         self.close(model, false, true);
         if (self.finishing) |processor| processor.finish();
         self.finishing = null;
@@ -107,7 +107,7 @@ pub const RollPanel = struct {
     }
 
     /// Draws the roll section at the top of the Scan view.
-    pub fn draw(self: *RollPanel, ctx: *c.struct_nk_context, model: *v600.native_ui.State, preview: ?PreviewBuffer) void {
+    pub fn draw(self: *RollPanel, ctx: *c.struct_nk_context, model: *cerealgrain.native_ui.State, preview: ?PreviewBuffer) void {
         layoutRow(ctx, 24.0, 1);
         c.nk_label(ctx, "Roll", c.NK_TEXT_LEFT);
         if (self.active) |*roll| {
@@ -117,7 +117,7 @@ pub const RollPanel = struct {
                 roll.stock,
                 roll.format,
                 roll.dpi,
-                v600.roll.kindName(roll.kind),
+                cerealgrain.roll.kindName(roll.kind),
                 self.strip_count,
                 if (self.strip_count == 1) "" else "s",
             }) catch roll.name;
@@ -191,7 +191,7 @@ pub const RollPanel = struct {
         layoutRow(ctx, 28.0, 1);
         self.name_field_rect = c.nk_widget_bounds(ctx);
         _ = c.nk_edit_string(ctx, c.NK_EDIT_FIELD, &self.new_name, &self.new_name_len, @intCast(self.new_name.len), c.nk_filter_default);
-        var stock_buffer: [16]v600.native_ui.ProcessStockChoice = undefined;
+        var stock_buffer: [16]cerealgrain.native_ui.ProcessStockChoice = undefined;
         if (model.processingStocksInfo(&stock_buffer)) |info| {
             for (info.stocks, 0..) |stock, index| {
                 if (index % 3 == 0) layoutRow(ctx, 24.0, @intCast(@min(3, info.stocks.len - index)));
@@ -218,9 +218,9 @@ pub const RollPanel = struct {
         }
     }
 
-    fn startRoll(self: *RollPanel, model: *v600.native_ui.State) void {
+    fn startRoll(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         const name = std.mem.trim(u8, self.new_name[0..@intCast(self.new_name_len)], " ");
-        const settings = v600.roll.Settings{
+        const settings = cerealgrain.roll.Settings{
             .stock = self.new_stock[0..self.new_stock_len],
             .format = formats[self.new_format],
             .dpi = model.scan_controls.dpi,
@@ -242,17 +242,17 @@ pub const RollPanel = struct {
     }
 
     /// Opens an existing roll, as clicking it in the list does.
-    pub fn openRoll(self: *RollPanel, model: *v600.native_ui.State, name: []const u8) !void {
+    pub fn openRoll(self: *RollPanel, model: *cerealgrain.native_ui.State, name: []const u8) !void {
         self.refreshNames();
         try self.activate(model, name);
     }
 
-    fn activate(self: *RollPanel, model: *v600.native_ui.State, name: []const u8) !void {
+    fn activate(self: *RollPanel, model: *cerealgrain.native_ui.State, name: []const u8) !void {
         self.close(model, true, true);
         var roll = try Roll.open(allocator, self.io, self.scans_root, self.frames_root, name);
         errdefer roll.deinit();
         std.Io.Dir.cwd().createDirPath(self.io, roll.frames_dir) catch {};
-        const processor = try v600.roll.Processor.start(self.io, self.scans_root, self.frames_root, roll.name, .{}, onProcessed, self);
+        const processor = try cerealgrain.roll.Processor.start(self.io, self.scans_root, self.frames_root, roll.name, .{}, onProcessed, self);
         self.active = roll;
         self.processor = processor;
         self.generation += 1;
@@ -264,8 +264,8 @@ pub const RollPanel = struct {
         applyRollControls(model, active);
         self.saveCurrent(active.name);
         // The Process view works on this roll's strips with its film stock.
-        if (v600.processing.config.FixedString.from(active.stock)) |stock| {
-            const updates = [_]v600.processing.config.Override{.{ .name = "stock", .value = .{ .string = stock } }};
+        if (cerealgrain.processing.config.FixedString.from(active.stock)) |stock| {
+            const updates = [_]cerealgrain.processing.config.Override{.{ .name = "stock", .value = .{ .string = stock } }};
             model.saveProcessingSettings(allocator, self.io, self.processing_config_path, &updates) catch {};
         } else |_| {}
 
@@ -283,13 +283,13 @@ pub const RollPanel = struct {
     /// back to plain scans.
     /// The Close Roll button: returns at once, leaving a strip in progress
     /// to finish in the background.
-    pub fn closeRoll(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn closeRoll(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         self.close(model, true, false);
     }
 
     /// With `wait` false, a strip still exporting finishes in the
     /// background (`finishing`) instead of blocking the UI thread.
-    fn close(self: *RollPanel, model: *v600.native_ui.State, save: bool, wait: bool) void {
+    fn close(self: *RollPanel, model: *cerealgrain.native_ui.State, save: bool, wait: bool) void {
         if (self.processor) |processor| {
             self.dropped_strips = processor.dropPending();
             if (wait or processor.pending() == 0) {
@@ -317,14 +317,14 @@ pub const RollPanel = struct {
 
     /// Mode and DPI chosen while a roll is open apply to its next strips.
     /// A roll needs RGB, so IR alone reverts to the roll's mode.
-    pub fn syncControls(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn syncControls(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         const roll = &(self.active orelse return);
         if (model.scan_controls.mode == .ir) {
             applyRollControls(model, roll);
             self.notice = "A roll scans RGB or RGB + IR; IR alone is for single scans.";
             return;
         }
-        const kind: v600.scanner.contracts.ScanKind = if (model.scan_controls.mode == .rgb) .rgb else .rgb_ir;
+        const kind: cerealgrain.scanner.contracts.ScanKind = if (model.scan_controls.mode == .rgb) .rgb else .rgb_ir;
         if (kind == roll.kind and model.scan_controls.dpi == roll.dpi) return;
         roll.kind = kind;
         roll.dpi = model.scan_controls.dpi;
@@ -347,11 +347,11 @@ pub const RollPanel = struct {
     }
 
     /// What Scan Strip does.
-    pub fn scanStrip(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn scanStrip(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         self.startStrip(model);
     }
 
-    fn startStrip(self: *RollPanel, model: *v600.native_ui.State) void {
+    fn startStrip(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         const roll = &(self.active orelse return);
         applyRollControls(model, roll);
         model.scan_controls.autoselect = true;
@@ -360,7 +360,7 @@ pub const RollPanel = struct {
     }
 
     /// Call after each preview finishes; continues a Scan Strip click.
-    pub fn afterPreview(self: *RollPanel, model: *v600.native_ui.State, preview: ?PreviewBuffer) void {
+    pub fn afterPreview(self: *RollPanel, model: *cerealgrain.native_ui.State, preview: ?PreviewBuffer) void {
         if (!self.strip_pending) return;
         self.strip_pending = false;
         if (!model.preview_ready) {
@@ -376,7 +376,7 @@ pub const RollPanel = struct {
 
     /// Scans the current selection as the roll's next strip. Scan Selection
     /// calls this while a roll is open.
-    pub fn queueStrip(self: *RollPanel, model: *v600.native_ui.State, preview: ?PreviewBuffer) void {
+    pub fn queueStrip(self: *RollPanel, model: *cerealgrain.native_ui.State, preview: ?PreviewBuffer) void {
         const roll = &(self.active orelse return);
         const selection = model.scan_controls.selection orelse {
             self.notice = "Draw a selection rectangle first.";
@@ -419,26 +419,26 @@ pub const RollPanel = struct {
 
     /// The roll LUT's path, creating the LUT from this preview on the first
     /// strip; warns when this strip's film falls outside it.
-    fn rollLut(self: *RollPanel, roll: *Roll, buffer: PreviewBuffer, selection: v600.native_ui.PreviewSelection) ![]u8 {
+    fn rollLut(self: *RollPanel, roll: *Roll, buffer: PreviewBuffer, selection: cerealgrain.native_ui.PreviewSelection) ![]u8 {
         const film_selection = film_lut.Selection{ .x = selection.x, .y = selection.y, .w = selection.w, .h = selection.h };
         const width: usize = @intCast(buffer.width);
         const height: usize = @intCast(buffer.height);
         const channels: usize = @intCast(buffer.samples_per_pixel);
         const first_strip = roll.lut_white == null;
         if (first_strip) {
-            const computed = try film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, v600.roll.lut_options);
+            const computed = try film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, cerealgrain.roll.lut_options);
             _ = try roll.adoptLut(self.io, computed) orelse return error.NoFilmForLut;
-        } else if (film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, v600.roll.fit_options)) |own| {
+        } else if (film_lut.computeFilmLuts(allocator, buffer.data, width, height, channels, film_selection, cerealgrain.roll.fit_options)) |own| {
             // Advisory only: the roll LUT applies either way.
             if (!roll.checkLutFit(own).ok()) {
                 self.notice = "This strip's film falls outside the roll LUT and will clip a little; a different film may need its own roll.";
             }
         } else |_| {}
-        return roll.path(allocator, v600.roll.lut_name);
+        return roll.path(allocator, cerealgrain.roll.lut_name);
     }
 
     /// Call after polling the scan worker, with whether a scan just finished.
-    pub fn afterScanPoll(self: *RollPanel, model: *v600.native_ui.State, finished: bool) void {
+    pub fn afterScanPoll(self: *RollPanel, model: *cerealgrain.native_ui.State, finished: bool) void {
         const strip = self.scanning_strip orelse return;
         if (finished) {
             if (self.processor) |processor| processor.enqueue(strip) catch |err| {
@@ -456,7 +456,7 @@ pub const RollPanel = struct {
 
     /// Refreshes the gallery after background exports finish, and ends a
     /// Scan Strip click whose preview was cancelled or never ran.
-    pub fn poll(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn poll(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         if (self.strip_pending) {
             if (model.scanner.cancel_requested) {
                 self.strip_pending = false;
@@ -487,7 +487,7 @@ pub const RollPanel = struct {
         model.setStatus(text);
     }
 
-    fn onProcessed(context: ?*anyopaque, done: v600.roll.Processor.Done) void {
+    fn onProcessed(context: ?*anyopaque, done: cerealgrain.roll.Processor.Done) void {
         const self: *RollPanel = @ptrCast(@alignCast(context.?));
         self.result_mutex.lockUncancelable(self.io);
         defer self.result_mutex.unlock(self.io);
@@ -518,9 +518,9 @@ pub const RollPanel = struct {
     /// Called each frame once the app has been asked to quit: queued strips
     /// are dropped, the one in progress finishes, and the status line says
     /// what the app is waiting for. True once no export is running.
-    pub fn stopForQuit(self: *RollPanel, model: *v600.native_ui.State) bool {
-        var waiting_for: ?*v600.roll.Processor = null;
-        for ([_]?*v600.roll.Processor{ self.processor, self.finishing }) |maybe| {
+    pub fn stopForQuit(self: *RollPanel, model: *cerealgrain.native_ui.State) bool {
+        var waiting_for: ?*cerealgrain.roll.Processor = null;
+        for ([_]?*cerealgrain.roll.Processor{ self.processor, self.finishing }) |maybe| {
             const processor = maybe orelse continue;
             self.dropped_strips += processor.dropPending();
             processor.requestStop();
@@ -541,7 +541,7 @@ pub const RollPanel = struct {
         const roll = &(self.active orelse return null);
         const dir = std.fs.path.dirname(path) orelse return null;
         if (!std.mem.eql(u8, dir, roll.dir)) return null;
-        return v600.roll.stripNumber(path);
+        return cerealgrain.roll.stripNumber(path);
     }
 
     /// `<roll>_sNN`, the names a strip's frames export under.
@@ -554,7 +554,7 @@ pub const RollPanel = struct {
     /// strip's framing and re-exports the strip in the background under the
     /// roll's names, replacing its earlier exports. Later re-exports keep
     /// using these frames.
-    pub fn exportFramedStrip(self: *RollPanel, model: *v600.native_ui.State, strip_path: []const u8) !void {
+    pub fn exportFramedStrip(self: *RollPanel, model: *cerealgrain.native_ui.State, strip_path: []const u8) !void {
         const processor = self.processor orelse return error.NoOpenRoll;
         const count = try self.saveFraming(model, strip_path);
         try processor.enqueue(strip_path);
@@ -567,9 +567,9 @@ pub const RollPanel = struct {
     }
 
     /// Writes the Process view's frames as the strip's framing file.
-    fn saveFraming(self: *RollPanel, model: *v600.native_ui.State, strip_path: []const u8) !usize {
+    fn saveFraming(self: *RollPanel, model: *cerealgrain.native_ui.State, strip_path: []const u8) !usize {
         const roll = &(self.active orelse return error.NoOpenRoll);
-        var framing = v600.native_ui.ProcessFraming{};
+        var framing = cerealgrain.native_ui.ProcessFraming{};
         const rects = try model.processExportRects(&framing.frames);
         if (rects.len == 0) return error.NoFrameSelections;
         framing.count = rects.len;
@@ -584,7 +584,7 @@ pub const RollPanel = struct {
     /// Call each frame: when the Process view moves to another image, hands
     /// it that strip's saved frames (if it is one of the open roll's strips
     /// and has them), to show instead of its first auto-detect.
-    pub fn syncSavedFraming(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn syncSavedFraming(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         const path = model.currentProcessingImagePathForWorker() orelse "";
         if (std.mem.eql(u8, path, self.synced_image_buffer[0..self.synced_image_len])) return;
         self.synced_image_len = @min(path.len, self.synced_image_buffer.len);
@@ -592,7 +592,7 @@ pub const RollPanel = struct {
         model.setProcessSavedFraming(self.loadSavedFraming(path));
     }
 
-    fn loadSavedFraming(self: *RollPanel, path: []const u8) ?v600.native_ui.ProcessFraming {
+    fn loadSavedFraming(self: *RollPanel, path: []const u8) ?cerealgrain.native_ui.ProcessFraming {
         const roll = &(self.active orelse return null);
         if (self.stripNumberOf(path) == null) return null;
         const owned = (roll.loadFraming(self.io, path) catch |err| {
@@ -600,7 +600,7 @@ pub const RollPanel = struct {
             return null;
         }) orelse return null;
         defer owned.deinit(roll.allocator);
-        var framing = v600.native_ui.ProcessFraming{ .rebate = owned.rebate };
+        var framing = cerealgrain.native_ui.ProcessFraming{ .rebate = owned.rebate };
         framing.count = @min(owned.frames.len, framing.frames.len);
         @memcpy(framing.frames[0..framing.count], owned.frames[0..framing.count]);
         return framing;
@@ -608,7 +608,7 @@ pub const RollPanel = struct {
 
     /// Call each frame after `settleProcessEdits`: saves hand edits (and
     /// undos) of an open-roll strip's frames, and says so.
-    pub fn saveFramingIfEdited(self: *RollPanel, model: *v600.native_ui.State) void {
+    pub fn saveFramingIfEdited(self: *RollPanel, model: *cerealgrain.native_ui.State) void {
         if (!model.process_framing_dirty) return;
         const path = model.currentProcessingImagePathForWorker() orelse return;
         if (self.stripNumberOf(path) == null or model.processing.loading) {
@@ -632,7 +632,7 @@ pub const RollPanel = struct {
     fn openReview(self: *RollPanel) void {
         const roll = &(self.active orelse return);
         roll.writeReviewIndex(self.io) catch {};
-        const index = roll.path(allocator, v600.roll.review_dir_name ++ "/index.html") catch return;
+        const index = roll.path(allocator, cerealgrain.roll.review_dir_name ++ "/index.html") catch return;
         defer allocator.free(index);
         const opener = if (builtin.os.tag == .macos) "open" else "xdg-open";
         const result = std.process.run(allocator, self.io, .{ .argv = &.{ opener, index } }) catch |err| {
@@ -644,15 +644,15 @@ pub const RollPanel = struct {
     }
 
     fn saveCurrent(self: *RollPanel, name: []const u8) void {
-        var updates = v600.scanner.config.LoadedConfig{};
+        var updates = cerealgrain.scanner.config.LoadedConfig{};
         updates.values.roll.set(name) catch return;
         updates.active.roll = true;
-        v600.scanner.config.saveFile(allocator, self.io, self.config_path, updates) catch {};
+        cerealgrain.scanner.config.saveFile(allocator, self.io, self.config_path, updates) catch {};
     }
 
     fn refreshNames(self: *RollPanel) void {
         self.freeNames();
-        self.names = v600.roll.listRolls(allocator, self.io, self.scans_root) catch &.{};
+        self.names = cerealgrain.roll.listRolls(allocator, self.io, self.scans_root) catch &.{};
     }
 
     fn freeNames(self: *RollPanel) void {
@@ -667,7 +667,7 @@ pub const RollPanel = struct {
 };
 
 /// A roll fixes the scan mode and resolution.
-fn applyRollControls(model: *v600.native_ui.State, roll: *const Roll) void {
+fn applyRollControls(model: *cerealgrain.native_ui.State, roll: *const Roll) void {
     model.scan_controls.setMode(if (roll.kind == .rgb) .rgb else .rgb_ir);
     model.scan_controls.setDpi(roll.dpi);
 }

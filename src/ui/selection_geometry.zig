@@ -3,10 +3,10 @@
 //! adjustment math shared by the event handlers, render layer, and smokes.
 
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 const c = @import("sdl_nuklear.zig").c;
 const chrome = @import("chrome.zig");
-const PreviewBuffer = v600.native_ui_preview_worker.PreviewBuffer;
+const PreviewBuffer = cerealgrain.native_ui_preview_worker.PreviewBuffer;
 
 pub const ProcessSelectionEditMode = enum {
     draw_frame,
@@ -25,10 +25,10 @@ pub const ProcessSelectionEditMode = enum {
 
 pub const ScanSelectionInteraction = struct {
     active: bool = false,
-    mode: v600.native_ui.PreviewSelectionEditMode = .move,
+    mode: cerealgrain.native_ui.PreviewSelectionEditMode = .move,
     start_x: f64 = 0.0,
     start_y: f64 = 0.0,
-    original: v600.native_ui.PreviewSelection = .{ .x = 0.0, .y = 0.0, .w = 0.0, .h = 0.0 },
+    original: cerealgrain.native_ui.PreviewSelection = .{ .x = 0.0, .y = 0.0, .w = 0.0, .h = 0.0 },
 
     pub fn beginDraw(self: *ScanSelectionInteraction, preview_x: f64, preview_y: f64) void {
         self.active = true;
@@ -40,10 +40,10 @@ pub const ScanSelectionInteraction = struct {
 
     pub fn beginEdit(
         self: *ScanSelectionInteraction,
-        mode: v600.native_ui.PreviewSelectionEditMode,
+        mode: cerealgrain.native_ui.PreviewSelectionEditMode,
         preview_x: f64,
         preview_y: f64,
-        selection: v600.native_ui.PreviewSelection,
+        selection: cerealgrain.native_ui.PreviewSelection,
     ) void {
         self.active = true;
         self.mode = mode;
@@ -79,7 +79,7 @@ pub const ProcessSelectionInteraction = struct {
     start_x: f64 = 0.0,
     start_y: f64 = 0.0,
     start_pointer_angle: f64 = 0.0,
-    original: v600.native_ui.ProcessSelection = .{ .x = 0.0, .y = 0.0, .w = 0.0, .h = 0.0 },
+    original: cerealgrain.native_ui.ProcessSelection = .{ .x = 0.0, .y = 0.0, .w = 0.0, .h = 0.0 },
     rebate_active: bool = false,
 
     pub fn beginFrame(
@@ -88,7 +88,7 @@ pub const ProcessSelectionInteraction = struct {
         mode: ProcessSelectionEditMode,
         preview_x: f64,
         preview_y: f64,
-        selection: v600.native_ui.ProcessSelection,
+        selection: cerealgrain.native_ui.ProcessSelection,
     ) void {
         self.active_target = .frame;
         self.active_index = index;
@@ -105,7 +105,7 @@ pub const ProcessSelectionInteraction = struct {
         mode: ProcessSelectionEditMode,
         preview_x: f64,
         preview_y: f64,
-        selection: v600.native_ui.ProcessSelection,
+        selection: cerealgrain.native_ui.ProcessSelection,
     ) void {
         self.active_target = .rebate;
         self.active_index = null;
@@ -156,8 +156,8 @@ pub const ScanPreviewPoint = struct {
 pub fn scanImageRect(
     renderer: *c.SDL_Renderer,
     preview: ?PreviewBuffer,
-    transform: *v600.native_ui.ProcessViewTransform,
-) ?v600.native_ui.PreviewScreenRect {
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
+) ?cerealgrain.native_ui.PreviewScreenRect {
     const image = preview orelse return null;
     const out = chrome.renderLogicalSize(renderer) orelse return null;
     const area = chrome.canvasArea(out.w, out.h);
@@ -174,7 +174,7 @@ pub fn scanPreviewBounds(preview: ?PreviewBuffer) ?ScanPreviewBounds {
 }
 
 pub fn screenToScanPreview(
-    image_rect: v600.native_ui.PreviewScreenRect,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
 ) ?ScanPreviewPoint {
@@ -187,7 +187,7 @@ pub fn screenToScanPreview(
 }
 
 pub fn screenToScanPreviewUnclamped(
-    image_rect: v600.native_ui.PreviewScreenRect,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
 ) ScanPreviewPoint {
@@ -198,13 +198,13 @@ pub fn screenToScanPreviewUnclamped(
 }
 
 pub fn hitScanSelection(
-    selection: ?v600.native_ui.PreviewSelection,
-    image_rect: v600.native_ui.PreviewScreenRect,
+    selection: ?cerealgrain.native_ui.PreviewSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
     preview_x: f64,
     preview_y: f64,
-) ?v600.native_ui.PreviewSelectionEditMode {
+) ?cerealgrain.native_ui.PreviewSelectionEditMode {
     const sel = selection orelse return null;
     if (!sel.isDrawable()) return null;
     if (scanSelectionHandleAt(sel, image_rect, screen_x, screen_y)) |mode| return mode;
@@ -215,11 +215,11 @@ pub fn hitScanSelection(
 }
 
 pub fn scanSelectionHandleAt(
-    selection: v600.native_ui.PreviewSelection,
-    image_rect: v600.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.PreviewSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
-) ?v600.native_ui.PreviewSelectionEditMode {
+) ?cerealgrain.native_ui.PreviewSelectionEditMode {
     const x = image_rect.x + selection.x * image_rect.scale;
     const y = image_rect.y + selection.y * image_rect.scale;
     const w = selection.w * image_rect.scale;
@@ -229,7 +229,7 @@ pub fn scanSelectionHandleAt(
     const handles = [_]struct {
         x: f64,
         y: f64,
-        mode: v600.native_ui.PreviewSelectionEditMode,
+        mode: cerealgrain.native_ui.PreviewSelectionEditMode,
     }{
         .{ .x = x, .y = y, .mode = .north_west },
         .{ .x = mx, .y = y, .mode = .north },
@@ -271,9 +271,9 @@ pub const ProcessSelectionHit = struct {
 
 pub fn processImageRect(
     renderer: *c.SDL_Renderer,
-    model: *const v600.native_ui.State,
-    transform: *v600.native_ui.ProcessViewTransform,
-) ?v600.native_ui.PreviewScreenRect {
+    model: *const cerealgrain.native_ui.State,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
+) ?cerealgrain.native_ui.PreviewScreenRect {
     const preview = model.processing_preview orelse return null;
     const out = chrome.renderLogicalSize(renderer) orelse return null;
     const area = chrome.canvasArea(out.w, out.h);
@@ -289,7 +289,7 @@ pub fn processImageRect(
     return transform.imageRect(preview.preview_width, preview.preview_height);
 }
 
-pub fn processPreviewBounds(model: *const v600.native_ui.State) ?ProcessPreviewBounds {
+pub fn processPreviewBounds(model: *const cerealgrain.native_ui.State) ?ProcessPreviewBounds {
     const preview = model.processing_preview orelse return null;
     return .{
         .w = @floatFromInt(preview.preview_width),
@@ -298,7 +298,7 @@ pub fn processPreviewBounds(model: *const v600.native_ui.State) ?ProcessPreviewB
 }
 
 pub fn screenToPreview(
-    image_rect: v600.native_ui.PreviewScreenRect,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
 ) ?ProcessPreviewPoint {
@@ -311,7 +311,7 @@ pub fn screenToPreview(
 }
 
 pub fn screenToPreviewUnclamped(
-    image_rect: v600.native_ui.PreviewScreenRect,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
 ) ProcessPreviewPoint {
@@ -321,7 +321,7 @@ pub fn screenToPreviewUnclamped(
     };
 }
 
-pub fn processSelectionCenter(selection: v600.native_ui.ProcessSelection) ProcessPreviewPoint {
+pub fn processSelectionCenter(selection: cerealgrain.native_ui.ProcessSelection) ProcessPreviewPoint {
     return .{
         .x = selection.x + selection.w / 2.0,
         .y = selection.y + selection.h / 2.0,
@@ -329,7 +329,7 @@ pub fn processSelectionCenter(selection: v600.native_ui.ProcessSelection) Proces
 }
 
 pub fn pointerAngleFromSelectionCenter(
-    selection: v600.native_ui.ProcessSelection,
+    selection: cerealgrain.native_ui.ProcessSelection,
     preview_x: f64,
     preview_y: f64,
 ) f64 {
@@ -338,7 +338,7 @@ pub fn pointerAngleFromSelectionCenter(
 }
 
 pub fn selectionLocalToPreview(
-    selection: v600.native_ui.ProcessSelection,
+    selection: cerealgrain.native_ui.ProcessSelection,
     local_x: f64,
     local_y: f64,
 ) ProcessPreviewPoint {
@@ -352,8 +352,8 @@ pub fn selectionLocalToPreview(
 }
 
 pub fn selectionLocalToScreen(
-    image_rect: v600.native_ui.PreviewScreenRect,
-    selection: v600.native_ui.ProcessSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.ProcessSelection,
     local_x: f64,
     local_y: f64,
 ) ProcessScreenPoint {
@@ -365,7 +365,7 @@ pub fn selectionLocalToScreen(
 }
 
 pub fn previewToSelectionLocal(
-    selection: v600.native_ui.ProcessSelection,
+    selection: cerealgrain.native_ui.ProcessSelection,
     preview_x: f64,
     preview_y: f64,
 ) ProcessPreviewPoint {
@@ -389,15 +389,15 @@ pub fn previewDeltaToSelectionLocal(angle: f64, dx: f64, dy: f64) ProcessPreview
     };
 }
 
-pub fn processRotationHandleOffsetPreview(image_rect: v600.native_ui.PreviewScreenRect) f64 {
+pub fn processRotationHandleOffsetPreview(image_rect: cerealgrain.native_ui.PreviewScreenRect) f64 {
     if (image_rect.scale <= 0.0) return 0.0;
     return 28.0 / image_rect.scale;
 }
 
 pub fn hitProcessSelection(
-    model: *const v600.native_ui.State,
+    model: *const cerealgrain.native_ui.State,
     interaction: *const ProcessSelectionInteraction,
-    image_rect: v600.native_ui.PreviewScreenRect,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
     preview_x: f64,
@@ -430,8 +430,8 @@ pub fn hitProcessSelection(
 }
 
 pub fn processSelectionHandleAt(
-    selection: v600.native_ui.ProcessSelection,
-    image_rect: v600.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.ProcessSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     screen_x: f64,
     screen_y: f64,
 ) ?ProcessSelectionEditMode {
@@ -471,14 +471,14 @@ pub fn processSelectionHandleAt(
 }
 
 pub fn adjustedProcessSelection(
-    original: v600.native_ui.ProcessSelection,
+    original: cerealgrain.native_ui.ProcessSelection,
     mode: ProcessSelectionEditMode,
     dx: f64,
     dy: f64,
     bounds_w: f64,
     bounds_h: f64,
     aspect: ?f64,
-) v600.native_ui.ProcessSelection {
+) cerealgrain.native_ui.ProcessSelection {
     const min_size = @max(@min(@min(bounds_w, bounds_h), 20.0), 0.1);
     switch (mode) {
         .move => {
@@ -590,11 +590,11 @@ pub fn adjustedProcessSelection(
 }
 
 pub fn rotatedProcessSelection(
-    original: v600.native_ui.ProcessSelection,
+    original: cerealgrain.native_ui.ProcessSelection,
     start_pointer_angle: f64,
     preview_x: f64,
     preview_y: f64,
-) v600.native_ui.ProcessSelection {
+) cerealgrain.native_ui.ProcessSelection {
     var adjusted = original;
     const current_pointer_angle = pointerAngleFromSelectionCenter(original, preview_x, preview_y);
     adjusted.angle = normalizeAngle(original.angle + current_pointer_angle - start_pointer_angle);
@@ -621,7 +621,7 @@ pub fn clampFloat(value: f64, min_value: f64, max_value: f64) f64 {
 }
 
 pub fn imagePointOutsideUiChrome(
-    image_rect: v600.native_ui.PreviewScreenRect,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
     ratio_x: f64,
     ratio_y: f64,
 ) ?ProcessScreenPoint {

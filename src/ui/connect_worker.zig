@@ -181,7 +181,7 @@ test "scanner connect worker transitions from connecting to connected" {
 
     try std.testing.expect(try worker.start(&model));
     try std.testing.expect(model.scannerStatus().connecting);
-    try std.testing.expect(!model.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(!model.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
     try std.testing.expectEqualStrings("Scanner connecting, please wait...", model.scanner.scan_status);
 
     try waitForPoll(&worker, &model);

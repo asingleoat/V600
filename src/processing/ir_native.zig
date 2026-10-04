@@ -11,7 +11,7 @@ const parallelism = @import("parallelism.zig");
 
 pub const available = !builtin.cpu.arch.isWasm() and build_options.native_libs;
 
-pub extern fn v600_estimate_local_grain(
+pub extern fn cerealgrain_estimate_local_grain(
     roi_rgb: [*]const f64,
     roi_mask: [*]const u8,
     width: c_int,
@@ -25,7 +25,7 @@ pub extern fn v600_estimate_local_grain(
     has_spectrum: *c_int,
 ) c_int;
 
-pub extern fn v600_synthesize_grain_from_noise(
+pub extern fn cerealgrain_synthesize_grain_from_noise(
     noise: [*]const f64,
     width: c_int,
     height: c_int,
@@ -36,7 +36,7 @@ pub extern fn v600_synthesize_grain_from_noise(
     output: [*]f64,
 ) c_int;
 
-extern fn v600_solve_sparse_lu(
+extern fn cerealgrain_solve_sparse_lu(
     n: usize,
     row_offsets: [*]const usize,
     columns: [*]const usize,
@@ -60,7 +60,7 @@ pub fn solveSparseLu(
     if (available) {
         sparse_lu_gate.enter();
         defer sparse_lu_gate.leave();
-        return v600_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
+        return cerealgrain_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
     }
     // There is no pure SuperLU port: report failure so the biharmonic solver
     // falls back to its pure iterative path.

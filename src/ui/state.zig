@@ -2594,23 +2594,24 @@ pub fn processingConfigPath(buffer: []u8) ![]u8 {
 }
 
 /// The folder for scans, exports, and both configs, which all resolve from
-/// the working directory: `V600_DATA_DIR` if set, else Pictures/V600 in the
-/// home folder for the macOS app bundle (Finder starts apps in "/"). Null
-/// keeps the working directory, as when run from a checkout.
+/// the working directory: `CEREALGRAIN_DATA_DIR` if set, else
+/// Pictures/CerealGrain in the home folder for the macOS app bundle (Finder
+/// starts apps in "/"). Null keeps the working directory, as when run from a
+/// checkout.
 pub fn dataDirPath(buffer: []u8, data_dir_env: ?[]const u8, home: ?[]const u8, exe_path: []const u8) !?[]const u8 {
     if (data_dir_env) |dir| return dir;
     if (std.mem.indexOf(u8, exe_path, ".app/Contents/MacOS/") == null) return null;
     const home_dir = home orelse return error.MissingHomeDirectory;
-    return try std.fmt.bufPrint(buffer, "{s}/Pictures/V600", .{home_dir});
+    return try std.fmt.bufPrint(buffer, "{s}/Pictures/CerealGrain", .{home_dir});
 }
 
-test "the data folder is the override, else Pictures/V600 for the app bundle" {
+test "the data folder is the override, else Pictures/CerealGrain for the app bundle" {
     var buffer: [256]u8 = undefined;
-    const bundle_exe = "/Applications/V600.app/Contents/MacOS/v600-ui";
-    try std.testing.expectEqualStrings("/Users/someone/Pictures/V600", (try dataDirPath(&buffer, null, "/Users/someone", bundle_exe)).?);
+    const bundle_exe = "/Applications/CerealGrain.app/Contents/MacOS/cerealgrain-ui";
+    try std.testing.expectEqualStrings("/Users/someone/Pictures/CerealGrain", (try dataDirPath(&buffer, null, "/Users/someone", bundle_exe)).?);
     try std.testing.expectEqualStrings("/data/v600", (try dataDirPath(&buffer, "/data/v600", "/Users/someone", bundle_exe)).?);
-    try std.testing.expectEqualStrings("/data/v600", (try dataDirPath(&buffer, "/data/v600", null, "/repo/zig-out/bin/v600-ui")).?);
-    try std.testing.expectEqual(@as(?[]const u8, null), try dataDirPath(&buffer, null, "/Users/someone", "/repo/zig-out/bin/v600-ui"));
+    try std.testing.expectEqualStrings("/data/v600", (try dataDirPath(&buffer, "/data/v600", null, "/repo/zig-out/bin/cerealgrain-ui")).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), try dataDirPath(&buffer, null, "/Users/someone", "/repo/zig-out/bin/cerealgrain-ui"));
     try std.testing.expectError(error.MissingHomeDirectory, dataDirPath(&buffer, null, null, bundle_exe));
 }
 
@@ -3799,7 +3800,7 @@ test "native UI scan trash and delete mirror extract_ui image recovery" {
 test "native UI gallery handoff mirrors browser list navigation and mutations" {
     const allocator = std.testing.allocator;
 
-    var missing = State.init("scans", ".zig-cache/tmp/v600-gallery-state-missing", 0);
+    var missing = State.init("scans", ".zig-cache/tmp/cerealgrain-gallery-state-missing", 0);
     defer missing.deinit(allocator);
     var info = try missing.refreshGalleryFiles(allocator, std.testing.io);
     try std.testing.expectEqual(@as(usize, 0), info.image_count);
@@ -3878,7 +3879,7 @@ test "native UI preview status follows scanner backend events headlessly" {
     defer state.deinit(std.testing.allocator);
     state.applyScannerBackendEvent(.{ .scan_start = .{
         .device = "epkowa:interpreter:001:017",
-        .output = "/tmp/v600-preview.tiff",
+        .output = "/tmp/cerealgrain-preview.tiff",
         .source = .tpu,
         .kind = .rgb,
         .requested_dpi = 200,
@@ -3896,8 +3897,8 @@ test "native UI preview status follows scanner backend events headlessly" {
     try std.testing.expectEqualStrings("Scanning preview...", status.status);
 
     state.applyScannerBackendEvent(.{ .scan_complete = .{
-        .output = "/tmp/v600-preview.tiff",
-        .metadata = "/tmp/v600-preview.tiff.json",
+        .output = "/tmp/cerealgrain-preview.tiff",
+        .metadata = "/tmp/cerealgrain-preview.tiff.json",
     } });
     status = state.scannerStatus();
     try std.testing.expect(!status.scanning);
@@ -3974,7 +3975,7 @@ test "native UI preview auto-select applies the film-area detector result" {
         .tpu_width_in = 1.0,
         .tpu_height_in = 0.6,
     }, .{
-        .output_path = "/tmp/v600-native-preview.tiff",
+        .output_path = "/tmp/cerealgrain-native-preview.tiff",
         .width = 10,
         .height = 6,
         .samples_per_pixel = 3,
@@ -4008,7 +4009,7 @@ test "native UI preview auto-select failure leaves manual selection empty" {
         .tpu_width_in = 1.0,
         .tpu_height_in = 1.0,
     }, .{
-        .output_path = "/tmp/v600-native-preview.tiff",
+        .output_path = "/tmp/cerealgrain-native-preview.tiff",
         .width = 10,
         .height = 10,
         .samples_per_pixel = 3,
@@ -4031,7 +4032,7 @@ test "native UI preview without auto-select restores pending saved selection" {
         .tpu_width_in = 10.0,
         .tpu_height_in = 5.0,
     }, .{
-        .output_path = "/tmp/v600-native-preview.tiff",
+        .output_path = "/tmp/cerealgrain-native-preview.tiff",
         .width = 1000,
         .height = 500,
         .samples_per_pixel = 3,
@@ -4073,7 +4074,7 @@ test "native UI queues preview scan command without running scanner hardware" {
     var state = State.init("scans", "frames", 0);
     defer state.deinit(std.testing.allocator);
     state.scannerConnected(0, 0, 2.7, 9.54);
-    try std.testing.expect(state.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(state.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
     try std.testing.expect(state.preview_requested);
     try std.testing.expect(state.scanner.scanning);
 
@@ -4082,7 +4083,7 @@ test "native UI queues preview scan command without running scanner hardware" {
     switch (command) {
         .preview_scan => |plan| {
             try std.testing.expectEqual(@as(u32, 200), plan.request.dpi);
-            try std.testing.expectEqualStrings("/tmp/v600-native-preview.tiff", plan.output_path);
+            try std.testing.expectEqualStrings("/tmp/cerealgrain-native-preview.tiff", plan.output_path);
             try std.testing.expectApproxEqAbs(2.7, plan.request.area.width.?, 0.0);
             try std.testing.expectApproxEqAbs(9.54, plan.request.area.height.?, 0.0);
         },
@@ -4092,7 +4093,7 @@ test "native UI queues preview scan command without running scanner hardware" {
     var missing = State.init("scans", "frames", 0);
     defer missing.deinit(std.testing.allocator);
     missing.scanner.connection = .connected;
-    try std.testing.expect(!missing.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(!missing.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
     try std.testing.expect(missing.pending_command == null);
     try std.testing.expect(!missing.preview_requested);
 }
@@ -4100,19 +4101,19 @@ test "native UI queues preview scan command without running scanner hardware" {
 test "native UI preview request preserves offline and connecting route behavior" {
     var disconnected = State.init("scans", "frames", 0);
     defer disconnected.deinit(std.testing.allocator);
-    try std.testing.expect(!disconnected.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(!disconnected.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
     try std.testing.expectEqualStrings("No scanner connected", disconnected.scanner.scan_status);
 
     var connecting = State.init("scans", "frames", 0);
     defer connecting.deinit(std.testing.allocator);
     connecting.beginScannerConnect();
-    try std.testing.expect(!connecting.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(!connecting.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
     try std.testing.expectEqualStrings("Scanner connecting, please wait...", connecting.scanner.scan_status);
 
     var failed = State.init("scans", "frames", 0);
     defer failed.deinit(std.testing.allocator);
     failed.scannerFailed("backend unavailable");
-    try std.testing.expect(!failed.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(!failed.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
     try std.testing.expectEqualStrings("backend unavailable", failed.scanner.scan_status);
 }
 
@@ -4121,7 +4122,7 @@ test "native UI queues scan-start command with browser scan request contract" {
     defer state.deinit(std.testing.allocator);
     state.scannerConnected(1000, 500, 10.0, 5.0);
     state.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
-    try std.testing.expect(state.queueScanStart(".zig-cache/v600-scan.cancel"));
+    try std.testing.expect(state.queueScanStart(".zig-cache/cerealgrain-scan.cancel"));
     try std.testing.expect(state.scanner.scanning);
     try std.testing.expectEqualStrings("Pass 1/2: Scanning RGB at 3200 DPI...", state.scanner.scan_status);
 
@@ -4139,7 +4140,7 @@ test "native UI queues scan-start command with browser scan request contract" {
             try std.testing.expectApproxEqAbs(1.0, plan.request.area.height.?, 0.0);
             try std.testing.expectEqualStrings("scans/scan_0001_rgbir_3200dpi.tiff", plan.output_path);
             try std.testing.expectEqualStrings(plan.output_path, plan.request.output_path.?);
-            try std.testing.expectEqualStrings(".zig-cache/v600-scan.cancel", plan.cancel_file_path.?);
+            try std.testing.expectEqualStrings(".zig-cache/cerealgrain-scan.cancel", plan.cancel_file_path.?);
         },
     }
 
@@ -4170,7 +4171,7 @@ test "native UI queues scan-start command to explicit output path" {
     state.scan_controls.setMode(.rgb);
     state.scan_controls.setDpi(800);
     state.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
-    try std.testing.expect(state.queueScanStartPath("/tmp/v600-native-scan-worker-smoke.tiff", ".zig-cache/v600-native-scan.cancel"));
+    try std.testing.expect(state.queueScanStartPath("/tmp/cerealgrain-native-scan-worker-smoke.tiff", ".zig-cache/cerealgrain-native-scan.cancel"));
 
     const command = state.takeCommand().?;
     switch (command) {
@@ -4178,9 +4179,9 @@ test "native UI queues scan-start command to explicit output path" {
         .scan_start => |plan| {
             try std.testing.expectEqual(scanner_contracts.ScanKind.rgb, plan.request.kind);
             try std.testing.expectEqual(@as(u32, 800), plan.request.dpi);
-            try std.testing.expectEqualStrings("/tmp/v600-native-scan-worker-smoke.tiff", plan.output_path);
-            try std.testing.expectEqualStrings("/tmp/v600-native-scan-worker-smoke.tiff", plan.request.output_path.?);
-            try std.testing.expectEqualStrings(".zig-cache/v600-native-scan.cancel", plan.cancel_file_path.?);
+            try std.testing.expectEqualStrings("/tmp/cerealgrain-native-scan-worker-smoke.tiff", plan.output_path);
+            try std.testing.expectEqualStrings("/tmp/cerealgrain-native-scan-worker-smoke.tiff", plan.request.output_path.?);
+            try std.testing.expectEqualStrings(".zig-cache/cerealgrain-native-scan.cancel", plan.cancel_file_path.?);
         },
     }
 }

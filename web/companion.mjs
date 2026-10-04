@@ -1,10 +1,10 @@
-// Browser client for the local scanner companion server (v600-zig serve).
+// Browser client for the local scanner companion server (cerealgrain serve).
 // The protocol contract lives in docs/SCANNER_COMPANION.md: scan progress is
-// the native v600.scanner.event.v1 stream plus companion-status envelope
+// the native cerealgrain.scanner.event.v1 stream plus companion-status envelope
 // lines, polled with a cursor. Every function takes an injectable fetch so
 // the headless companion smoke can drive this module against a live server.
 
-export const companionApiSchema = "v600.companion.api.v1";
+export const companionApiSchema = "cerealgrain.companion.api.v1";
 
 export const scanSources = Object.freeze(["tpu", "flatbed"]);
 export const scanKinds = Object.freeze(["rgb+ir", "rgb", "gray", "ir"]);

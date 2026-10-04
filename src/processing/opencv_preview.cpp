@@ -399,7 +399,7 @@ int process_quick_preview_impl(
 
 }  // namespace
 
-extern "C" int v600_process_quick_preview(
+extern "C" int cerealgrain_process_quick_preview(
     const unsigned char* input,
     int width,
     int height,
@@ -437,7 +437,7 @@ extern "C" int v600_process_quick_preview(
         nullptr);
 }
 
-extern "C" int v600_process_quick_preview_breakdown(
+extern "C" int cerealgrain_process_quick_preview_breakdown(
     const unsigned char* input,
     int width,
     int height,
@@ -497,7 +497,7 @@ extern "C" int v600_process_quick_preview_breakdown(
     return status;
 }
 
-extern "C" int v600_decode_jpeg_rgb(
+extern "C" int cerealgrain_decode_jpeg_rgb(
     const unsigned char* jpeg,
     int jpeg_len,
     unsigned char* rgb_out,

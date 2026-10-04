@@ -905,7 +905,7 @@ pub fn estimateLocalGrain(
     var grain_std = [_]f64{ 0.0, 0.0, 0.0 };
     var spectrum_len: c_int = 0;
     var has_spectrum: c_int = 0;
-    const status = ir_native.v600_estimate_local_grain(
+    const status = ir_native.cerealgrain_estimate_local_grain(
         roi_rgb.ptr,
         roi_mask.ptr,
         @intCast(width),
@@ -966,7 +966,7 @@ pub fn synthesizeGrainFromNoise(
     const spectrum_len = if (grain_spectrum) |spectrum| spectrum.len else 0;
     if (spectrum_len > @as(usize, @intCast(std.math.maxInt(c_int)))) return error.InvalidIrGrainSynthesisBuffer;
 
-    const status = ir_native.v600_synthesize_grain_from_noise(
+    const status = ir_native.cerealgrain_synthesize_grain_from_noise(
         noise.ptr,
         @intCast(width),
         @intCast(height),

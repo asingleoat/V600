@@ -432,12 +432,12 @@ test "plans V600 LUT file environment for RGB scans only" {
         .source = .tpu,
         .kind = .rgb,
         .depth = .sixteen,
-        .lut_file_path = "/tmp/v600-luts.bin",
+        .lut_file_path = "/tmp/cerealgrain-luts.bin",
         .output_path = "rgb.tiff",
     };
     var rgb_plan = try planCommand(allocator, rgb_request, caps, .{ .scanimage_v600 = true });
     defer rgb_plan.deinit(allocator);
-    try std.testing.expectEqualStrings("/tmp/v600-luts.bin", rgb_plan.env.lut_file.?);
+    try std.testing.expectEqualStrings("/tmp/cerealgrain-luts.bin", rgb_plan.env.lut_file.?);
 
     var ir_request = rgb_request;
     ir_request.kind = .ir;

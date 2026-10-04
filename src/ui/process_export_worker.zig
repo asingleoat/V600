@@ -452,7 +452,7 @@ fn emitExportStart(context: *const Context) void {
         .output_dir = context.output_dir,
     });
     std.debug.print(
-        "[v600 process export] start input={s} output_dir={s} basename={s} frames={d} ir_neg={s} ir_inv={s} inv_only={s}\n",
+        "[cerealgrain process export] start input={s} output_dir={s} basename={s} frames={d} ir_neg={s} ir_inv={s} inv_only={s}\n",
         .{
             context.input_path,
             context.output_dir,

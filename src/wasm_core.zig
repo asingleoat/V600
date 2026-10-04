@@ -14,18 +14,18 @@ pub const FrameDetectRect = core.FrameDetectRect;
 pub const FrameDetectResult = core.FrameDetectResult;
 
 const exported_core_functions = [_][]const u8{
-    "v600_wasm_alloc",
-    "v600_wasm_free",
-    "v600_preview_invert_u16_to_u8",
-    "v600_export_invert_u16_to_u16",
-    "v600_ir_make_defect_mask_u8",
-    "v600_ir_make_defect_mask_f32",
-    "v600_ir_resize_mask_to_rgb_u8",
-    "v600_ir_biharmonic_inpaint_u16",
-    "v600_ir_inpaint_grain_u16_with_noise",
-    "v600_ir_apply_translation_f32",
-    "v600_ir_estimate_translation_f32",
-    "v600_detect_frames_rgb16",
+    "cerealgrain_wasm_alloc",
+    "cerealgrain_wasm_free",
+    "cerealgrain_preview_invert_u16_to_u8",
+    "cerealgrain_export_invert_u16_to_u16",
+    "cerealgrain_ir_make_defect_mask_u8",
+    "cerealgrain_ir_make_defect_mask_f32",
+    "cerealgrain_ir_resize_mask_to_rgb_u8",
+    "cerealgrain_ir_biharmonic_inpaint_u16",
+    "cerealgrain_ir_inpaint_grain_u16_with_noise",
+    "cerealgrain_ir_apply_translation_f32",
+    "cerealgrain_ir_estimate_translation_f32",
+    "cerealgrain_detect_frames_rgb16",
 };
 
 comptime {
@@ -34,7 +34,7 @@ comptime {
     }
 }
 
-export fn v600_wasm_pointer_bits() u32 {
+export fn cerealgrain_wasm_pointer_bits() u32 {
     return @bitSizeOf(usize);
 }
 

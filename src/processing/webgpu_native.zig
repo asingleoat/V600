@@ -149,8 +149,8 @@ const InvertNegativeRuntimeCache = struct {
 
         var device_state = DeviceRequestState{};
         var device_descriptor: c.WGPUDeviceDescriptor = std.mem.zeroes(c.WGPUDeviceDescriptor);
-        device_descriptor.label = stringView("v600-invert-negative-runtime");
-        device_descriptor.defaultQueue.label = stringView("v600-invert-negative-runtime-queue");
+        device_descriptor.label = stringView("cerealgrain-invert-negative-runtime");
+        device_descriptor.defaultQueue.label = stringView("cerealgrain-invert-negative-runtime-queue");
         device_descriptor.deviceLostCallbackInfo = .{
             .nextInChain = null,
             .mode = c.WGPUCallbackMode_AllowSpontaneous,
@@ -194,7 +194,7 @@ const InvertNegativeRuntimeCache = struct {
         };
         var shader_descriptor = c.WGPUShaderModuleDescriptor{
             .nextInChain = &shader_source.chain,
-            .label = stringView("v600-invert-negative-runtime-shader"),
+            .label = stringView("cerealgrain-invert-negative-runtime-shader"),
         };
         const shader = c.wgpuDeviceCreateShaderModule(device, &shader_descriptor) orelse return error.WebGpuShaderModuleCreateFailed;
         defer c.wgpuShaderModuleRelease(shader);
@@ -206,7 +206,7 @@ const InvertNegativeRuntimeCache = struct {
         };
         var bind_group_layout_descriptor = c.WGPUBindGroupLayoutDescriptor{
             .nextInChain = null,
-            .label = stringView("v600-invert-negative-runtime-bind-group-layout"),
+            .label = stringView("cerealgrain-invert-negative-runtime-bind-group-layout"),
             .entryCount = layout_entries.len,
             .entries = &layout_entries,
         };
@@ -217,7 +217,7 @@ const InvertNegativeRuntimeCache = struct {
         var bind_group_layouts = [_]c.WGPUBindGroupLayout{bind_group_layout};
         var pipeline_layout_descriptor = c.WGPUPipelineLayoutDescriptor{
             .nextInChain = null,
-            .label = stringView("v600-invert-negative-runtime-pipeline-layout"),
+            .label = stringView("cerealgrain-invert-negative-runtime-pipeline-layout"),
             .bindGroupLayoutCount = bind_group_layouts.len,
             .bindGroupLayouts = &bind_group_layouts,
         };
@@ -227,7 +227,7 @@ const InvertNegativeRuntimeCache = struct {
 
         var pipeline_descriptor = c.WGPUComputePipelineDescriptor{
             .nextInChain = null,
-            .label = stringView("v600-invert-negative-runtime-pipeline"),
+            .label = stringView("cerealgrain-invert-negative-runtime-pipeline"),
             .layout = pipeline_layout,
             .compute = .{
                 .nextInChain = null,
@@ -313,8 +313,8 @@ pub fn runAdapterDeviceSmoke(stdout: anytype, options: webgpu.SmokeOptions) !voi
     var callback_state = DeviceCallbackState{};
     var device_state = DeviceRequestState{};
     var device_descriptor: c.WGPUDeviceDescriptor = std.mem.zeroes(c.WGPUDeviceDescriptor);
-    device_descriptor.label = stringView("v600-webgpu-smoke");
-    device_descriptor.defaultQueue.label = stringView("v600-webgpu-smoke-queue");
+    device_descriptor.label = stringView("cerealgrain-webgpu-smoke");
+    device_descriptor.defaultQueue.label = stringView("cerealgrain-webgpu-smoke-queue");
     device_descriptor.deviceLostCallbackInfo = .{
         .nextInChain = null,
         .mode = c.WGPUCallbackMode_AllowSpontaneous,
@@ -426,8 +426,8 @@ pub fn applySigmoidKernel(
     var callback_state = DeviceCallbackState{};
     var device_state = DeviceRequestState{};
     var device_descriptor: c.WGPUDeviceDescriptor = std.mem.zeroes(c.WGPUDeviceDescriptor);
-    device_descriptor.label = stringView("v600-apply-sigmoid");
-    device_descriptor.defaultQueue.label = stringView("v600-apply-sigmoid-queue");
+    device_descriptor.label = stringView("cerealgrain-apply-sigmoid");
+    device_descriptor.defaultQueue.label = stringView("cerealgrain-apply-sigmoid-queue");
     device_descriptor.deviceLostCallbackInfo = .{
         .nextInChain = null,
         .mode = c.WGPUCallbackMode_AllowSpontaneous,
@@ -462,7 +462,7 @@ pub fn applySigmoidKernel(
 
     const input_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-input",
+        "cerealgrain-apply-sigmoid-input",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -470,7 +470,7 @@ pub fn applySigmoidKernel(
 
     const output_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-output",
+        "cerealgrain-apply-sigmoid-output",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopySrc,
         byte_len_u64,
     );
@@ -478,7 +478,7 @@ pub fn applySigmoidKernel(
 
     const readback_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-readback",
+        "cerealgrain-apply-sigmoid-readback",
         c.WGPUBufferUsage_MapRead | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -497,7 +497,7 @@ pub fn applySigmoidKernel(
     const uniform_bytes = std.mem.asBytes(&uniform);
     const uniform_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-params",
+        "cerealgrain-apply-sigmoid-params",
         c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst,
         uniform_bytes.len,
     );
@@ -516,7 +516,7 @@ pub fn applySigmoidKernel(
     };
     var shader_descriptor = c.WGPUShaderModuleDescriptor{
         .nextInChain = &shader_source.chain,
-        .label = stringView("v600-apply-sigmoid-shader"),
+        .label = stringView("cerealgrain-apply-sigmoid-shader"),
     };
     const shader = c.wgpuDeviceCreateShaderModule(device, &shader_descriptor) orelse return error.WebGpuShaderModuleCreateFailed;
     defer c.wgpuShaderModuleRelease(shader);
@@ -528,7 +528,7 @@ pub fn applySigmoidKernel(
     };
     var bind_group_layout_descriptor = c.WGPUBindGroupLayoutDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bind-group-layout"),
+        .label = stringView("cerealgrain-apply-sigmoid-bind-group-layout"),
         .entryCount = layout_entries.len,
         .entries = &layout_entries,
     };
@@ -538,7 +538,7 @@ pub fn applySigmoidKernel(
     var bind_group_layouts = [_]c.WGPUBindGroupLayout{bind_group_layout};
     var pipeline_layout_descriptor = c.WGPUPipelineLayoutDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-pipeline-layout"),
+        .label = stringView("cerealgrain-apply-sigmoid-pipeline-layout"),
         .bindGroupLayoutCount = bind_group_layouts.len,
         .bindGroupLayouts = &bind_group_layouts,
     };
@@ -547,7 +547,7 @@ pub fn applySigmoidKernel(
 
     var pipeline_descriptor = c.WGPUComputePipelineDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-pipeline"),
+        .label = stringView("cerealgrain-apply-sigmoid-pipeline"),
         .layout = pipeline_layout,
         .compute = .{
             .nextInChain = null,
@@ -567,7 +567,7 @@ pub fn applySigmoidKernel(
     };
     var bind_group_descriptor = c.WGPUBindGroupDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bind-group"),
+        .label = stringView("cerealgrain-apply-sigmoid-bind-group"),
         .layout = bind_group_layout,
         .entryCount = bind_entries.len,
         .entries = &bind_entries,
@@ -577,14 +577,14 @@ pub fn applySigmoidKernel(
 
     var encoder_descriptor = c.WGPUCommandEncoderDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-encoder"),
+        .label = stringView("cerealgrain-apply-sigmoid-encoder"),
     };
     const encoder = c.wgpuDeviceCreateCommandEncoder(device, &encoder_descriptor) orelse return error.WebGpuCommandEncoderCreateFailed;
     defer c.wgpuCommandEncoderRelease(encoder);
 
     var pass_descriptor = c.WGPUComputePassDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-pass"),
+        .label = stringView("cerealgrain-apply-sigmoid-pass"),
         .timestampWrites = null,
     };
     const pass = c.wgpuCommandEncoderBeginComputePass(encoder, &pass_descriptor) orelse return error.WebGpuComputePassCreateFailed;
@@ -598,7 +598,7 @@ pub fn applySigmoidKernel(
 
     var command_descriptor = c.WGPUCommandBufferDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-command"),
+        .label = stringView("cerealgrain-apply-sigmoid-command"),
     };
     const command = c.wgpuCommandEncoderFinish(encoder, &command_descriptor) orelse return error.WebGpuCommandBufferCreateFailed;
     defer c.wgpuCommandBufferRelease(command);
@@ -731,7 +731,7 @@ fn applyInvertNegativeKernelChunk(
 
     const input_buffer = try createBuffer(
         device,
-        "v600-invert-negative-input",
+        "cerealgrain-invert-negative-input",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -739,7 +739,7 @@ fn applyInvertNegativeKernelChunk(
 
     const output_buffer = try createBuffer(
         device,
-        "v600-invert-negative-output",
+        "cerealgrain-invert-negative-output",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopySrc,
         byte_len_u64,
     );
@@ -747,7 +747,7 @@ fn applyInvertNegativeKernelChunk(
 
     const readback_buffer = try createBuffer(
         device,
-        "v600-invert-negative-readback",
+        "cerealgrain-invert-negative-readback",
         c.WGPUBufferUsage_MapRead | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -757,7 +757,7 @@ fn applyInvertNegativeKernelChunk(
     const uniform_bytes = std.mem.asBytes(&uniform);
     const uniform_buffer = try createBuffer(
         device,
-        "v600-invert-negative-params",
+        "cerealgrain-invert-negative-params",
         c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst,
         uniform_bytes.len,
     );
@@ -774,7 +774,7 @@ fn applyInvertNegativeKernelChunk(
     };
     var bind_group_descriptor = c.WGPUBindGroupDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bind-group"),
+        .label = stringView("cerealgrain-invert-negative-bind-group"),
         .layout = bind_group_layout,
         .entryCount = bind_entries.len,
         .entries = &bind_entries,
@@ -873,8 +873,8 @@ pub fn benchmarkApplySigmoidKernel(
     var callback_state = DeviceCallbackState{};
     var device_state = DeviceRequestState{};
     var device_descriptor: c.WGPUDeviceDescriptor = std.mem.zeroes(c.WGPUDeviceDescriptor);
-    device_descriptor.label = stringView("v600-apply-sigmoid-bench");
-    device_descriptor.defaultQueue.label = stringView("v600-apply-sigmoid-bench-queue");
+    device_descriptor.label = stringView("cerealgrain-apply-sigmoid-bench");
+    device_descriptor.defaultQueue.label = stringView("cerealgrain-apply-sigmoid-bench-queue");
     device_descriptor.deviceLostCallbackInfo = .{
         .nextInChain = null,
         .mode = c.WGPUCallbackMode_AllowSpontaneous,
@@ -909,7 +909,7 @@ pub fn benchmarkApplySigmoidKernel(
 
     const input_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-bench-input",
+        "cerealgrain-apply-sigmoid-bench-input",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -917,7 +917,7 @@ pub fn benchmarkApplySigmoidKernel(
 
     const output_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-bench-output",
+        "cerealgrain-apply-sigmoid-bench-output",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopySrc,
         byte_len_u64,
     );
@@ -925,7 +925,7 @@ pub fn benchmarkApplySigmoidKernel(
 
     const readback_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-bench-readback",
+        "cerealgrain-apply-sigmoid-bench-readback",
         c.WGPUBufferUsage_MapRead | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -944,7 +944,7 @@ pub fn benchmarkApplySigmoidKernel(
     const uniform_bytes = std.mem.asBytes(&uniform);
     const uniform_buffer = try createBuffer(
         device,
-        "v600-apply-sigmoid-bench-params",
+        "cerealgrain-apply-sigmoid-bench-params",
         c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst,
         uniform_bytes.len,
     );
@@ -959,7 +959,7 @@ pub fn benchmarkApplySigmoidKernel(
     };
     var shader_descriptor = c.WGPUShaderModuleDescriptor{
         .nextInChain = &shader_source.chain,
-        .label = stringView("v600-apply-sigmoid-bench-shader"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-shader"),
     };
     const shader = c.wgpuDeviceCreateShaderModule(device, &shader_descriptor) orelse return error.WebGpuShaderModuleCreateFailed;
     defer c.wgpuShaderModuleRelease(shader);
@@ -971,7 +971,7 @@ pub fn benchmarkApplySigmoidKernel(
     };
     var bind_group_layout_descriptor = c.WGPUBindGroupLayoutDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-bind-group-layout"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-bind-group-layout"),
         .entryCount = layout_entries.len,
         .entries = &layout_entries,
     };
@@ -981,7 +981,7 @@ pub fn benchmarkApplySigmoidKernel(
     var bind_group_layouts = [_]c.WGPUBindGroupLayout{bind_group_layout};
     var pipeline_layout_descriptor = c.WGPUPipelineLayoutDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-pipeline-layout"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-pipeline-layout"),
         .bindGroupLayoutCount = bind_group_layouts.len,
         .bindGroupLayouts = &bind_group_layouts,
     };
@@ -990,7 +990,7 @@ pub fn benchmarkApplySigmoidKernel(
 
     var pipeline_descriptor = c.WGPUComputePipelineDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-pipeline"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-pipeline"),
         .layout = pipeline_layout,
         .compute = .{
             .nextInChain = null,
@@ -1010,7 +1010,7 @@ pub fn benchmarkApplySigmoidKernel(
     };
     var bind_group_descriptor = c.WGPUBindGroupDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-bind-group"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-bind-group"),
         .layout = bind_group_layout,
         .entryCount = bind_entries.len,
         .entries = &bind_entries,
@@ -1112,8 +1112,8 @@ pub fn benchmarkInvertNegativeKernel(
     var callback_state = DeviceCallbackState{};
     var device_state = DeviceRequestState{};
     var device_descriptor: c.WGPUDeviceDescriptor = std.mem.zeroes(c.WGPUDeviceDescriptor);
-    device_descriptor.label = stringView("v600-invert-negative-bench");
-    device_descriptor.defaultQueue.label = stringView("v600-invert-negative-bench-queue");
+    device_descriptor.label = stringView("cerealgrain-invert-negative-bench");
+    device_descriptor.defaultQueue.label = stringView("cerealgrain-invert-negative-bench-queue");
     device_descriptor.deviceLostCallbackInfo = .{
         .nextInChain = null,
         .mode = c.WGPUCallbackMode_AllowSpontaneous,
@@ -1148,7 +1148,7 @@ pub fn benchmarkInvertNegativeKernel(
 
     const input_buffer = try createBuffer(
         device,
-        "v600-invert-negative-bench-input",
+        "cerealgrain-invert-negative-bench-input",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -1156,7 +1156,7 @@ pub fn benchmarkInvertNegativeKernel(
 
     const output_buffer = try createBuffer(
         device,
-        "v600-invert-negative-bench-output",
+        "cerealgrain-invert-negative-bench-output",
         c.WGPUBufferUsage_Storage | c.WGPUBufferUsage_CopySrc,
         byte_len_u64,
     );
@@ -1164,7 +1164,7 @@ pub fn benchmarkInvertNegativeKernel(
 
     const readback_buffer = try createBuffer(
         device,
-        "v600-invert-negative-bench-readback",
+        "cerealgrain-invert-negative-bench-readback",
         c.WGPUBufferUsage_MapRead | c.WGPUBufferUsage_CopyDst,
         byte_len_u64,
     );
@@ -1174,7 +1174,7 @@ pub fn benchmarkInvertNegativeKernel(
     const uniform_bytes = std.mem.asBytes(&uniform);
     const uniform_buffer = try createBuffer(
         device,
-        "v600-invert-negative-bench-params",
+        "cerealgrain-invert-negative-bench-params",
         c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst,
         uniform_bytes.len,
     );
@@ -1189,7 +1189,7 @@ pub fn benchmarkInvertNegativeKernel(
     };
     var shader_descriptor = c.WGPUShaderModuleDescriptor{
         .nextInChain = &shader_source.chain,
-        .label = stringView("v600-invert-negative-bench-shader"),
+        .label = stringView("cerealgrain-invert-negative-bench-shader"),
     };
     const shader = c.wgpuDeviceCreateShaderModule(device, &shader_descriptor) orelse return error.WebGpuShaderModuleCreateFailed;
     defer c.wgpuShaderModuleRelease(shader);
@@ -1201,7 +1201,7 @@ pub fn benchmarkInvertNegativeKernel(
     };
     var bind_group_layout_descriptor = c.WGPUBindGroupLayoutDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-bind-group-layout"),
+        .label = stringView("cerealgrain-invert-negative-bench-bind-group-layout"),
         .entryCount = layout_entries.len,
         .entries = &layout_entries,
     };
@@ -1211,7 +1211,7 @@ pub fn benchmarkInvertNegativeKernel(
     var bind_group_layouts = [_]c.WGPUBindGroupLayout{bind_group_layout};
     var pipeline_layout_descriptor = c.WGPUPipelineLayoutDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-pipeline-layout"),
+        .label = stringView("cerealgrain-invert-negative-bench-pipeline-layout"),
         .bindGroupLayoutCount = bind_group_layouts.len,
         .bindGroupLayouts = &bind_group_layouts,
     };
@@ -1220,7 +1220,7 @@ pub fn benchmarkInvertNegativeKernel(
 
     var pipeline_descriptor = c.WGPUComputePipelineDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-pipeline"),
+        .label = stringView("cerealgrain-invert-negative-bench-pipeline"),
         .layout = pipeline_layout,
         .compute = .{
             .nextInChain = null,
@@ -1240,7 +1240,7 @@ pub fn benchmarkInvertNegativeKernel(
     };
     var bind_group_descriptor = c.WGPUBindGroupDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-bind-group"),
+        .label = stringView("cerealgrain-invert-negative-bench-bind-group"),
         .layout = bind_group_layout,
         .entryCount = bind_entries.len,
         .entries = &bind_entries,
@@ -1584,14 +1584,14 @@ fn submitSigmoidCommand(
 ) !void {
     var encoder_descriptor = c.WGPUCommandEncoderDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-encoder"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-encoder"),
     };
     const encoder = c.wgpuDeviceCreateCommandEncoder(device, &encoder_descriptor) orelse return error.WebGpuCommandEncoderCreateFailed;
     defer c.wgpuCommandEncoderRelease(encoder);
 
     var pass_descriptor = c.WGPUComputePassDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-pass"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-pass"),
         .timestampWrites = null,
     };
     const pass = c.wgpuCommandEncoderBeginComputePass(encoder, &pass_descriptor) orelse return error.WebGpuComputePassCreateFailed;
@@ -1607,7 +1607,7 @@ fn submitSigmoidCommand(
 
     var command_descriptor = c.WGPUCommandBufferDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-apply-sigmoid-bench-command"),
+        .label = stringView("cerealgrain-apply-sigmoid-bench-command"),
     };
     const command = c.wgpuCommandEncoderFinish(encoder, &command_descriptor) orelse return error.WebGpuCommandBufferCreateFailed;
     defer c.wgpuCommandBufferRelease(command);
@@ -1629,14 +1629,14 @@ fn submitInvertNegativeCommand(
 ) !void {
     var encoder_descriptor = c.WGPUCommandEncoderDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-encoder"),
+        .label = stringView("cerealgrain-invert-negative-bench-encoder"),
     };
     const encoder = c.wgpuDeviceCreateCommandEncoder(device, &encoder_descriptor) orelse return error.WebGpuCommandEncoderCreateFailed;
     defer c.wgpuCommandEncoderRelease(encoder);
 
     var pass_descriptor = c.WGPUComputePassDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-pass"),
+        .label = stringView("cerealgrain-invert-negative-bench-pass"),
         .timestampWrites = null,
     };
     const pass = c.wgpuCommandEncoderBeginComputePass(encoder, &pass_descriptor) orelse return error.WebGpuComputePassCreateFailed;
@@ -1652,7 +1652,7 @@ fn submitInvertNegativeCommand(
 
     var command_descriptor = c.WGPUCommandBufferDescriptor{
         .nextInChain = null,
-        .label = stringView("v600-invert-negative-bench-command"),
+        .label = stringView("cerealgrain-invert-negative-bench-command"),
     };
     const command = c.wgpuCommandEncoderFinish(encoder, &command_descriptor) orelse return error.WebGpuCommandBufferCreateFailed;
     defer c.wgpuCommandBufferRelease(command);

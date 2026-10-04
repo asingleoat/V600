@@ -1,8 +1,8 @@
-{"event":"startup","schema":"v600.scanner.event.v1","platform":"linux","backend":"sane"}
-{"event":"device-discovery","schema":"v600.scanner.event.v1","discovery_attempted":false,"devices_found":null,"selected_device":"epkowa:interpreter:001:017","selection_source":"cache-hit"}
-{"event":"scan-start","schema":"v600.scanner.event.v1","device":"epkowa:interpreter:001:017","output":"/tmp/v600-zig-progress-smoke.tiff","source":"tpu","kind":"rgb","requested_dpi":400,"effective_dpi":400}
-{"event":"progress","schema":"v600.scanner.event.v1","percent":40}
-{"event":"progress","schema":"v600.scanner.event.v1","percent":80}
-{"event":"progress","schema":"v600.scanner.event.v1","percent":100}
-{"event":"progress","schema":"v600.scanner.event.v1","percent":100}
-{"event":"scan-complete","schema":"v600.scanner.event.v1","output":"/tmp/v600-zig-progress-smoke.tiff","metadata":"/tmp/v600-zig-progress-smoke.tiff.json"}
+{"event":"startup","schema":"cerealgrain.scanner.event.v1","platform":"linux","backend":"sane"}
+{"event":"device-discovery","schema":"cerealgrain.scanner.event.v1","discovery_attempted":false,"devices_found":null,"selected_device":"epkowa:interpreter:001:017","selection_source":"cache-hit"}
+{"event":"scan-start","schema":"cerealgrain.scanner.event.v1","device":"epkowa:interpreter:001:017","output":"/tmp/cerealgrain-progress-smoke.tiff","source":"tpu","kind":"rgb","requested_dpi":400,"effective_dpi":400}
+{"event":"progress","schema":"cerealgrain.scanner.event.v1","percent":40}
+{"event":"progress","schema":"cerealgrain.scanner.event.v1","percent":80}
+{"event":"progress","schema":"cerealgrain.scanner.event.v1","percent":100}
+{"event":"progress","schema":"cerealgrain.scanner.event.v1","percent":100}
+{"event":"scan-complete","schema":"cerealgrain.scanner.event.v1","output":"/tmp/cerealgrain-progress-smoke.tiff","metadata":"/tmp/cerealgrain-progress-smoke.tiff.json"}

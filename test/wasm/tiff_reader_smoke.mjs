@@ -68,7 +68,7 @@ assertLinearized(lutPage.data);
 
 console.log(JSON.stringify({
   event: "tiff-reader-smoke",
-  schema: "v600.webapp.event.v1",
+  schema: "cerealgrain.webapp.event.v1",
   fixture: fixturePath,
   pages: pages.length,
   rgb_samples: rgb.data.length,

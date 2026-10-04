@@ -26,7 +26,7 @@ pub const review_dir_name = "review";
 pub const strip_prefix = "strip_";
 pub const processed_suffix = ".processed.json";
 pub const framing_suffix = ".frames.json";
-const schema = "v600.roll.v1";
+const schema = "cerealgrain.roll.v1";
 const max_name_len = 64;
 
 /// LUT margins for a whole roll, wider than one strip's (0.75, 1.05) so the
@@ -1384,7 +1384,7 @@ test "exported frames default to landscape for formats that are portrait in the 
     try std.Io.Dir.cwd().writeFile(io, .{
         .sub_path = old_manifest,
         .data =
-        \\{"schema": "v600.roll.v1", "name": "old", "stock": "kodak_gold", "format": "35mm", "dpi": 3200, "kind": "rgb+ir"}
+        \\{"schema": "cerealgrain.roll.v1", "name": "old", "stock": "kodak_gold", "format": "35mm", "dpi": 3200, "kind": "rgb+ir"}
         ,
     });
     var old = try Roll.open(allocator, io, root, root, "old");

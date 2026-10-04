@@ -73,7 +73,7 @@ export function loadIrPageFromTiff(arrayBuffer) {
   };
 }
 
-export function rgb16ToTiffBytes(rgb16, width, height, { dpi = 800, software = "V600 Web Processing" } = {}) {
+export function rgb16ToTiffBytes(rgb16, width, height, { dpi = 800, software = "CerealGrain web" } = {}) {
   if (!Number.isInteger(width) || width <= 0) throw new Error("TIFF width must be a positive integer");
   if (!Number.isInteger(height) || height <= 0) throw new Error("TIFF height must be a positive integer");
   if (rgb16.length !== width * height * 3) throw new Error("RGB16 data length does not match TIFF dimensions");

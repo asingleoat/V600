@@ -9,7 +9,7 @@ import tempfile
 import scratchndent.config as c
 
 with tempfile.TemporaryDirectory() as d:
-    c.CONFIG_FILE = Path(d) / "scratchndent_config.toml"
+    c.CONFIG_FILE = Path(d) / "processing.toml"
     c._CONFIG.clear()
     c.save_config({...})
     print(c.CONFIG_FILE.read_text())

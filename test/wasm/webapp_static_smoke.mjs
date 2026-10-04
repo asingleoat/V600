@@ -22,8 +22,8 @@ const requiredPaths = [
   "worker/processor.mjs",
   "worker/protocol.mjs",
   "worker/wasm_abi.mjs",
-  "v600-wasm-core.wasm",
-  "v600-wasm-core32.wasm",
+  "cerealgrain-wasm-core.wasm",
+  "cerealgrain-wasm-core32.wasm",
 ];
 
 for (const relative of requiredPaths) {
@@ -55,7 +55,7 @@ assert.doesNotMatch(index, />Download<\/button>/);
 assert.doesNotMatch(index, />Export RGB16<\/button>/);
 
 const app = await fs.readFile(path.join(root, "app.mjs"), "utf8");
-assert.match(app, /supportsWasm64\(\) \? "\.\/v600-wasm-core\.wasm" : "\.\/v600-wasm-core32\.wasm"/);
+assert.match(app, /supportsWasm64\(\) \? "\.\/cerealgrain-wasm-core\.wasm" : "\.\/cerealgrain-wasm-core32\.wasm"/);
 assert.match(app, /refreshFrameOverlay/);
 assert.match(app, /applyDetectedRebate/);
 assert.match(app, /computeDminFromRgb16/);
@@ -72,12 +72,12 @@ assert.match(styles, /\.rebate-box/);
 
 const worker = await fs.readFile(path.join(root, "worker/processor.mjs"), "utf8");
 assert.match(worker, /createWasmAbi/);
-assert.doesNotMatch(worker, /v600_wasm_alloc\(len\)\s*>>>\s*0/);
+assert.doesNotMatch(worker, /cerealgrain_wasm_alloc\(len\)\s*>>>\s*0/);
 
 const wasmAbi = await fs.readFile(path.join(root, "worker/wasm_abi.mjs"), "utf8");
-assert.match(wasmAbi, /v600_wasm_pointer_bits/);
+assert.match(wasmAbi, /cerealgrain_wasm_pointer_bits/);
 assert.match(wasmAbi, /pointerBits === 64 \? BigInt\(value\) : value/);
-assert.doesNotMatch(wasmAbi, /v600_wasm_alloc\(len\)\s*>>>\s*0/);
+assert.doesNotMatch(wasmAbi, /cerealgrain_wasm_alloc\(len\)\s*>>>\s*0/);
 assert.match(wasmAbi, /exceeds memory size/);
 
 const server = http.createServer(async (request, response) => {
@@ -116,7 +116,7 @@ try {
 
   console.log(JSON.stringify({
     event: "webapp-static-smoke",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     files: requiredPaths.length,
     status: "ok",
   }));

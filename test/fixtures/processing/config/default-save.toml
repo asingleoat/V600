@@ -1,4 +1,4 @@
-# scratchndent configuration
+# CerealGrain processing configuration
 
 [dust_removal]
 # Defect detection sensitivity (lower = more aggressive)

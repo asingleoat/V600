@@ -1,9 +1,9 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const film_stocks = v600.processing.film_stocks;
-const inversion = v600.processing.inversion;
-const webgpu = v600.processing.webgpu;
+const film_stocks = cerealgrain.processing.film_stocks;
+const inversion = cerealgrain.processing.inversion;
+const webgpu = cerealgrain.processing.webgpu;
 
 const Case = struct {
     name: []const u8,

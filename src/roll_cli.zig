@@ -1,16 +1,16 @@
-//! `v600-zig roll ...`: scan a film roll strip by strip. Each strip is one
+//! `cerealgrain roll ...`: scan a film roll strip by strip. Each strip is one
 //! action (preview, film area, roll LUT, full scan), and finished strips are
 //! processed in the background while the next one scans.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const Roll = v600.roll.Roll;
-const events = v600.scanner.events;
-const film_lut = v600.scanner.film_lut;
-const scanner_config = v600.scanner.config;
-const processing_config = v600.processing.config;
+const Roll = cerealgrain.roll.Roll;
+const events = cerealgrain.scanner.events;
+const film_lut = cerealgrain.scanner.film_lut;
+const scanner_config = cerealgrain.scanner.config;
+const processing_config = cerealgrain.processing.config;
 
 pub const scans_root = "scans";
 pub const frames_root = "frames";
@@ -55,7 +55,7 @@ pub fn handle(
         var roll = try openRoll(allocator, io, rollOption(argv));
         defer roll.deinit();
         try roll.writeReviewIndex(io);
-        const index = try roll.path(allocator, v600.roll.review_dir_name ++ "/index.html");
+        const index = try roll.path(allocator, cerealgrain.roll.review_dir_name ++ "/index.html");
         defer allocator.free(index);
         try stdout.print("{s}\n", .{index});
         if (hasFlag(argv, "--open")) openInBrowser(allocator, io, index);
@@ -67,7 +67,7 @@ pub fn handle(
 
 pub fn printUsage() void {
     std.debug.print(
-        \\usage: v600-zig roll <command>
+        \\usage: cerealgrain roll <command>
         \\
         \\commands:
         \\  start NAME [--stock NAME] [--format 35mm|645|6x6|6x7|6x9] [--dpi 800|1600|3200|6400] [--kind rgb+ir|rgb]
@@ -100,7 +100,7 @@ pub fn printUsage() void {
 
 fn runStart(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdout: anytype) !void {
     if (argv.len == 0 or std.mem.startsWith(u8, argv[0], "--")) return error.MissingRollName;
-    var settings = v600.roll.Settings{};
+    var settings = cerealgrain.roll.Settings{};
     var index: usize = 1;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
@@ -114,7 +114,7 @@ fn runStart(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, 
         } else if (std.mem.eql(u8, arg, "--dpi")) {
             settings.dpi = try std.fmt.parseInt(u32, value, 10);
         } else if (std.mem.eql(u8, arg, "--kind")) {
-            settings.kind = v600.roll.kindFromName(value) orelse return error.InvalidRollSettings;
+            settings.kind = cerealgrain.roll.kindFromName(value) orelse return error.InvalidRollSettings;
         } else if (std.mem.eql(u8, arg, "--rotation")) {
             settings.rotation = try std.fmt.parseInt(i32, value, 10);
         } else {
@@ -140,16 +140,16 @@ fn runStart(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, 
         roll.stock,
         roll.format,
         roll.dpi,
-        v600.roll.kindName(roll.kind),
+        cerealgrain.roll.kindName(roll.kind),
         roll.rotation,
         roll.dir,
         roll.frames_dir,
     });
-    try stdout.print("Next: v600-zig roll scan\n", .{});
+    try stdout.print("Next: cerealgrain roll scan\n", .{});
 }
 
 fn printStatus(allocator: std.mem.Allocator, io: std.Io, roll: *const Roll, stdout: anytype) !void {
-    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}, frames rotated {d}\n", .{ roll.name, roll.stock, roll.format, roll.dpi, v600.roll.kindName(roll.kind), roll.rotation });
+    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}, frames rotated {d}\n", .{ roll.name, roll.stock, roll.format, roll.dpi, cerealgrain.roll.kindName(roll.kind), roll.rotation });
     try stdout.print("LUT: {s}\n", .{if (roll.lut_white != null) "fixed by the first strip" else "not set yet"});
     if (roll.dmin) |dmin| try stdout.print("Dmin: {d:.3} / {d:.3} / {d:.3}\n", .{ dmin[0], dmin[1], dmin[2] });
     var strips = try roll.listStrips(io);
@@ -194,7 +194,7 @@ fn runExport(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         processed,
         if (processed == 1) "" else "s",
         roll.dir,
-        v600.roll.review_dir_name,
+        cerealgrain.roll.review_dir_name,
     });
 }
 
@@ -218,7 +218,7 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
     var offset_max: f64 = 0.0;
     var rebate_overlaps: usize = 0;
     for (strips.paths) |strip| {
-        const number = v600.roll.stripNumber(strip) orelse continue;
+        const number = cerealgrain.roll.stripNumber(strip) orelse continue;
         const framing = try roll.loadFraming(io, strip);
         defer if (framing) |owned| owned.deinit(allocator);
         const exported = if (framing == null and std.mem.indexOfScalar(usize, verified, number) != null)
@@ -230,21 +230,21 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
 
         const detection = roll.detectStripFrames(strip, .{}) catch |err| blk: {
             try stdout.print("{s}: detection failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
-            break :blk v600.roll.StripDetection{ .frames = try allocator.alloc(v600.roll.FrameRect, 0), .rebate = null };
+            break :blk cerealgrain.roll.StripDetection{ .frames = try allocator.alloc(cerealgrain.roll.FrameRect, 0), .rebate = null };
         };
         const detected = detection.frames;
         defer allocator.free(detected);
-        const matches = try allocator.alloc(v600.roll.FrameMatch, known.len);
+        const matches = try allocator.alloc(cerealgrain.roll.FrameMatch, known.len);
         defer allocator.free(matches);
-        v600.roll.matchFrames(known, detected, px_per_mm, matches);
+        cerealgrain.roll.matchFrames(known, detected, px_per_mm, matches);
 
         // A rebate must measure film base, not picture.
         const rebate_note = if (detection.rebate) |rebate|
-            (if (v600.roll.rebateClearOfFrames(rebate, known)) "rebate clear of them" else "rebate OVERLAPS them")
+            (if (cerealgrain.roll.rebateClearOfFrames(rebate, known)) "rebate clear of them" else "rebate OVERLAPS them")
         else
             "no rebate";
         if (detection.rebate) |rebate| {
-            if (!v600.roll.rebateClearOfFrames(rebate, known)) rebate_overlaps += 1;
+            if (!cerealgrain.roll.rebateClearOfFrames(rebate, known)) rebate_overlaps += 1;
         }
         try stdout.print("{s}: {d} frame{s} {s}, {d} detected, {s}\n", .{
             std.fs.path.basename(strip),
@@ -323,7 +323,7 @@ fn optionValue(argv: []const []const u8, name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn printOutcome(stdout: anytype, strip: []const u8, outcome: v600.roll.StripOutcome, seconds: i64) !void {
+fn printOutcome(stdout: anytype, strip: []const u8, outcome: cerealgrain.roll.StripOutcome, seconds: i64) !void {
     try stdout.print("{s}: {d} frame{s} exported, Dmin from {s} ({d}s)\n", .{
         std.fs.path.basename(strip),
         outcome.files.len,
@@ -348,25 +348,25 @@ fn runScan(
     events.echo_to_stderr = false;
     defer events.echo_to_stderr = true;
     var progress = ProgressLine{};
-    const runtime = v600.scanner.host.Runtime{
+    const runtime = cerealgrain.scanner.host.Runtime{
         .allocator = allocator,
         .io = io,
         .environ_map = environ_map,
         .event_sink = progress.sink(),
     };
 
-    const processor: ?*v600.roll.Processor = if (process)
-        try v600.roll.Processor.start(io, scans_root, frames_root, roll.name, .{}, printDone, null)
+    const processor: ?*cerealgrain.roll.Processor = if (process)
+        try cerealgrain.roll.Processor.start(io, scans_root, frames_root, roll.name, .{}, printDone, null)
     else
         null;
     defer if (processor) |worker| finishProcessing(worker, &roll, stdout);
 
-    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}.\n", .{ roll.name, roll.stock, roll.format, roll.dpi, v600.roll.kindName(roll.kind) });
+    try stdout.print("Roll {s}: {s}, {s}, {d} dpi {s}.\n", .{ roll.name, roll.stock, roll.format, roll.dpi, cerealgrain.roll.kindName(roll.kind) });
     try stdout.flush();
     var stdin_buffer: [256]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
     while (true) {
-        const number = try v600.tiff.nextScanNumber(io, roll.dir, v600.roll.strip_prefix);
+        const number = try cerealgrain.tiff.nextScanNumber(io, roll.dir, cerealgrain.roll.strip_prefix);
         if (!once) {
             try stdout.print("Load strip {d} and press Enter (q to finish): ", .{number});
             try stdout.flush();
@@ -379,7 +379,7 @@ fn runScan(
         const strip_path = scanStrip(allocator, io, &roll, runtime, stdout) catch |err| {
             progress.finishLine();
             try stdout.print("Strip {d} failed: {s}\n", .{ number, @errorName(err) });
-            if (builtin.os.tag == .macos and busyError(err)) try stdout.print("{s}\n", .{v600.scanner.interpreter_runtime.busy_hint});
+            if (builtin.os.tag == .macos and busyError(err)) try stdout.print("{s}\n", .{cerealgrain.scanner.interpreter_runtime.busy_hint});
             try stdout.flush();
             if (once) return err;
             continue;
@@ -409,7 +409,7 @@ fn scanStrip(
     allocator: std.mem.Allocator,
     io: std.Io,
     roll: *Roll,
-    runtime: v600.scanner.host.Runtime,
+    runtime: cerealgrain.scanner.host.Runtime,
     stdout: anytype,
 ) ![]u8 {
     var preview = try scanPreview(allocator, io, runtime);
@@ -425,12 +425,12 @@ fn scanStrip(
     if (builtin.os.tag == .macos) {
         const film_selection = film_lut.Selection{ .x = selection.x, .y = selection.y, .w = selection.w, .h = selection.h };
         const image = preview.image;
-        const computed = try film_lut.computeFilmLuts(allocator, image.data, image.width, image.height, image.samples_per_pixel, film_selection, v600.roll.lut_options);
+        const computed = try film_lut.computeFilmLuts(allocator, image.data, image.width, image.height, image.samples_per_pixel, film_selection, cerealgrain.roll.lut_options);
         const first_strip = roll.lut_white == null;
         if (try roll.adoptLut(io, computed)) |_| {
-            lut_file = try roll.path(allocator, v600.roll.lut_name);
+            lut_file = try roll.path(allocator, cerealgrain.roll.lut_name);
             if (!first_strip) {
-                const own = try film_lut.computeFilmLuts(allocator, image.data, image.width, image.height, image.samples_per_pixel, film_selection, v600.roll.fit_options);
+                const own = try film_lut.computeFilmLuts(allocator, image.data, image.width, image.height, image.samples_per_pixel, film_selection, cerealgrain.roll.fit_options);
                 const fit = roll.checkLutFit(own);
                 if (!fit.ok()) try printFitWarning(stdout, fit);
             }
@@ -454,7 +454,7 @@ fn scanStrip(
     return strip_path;
 }
 
-fn printFitWarning(stdout: anytype, fit: v600.roll.LutFit) !void {
+fn printFitWarning(stdout: anytype, fit: cerealgrain.roll.LutFit) !void {
     const names = [_][]const u8{ "red", "green", "blue" };
     for (0..3) |channel| {
         if (fit.dense_clipped[channel]) try stdout.print("Warning: this strip's densest {s} is beyond the roll LUT; some highlights will clip.\n", .{names[channel]});
@@ -464,11 +464,11 @@ fn printFitWarning(stdout: anytype, fit: v600.roll.LutFit) !void {
 }
 
 pub const Preview = struct {
-    image: v600.tiff.Image,
+    image: cerealgrain.tiff.Image,
     /// Film area in preview pixels, with the clear margin.
-    selection: ?v600.native_ui.PreviewSelection,
+    selection: ?cerealgrain.native_ui.PreviewSelection,
     /// The same area in the inch coordinates a scan takes.
-    area: ?v600.native_ui.ScanAreaInches,
+    area: ?cerealgrain.native_ui.ScanAreaInches,
 
     pub fn deinit(self: *Preview, allocator: std.mem.Allocator) void {
         self.image.deinit(allocator);
@@ -477,7 +477,7 @@ pub const Preview = struct {
 
 /// Scans the whole transparency unit at 400 dpi, 8-bit, to `scans/preview.tiff`
 /// and finds the film area.
-pub fn scanPreview(allocator: std.mem.Allocator, io: std.Io, runtime: v600.scanner.host.Runtime) !Preview {
+pub fn scanPreview(allocator: std.mem.Allocator, io: std.Io, runtime: cerealgrain.scanner.host.Runtime) !Preview {
     try std.Io.Dir.cwd().createDirPath(io, scans_root);
     try runtime.scan(.{
         .request = .{ .dpi = preview_dpi, .source = .tpu, .kind = .rgb, .depth = .eight },
@@ -487,17 +487,17 @@ pub fn scanPreview(allocator: std.mem.Allocator, io: std.Io, runtime: v600.scann
 }
 
 pub fn loadPreview(allocator: std.mem.Allocator, path: []const u8) !Preview {
-    const image = try v600.tiff.loadRgbPage(allocator, path);
+    const image = try cerealgrain.tiff.loadRgbPage(allocator, path);
     errdefer image.deinit(allocator);
-    const dpi: f64 = @floatFromInt(v600.scanner.sane.effectiveDpiForRequest(.{ .dpi = preview_dpi, .source = .tpu }));
-    const info = v600.app_state.ScannerInfo{
+    const dpi: f64 = @floatFromInt(cerealgrain.scanner.sane.effectiveDpiForRequest(.{ .dpi = preview_dpi, .source = .tpu }));
+    const info = cerealgrain.app_state.ScannerInfo{
         .preview_width = image.width,
         .preview_height = image.height,
         .tpu_width_in = @as(f64, @floatFromInt(image.width)) / dpi,
         .tpu_height_in = @as(f64, @floatFromInt(image.height)) / dpi,
         .scan_counter = 0,
     };
-    const selection = try v600.native_ui.detectFilmAreaSelection(
+    const selection = try cerealgrain.native_ui.detectFilmAreaSelection(
         allocator,
         image.data,
         image.width,
@@ -508,7 +508,7 @@ pub fn loadPreview(allocator: std.mem.Allocator, path: []const u8) !Preview {
         info.tpu_height_in,
         .{},
     );
-    const controls = v600.native_ui.ScanControls{ .selection = selection };
+    const controls = cerealgrain.native_ui.ScanControls{ .selection = selection };
     return .{ .image = image, .selection = selection, .area = controls.selectionForScanStart(info) };
 }
 
@@ -553,7 +553,7 @@ const ProgressLine = struct {
 };
 
 /// Prints each background result as it finishes.
-fn printDone(_: ?*anyopaque, done: v600.roll.Processor.Done) void {
+fn printDone(_: ?*anyopaque, done: cerealgrain.roll.Processor.Done) void {
     const name = std.fs.path.basename(done.strip);
     if (done.outcome) |outcome| {
         std.debug.print("\n[processing] {s}: {d} frame{s} exported, Dmin from {s} ({d}s)\n", .{
@@ -568,14 +568,14 @@ fn printDone(_: ?*anyopaque, done: v600.roll.Processor.Done) void {
     }
 }
 
-fn finishProcessing(processor: *v600.roll.Processor, roll: *const Roll, stdout: anytype) void {
+fn finishProcessing(processor: *cerealgrain.roll.Processor, roll: *const Roll, stdout: anytype) void {
     const pending = processor.pending();
     if (pending != 0) {
         stdout.print("Waiting for {d} strip{s} to finish processing...\n", .{ pending, if (pending == 1) "" else "s" }) catch {};
         stdout.flush() catch {};
     }
     processor.finish();
-    stdout.print("Review: {s}/{s}/index.html\n", .{ roll.dir, v600.roll.review_dir_name }) catch {};
+    stdout.print("Review: {s}/{s}/index.html\n", .{ roll.dir, cerealgrain.roll.review_dir_name }) catch {};
     stdout.flush() catch {};
 }
 
@@ -584,7 +584,7 @@ fn openRoll(allocator: std.mem.Allocator, io: std.Io, name: ?[]const u8) !Roll {
     const config_path = scans_root ++ "/" ++ scanner_config.file_name;
     const loaded = try scanner_config.loadFile(allocator, io, config_path);
     if (!loaded.active.roll or loaded.values.roll.len == 0) {
-        std.debug.print("No current roll: start one with `v600-zig roll start NAME` or pass --roll NAME.\n", .{});
+        std.debug.print("No current roll: start one with `cerealgrain roll start NAME` or pass --roll NAME.\n", .{});
         return error.NoCurrentRoll;
     }
     return Roll.open(allocator, io, scans_root, frames_root, loaded.values.roll.slice());
@@ -620,7 +620,7 @@ fn busyError(err: anyerror) bool {
 fn notify(allocator: std.mem.Allocator, io: std.Io, strip: usize) void {
     std.debug.print("\x07", .{});
     if (builtin.os.tag != .macos) return;
-    const script = std.fmt.allocPrint(allocator, "display notification \"Strip {d} scanned. Load the next strip.\" with title \"V600\" sound name \"Glass\"", .{strip}) catch return;
+    const script = std.fmt.allocPrint(allocator, "display notification \"Strip {d} scanned. Load the next strip.\" with title \"CerealGrain\" sound name \"Glass\"", .{strip}) catch return;
     defer allocator.free(script);
     const result = std.process.run(allocator, io, .{ .argv = &.{ "osascript", "-e", script } }) catch return;
     allocator.free(result.stdout);

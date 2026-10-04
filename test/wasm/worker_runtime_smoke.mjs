@@ -434,7 +434,7 @@ function waitFor(worker, predicate) {
 }
 
 const wasmPath = process.argv[2];
-if (!wasmPath) throw new Error("usage: node test/wasm/worker_runtime_smoke.mjs <v600-wasm-core.wasm>");
+if (!wasmPath) throw new Error("usage: node test/wasm/worker_runtime_smoke.mjs <cerealgrain-wasm-core.wasm>");
 
 const worker = new Worker(new URL("../../web/worker/processor.mjs", import.meta.url), {
   type: "module",
@@ -813,7 +813,7 @@ try {
 
   console.log(JSON.stringify({
     event: "worker-runtime-smoke",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     cache_key: cacheKey,
     output_bytes: expectedPreview.length,
     ir_rgb_mask_bytes: expectedRgbMask.length,

@@ -572,7 +572,7 @@ test "scan worker consumes queued scan command without blocking UI state" {
     var model = ui_state.State.init("scans", "frames", 0);
     model.scannerConnected(1000, 500, 10.0, 5.0);
     model.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
-    try std.testing.expect(model.queueScanStart(".zig-cache/v600-scan.cancel"));
+    try std.testing.expect(model.queueScanStart(".zig-cache/cerealgrain-scan.cancel"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakeScanSuccess);
     defer worker.deinit();
@@ -608,7 +608,7 @@ test "scan worker passes connected scanner capabilities to runtime context" {
         .tpu_height_in = 9.0,
     });
     model.scan_controls.setSelection(.{ .x = 100.0, .y = 50.0, .w = 200.0, .h = 100.0 });
-    try std.testing.expect(model.queueScanStart(".zig-cache/v600-scan.cancel"));
+    try std.testing.expect(model.queueScanStart(".zig-cache/cerealgrain-scan.cancel"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakeScanRequiresCachedCapabilities);
     defer worker.deinit();
@@ -743,14 +743,14 @@ test "scan worker leaves preview command for preview worker" {
 
     var model = ui_state.State.init("scans", "frames", 0);
     model.scannerConnected(0, 0, 2.7, 9.54);
-    try std.testing.expect(model.queuePreviewScan("/tmp/v600-native-preview.tiff"));
+    try std.testing.expect(model.queuePreviewScan("/tmp/cerealgrain-native-preview.tiff"));
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, &env, fakeScanSuccess);
     defer worker.deinit();
     try std.testing.expect(!(try worker.startQueued(&model, null)));
     try std.testing.expect(model.pending_command != null);
     switch (model.pending_command.?) {
-        .preview_scan => |plan| try std.testing.expectEqualStrings("/tmp/v600-native-preview.tiff", plan.output_path),
+        .preview_scan => |plan| try std.testing.expectEqualStrings("/tmp/cerealgrain-native-preview.tiff", plan.output_path),
         .scan_start => unreachable,
     }
 }

@@ -1,11 +1,11 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const color = v600.processing.color;
-const film_stocks = v600.processing.film_stocks;
-const gpu_boundary = v600.processing.gpu_boundary;
-const inversion = v600.processing.inversion;
-const render = v600.processing.render;
+const color = cerealgrain.processing.color;
+const film_stocks = cerealgrain.processing.film_stocks;
+const gpu_boundary = cerealgrain.processing.gpu_boundary;
+const inversion = cerealgrain.processing.inversion;
+const render = cerealgrain.processing.render;
 
 const pixel_count: usize = 4096;
 const color_iterations: usize = 256;

@@ -1,5 +1,5 @@
-export const protocolSchema = "v600.webapp.worker.v1";
-export const cacheKeySchema = "v600.webapp.cache-key.v1";
+export const protocolSchema = "cerealgrain.webapp.worker.v1";
+export const cacheKeySchema = "cerealgrain.webapp.cache-key.v1";
 export const protocolVersion = 1;
 
 export const messageTypes = Object.freeze({

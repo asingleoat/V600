@@ -7,10 +7,10 @@ const lut = @import("lut.zig");
 const sane = @import("sane.zig");
 const tiff = @import("../tiff.zig");
 
-pub const v600_vendor_id = "04b8";
-pub const v600_product_id = "013a";
-pub const v600_vendor_id_int: u16 = 0x04b8;
-pub const v600_product_id_int: u16 = 0x013a;
+pub const cerealgrain_vendor_id = "04b8";
+pub const cerealgrain_product_id = "013a";
+pub const cerealgrain_vendor_id_int: u16 = 0x04b8;
+pub const cerealgrain_product_id_int: u16 = 0x013a;
 pub const usbdevfs_reset: u32 = 0x5514;
 pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
 
@@ -87,7 +87,7 @@ pub const FailureKind = events.FailureKind;
 pub const WrapperAvailability = sane.WrapperAvailability;
 
 pub const cache_header = "v600-scanner-device-cache-v1";
-pub const tiff_software = "epdaughter-sane";
+pub const tiff_software = "CerealGrain (SANE)";
 const custom_lut_marker = tiff.scanner_custom_lut_marker;
 
 pub const TiffMetadataTag = enum(u16) {
@@ -913,17 +913,17 @@ pub const Runtime = struct {
     }
 
     fn deviceCachePath(self: Runtime) !?[]u8 {
-        if (self.environ_map.get("V600_SCANNER_DEVICE_CACHE")) |path| {
+        if (self.environ_map.get("CEREALGRAIN_SCANNER_DEVICE_CACHE")) |path| {
             if (path.len != 0) return try self.allocator.dupe(u8, path);
         }
         if (self.environ_map.get("XDG_CACHE_HOME")) |cache_home| {
             if (cache_home.len != 0) {
-                return try std.fmt.allocPrint(self.allocator, "{s}/v600/scanner-device.txt", .{cache_home});
+                return try std.fmt.allocPrint(self.allocator, "{s}/cerealgrain/scanner-device.txt", .{cache_home});
             }
         }
         if (self.environ_map.get("HOME")) |home| {
             if (home.len != 0) {
-                return try std.fmt.allocPrint(self.allocator, "{s}/.cache/v600/scanner-device.txt", .{home});
+                return try std.fmt.allocPrint(self.allocator, "{s}/.cache/cerealgrain/scanner-device.txt", .{home});
             }
         }
         return null;
@@ -1210,7 +1210,7 @@ pub fn parseUsbDeviceDescriptor(descriptor: []const u8) ?UsbDeviceId {
 }
 
 pub fn isV600UsbDevice(device_id: UsbDeviceId) bool {
-    return device_id.vendor_id == v600_vendor_id_int and device_id.product_id == v600_product_id_int;
+    return device_id.vendor_id == cerealgrain_vendor_id_int and device_id.product_id == cerealgrain_product_id_int;
 }
 
 pub fn usbDevicePath(allocator: std.mem.Allocator, bus: usize, dev: usize) ![]u8 {
@@ -1300,7 +1300,7 @@ fn prepareEnvironment(
     if (!env.scan_ir_mode and env.lut_file == null) return null;
     storage.* = try parent.clone(allocator);
     if (env.scan_ir_mode) try storage.*.?.put("SCAN_IR_MODE", "1");
-    if (env.lut_file) |lut_file| try storage.*.?.put("V600_LUT_FILE", lut_file);
+    if (env.lut_file) |lut_file| try storage.*.?.put("CEREALGRAIN_LUT_FILE", lut_file);
     return &storage.*.?;
 }
 
@@ -1349,7 +1349,7 @@ fn writeMetadataSidecar(
 
     try out.print(
         \\{{
-        \\  "software": "v600-zig",
+        \\  "software": "cerealgrain",
         \\  "device": "{s}",
         \\  "model": "{s}",
         \\  "source": "{t}",
@@ -1408,7 +1408,7 @@ fn writeCombinedMetadataSidecar(
 
     try out.print(
         \\{{
-        \\  "software": "v600-zig",
+        \\  "software": "cerealgrain",
         \\  "device": "{s}",
         \\  "model": "Epson Perfection V600 Photo",
         \\  "source": "{t}",
@@ -1549,7 +1549,7 @@ test "serializes and parses persistent scanner device cache" {
     const parsed = (try parseCachedDeviceName(allocator, data)).?;
     defer allocator.free(parsed);
     try std.testing.expectEqualStrings("epkowa:interpreter:001:017", parsed);
-    try std.testing.expect((try parseCachedDeviceName(allocator, "not-a-v600-cache\nfoo\n")) == null);
+    try std.testing.expect((try parseCachedDeviceName(allocator, "not-a-cerealgrain-cache\nfoo\n")) == null);
 }
 
 test "chooses explicit device over cache and discovery" {
@@ -1731,7 +1731,7 @@ test "probe emits timing events around fake discovery and capabilities" {
 
     var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
     defer environ_map.deinit();
-    try environ_map.put("V600_SCANNER_DEVICE_CACHE", cache_path);
+    try environ_map.put("CEREALGRAIN_SCANNER_DEVICE_CACHE", cache_path);
 
     var recorder = ScannerEventRecorder{};
     const runtime = Runtime{
@@ -1775,7 +1775,7 @@ test "resolve device emits cache-hit timing without discovery" {
 
     var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
     defer environ_map.deinit();
-    try environ_map.put("V600_SCANNER_DEVICE_CACHE", cache_path);
+    try environ_map.put("CEREALGRAIN_SCANNER_DEVICE_CACHE", cache_path);
 
     var recorder = ScannerEventRecorder{};
     const runtime = Runtime{
@@ -1857,7 +1857,7 @@ test "maps TIFF metadata tags to Python SANE parity values" {
     try std.testing.expectEqualStrings("Epson Perfection V600 Photo", tags[1].value);
     try std.testing.expectEqual(TiffMetadataTag.software, tags[2].tag);
     try std.testing.expectEqualStrings("305", tiffTagNumber(tags[2].tag));
-    try std.testing.expectEqualStrings("epdaughter-sane", tags[2].value);
+    try std.testing.expectEqualStrings("CerealGrain (SANE)", tags[2].value);
 
     const fallback = tiffMetadataTags(.{ .model = "" });
     try std.testing.expectEqualStrings("Epson Scanner", fallback[1].value);
@@ -2269,7 +2269,7 @@ test "writes RGB plus IR sidecar with stable page layout" {
     try std.testing.expect(std.mem.indexOf(u8, data, ".tmp.tiff") == null);
 }
 
-test "prepareEnvironment exposes V600_LUT_FILE to scan child" {
+test "prepareEnvironment exposes CEREALGRAIN_LUT_FILE to scan child" {
     const allocator = std.testing.allocator;
     var parent = try std.process.Environ.createMap(std.testing.environ, allocator);
     defer parent.deinit();
@@ -2277,8 +2277,8 @@ test "prepareEnvironment exposes V600_LUT_FILE to scan child" {
     var storage: ?std.process.Environ.Map = null;
     defer if (storage) |*map| map.deinit();
 
-    const child_env = (try prepareEnvironment(allocator, &parent, .{ .lut_file = "/tmp/v600-luts.bin" }, &storage)).?;
-    try std.testing.expectEqualStrings("/tmp/v600-luts.bin", child_env.get("V600_LUT_FILE").?);
+    const child_env = (try prepareEnvironment(allocator, &parent, .{ .lut_file = "/tmp/cerealgrain-luts.bin" }, &storage)).?;
+    try std.testing.expectEqualStrings("/tmp/cerealgrain-luts.bin", child_env.get("CEREALGRAIN_LUT_FILE").?);
 }
 
 test "mirrors TIFF horizontally like Python TPU postprocessing" {
@@ -2408,8 +2408,8 @@ test "SANE backend init state mirrors Python constructor defaults" {
     try std.testing.expect(default_state.product_id == null);
     try std.testing.expect(default_state.cached_capabilities == null);
 
-    const explicit_state = SaneBackendState.init(v600_product_id_int);
-    try std.testing.expectEqual(@as(?u16, v600_product_id_int), explicit_state.product_id);
+    const explicit_state = SaneBackendState.init(cerealgrain_product_id_int);
+    try std.testing.expectEqual(@as(?u16, cerealgrain_product_id_int), explicit_state.product_id);
     try std.testing.expect(explicit_state.device_name == null);
     try std.testing.expect(explicit_state.model_name == null);
     try std.testing.expect(explicit_state.cached_capabilities == null);

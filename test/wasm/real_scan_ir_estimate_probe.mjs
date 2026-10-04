@@ -7,7 +7,7 @@ import { loadIrPageFromTiff, loadRgb16PageFromTiff } from "../../web/tiff.mjs";
 const wasmPath = process.argv[2];
 const scanPath = process.argv[3];
 if (!wasmPath || !scanPath) {
-  throw new Error("usage: node test/wasm/real_scan_ir_estimate_probe.mjs <v600-wasm-core.wasm> <scan.tiff>");
+  throw new Error("usage: node test/wasm/real_scan_ir_estimate_probe.mjs <cerealgrain-wasm-core.wasm> <scan.tiff>");
 }
 
 const bytes = fs.readFileSync(scanPath);
@@ -56,7 +56,7 @@ try {
   });
   console.log(JSON.stringify({
     event: "real-scan-ir-estimate-probe",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     scan: scanPath,
     rgb: { width: rgbPage.width, height: rgbPage.height },
     ir: { width: irPage.width, height: irPage.height },

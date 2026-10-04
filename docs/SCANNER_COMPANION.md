@@ -1,6 +1,6 @@
 # Scanner Companion Server
 
-`v600-zig serve` lets the browser webapp scan. It binds `127.0.0.1`, serves
+`cerealgrain serve` lets the browser webapp scan. It binds `127.0.0.1`, serves
 the staged webapp, and runs scans through the same Linux scanner runtime as
 the CLI (`scanner.linux.Runtime`: patched epkowa SANE, TPU, IR pass), exposed
 as a small JSON job API. Linux only.
@@ -13,25 +13,26 @@ against cross-site requests; see Known issues.
 
 ```sh
 zig build wasm-webapp
-./zig-out/bin/v600-zig serve [--port 8433] [--webapp-dir zig-out/webapp] \
+./zig-out/bin/cerealgrain serve [--port 8433] [--webapp-dir zig-out/webapp] \
                              [--out-dir scans] [--scanimage PATH]
 ```
 
-Open `http://127.0.0.1:8433/`. `--scanimage` replaces the scanner
-executable, for hardware-free testing. On startup the server prints one
-`{"event":"companion-ready","schema":"v600.companion.event.v1",...}` line.
+Open `http://127.0.0.1:8433/`. `--scanimage` replaces the scanner executable,
+for hardware-free testing. On startup the server prints one
+`{"event":"companion-ready","schema":"cerealgrain.companion.event.v1",...}`
+line.
 
 ## API
 
-Bodies are JSON. Scan progress reuses the `v600.scanner.event.v1` event
+Bodies are JSON. Scan progress reuses the `cerealgrain.scanner.event.v1` event
 objects unchanged; the companion adds `companion-status` lines to the same
-stream and wraps responses in the `v600.companion.api.v1` schema.
+stream and wraps responses in the `cerealgrain.companion.api.v1` schema.
 
 | Method and path | Behavior |
 | --- | --- |
 | `GET /api/status` | `{schema, service, version, job}`; `job` is `null` before the first scan, else `{id, status, error?}`. |
 | `GET /api/devices` | `{schema, devices: [{name, vendor, model, kind}], error?}`. Discovery failures fill `error`. Runs `scanimage -L`, which blocks the server while it runs. |
-| `POST /api/scan` | Body `{dpi?, source?, kind?, depth?, device?, x?, y?, width?, height?}`; defaults match `v600-zig scanner scan` (400 dpi, tpu, rgb, 16-bit). `kind` is `rgb`, `gray`, `ir`, or `rgb+ir` (alias `rgb_ir`). Returns `{schema, job, status, output}`; `409` while a job runs. One job at a time. No LUT or preview-scan options. |
+| `POST /api/scan` | Body `{dpi?, source?, kind?, depth?, device?, x?, y?, width?, height?}`; defaults match `cerealgrain scanner scan` (400 dpi, tpu, rgb, 16-bit). `kind` is `rgb`, `gray`, `ir`, or `rgb+ir` (alias `rgb_ir`). Returns `{schema, job, status, output}`; `409` while a job runs. One job at a time. No LUT or preview-scan options. |
 | `GET /api/scan/<id>/events?from=N` | `{schema, job, status, next, events: [...]}` from index `N`. Poll with `from=next` until `status` is `complete`, `failed`, or `cancelled`. |
 | `GET /api/scan/<id>/file` | The combined scan TIFF (`image/tiff`) once complete; `409` before that. |
 | `GET /api/scan/<id>/metadata` | The sidecar JSON once complete. |

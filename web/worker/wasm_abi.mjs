@@ -19,19 +19,19 @@ export const irInpaintGrainOptionsSize = 16;
 
 export const requiredWasmExports = [
   "memory",
-  "v600_wasm_pointer_bits",
-  "v600_wasm_alloc",
-  "v600_wasm_free",
-  "v600_preview_invert_u16_to_u8",
-  "v600_export_invert_u16_to_u16",
-  "v600_detect_frames_rgb16",
-  "v600_ir_estimate_translation_f32",
-  "v600_ir_apply_translation_f32",
-  "v600_ir_make_defect_mask_u8",
-  "v600_ir_make_defect_mask_f32",
-  "v600_ir_resize_mask_to_rgb_u8",
-  "v600_ir_biharmonic_inpaint_u16",
-  "v600_ir_inpaint_grain_u16_with_noise",
+  "cerealgrain_wasm_pointer_bits",
+  "cerealgrain_wasm_alloc",
+  "cerealgrain_wasm_free",
+  "cerealgrain_preview_invert_u16_to_u8",
+  "cerealgrain_export_invert_u16_to_u16",
+  "cerealgrain_detect_frames_rgb16",
+  "cerealgrain_ir_estimate_translation_f32",
+  "cerealgrain_ir_apply_translation_f32",
+  "cerealgrain_ir_make_defect_mask_u8",
+  "cerealgrain_ir_make_defect_mask_f32",
+  "cerealgrain_ir_resize_mask_to_rgb_u8",
+  "cerealgrain_ir_biharmonic_inpaint_u16",
+  "cerealgrain_ir_inpaint_grain_u16_with_noise",
 ];
 
 export function aspectName(code) {
@@ -53,7 +53,7 @@ export function createWasmAbi(exports) {
   for (const name of requiredWasmExports) {
     if (!(name in exports)) throw new Error(`missing Wasm export: ${name}`);
   }
-  const pointerBits = Number(exports.v600_wasm_pointer_bits());
+  const pointerBits = Number(exports.cerealgrain_wasm_pointer_bits());
   if (pointerBits !== 32 && pointerBits !== 64) {
     throw new Error(`unsupported Wasm pointer width: ${pointerBits}`);
   }
@@ -74,7 +74,7 @@ export function createWasmAbi(exports) {
   }
 
   function alloc(len) {
-    const ptr = wasmByteOffset(exports.v600_wasm_alloc(wasmIndex(len)), "allocation pointer");
+    const ptr = wasmByteOffset(exports.cerealgrain_wasm_alloc(wasmIndex(len)), "allocation pointer");
     if (ptr === 0) throw new Error(`wasm allocation failed for ${len} bytes`);
     if (BigInt(ptr) + BigInt(len) > BigInt(exports.memory.buffer.byteLength)) {
       throw new Error(`wasm allocation ${ptr}+${len} exceeds memory size ${exports.memory.buffer.byteLength}`);
@@ -84,7 +84,7 @@ export function createWasmAbi(exports) {
 
   function free(ptr, len) {
     if (ptr === 0 || len === 0) return;
-    exports.v600_wasm_free(wasmIndex(ptr), wasmIndex(len));
+    exports.cerealgrain_wasm_free(wasmIndex(ptr), wasmIndex(len));
   }
 
   function callCore(name, ...args) {

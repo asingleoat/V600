@@ -215,7 +215,7 @@ export function buildNativeVariantExportMetadata({
   irCleaning = "browser-no-ir-fallback",
 }) {
   const metadata = {
-    schema: "v600.webapp.native-export-metadata.v1",
+    schema: "cerealgrain.webapp.native-export-metadata.v1",
     source: file.name,
     source_file: file,
     source_image: {

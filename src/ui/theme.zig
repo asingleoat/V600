@@ -46,7 +46,7 @@ pub const Palette = struct {
     background: Rgba,
 };
 
-/// Default UI scale: 18 px text. V600_UI_SCALE overrides it.
+/// Default UI scale: 18 px text. CEREALGRAIN_UI_SCALE overrides it.
 pub const default_scale: f32 = 1.4;
 
 pub const Config = struct {
@@ -55,10 +55,10 @@ pub const Config = struct {
 
     pub fn fromEnvironment(environ_map: *std.process.Environ.Map) Config {
         var config = Config{};
-        if (environ_map.get("V600_UI_THEME")) |value| {
+        if (environ_map.get("CEREALGRAIN_UI_THEME")) |value| {
             if (ThemeName.parse(value)) |theme| config.theme = theme;
         }
-        if (environ_map.get("V600_UI_SCALE")) |value| {
+        if (environ_map.get("CEREALGRAIN_UI_SCALE")) |value| {
             config.scale = parseScale(value) catch config.scale;
         }
         return config.normalized();

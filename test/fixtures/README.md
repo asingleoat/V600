@@ -9,5 +9,5 @@ Python oracle and are small enough to review by sidecar metadata.
 
 Do not commit full-resolution scanner TIFFs, export outputs, or other large
 binary files here without explicit approval. Large local evidence belongs in
-`scans/`, `frames/`, or `/tmp/v600-*` and should be described in `plan.md` or
-the task summary instead.
+`scans/`, `frames/`, or `/tmp/cerealgrain-*` and should be described in
+`plan.md` or the task summary instead.

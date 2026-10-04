@@ -169,19 +169,19 @@ fn allocatorForCore() std.mem.Allocator {
     return std.heap.page_allocator;
 }
 
-pub fn v600_wasm_alloc(len: usize) callconv(.c) usize {
+pub fn cerealgrain_wasm_alloc(len: usize) callconv(.c) usize {
     if (len == 0) return 0;
     const ptr = allocatorForCore().rawAlloc(len, allocation_alignment, @returnAddress()) orelse return 0;
     return @intFromPtr(ptr);
 }
 
-pub fn v600_wasm_free(ptr_addr: usize, len: usize) callconv(.c) void {
+pub fn cerealgrain_wasm_free(ptr_addr: usize, len: usize) callconv(.c) void {
     if (ptr_addr == 0 or len == 0) return;
     const ptr: [*]u8 = @ptrFromInt(ptr_addr);
     allocatorForCore().rawFree(ptr[0..len], allocation_alignment, @returnAddress());
 }
 
-pub fn v600_preview_invert_u16_to_u8(
+pub fn cerealgrain_preview_invert_u16_to_u8(
     raw_ptr: [*]const u16,
     raw_len: usize,
     output_ptr: [*]u8,
@@ -196,7 +196,7 @@ pub fn v600_preview_invert_u16_to_u8(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_export_invert_u16_to_u16(
+pub fn cerealgrain_export_invert_u16_to_u16(
     raw_ptr: [*]const u16,
     raw_len: usize,
     output_ptr: [*]u16,
@@ -211,7 +211,7 @@ pub fn v600_export_invert_u16_to_u16(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_make_defect_mask_u8(
+pub fn cerealgrain_ir_make_defect_mask_u8(
     ir_ptr: [*]const u8,
     ir_len: usize,
     output_ptr: [*]u8,
@@ -226,7 +226,7 @@ pub fn v600_ir_make_defect_mask_u8(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_make_defect_mask_f32(
+pub fn cerealgrain_ir_make_defect_mask_f32(
     ir_ptr: [*]const f32,
     ir_len: usize,
     output_ptr: [*]u8,
@@ -241,7 +241,7 @@ pub fn v600_ir_make_defect_mask_f32(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_resize_mask_to_rgb_u8(
+pub fn cerealgrain_ir_resize_mask_to_rgb_u8(
     ir_mask_ptr: [*]const u8,
     ir_mask_len: usize,
     output_ptr: [*]u8,
@@ -256,7 +256,7 @@ pub fn v600_ir_resize_mask_to_rgb_u8(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_biharmonic_inpaint_u16(
+pub fn cerealgrain_ir_biharmonic_inpaint_u16(
     rgb_ptr: [*]const u16,
     rgb_len: usize,
     mask_ptr: [*]const u8,
@@ -274,7 +274,7 @@ pub fn v600_ir_biharmonic_inpaint_u16(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_inpaint_grain_u16_with_noise(
+pub fn cerealgrain_ir_inpaint_grain_u16_with_noise(
     rgb_ptr: [*]const u16,
     rgb_len: usize,
     mask_ptr: [*]const u8,
@@ -295,7 +295,7 @@ pub fn v600_ir_inpaint_grain_u16_with_noise(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_apply_translation_f32(
+pub fn cerealgrain_ir_apply_translation_f32(
     ir_ptr: [*]const f32,
     ir_len: usize,
     output_ptr: [*]f32,
@@ -310,7 +310,7 @@ pub fn v600_ir_apply_translation_f32(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_ir_estimate_translation_f32(
+pub fn cerealgrain_ir_estimate_translation_f32(
     rgb_ptr: [*]const f32,
     rgb_len: usize,
     ir_ptr: [*]const f32,
@@ -326,7 +326,7 @@ pub fn v600_ir_estimate_translation_f32(
     return @intFromEnum(Status.ok);
 }
 
-pub fn v600_detect_frames_rgb16(
+pub fn cerealgrain_detect_frames_rgb16(
     raw_ptr: [*]const u16,
     raw_len: usize,
     frames_ptr: [*]FrameDetectRect,

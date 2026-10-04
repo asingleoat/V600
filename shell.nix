@@ -6,7 +6,7 @@ let
     then pkgs.zig_0_16
     else if pkgs.lib.getVersion pkgs.zig == "0.16.0"
     then pkgs.zig
-    else throw "V600 shell.nix requires Zig 0.16.0. Update the nixpkgs channel, or enter the flake shell with `nix develop path:.` / direnv `use flake`.";
+    else throw "CerealGrain shell.nix requires Zig 0.16.0. Update the nixpkgs channel, or enter the flake shell with `nix develop path:.` / direnv `use flake`.";
 
   zlsPkg =
     if pkgs ? zls_0_16
@@ -127,7 +127,7 @@ in pkgs.mkShell {
     fi
     if [ "${if withWebGPU then "1" else "0"}" = "1" ]; then
       export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath ([ pkgs.wgpu-native ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.vulkan-loader ])}''${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH"
-      echo "V600 WebGPU shell: using nixpkgs wgpu-native (libwgpu_native, include/webgpu)" >&2
+      echo "CerealGrain WebGPU shell: using nixpkgs wgpu-native (libwgpu_native, include/webgpu)" >&2
     fi
   '';
 }

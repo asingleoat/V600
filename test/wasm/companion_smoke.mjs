@@ -1,5 +1,5 @@
 // Hardware-free smoke for the local scanner companion server: starts
-// `v600-zig serve` against a fake scanimage (the same override pattern the
+// `cerealgrain serve` against a fake scanimage (the same override pattern the
 // scanner runtime tests use), then exercises the API contract in
 // docs/SCANNER_COMPANION.md end to end, including parsing the finished scan
 // TIFF with the browser TIFF reader.
@@ -22,12 +22,12 @@ import {
 const exePath = process.argv[2];
 const webappDir = process.argv[3];
 if (!exePath || !webappDir) {
-  throw new Error("usage: node test/wasm/companion_smoke.mjs <v600-zig> <webapp-dir>");
+  throw new Error("usage: node test/wasm/companion_smoke.mjs <cerealgrain> <webapp-dir>");
 }
 
 const port = 8461;
 const base = `http://127.0.0.1:${port}`;
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v600-companion-smoke-"));
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cerealgrain-companion-smoke-"));
 const scriptPath = path.join(tmpDir, "scanimage");
 const outDir = path.join(tmpDir, "scans");
 
@@ -81,13 +81,13 @@ function sleep(ms) {
 
 try {
   const readyEvent = await ready;
-  assert.equal(readyEvent.schema, "v600.companion.event.v1");
-  assert.equal(readyEvent.service, "v600-companion");
+  assert.equal(readyEvent.schema, "cerealgrain.companion.event.v1");
+  assert.equal(readyEvent.service, "cerealgrain-companion");
   assert.equal(readyEvent.port, port);
 
   const status = await (await fetch(`${base}/api/status`)).json();
-  assert.equal(status.schema, "v600.companion.api.v1");
-  assert.equal(status.service, "v600-companion");
+  assert.equal(status.schema, "cerealgrain.companion.api.v1");
+  assert.equal(status.service, "cerealgrain-companion");
   assert.equal(status.job, null);
 
   const index = await fetch(`${base}/`);
@@ -99,7 +99,7 @@ try {
   assert.equal(appCore.status, 200);
   assert.match(appCore.headers.get("content-type"), /text\/javascript/);
 
-  const wasmResponse = await fetch(`${base}/v600-wasm-core.wasm`);
+  const wasmResponse = await fetch(`${base}/cerealgrain-wasm-core.wasm`);
   assert.equal(wasmResponse.status, 200);
   const wasmBytes = new Uint8Array(await wasmResponse.arrayBuffer());
   assert.deepEqual(Array.from(wasmBytes.slice(0, 4)), [0x00, 0x61, 0x73, 0x6d]);
@@ -108,7 +108,7 @@ try {
   assert.equal((await fetch(`${base}/api/unknown`)).status, 404);
 
   const devices = await (await fetch(`${base}/api/devices`)).json();
-  assert.equal(devices.schema, "v600.companion.api.v1");
+  assert.equal(devices.schema, "cerealgrain.companion.api.v1");
   assert.ok(Array.isArray(devices.devices));
 
   const started = await (await fetch(`${base}/api/scan`, {
@@ -127,7 +127,7 @@ try {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     const page = await (await fetch(`${base}/api/scan/1/events?from=${next}`)).json();
-    assert.equal(page.schema, "v600.companion.api.v1");
+    assert.equal(page.schema, "cerealgrain.companion.api.v1");
     assert.equal(page.job, 1);
     for (const event of page.events) {
       eventNames.add(event.event);
@@ -205,7 +205,7 @@ try {
 
   console.log(JSON.stringify({
     event: "companion-smoke",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     job_status: terminal,
     client_job_status: clientRun.status,
     event_names: [...eventNames].sort(),

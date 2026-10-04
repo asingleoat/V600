@@ -165,7 +165,7 @@ async function handleLoadModule(message) {
       ir_inpaint_grain_options_layout: "IrInpaintGrainOptions/v1",
       pointer_bits: wasmPointerBits,
       output_formats: ["rgb8-preview", "rgb16-export", "frame-detection", "ir-alignment", "ir-f32", "ir-mask", "rgb-mask", "cleaned-rgb16", "ir-clean-crops"],
-      cache_key_schema: "v600.webapp.cache-key.v1",
+      cache_key_schema: "cerealgrain.webapp.cache-key.v1",
     },
   }));
 }
@@ -200,7 +200,7 @@ function handleProcessFrameDetect(message) {
     new Uint16Array(wasmExports.memory.buffer, rawPtr, raw.length).set(raw);
     writeFrameDetectOptions(optionsPtr, options);
     const status = callCore(
-      "v600_detect_frames_rgb16",
+      "cerealgrain_detect_frames_rgb16",
       rawPtr,
       raw.length,
       framesPtr,
@@ -283,7 +283,7 @@ function handleProcessIrEstimate(message) {
     new Float32Array(wasmExports.memory.buffer, irPtr, ir.length).set(ir);
     writeIrEstimateOptions(optionsPtr, options);
     const status = callCore(
-      "v600_ir_estimate_translation_f32",
+      "cerealgrain_ir_estimate_translation_f32",
       rgbPtr,
       rgb.length,
       irPtr,
@@ -362,7 +362,7 @@ function handleProcessIrAlign(message) {
     new Float32Array(wasmExports.memory.buffer, irPtr, ir.length).set(ir);
     writeIrAlignOptions(optionsPtr, options);
     const status = callCore(
-      "v600_ir_apply_translation_f32",
+      "cerealgrain_ir_apply_translation_f32",
       irPtr,
       ir.length,
       outputPtr,
@@ -443,7 +443,7 @@ function handleProcessIrMask(message) {
     }
     writeIrMaskOptions(optionsPtr, options);
     const status = callCore(
-      irFormat === "f32" ? "v600_ir_make_defect_mask_f32" : "v600_ir_make_defect_mask_u8",
+      irFormat === "f32" ? "cerealgrain_ir_make_defect_mask_f32" : "cerealgrain_ir_make_defect_mask_u8",
       irPtr,
       ir.length,
       outputPtr,
@@ -516,7 +516,7 @@ function handleProcessIrRgbMask(message) {
     new Uint8Array(wasmExports.memory.buffer, maskPtr, mask.length).set(mask);
     writeIrMaskResizeOptions(optionsPtr, options);
     const status = callCore(
-      "v600_ir_resize_mask_to_rgb_u8",
+      "cerealgrain_ir_resize_mask_to_rgb_u8",
       maskPtr,
       mask.length,
       outputPtr,
@@ -622,7 +622,7 @@ function handleProcessIrInpaint(message) {
       }
       writeIrInpaintGrainOptions(optionsPtr, options);
       status = callCore(
-        "v600_ir_inpaint_grain_u16_with_noise",
+        "cerealgrain_ir_inpaint_grain_u16_with_noise",
         rgbPtr,
         rgb.length,
         maskPtr,
@@ -636,7 +636,7 @@ function handleProcessIrInpaint(message) {
     } else {
       writeIrInpaintOptions(optionsPtr, options);
       status = callCore(
-        "v600_ir_biharmonic_inpaint_u16",
+        "cerealgrain_ir_biharmonic_inpaint_u16",
         rgbPtr,
         rgb.length,
         maskPtr,
@@ -803,7 +803,7 @@ function handleProcessPreview(message) {
     new Uint16Array(wasmExports.memory.buffer, rawPtr, raw.length).set(raw);
     writePreviewOptions(optionsPtr, options);
     const status = callCore(
-      "v600_preview_invert_u16_to_u8",
+      "cerealgrain_preview_invert_u16_to_u8",
       rawPtr,
       raw.length,
       outputPtr,
@@ -885,7 +885,7 @@ function handleProcessExport(message) {
     new Uint16Array(wasmExports.memory.buffer, rawPtr, raw.length).set(raw);
     writePreviewOptions(optionsPtr, options);
     const status = callCore(
-      "v600_export_invert_u16_to_u16",
+      "cerealgrain_export_invert_u16_to_u16",
       rawPtr,
       raw.length,
       outputPtr,

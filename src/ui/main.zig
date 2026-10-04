@@ -1,17 +1,17 @@
 const std = @import("std");
-const v600 = @import("v600");
-const ui_theme = v600.native_ui_theme;
+const cerealgrain = @import("cerealgrain");
+const ui_theme = cerealgrain.native_ui_theme;
 
-const ConnectWorker = v600.native_ui_connect_worker.Worker;
-const PreviewBuffer = v600.native_ui_preview_worker.PreviewBuffer;
-const PreviewWorker = v600.native_ui_preview_worker.Worker;
-const ScanWorker = v600.native_ui_scan_worker.Worker;
-const ProcessWorker = v600.native_ui_process_worker.Worker;
-const ProcessExportWorker = v600.native_ui_process_export_worker.Worker;
-const InvertedPreviewWorker = v600.native_ui_inverted_preview_worker.Worker;
-const InvertedPreviewKey = v600.native_ui_inverted_preview_worker.Key;
-const InvertedPreviewResult = v600.native_ui_inverted_preview_worker.Result;
-const ProcessCache = v600.native_ui_process_cache;
+const ConnectWorker = cerealgrain.native_ui_connect_worker.Worker;
+const PreviewBuffer = cerealgrain.native_ui_preview_worker.PreviewBuffer;
+const PreviewWorker = cerealgrain.native_ui_preview_worker.Worker;
+const ScanWorker = cerealgrain.native_ui_scan_worker.Worker;
+const ProcessWorker = cerealgrain.native_ui_process_worker.Worker;
+const ProcessExportWorker = cerealgrain.native_ui_process_export_worker.Worker;
+const InvertedPreviewWorker = cerealgrain.native_ui_inverted_preview_worker.Worker;
+const InvertedPreviewKey = cerealgrain.native_ui_inverted_preview_worker.Key;
+const InvertedPreviewResult = cerealgrain.native_ui_inverted_preview_worker.Result;
+const ProcessCache = cerealgrain.native_ui_process_cache;
 
 const c = @import("sdl_nuklear.zig").c;
 const chrome = @import("chrome.zig");
@@ -112,7 +112,7 @@ const ProcessUiState = struct {
     last_angle: f64 = 0.0,
     last_w: f64 = 0.0,
     last_h: f64 = 0.0,
-    last_rotation: i32 = v600.native_ui.default_process_output_rotation,
+    last_rotation: i32 = cerealgrain.native_ui.default_process_output_rotation,
     render_contrast: f32 = 1.8,
     dye_crosstalk: f32 = 0.2,
     render_percentile_lo: f32 = 0.5,
@@ -135,7 +135,7 @@ const ProcessUiState = struct {
     export_basename_len: c_int = 0,
     export_basename_source_buffer: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes,
     export_basename_source_len: usize = 0,
-    settings_draft: v600.native_ui.ProcessSettingsDraft = .{},
+    settings_draft: cerealgrain.native_ui.ProcessSettingsDraft = .{},
 
     fn setExportBasename(self: *ProcessUiState, value: []const u8) void {
         @memset(self.export_basename_buffer[0..], 0);
@@ -214,8 +214,8 @@ pub fn main(init: std.process.Init) !void {
     var gallery_trash_prompt_smoke = false;
     var gallery_delete_prompt_smoke = false;
     var scanner_connect_smoke = false;
-    var preview_worker_output: []const u8 = "/tmp/v600-native-preview-worker-smoke.tiff";
-    var scan_worker_output: []const u8 = "/tmp/v600-native-scan-worker-smoke.tiff";
+    var preview_worker_output: []const u8 = "/tmp/cerealgrain-native-preview-worker-smoke.tiff";
+    var scan_worker_output: []const u8 = "/tmp/cerealgrain-native-scan-worker-smoke.tiff";
     var timing_report_path: ?[]const u8 = null;
     var screenshot_path: ?[:0]const u8 = null;
     var smoke_hold_ms: u64 = 0;
@@ -348,8 +348,8 @@ pub fn main(init: std.process.Init) !void {
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
     // Smokes run in the checkout and keep their paths there unless
-    // V600_DATA_DIR moves them.
-    if (!any_smoke or init.environ_map.get("V600_DATA_DIR") != null) try enterDataDir(init.io, init.environ_map);
+    // CEREALGRAIN_DATA_DIR moves them.
+    if (!any_smoke or init.environ_map.get("CEREALGRAIN_DATA_DIR") != null) try enterDataDir(init.io, init.environ_map);
     if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke) {
         scan_dir = roll_smoke_root ++ "/scans";
         output_dir = roll_smoke_root ++ "/frames";
@@ -358,25 +358,25 @@ pub fn main(init: std.process.Init) !void {
         std.Io.Dir.cwd().deleteTree(init.io, export_smoke_root) catch {};
         output_dir = export_smoke_root;
     }
-    var model = v600.native_ui.State.init(scan_dir, output_dir, 0);
+    var model = cerealgrain.native_ui.State.init(scan_dir, output_dir, 0);
     defer model.deinit(std.heap.page_allocator);
     std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
     model.syncScanCounter(init.io);
     var scanner_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const scanner_config_path = v600.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch v600.scanner.config.file_name;
+    const scanner_config_path = cerealgrain.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch cerealgrain.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke)
-        roll_smoke_root ++ "/" ++ v600.processing.config.config_file
+        roll_smoke_root ++ "/" ++ cerealgrain.processing.config.config_file
     else
-        v600.native_ui.processingConfigPath(&processing_config_path_buffer) catch v600.processing.config.config_file;
+        cerealgrain.native_ui.processingConfigPath(&processing_config_path_buffer) catch cerealgrain.processing.config.config_file;
     model.loadProcessingConfig(std.heap.page_allocator, init.io, processing_config_path) catch {};
     model.setProcessingGpuRequest(
         std.heap.page_allocator,
-        try v600.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
+        try cerealgrain.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
     );
     syncProcessUiFromConfig(&process_ui, &model);
-    var timing_report: ?v600.scanner.events.TimingReport = null;
+    var timing_report: ?cerealgrain.scanner.events.TimingReport = null;
     defer if (timing_report) |*report| report.deinit();
     var connect_worker = ConnectWorker.init(std.heap.page_allocator, init.io, init.environ_map);
     defer connect_worker.deinit();
@@ -403,11 +403,11 @@ pub fn main(init: std.process.Init) !void {
     if (roll_close_smoke) try runRollCloseSmoke(&rolls, &model, init.io);
     if (roll_strip_smoke) {
         if (!hardwareSmokeEnabled(init.environ_map)) {
-            std.debug.print("native roll strip smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
+            std.debug.print("native roll strip smoke skipped: set CEREALGRAIN_HARDWARE_SMOKE=1 to run\n", .{});
             return;
         }
         std.Io.Dir.cwd().deleteTree(init.io, roll_smoke_root) catch {};
-        var roll = try v600.roll.Roll.create(std.heap.page_allocator, init.io, model.scanner.output_dir, model.processing.output_dir, "strip-smoke", .{ .dpi = 800 });
+        var roll = try cerealgrain.roll.Roll.create(std.heap.page_allocator, init.io, model.scanner.output_dir, model.processing.output_dir, "strip-smoke", .{ .dpi = 800 });
         roll.deinit();
         try rolls.openRoll(&model, "strip-smoke");
     }
@@ -418,7 +418,7 @@ pub fn main(init: std.process.Init) !void {
     var text_editing = false;
     const roll_strip_deadline_ms: u64 = c.SDL_GetTicks() + 15 * std.time.ms_per_min;
     if (timing_report_path) |path| {
-        timing_report = try v600.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
+        timing_report = try cerealgrain.scanner.events.TimingReport.open(std.heap.page_allocator, init.io, path);
         if (timing_report) |*report| {
             const sink = report.sink();
             preview_worker.event_sink = sink;
@@ -446,7 +446,7 @@ pub fn main(init: std.process.Init) !void {
             &timing_report,
             "native preview-worker smoke",
             if (skipped) "skipped" else "ok",
-            if (skipped) "set V600_HARDWARE_SMOKE=1 to run" else null,
+            if (skipped) "set CEREALGRAIN_HARDWARE_SMOKE=1 to run" else null,
             preview_worker_output,
         );
         return;
@@ -469,7 +469,7 @@ pub fn main(init: std.process.Init) !void {
             &timing_report,
             "native scan-worker smoke",
             if (skipped) "skipped" else "ok",
-            if (skipped) "set V600_HARDWARE_SMOKE=1 to run" else null,
+            if (skipped) "set CEREALGRAIN_HARDWARE_SMOKE=1 to run" else null,
             scan_worker_output,
         );
         return;
@@ -480,7 +480,7 @@ pub fn main(init: std.process.Init) !void {
     }
     const start_connect_worker = !preview_render_smoke and !process_render_smoke and !gallery_render_smoke;
     if (start_connect_worker) {
-        if (smoke) connect_worker.execute = v600.native_ui_connect_worker.fakeConnectDelayedSuccess;
+        if (smoke) connect_worker.execute = cerealgrain.native_ui_connect_worker.fakeConnectDelayedSuccess;
         if (!(try connect_worker.start(&model))) return error.ScannerConnectWorkerDidNotStart;
         if (scanner_connect_smoke or smoke) try assertScannerConnectSmokeInitial(&model);
     }
@@ -489,13 +489,13 @@ pub fn main(init: std.process.Init) !void {
     }
     if (scan_sweep_smoke) seedScanSweepSmoke(&model);
     if (process_interaction_smoke) {
-        process_worker.execute = v600.native_ui_process_worker.fakeRebateSuccess;
+        process_worker.execute = cerealgrain.native_ui_process_worker.fakeRebateSuccess;
     }
     if (process_render_smoke) {
         try validateProcessAutoDetectUiDefaults(&process_ui);
-        var smoke_processing_config = v600.processing.config.LoadedConfig{};
+        var smoke_processing_config = cerealgrain.processing.config.LoadedConfig{};
         try smoke_processing_config.apply(&.{
-            .{ .name = "stock", .value = .{ .string = v600.processing.config.FixedString.init("kodak_gold") } },
+            .{ .name = "stock", .value = .{ .string = cerealgrain.processing.config.FixedString.init("kodak_gold") } },
         });
         model.applyProcessingConfig(smoke_processing_config);
         model.setProcessingPreviewInversionEnabled(true);
@@ -509,9 +509,9 @@ pub fn main(init: std.process.Init) !void {
     }
     if (process_worker_smoke) {
         process_worker.execute = if (process_worker_screenshot_smoke)
-            v600.native_ui_process_worker.fakeLoadScreenshotDelayedSuccess
+            cerealgrain.native_ui_process_worker.fakeLoadScreenshotDelayedSuccess
         else
-            v600.native_ui_process_worker.fakeLoadDelayedSuccess;
+            cerealgrain.native_ui_process_worker.fakeLoadDelayedSuccess;
         try seedProcessWorkerSmokeImages(&model, std.heap.page_allocator);
         model.show(.process);
         if (!(try process_worker.startLoadIndex(&model, 0, processingPreviewSize(&process_ui)))) {
@@ -546,7 +546,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const window = c.SDL_CreateWindow(
-        "V600",
+        "CerealGrain",
         initial_width,
         initial_height,
         c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
@@ -564,9 +564,9 @@ pub fn main(init: std.process.Init) !void {
     var process_texture = ProcessPreviewTextureCache{};
     defer process_texture.deinit(std.heap.page_allocator);
     var process_selection_interaction = ProcessSelectionInteraction{};
-    var process_transform = v600.native_ui.ProcessViewTransform{};
-    var scan_transform = v600.native_ui.ProcessViewTransform{};
-    var scan_sweep = v600.native_ui_scan_sweep.Animator{};
+    var process_transform = cerealgrain.native_ui.ProcessViewTransform{};
+    var scan_transform = cerealgrain.native_ui.ProcessViewTransform{};
+    var scan_sweep = cerealgrain.native_ui_scan_sweep.Animator{};
     var synced_roll_generation: usize = 0;
     var process_confirmation = ProcessConfirmation{};
     defer process_confirmation.deinit(std.heap.page_allocator);
@@ -1024,16 +1024,16 @@ fn pixelDiffers(a: [3]u8, b: [3]u8) bool {
 
 fn runPreviewWorkerSmoke(
     environ_map: *std.process.Environ.Map,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     preview_worker: *PreviewWorker,
     output_path: []const u8,
 ) !void {
     if (!hardwareSmokeEnabled(environ_map)) {
-        std.debug.print("native preview worker smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
+        std.debug.print("native preview worker smoke skipped: set CEREALGRAIN_HARDWARE_SMOKE=1 to run\n", .{});
         return;
     }
     if (!model.scannerStatus().connected) {
-        const caps = v600.scanner.contracts.ScannerCapabilities{};
+        const caps = cerealgrain.scanner.contracts.ScannerCapabilities{};
         model.scannerConnected(0, 0, caps.tpu_width_in, caps.tpu_height_in);
     }
     if (!model.queuePreviewScan(output_path)) return error.PreviewWorkerPlanUnavailable;
@@ -1053,7 +1053,7 @@ fn runPreviewWorkerSmoke(
     std.debug.print("native preview worker smoke wrote {s}\n", .{output_path});
 }
 
-fn assertScannerConnectSmokeInitial(model: *v600.native_ui.State) !void {
+fn assertScannerConnectSmokeInitial(model: *cerealgrain.native_ui.State) !void {
     const status = model.scannerStatus();
     if (!status.connecting or status.connected) return error.ScannerConnectSmokeFailed;
     if (std.mem.eql(u8, status.status, "Ready")) return error.ScannerConnectSmokeFailed;
@@ -1062,31 +1062,31 @@ fn assertScannerConnectSmokeInitial(model: *v600.native_ui.State) !void {
 }
 
 fn assertScanBusyQueuePolicy() !void {
-    var model = v600.native_ui.State.init("scans", "frames", 0);
+    var model = cerealgrain.native_ui.State.init("scans", "frames", 0);
     defer model.deinit(std.heap.page_allocator);
     model.scannerConnected(160, 100, 2.7, 9.54);
-    if (!model.queuePreviewScan("/tmp/v600-native-preview-a.tiff")) return error.ScanBusySmokeFailed;
-    if (model.queuePreviewScan("/tmp/v600-native-preview-b.tiff")) return error.ScanBusySmokeFailed;
-    if (model.queueScanStartPath("/tmp/v600-native-scan-after-preview.tiff", null)) return error.ScanBusySmokeFailed;
+    if (!model.queuePreviewScan("/tmp/cerealgrain-native-preview-a.tiff")) return error.ScanBusySmokeFailed;
+    if (model.queuePreviewScan("/tmp/cerealgrain-native-preview-b.tiff")) return error.ScanBusySmokeFailed;
+    if (model.queueScanStartPath("/tmp/cerealgrain-native-scan-after-preview.tiff", null)) return error.ScanBusySmokeFailed;
     switch (model.pending_command orelse return error.ScanBusySmokeFailed) {
         .preview_scan => |plan| {
-            if (!std.mem.eql(u8, plan.output_path, "/tmp/v600-native-preview-a.tiff")) return error.ScanBusySmokeFailed;
+            if (!std.mem.eql(u8, plan.output_path, "/tmp/cerealgrain-native-preview-a.tiff")) return error.ScanBusySmokeFailed;
         },
         .scan_start => return error.ScanBusySmokeFailed,
     }
 }
 
 fn runScanWorkerSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     scan_worker: *ScanWorker,
     output_path: []const u8,
 ) !void {
     if (!hardwareSmokeEnabled(scan_worker.environ_map)) {
-        std.debug.print("native scan worker smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
+        std.debug.print("native scan worker smoke skipped: set CEREALGRAIN_HARDWARE_SMOKE=1 to run\n", .{});
         return;
     }
 
-    const caps = v600.scanner.contracts.ScannerCapabilities{};
+    const caps = cerealgrain.scanner.contracts.ScannerCapabilities{};
     model.scannerConnected(1000, 1000, caps.tpu_width_in, caps.tpu_height_in);
     model.scan_controls.setMode(.rgb);
     model.scan_controls.setDpi(800);
@@ -1098,7 +1098,7 @@ fn runScanWorkerSmoke(
         .h = 0.25 / caps.tpu_height_in * 1000.0,
     });
 
-    const cancel_path = ".zig-cache/v600-native-scan-worker-smoke.cancel";
+    const cancel_path = ".zig-cache/cerealgrain-native-scan-worker-smoke.cancel";
     if (!model.queueScanStartPath(output_path, cancel_path)) return error.ScanWorkerPlanUnavailable;
     if (!(try scan_worker.startQueued(model, null))) return error.ScanWorkerDidNotStart;
     while (!scan_worker.poll(model)) {
@@ -1109,14 +1109,14 @@ fn runScanWorkerSmoke(
     std.debug.print("native scan worker smoke wrote {s}\n", .{output_path});
 }
 
-const roll_smoke_root = ".zig-cache/tmp/v600-native-roll-smoke";
-const export_smoke_root = ".zig-cache/tmp/v600-native-export-smoke";
+const roll_smoke_root = ".zig-cache/tmp/cerealgrain-native-roll-smoke";
+const export_smoke_root = ".zig-cache/tmp/cerealgrain-native-export-smoke";
 
 /// Creates a roll with one unexported-looking strip entry missing, then opens
 /// it through the panel as a person would.
-fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io: std.Io) !void {
+fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_ui.State, io: std.Io) !void {
     std.Io.Dir.cwd().deleteTree(io, roll_smoke_root) catch {};
-    var roll = try v600.roll.Roll.create(std.heap.page_allocator, io, model.scanner.output_dir, model.processing.output_dir, "smoke-roll", .{ .stock = "kodak_portra", .format = "645", .dpi = 1600 });
+    var roll = try cerealgrain.roll.Roll.create(std.heap.page_allocator, io, model.scanner.output_dir, model.processing.output_dir, "smoke-roll", .{ .stock = "kodak_portra", .format = "645", .dpi = 1600 });
     roll.deinit();
     try rolls.openRoll(model, "smoke-roll");
     if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
@@ -1127,10 +1127,10 @@ fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io
 /// Opens a roll whose one strip was auto-exported, frames it by hand in the
 /// Process view, exports through the roll, and checks that the hand frame
 /// replaced the automatic export under the roll's name and was saved.
-fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io: std.Io) !void {
+fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_ui.State, io: std.Io) !void {
     const allocator = std.heap.page_allocator;
     std.Io.Dir.cwd().deleteTree(io, roll_smoke_root) catch {};
-    var roll = try v600.roll.Roll.create(allocator, io, model.scanner.output_dir, model.processing.output_dir, "reframe", .{ .dpi = 800 });
+    var roll = try cerealgrain.roll.Roll.create(allocator, io, model.scanner.output_dir, model.processing.output_dir, "reframe", .{ .dpi = 800 });
     defer roll.deinit();
     const strip = try roll.nextStripPath(io);
     defer allocator.free(strip);
@@ -1147,13 +1147,13 @@ fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.Stat
     try rolls.exportFramedStrip(model, path);
     try waitForRollExports(rolls, io);
 
-    var exported = try v600.tiff.findImages(allocator, io, roll.frames_dir);
+    var exported = try cerealgrain.tiff.findImages(allocator, io, roll.frames_dir);
     defer exported.deinit(allocator);
     if (exported.paths.len != 1 or !std.mem.endsWith(u8, exported.paths[0], "/reframe_s01_01.tif")) return error.RollReframeSmokeFailed;
-    const info = try v600.tiff.readRgbIrPageInfo(allocator, exported.paths[0]);
+    const info = try cerealgrain.tiff.readRgbIrPageInfo(allocator, exported.paths[0]);
     if (info.rgb.width != 100 or info.rgb.height != 150) return error.RollReframeSmokeFailed;
     if (!roll.hasFraming(io, strip)) return error.RollReframeSmokeFailed;
-    const marker = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, v600.roll.processed_suffix });
+    const marker = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, cerealgrain.roll.processed_suffix });
     defer allocator.free(marker);
     const text = try std.Io.Dir.cwd().readFileAlloc(io, marker, allocator, .limited(64 * 1024));
     defer allocator.free(text);
@@ -1163,7 +1163,7 @@ fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.Stat
     if (model.process_saved_framing == null) return error.RollReframeSmokeFailed;
     model.process_selections[0].x += 5.0;
     model.settleProcessEdits(1_000);
-    model.settleProcessEdits(1_000 + v600.native_ui.process_edit_settle_ms);
+    model.settleProcessEdits(1_000 + cerealgrain.native_ui.process_edit_settle_ms);
     rolls.saveFramingIfEdited(model);
     if (try framingCx(allocator, io, strip) != 100.0) return error.RollReframeSmokeFailed;
     if (!model.undoProcessSelections()) return error.RollReframeSmokeFailed;
@@ -1174,7 +1174,7 @@ fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.Stat
 }
 
 fn framingCx(allocator: std.mem.Allocator, io: std.Io, strip: []const u8) !f64 {
-    const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, v600.roll.framing_suffix });
+    const framing_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip, cerealgrain.roll.framing_suffix });
     defer allocator.free(framing_path);
     const text = try std.Io.Dir.cwd().readFileAlloc(io, framing_path, allocator, .limited(64 * 1024));
     defer allocator.free(text);
@@ -1185,10 +1185,10 @@ fn framingCx(allocator: std.mem.Allocator, io: std.Io, strip: []const u8) !f64 {
 
 /// Closes a roll while its strip exports: Close Roll returns at once, the
 /// panel reports the export still finishing, and it completes afterwards.
-fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State, io: std.Io) !void {
+fn runRollCloseSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_ui.State, io: std.Io) !void {
     const allocator = std.heap.page_allocator;
     std.Io.Dir.cwd().deleteTree(io, roll_smoke_root) catch {};
-    var roll = try v600.roll.Roll.create(allocator, io, model.scanner.output_dir, model.processing.output_dir, "close", .{ .dpi = 800 });
+    var roll = try cerealgrain.roll.Roll.create(allocator, io, model.scanner.output_dir, model.processing.output_dir, "close", .{ .dpi = 800 });
     defer roll.deinit();
     const strip = try roll.nextStripPath(io);
     defer allocator.free(strip);
@@ -1253,7 +1253,7 @@ fn writeSmokeStripSized(path: []const u8, width: u32, height: u32) !void {
     const ir = try allocator.alloc(u8, @as(usize, width) * height);
     defer allocator.free(ir);
     @memset(ir, 250);
-    try v600.tiff.writeScanPages(allocator, path, &.{
+    try cerealgrain.tiff.writeScanPages(allocator, path, &.{
         .{ .image = .{ .width = width, .height = height, .samples_per_pixel = 3, .bits_per_sample = 16, .data = std.mem.sliceAsBytes(rgb) }, .metadata = .{ .dpi = 800 } },
         .{ .image = .{ .width = 2, .height = 4, .samples_per_pixel = 3, .bits_per_sample = 8, .data = &thumb } },
         .{ .image = .{ .width = width, .height = height, .samples_per_pixel = 1, .bits_per_sample = 8, .data = ir }, .metadata = .{ .dpi = 800 } },
@@ -1298,14 +1298,14 @@ fn pushTextEvent(text: [*:0]const u8) void {
     _ = c.SDL_PushEvent(&event);
 }
 
-fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *v600.native_ui.State) !void {
+fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_ui.State) !void {
     if (!rolls.isActive()) return error.RollSmokeFailed;
     if (!std.mem.endsWith(u8, model.processing.input_dir, "/smoke-roll")) return error.RollSmokeFailed;
     if (!std.mem.endsWith(u8, model.processing.output_dir, "frames/smoke-roll")) return error.RollSmokeFailed;
     if (!std.mem.eql(u8, model.processing_config.activeStock() orelse "", "kodak_portra")) return error.RollSmokeFailed;
     const roll = &(rolls.active orelse return error.RollSmokeFailed);
     if (roll.dpi != 3200) return error.RollSmokeFailed;
-    var saved = try v600.roll.Roll.open(std.heap.page_allocator, rolls.io, rolls.scans_root, rolls.frames_root, "smoke-roll");
+    var saved = try cerealgrain.roll.Roll.open(std.heap.page_allocator, rolls.io, rolls.scans_root, rolls.frames_root, "smoke-roll");
     defer saved.deinit();
     if (saved.dpi != 3200) return error.RollSmokeFailed;
 }
@@ -1315,7 +1315,7 @@ fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {
     var strips = try roll.listStrips(io);
     defer strips.deinit(std.heap.page_allocator);
     if (strips.paths.len != 1 or !roll.isProcessed(io, strips.paths[0])) return error.RollStripSmokeFailed;
-    var exported = try v600.tiff.findImages(std.heap.page_allocator, io, roll.frames_dir);
+    var exported = try cerealgrain.tiff.findImages(std.heap.page_allocator, io, roll.frames_dir);
     defer exported.deinit(std.heap.page_allocator);
     if (exported.paths.len == 0) return error.RollStripSmokeFailed;
     std.debug.print("native roll strip smoke: {s} exported {d} frame file{s} to {s}\n", .{
@@ -1337,26 +1337,26 @@ fn enterDataDir(io: std.Io, environ_map: *std.process.Environ.Map) !void {
     var exe_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const exe_len = std.process.executablePath(io, &exe_buffer) catch 0;
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try v600.native_ui.dataDirPath(&path_buffer, environ_map.get("V600_DATA_DIR"), environ_map.get("HOME"), exe_buffer[0..exe_len]) orelse return;
+    const path = try cerealgrain.native_ui.dataDirPath(&path_buffer, environ_map.get("CEREALGRAIN_DATA_DIR"), environ_map.get("HOME"), exe_buffer[0..exe_len]) orelse return;
     const dir = try std.Io.Dir.cwd().createDirPathOpen(io, path, .{});
     defer dir.close(io);
     try std.process.setCurrentDir(io, dir);
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
-    const value = environ_map.get("V600_HARDWARE_SMOKE") orelse return false;
+    const value = environ_map.get("CEREALGRAIN_HARDWARE_SMOKE") orelse return false;
     return std.mem.eql(u8, value, "1");
 }
 
 fn writeUiReportContext(
-    report: *?v600.scanner.events.TimingReport,
-    event: v600.scanner.events.TimingContextEvent,
+    report: *?cerealgrain.scanner.events.TimingReport,
+    event: cerealgrain.scanner.events.TimingContextEvent,
 ) !void {
     if (report.*) |*item| try item.writeContext(event);
 }
 
 fn writeUiReportStatus(
-    report: *?v600.scanner.events.TimingReport,
+    report: *?cerealgrain.scanner.events.TimingReport,
     command: []const u8,
     status: []const u8,
     detail: ?[]const u8,
@@ -1444,15 +1444,15 @@ fn followRollInProcessView(rolls: *const roll_panel.RollPanel, ui: *ProcessUiSta
 /// The scan line for this frame: over the selection being scanned, or the
 /// whole preview during a preview scan.
 fn currentScanSweep(
-    animator: *v600.native_ui_scan_sweep.Animator,
-    model: *const v600.native_ui.State,
+    animator: *cerealgrain.native_ui_scan_sweep.Animator,
+    model: *const cerealgrain.native_ui.State,
     now_ms: u64,
-) ?v600.native_ui_scan_sweep.Sweep {
+) ?cerealgrain.native_ui_scan_sweep.Sweep {
     if (!model.scanner.scanning) {
         animator.reset();
         return null;
     }
-    const area: ?v600.native_ui.PreviewSelection = if (model.preview_requested)
+    const area: ?cerealgrain.native_ui.PreviewSelection = if (model.preview_requested)
         null
     else
         model.active_scan_selection orelse return null;
@@ -1462,7 +1462,7 @@ fn currentScanSweep(
 }
 
 /// An RGB+IR scan 40% through its RGB pass over a large selection.
-fn seedScanSweepSmoke(model: *v600.native_ui.State) void {
+fn seedScanSweepSmoke(model: *cerealgrain.native_ui.State) void {
     model.scan_controls.setSelection(.{ .x = 20.0, .y = 10.0, .w = 120.0, .h = 80.0 });
     model.active_scan_selection = model.scan_controls.selection;
     model.active_scan_mode = .rgb_ir;
@@ -1475,9 +1475,9 @@ fn seedScanSweepSmoke(model: *v600.native_ui.State) void {
 /// RGB pass and red in the IR pass.
 fn assertScanSweepRendered(
     renderer: *c.SDL_Renderer,
-    model: *const v600.native_ui.State,
-    preview: ?v600.native_ui_preview_worker.PreviewBuffer,
-    transform: *v600.native_ui.ProcessViewTransform,
+    model: *const cerealgrain.native_ui.State,
+    preview: ?cerealgrain.native_ui_preview_worker.PreviewBuffer,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
 ) !void {
     const rect = selection_geometry.scanImageRect(renderer, preview, transform) orelse return error.ScanSweepSmokeFailed;
     const sel = model.active_scan_selection orelse return error.ScanSweepSmokeFailed;
@@ -1495,7 +1495,7 @@ fn assertScanSweepRendered(
     if (!lit) return error.ScanSweepSmokeFailed;
 }
 
-fn seedSyntheticPreview(preview_worker: *PreviewWorker, model: *v600.native_ui.State) !void {
+fn seedSyntheticPreview(preview_worker: *PreviewWorker, model: *cerealgrain.native_ui.State) !void {
     const width: usize = 160;
     const height: usize = 100;
     const channels: usize = 3;
@@ -1519,13 +1519,13 @@ fn seedSyntheticPreview(preview_worker: *PreviewWorker, model: *v600.native_ui.S
         .bits_per_sample = 8,
         .data = data,
     };
-    const caps = v600.scanner.contracts.ScannerCapabilities{};
+    const caps = cerealgrain.scanner.contracts.ScannerCapabilities{};
     model.scan_controls.autoselect = false;
     model.finishPreviewScan(caps, preview_worker.last_preview.?.info());
     model.scan_controls.setSelection(.{ .x = 100.0, .y = 55.0, .w = 35.0, .h = 30.0 });
 }
 
-fn seedProcessWorkerSmokeImages(model: *v600.native_ui.State, allocator: std.mem.Allocator) !void {
+fn seedProcessWorkerSmokeImages(model: *cerealgrain.native_ui.State, allocator: std.mem.Allocator) !void {
     model.processing_images.deinit(allocator);
     model.processing_images.paths = try allocator.alloc([]u8, 1);
     errdefer {
@@ -1538,7 +1538,7 @@ fn seedProcessWorkerSmokeImages(model: *v600.native_ui.State, allocator: std.mem
 }
 
 fn seedProcessPreview(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     preview_size: i64,
 ) !void {
@@ -1556,15 +1556,15 @@ fn seedProcessPreview(
 }
 
 fn seedProcessMutationSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     preview_size: i64,
 ) !void {
-    const scan_dir = ".zig-cache/tmp/v600-native-process-confirm-smoke/scans";
-    const output_dir = ".zig-cache/tmp/v600-native-process-confirm-smoke/frames";
+    const scan_dir = ".zig-cache/tmp/cerealgrain-native-process-confirm-smoke/scans";
+    const output_dir = ".zig-cache/tmp/cerealgrain-native-process-confirm-smoke/frames";
     const cwd = std.Io.Dir.cwd();
-    cwd.deleteTree(io, ".zig-cache/tmp/v600-native-process-confirm-smoke") catch {};
+    cwd.deleteTree(io, ".zig-cache/tmp/cerealgrain-native-process-confirm-smoke") catch {};
     try cwd.createDirPath(io, scan_dir);
     try cwd.createDirPath(io, output_dir);
     const fixture = try cwd.readFileAlloc(
@@ -1574,16 +1574,16 @@ fn seedProcessMutationSmoke(
         .limited(128 * 1024),
     );
     defer allocator.free(fixture);
-    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/v600-native-process-confirm-smoke/scans/confirm_a.tiff", .data = fixture });
-    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/v600-native-process-confirm-smoke/scans/confirm_b.tiff", .data = fixture });
+    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/cerealgrain-native-process-confirm-smoke/scans/confirm_a.tiff", .data = fixture });
+    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/cerealgrain-native-process-confirm-smoke/scans/confirm_b.tiff", .data = fixture });
     model.processing.input_dir = scan_dir;
     model.processing.output_dir = output_dir;
     _ = try model.refreshProcessingImageList(allocator, io);
     _ = try model.switchProcessingImage(allocator, 0, preview_size);
 }
 
-fn seedSyntheticGallery(model: *v600.native_ui.State, io: std.Io) !void {
-    const output_dir = ".zig-cache/tmp/v600-native-gallery-smoke";
+fn seedSyntheticGallery(model: *cerealgrain.native_ui.State, io: std.Io) !void {
+    const output_dir = ".zig-cache/tmp/cerealgrain-native-gallery-smoke";
     const cwd = std.Io.Dir.cwd();
     cwd.deleteTree(io, output_dir) catch {};
     try cwd.createDirPath(io, output_dir);
@@ -1594,8 +1594,8 @@ fn seedSyntheticGallery(model: *v600.native_ui.State, io: std.Io) !void {
         .limited(128 * 1024),
     );
     defer std.heap.page_allocator.free(fixture);
-    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/v600-native-gallery-smoke/roll_01_inv.tif", .data = fixture });
-    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/v600-native-gallery-smoke/roll_02_inv.tif", .data = fixture });
+    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/cerealgrain-native-gallery-smoke/roll_01_inv.tif", .data = fixture });
+    try cwd.writeFile(io, .{ .sub_path = ".zig-cache/tmp/cerealgrain-native-gallery-smoke/roll_02_inv.tif", .data = fixture });
     model.processing.output_dir = output_dir;
     _ = try model.refreshGalleryFiles(std.heap.page_allocator, io);
     model.show(.gallery);
@@ -1603,10 +1603,10 @@ fn seedSyntheticGallery(model: *v600.native_ui.State, io: std.Io) !void {
 
 fn handleScanSelectionEvent(
     interaction: *ScanSelectionInteraction,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     renderer: *c.SDL_Renderer,
     preview: ?PreviewBuffer,
-    transform: *v600.native_ui.ProcessViewTransform,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
     event: c.SDL_Event,
 ) void {
     if (model.active_view != .scan) {
@@ -1660,7 +1660,7 @@ fn handleScanSelectionEvent(
                 @as(f64, @floatCast(event.motion.y)),
             );
             if (interaction.drawing()) {
-                model.scan_controls.selection = v600.native_ui.previewSelectionFromDraw(
+                model.scan_controls.selection = cerealgrain.native_ui.previewSelectionFromDraw(
                     interaction.start_x,
                     interaction.start_y,
                     preview_point.x,
@@ -1669,7 +1669,7 @@ fn handleScanSelectionEvent(
                     bounds.h,
                 );
             } else {
-                model.scan_controls.selection = v600.native_ui.adjustedPreviewSelection(
+                model.scan_controls.selection = cerealgrain.native_ui.adjustedPreviewSelection(
                     interaction.original,
                     interaction.mode,
                     preview_point.x - interaction.start_x,
@@ -1702,13 +1702,13 @@ fn handleScanSelectionEvent(
 /// Cursor for the image under the mouse, or null to keep the current one while
 /// a selection is being dragged.
 fn canvasCursorShape(
-    model: *const v600.native_ui.State,
+    model: *const cerealgrain.native_ui.State,
     renderer: *c.SDL_Renderer,
     preview: ?PreviewBuffer,
-    scan_transform: *v600.native_ui.ProcessViewTransform,
+    scan_transform: *cerealgrain.native_ui.ProcessViewTransform,
     scan_interaction: *const ScanSelectionInteraction,
     process_interaction: *const ProcessSelectionInteraction,
-    process_transform: *v600.native_ui.ProcessViewTransform,
+    process_transform: *cerealgrain.native_ui.ProcessViewTransform,
 ) ?cursor.Shape {
     var mouse_x: f32 = 0.0;
     var mouse_y: f32 = 0.0;
@@ -1741,7 +1741,7 @@ fn canvasCursorShape(
 
 fn handleScanShortcutEvent(
     interaction: *ScanSelectionInteraction,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     event: c.SDL_Event,
     editing_widget_active: bool,
 ) void {
@@ -1757,7 +1757,7 @@ fn handleScanShortcutEvent(
 
 fn handleGalleryImageEvent(
     transform: *GalleryViewTransform,
-    model: *const v600.native_ui.State,
+    model: *const cerealgrain.native_ui.State,
     event: c.SDL_Event,
 ) void {
     if (model.active_view != .gallery or model.currentGalleryFileName() == null) return;
@@ -1799,7 +1799,7 @@ fn handleGalleryImageEvent(
 }
 
 fn handleGalleryShortcutEvent(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     transform: *GalleryViewTransform,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
@@ -1838,8 +1838,8 @@ fn handleGalleryShortcutEvent(
 
 fn handleProcessSelectionEvent(
     interaction: *ProcessSelectionInteraction,
-    transform: *v600.native_ui.ProcessViewTransform,
-    model: *v600.native_ui.State,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
     renderer: *c.SDL_Renderer,
     process_worker: *ProcessWorker,
@@ -2025,7 +2025,7 @@ fn handleProcessSelectionEvent(
 
 fn handleProcessShortcutEvent(
     interaction: *ProcessSelectionInteraction,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     event: c.SDL_Event,
     editing_widget_active: bool,
 ) void {
@@ -2044,10 +2044,10 @@ fn handleProcessShortcutEvent(
 }
 
 fn finalizeProcessRebate(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     config_path: []const u8,
-    rebate: v600.native_ui.ProcessSelection,
+    rebate: cerealgrain.native_ui.ProcessSelection,
 ) void {
     const accepted = model.setProcessRebatePreviewRect(rebate) catch |err| {
         setProcessUiError(model, err);
@@ -2077,7 +2077,7 @@ fn processSelectionFromDraw(
     bounds: ProcessPreviewBounds,
     angle: f64,
     rotation: i32,
-) v600.native_ui.ProcessSelection {
+) cerealgrain.native_ui.ProcessSelection {
     const width = current_x - start_x;
     var height = current_y - start_y;
     if (aspect) |ratio| {
@@ -2102,10 +2102,10 @@ fn processSelectionFromDraw(
 }
 
 fn applyProcessInteractionSelection(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     target: ProcessSelectionTarget,
     index: ?usize,
-    selection: v600.native_ui.ProcessSelection,
+    selection: cerealgrain.native_ui.ProcessSelection,
 ) void {
     switch (target) {
         .frame => {
@@ -2119,14 +2119,14 @@ fn applyProcessInteractionSelection(
     }
 }
 
-fn updateProcessUiLastSelection(ui: *ProcessUiState, selection: v600.native_ui.ProcessSelection) void {
+fn updateProcessUiLastSelection(ui: *ProcessUiState, selection: cerealgrain.native_ui.ProcessSelection) void {
     ui.last_angle = selection.angle;
     ui.last_w = selection.w;
     ui.last_h = selection.h;
     ui.last_rotation = selection.rotation;
 }
 
-fn syncProcessExportBasename(ui: *ProcessUiState, model: *const v600.native_ui.State) void {
+fn syncProcessExportBasename(ui: *ProcessUiState, model: *const cerealgrain.native_ui.State) void {
     const source = model.processing.input_path;
     if (source.len == 0) {
         if (ui.export_basename_source_len != 0) {
@@ -2145,9 +2145,9 @@ fn syncProcessExportBasename(ui: *ProcessUiState, model: *const v600.native_ui.S
 }
 
 fn addProcessSelectionFromUi(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
-    transform: *const v600.native_ui.ProcessViewTransform,
+    transform: *const cerealgrain.native_ui.ProcessViewTransform,
 ) !void {
     const bounds = processPreviewBounds(model) orelse return error.NoProcessImageLoaded;
     const aspect = selectedProcessAspect(ui);
@@ -2171,7 +2171,7 @@ fn addProcessSelectionFromUi(
     const center = transform.viewportCenterPreview(bounds.w, bounds.h);
     const cx = center.x;
     const cy = center.y;
-    const selection = v600.native_ui.ProcessSelection{
+    const selection = cerealgrain.native_ui.ProcessSelection{
         .x = clampFloat(cx - w / 2.0, 0.0, @max(bounds.w - w, 0.0)),
         .y = clampFloat(cy - h / 2.0, 0.0, @max(bounds.h - h, 0.0)),
         .w = w,
@@ -2216,7 +2216,7 @@ fn parseProcessAspectRatio(value: []const u8) ?f64 {
 }
 
 fn maybeRefreshGalleryFiles(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     transform: *GalleryViewTransform,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -2233,10 +2233,10 @@ fn maybeRefreshGalleryFiles(
 
 fn runScanSelectionInteractionSmokeEvents(
     interaction: *ScanSelectionInteraction,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     renderer: *c.SDL_Renderer,
     preview: ?PreviewBuffer,
-    transform: *v600.native_ui.ProcessViewTransform,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
@@ -2265,13 +2265,13 @@ fn runScanSelectionInteractionSmokeEvents(
     if (!drawn.isDrawable() or model.scan_controls.auto_selection == null) return error.ScanInteractionSmokeFailed;
     if (model.scanStartPlan("scans/smoke.tiff", null) == null) return error.ScanInteractionSmokeFailed;
 
-    const cfg_dir = ".zig-cache/tmp/v600-native-scan-interaction-smoke";
-    const cfg_path = ".zig-cache/tmp/v600-native-scan-interaction-smoke/epdaughter_config.toml";
+    const cfg_dir = ".zig-cache/tmp/cerealgrain-native-scan-interaction-smoke";
+    const cfg_path = ".zig-cache/tmp/cerealgrain-native-scan-interaction-smoke/scanner.toml";
     const cwd = std.Io.Dir.cwd();
     cwd.deleteTree(io, cfg_dir) catch {};
     try cwd.createDirPath(io, cfg_dir);
     if (!(try model.saveScannerConfig(allocator, io, cfg_path))) return error.ScanInteractionSmokeFailed;
-    const loaded = try v600.scanner.config.loadFile(allocator, io, cfg_path);
+    const loaded = try cerealgrain.scanner.config.loadFile(allocator, io, cfg_path);
     if (!loaded.active.sel_x_in or !loaded.active.sel_y_in or !loaded.active.sel_w_in or !loaded.active.sel_h_in) {
         return error.ScanInteractionSmokeFailed;
     }
@@ -2396,7 +2396,7 @@ fn runScanSelectionInteractionSmokeEvents(
     transform.requestFit();
 }
 
-fn runGalleryInteractionSmokeEvents(transform: *GalleryViewTransform, model: *const v600.native_ui.State) !void {
+fn runGalleryInteractionSmokeEvents(transform: *GalleryViewTransform, model: *const cerealgrain.native_ui.State) !void {
     const start_scale = transform.scale;
 
     var event: c.SDL_Event = undefined;
@@ -2483,8 +2483,8 @@ fn runGalleryInteractionSmokeEvents(transform: *GalleryViewTransform, model: *co
 
 fn runProcessSelectionInteractionSmokeEvents(
     interaction: *ProcessSelectionInteraction,
-    transform: *v600.native_ui.ProcessViewTransform,
-    model: *v600.native_ui.State,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
     renderer: *c.SDL_Renderer,
     process_worker: *ProcessWorker,
@@ -2535,7 +2535,7 @@ fn runProcessSelectionInteractionSmokeEvents(
     const target_preview = screenToPreview(image_rect, target_screen_x, target_screen_y) orelse return error.ProcessInteractionSmokeFailed;
     const selection_w = @max(bounds.w * 0.18, @min(bounds.w * 0.25, 1.0));
     const selection_h = @max(bounds.h * 0.18, @min(bounds.h * 0.25, 1.0));
-    const selection = v600.native_ui.ProcessSelection{
+    const selection = cerealgrain.native_ui.ProcessSelection{
         .x = clampFloat(target_preview.x - selection_w / 2.0, 0.0, @max(bounds.w - selection_w, 0.0)),
         .y = clampFloat(target_preview.y - selection_h / 2.0, 0.0, @max(bounds.h - selection_h, 0.0)),
         .w = selection_w,
@@ -2680,7 +2680,7 @@ fn runProcessSelectionInteractionSmokeEvents(
     event.type = c.SDL_EVENT_MOUSE_BUTTON_UP;
     event.button.button = c.SDL_BUTTON_LEFT;
     handleProcessSelectionEvent(interaction, transform, model, ui, renderer, process_worker, config_path, event);
-    if (bounds.w < v600.native_ui.process_draw_frame_min_size or bounds.h < v600.native_ui.process_draw_frame_min_size) {
+    if (bounds.w < cerealgrain.native_ui.process_draw_frame_min_size or bounds.h < cerealgrain.native_ui.process_draw_frame_min_size) {
         if (model.process_selection_count != draw_count) return error.ProcessInteractionSmokeFailed;
         if (!std.mem.eql(u8, model.status, "Selection too small, cleared")) return error.ProcessInteractionSmokeFailed;
     } else {
@@ -2742,7 +2742,7 @@ fn runProcessSelectionInteractionSmokeEvents(
 }
 
 fn runGalleryShortcutRefreshSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     transform: *GalleryViewTransform,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
@@ -2778,7 +2778,7 @@ fn runGalleryShortcutRefreshSmoke(
         .limited(128 * 1024),
     );
     defer allocator.free(fixture);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/tmp/v600-native-gallery-smoke/roll_03_inv.tif", .data = fixture });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/tmp/cerealgrain-native-gallery-smoke/roll_03_inv.tif", .data = fixture });
 
     last_refresh_ms.* = 0;
     if (!(try maybeRefreshGalleryFiles(model, transform, allocator, io, 500, last_refresh_ms))) {
@@ -2791,7 +2791,7 @@ fn runGalleryShortcutRefreshSmoke(
 }
 
 fn runGalleryConfirmationSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     transform: *GalleryViewTransform,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
@@ -2818,7 +2818,7 @@ fn runGalleryConfirmationSmoke(
 }
 
 fn runProcessConfirmationSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     confirmation: *ProcessConfirmation,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -2848,7 +2848,7 @@ fn runProcessConfirmationSmoke(
 }
 
 fn runProcessSelectorSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     preview_size: i64,
@@ -2879,7 +2879,7 @@ fn runProcessSelectorSmoke(
 
 fn runProcessExportSmoke(
     worker: *ProcessExportWorker,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
 ) !void {
     if (model.process_selection_count == 0) {
@@ -2912,7 +2912,7 @@ const ProcessDumpSmokeWriter = struct {
 };
 
 fn runProcessDumpSmoke(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
 ) !void {
     model.processing.preview_scale = 0.25;
@@ -2935,7 +2935,7 @@ fn runProcessDumpSmoke(
 
 fn drawFooterStatusBar(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     export_worker: *ProcessExportWorker,
 ) void {
@@ -2949,7 +2949,7 @@ fn drawFooterStatusBar(
 
 fn footerStatusText(
     buffer: []u8,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     export_worker: *ProcessExportWorker,
 ) []const u8 {
@@ -2960,7 +2960,7 @@ fn footerStatusText(
     };
 }
 
-fn scanFooterStatusText(buffer: []u8, model: *const v600.native_ui.State) []const u8 {
+fn scanFooterStatusText(buffer: []u8, model: *const cerealgrain.native_ui.State) []const u8 {
     const status = model.scanStatusDisplay();
     if (model.scan_eta_seconds != null) return std.fmt.bufPrint(buffer, "Scan | {s}", .{status}) catch status;
     if (model.scanner_progress_percent) |percent| {
@@ -2973,22 +2973,22 @@ fn scanFooterStatusText(buffer: []u8, model: *const v600.native_ui.State) []cons
     return std.fmt.bufPrint(buffer, "Scan | {s}", .{status}) catch status;
 }
 
-fn updateWindowTitle(window: *c.SDL_Window, model: *const v600.native_ui.State, shown_eta: *?u64) void {
+fn updateWindowTitle(window: *c.SDL_Window, model: *const cerealgrain.native_ui.State, shown_eta: *?u64) void {
     const eta: ?u64 = if (model.scan_eta_seconds) |seconds| @intFromFloat(@max(seconds, 0.0)) else null;
     if (std.meta.eql(eta, shown_eta.*)) return;
     shown_eta.* = eta;
     var eta_buffer: [32]u8 = undefined;
     var title_buffer: [64]u8 = undefined;
     const title = if (eta) |seconds| blk: {
-        const text = v600.native_ui.handleScanFormatEta(&eta_buffer, @floatFromInt(seconds)) catch break :blk "V600";
-        break :blk std.fmt.bufPrintZ(&title_buffer, "{s} — V600", .{text}) catch "V600";
-    } else "V600";
+        const text = cerealgrain.native_ui.handleScanFormatEta(&eta_buffer, @floatFromInt(seconds)) catch break :blk "CerealGrain";
+        break :blk std.fmt.bufPrintZ(&title_buffer, "{s} — CerealGrain", .{text}) catch "CerealGrain";
+    } else "CerealGrain";
     _ = c.SDL_SetWindowTitle(window, title.ptr);
 }
 
 fn processFooterStatusText(
     buffer: []u8,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     export_worker: *ProcessExportWorker,
 ) []const u8 {
@@ -3030,7 +3030,7 @@ fn processFooterStatusText(
 
 fn processFooterPrimaryStatus(
     buffer: []u8,
-    model: *const v600.native_ui.State,
+    model: *const cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     export_worker: *ProcessExportWorker,
 ) []const u8 {
@@ -3049,7 +3049,7 @@ fn processFooterPrimaryStatus(
     return "Ready";
 }
 
-fn galleryFooterStatusText(buffer: []u8, model: *const v600.native_ui.State) []const u8 {
+fn galleryFooterStatusText(buffer: []u8, model: *const cerealgrain.native_ui.State) []const u8 {
     const info = model.galleryInfo();
     const status = if (model.status.len == 0) "Ready" else model.status;
     if (info.image_count == 0) {
@@ -3065,13 +3065,13 @@ fn galleryFooterStatusText(buffer: []u8, model: *const v600.native_ui.State) []c
 
 fn assertFooterStatusPolicy(process_worker: *ProcessWorker, export_worker: *ProcessExportWorker) !void {
     var buffer: [1024]u8 = undefined;
-    var scan_model = v600.native_ui.State{};
+    var scan_model = cerealgrain.native_ui.State{};
     scan_model.scanner.scanning = true;
     scan_model.scanner_progress_percent = 42;
     const scan_text = footerStatusText(&buffer, &scan_model, process_worker, export_worker);
     if (std.mem.indexOf(u8, scan_text, "Scan | Scanning... | 42%") == null) return error.FooterStatusPolicyMismatch;
 
-    var process_model = v600.native_ui.State{};
+    var process_model = cerealgrain.native_ui.State{};
     process_model.show(.process);
     process_model.setProcessingProgress("Processing 1 frame...");
     const process_text = footerStatusText(&buffer, &process_model, process_worker, export_worker);
@@ -3079,7 +3079,7 @@ fn assertFooterStatusPolicy(process_worker: *ProcessWorker, export_worker: *Proc
         return error.FooterStatusPolicyMismatch;
     }
 
-    var gallery_model = v600.native_ui.State{};
+    var gallery_model = cerealgrain.native_ui.State{};
     gallery_model.show(.gallery);
     gallery_model.setStatus("No exports found");
     const gallery_text = footerStatusText(&buffer, &gallery_model, process_worker, export_worker);
@@ -3088,7 +3088,7 @@ fn assertFooterStatusPolicy(process_worker: *ProcessWorker, export_worker: *Proc
     }
 }
 
-fn drawNavigation(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void {
+fn drawNavigation(ctx: *c.struct_nk_context, model: *cerealgrain.native_ui.State) void {
     layoutRow(ctx, 28.0, 3);
     if (chrome.optionClicked(ctx, "Scan", model.active_view == .scan)) model.show(.scan);
     if (chrome.optionClicked(ctx, "Process", model.active_view == .process)) model.show(.process);
@@ -3097,10 +3097,10 @@ fn drawNavigation(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void 
 
 fn drawScanView(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     io: std.Io,
     rolls: *roll_panel.RollPanel,
-    preview: ?v600.native_ui_preview_worker.PreviewBuffer,
+    preview: ?cerealgrain.native_ui_preview_worker.PreviewBuffer,
 ) void {
     const scanner_busy = model.scannerWorkActive();
     if (model.scanner.connection == .error_state or model.scanner.connection == .disconnected) {
@@ -3171,7 +3171,7 @@ fn drawScanView(
         if (c.nk_button_label(ctx, "Cancel") != 0) model.requestScannerCancel();
     }
     var estimate_buffer: [192]u8 = undefined;
-    const estimate_text = v600.native_ui.formatScanSelectionEstimate(
+    const estimate_text = cerealgrain.native_ui.formatScanSelectionEstimate(
         &estimate_buffer,
         model.scan_controls,
         model.scanner.info(),
@@ -3185,7 +3185,7 @@ fn drawScanView(
 
 fn drawGalleryView(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     renderer: *c.SDL_Renderer,
     thumbnails: *GalleryThumbnailCache,
     confirmation: *GalleryConfirmation,
@@ -3239,7 +3239,7 @@ fn drawGalleryView(
 }
 
 fn requestGalleryConfirmation(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
     action: GalleryConfirmAction,
@@ -3253,7 +3253,7 @@ fn requestGalleryConfirmation(
 
 fn drawGalleryConfirmation(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     transform: *GalleryViewTransform,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
@@ -3284,7 +3284,7 @@ fn drawGalleryConfirmation(
 }
 
 fn executeGalleryConfirmation(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     transform: *GalleryViewTransform,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
@@ -3302,7 +3302,7 @@ fn executeGalleryConfirmation(
 }
 
 fn requestProcessConfirmation(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     confirmation: *ProcessConfirmation,
     allocator: std.mem.Allocator,
     action: ProcessConfirmAction,
@@ -3318,7 +3318,7 @@ fn requestProcessConfirmation(
 
 fn drawProcessConfirmation(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     confirmation: *ProcessConfirmation,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3347,7 +3347,7 @@ fn drawProcessConfirmation(
 }
 
 fn executeProcessConfirmation(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     confirmation: *ProcessConfirmation,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3370,7 +3370,7 @@ fn executeProcessConfirmation(
 
 fn drawProcessView(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
@@ -3379,7 +3379,7 @@ fn drawProcessView(
     confirmation: *ProcessConfirmation,
     process_worker: *ProcessWorker,
     export_worker: *ProcessExportWorker,
-    transform: *const v600.native_ui.ProcessViewTransform,
+    transform: *const cerealgrain.native_ui.ProcessViewTransform,
     rolls: *roll_panel.RollPanel,
 ) void {
     const export_active = model.process_exporting or export_worker.isRunning();
@@ -3575,7 +3575,7 @@ fn drawProcessView(
 
 fn drawProcessImageSelector(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3616,7 +3616,7 @@ fn drawProcessImageSelector(
     }
 }
 
-fn drawProcessUndo(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void {
+fn drawProcessUndo(ctx: *c.struct_nk_context, model: *cerealgrain.native_ui.State) void {
     const can_undo = model.canUndoProcessSelections();
     layoutRow(ctx, 28.0, 1);
     if (!can_undo) c.nk_widget_disable_begin(ctx);
@@ -3629,7 +3629,7 @@ fn drawProcessUndo(ctx: *c.struct_nk_context, model: *v600.native_ui.State) void
 
 fn drawProcessSelectionControls(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
 ) void {
     if (model.process_selection_count == 0) return;
@@ -3673,7 +3673,7 @@ fn drawProcessSelectionControls(
 
 fn drawProcessSettingsControls(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
@@ -3725,13 +3725,13 @@ fn drawProcessSettingsControls(
 
 fn drawProcessStockControls(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
     ui: *ProcessUiState,
 ) void {
-    var stock_buffer: [16]v600.native_ui.ProcessStockChoice = undefined;
+    var stock_buffer: [16]cerealgrain.native_ui.ProcessStockChoice = undefined;
     const info = model.processingStocksInfo(&stock_buffer) catch return;
     const active = info.active orelse "";
     layoutRow(ctx, 24.0, 1);
@@ -3750,7 +3750,7 @@ fn drawProcessStockControls(
 
 fn drawColorPad(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
 ) void {
     layoutRow(ctx, 88.0, 1);
@@ -3808,7 +3808,7 @@ fn drawColorPad(
 
 fn drawFloatSetting(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
     label: [*:0]const u8,
     name: []const u8,
@@ -3829,7 +3829,7 @@ fn drawFloatSetting(
 
 fn drawIntSetting(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
     label: [*:0]const u8,
     name: []const u8,
@@ -3849,7 +3849,7 @@ fn drawIntSetting(
 }
 
 fn ensureProcessImageLoaded(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3861,7 +3861,7 @@ fn ensureProcessImageLoaded(
 }
 
 fn refreshAndLoadProcessingImage(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3874,7 +3874,7 @@ fn refreshAndLoadProcessingImage(
 }
 
 fn startPreviousProcessingImage(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3891,7 +3891,7 @@ fn startPreviousProcessingImage(
 }
 
 fn startNextProcessingImage(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3908,7 +3908,7 @@ fn startNextProcessingImage(
 }
 
 fn startProcessingImageAfterRefresh(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -3920,7 +3920,7 @@ fn startProcessingImageAfterRefresh(
     _ = try process_worker.startLoadIndex(model, refreshed_index, preview_size);
 }
 
-fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const v600.native_ui.State) void {
+fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const cerealgrain.native_ui.State) void {
     ui.preview_size = processSettingInt(model, "preview_size");
     ui.render_contrast = processSettingFloat(model, "render_contrast");
     ui.dye_crosstalk = processSettingFloat(model, "dye_crosstalk");
@@ -3945,19 +3945,19 @@ fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const v600.native_ui.Sta
     }
 }
 
-fn processSettingFloat(model: *const v600.native_ui.State, name: []const u8) f32 {
+fn processSettingFloat(model: *const cerealgrain.native_ui.State, name: []const u8) f32 {
     if (model.processing_config.value(name)) |value| return @floatCast(value.asFloat());
-    if (v600.processing.config.defaultValue(name)) |value| return @floatCast(value.asFloat());
+    if (cerealgrain.processing.config.defaultValue(name)) |value| return @floatCast(value.asFloat());
     return 0.0;
 }
 
-fn processSettingInt(model: *const v600.native_ui.State, name: []const u8) c_int {
+fn processSettingInt(model: *const cerealgrain.native_ui.State, name: []const u8) c_int {
     if (model.processing_config.value(name)) |value| return @intFromFloat(@round(value.asFloat()));
-    if (v600.processing.config.defaultValue(name)) |value| return @intFromFloat(@round(value.asFloat()));
+    if (cerealgrain.processing.config.defaultValue(name)) |value| return @intFromFloat(@round(value.asFloat()));
     return 0;
 }
 
-fn processSettingBool(model: *const v600.native_ui.State, name: []const u8, fallback: bool) bool {
+fn processSettingBool(model: *const cerealgrain.native_ui.State, name: []const u8, fallback: bool) bool {
     const value = model.processing_config.value(name) orelse return fallback;
     return switch (value) {
         .boolean => |boolean| boolean,
@@ -3965,7 +3965,7 @@ fn processSettingBool(model: *const v600.native_ui.State, name: []const u8, fall
     };
 }
 
-fn processSettingString(model: *const v600.native_ui.State, name: []const u8) ?[]const u8 {
+fn processSettingString(model: *const cerealgrain.native_ui.State, name: []const u8) ?[]const u8 {
     const entry = model.processing_config.entry(name) orelse return null;
     return switch (entry.value) {
         .string => |string| string.slice(),
@@ -3974,23 +3974,23 @@ fn processSettingString(model: *const v600.native_ui.State, name: []const u8) ?[
 }
 
 fn selectProcessStock(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
     ui: *ProcessUiState,
     stock: []const u8,
 ) !void {
-    const fixed = try v600.processing.config.FixedString.from(stock);
+    const fixed = try cerealgrain.processing.config.FixedString.from(stock);
     if (stock.len == 0) {
-        const updates = [_]v600.processing.config.Override{
+        const updates = [_]cerealgrain.processing.config.Override{
             .{ .name = "stock", .value = .{ .string = fixed } },
         };
         try model.saveProcessingSettings(allocator, io, config_path, &updates);
         return;
     }
     ui.export_ir_inv = true;
-    const updates = [_]v600.processing.config.Override{
+    const updates = [_]cerealgrain.processing.config.Override{
         .{ .name = "stock", .value = .{ .string = fixed } },
         .{ .name = "export_ir_inv", .value = .{ .boolean = true } },
     };
@@ -3999,7 +3999,7 @@ fn selectProcessStock(
 
 fn drawProcessExportVariant(
     ctx: *c.struct_nk_context,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
@@ -4012,12 +4012,12 @@ fn drawProcessExportVariant(
     tooltip(ctx, help);
     if (c.nk_checkbox_label(ctx, label, &checked) == 0) return;
     enabled.* = checked != 0;
-    const updates = [_]v600.processing.config.Override{.{ .name = setting, .value = .{ .boolean = enabled.* } }};
+    const updates = [_]cerealgrain.processing.config.Override{.{ .name = setting, .value = .{ .boolean = enabled.* } }};
     model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
 }
 
 fn queueProcessFloatSetting(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
     name: []const u8,
     value: f32,
@@ -4026,7 +4026,7 @@ fn queueProcessFloatSetting(
 }
 
 fn queueProcessIntSetting(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     ui: *ProcessUiState,
     name: []const u8,
     value: c_int,
@@ -4042,7 +4042,7 @@ fn processSettingsCommitReady(ctx: *c.struct_nk_context) bool {
 }
 
 fn commitPendingProcessSettings(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
@@ -4055,15 +4055,15 @@ fn commitPendingProcessSettings(
 }
 
 fn saveProcessStringSetting(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
     io: std.Io,
     config_path: []const u8,
     name: []const u8,
     value: []const u8,
 ) !void {
-    const fixed = try v600.processing.config.FixedString.from(value);
-    const updates = [_]v600.processing.config.Override{
+    const fixed = try cerealgrain.processing.config.FixedString.from(value);
+    const updates = [_]cerealgrain.processing.config.Override{
         .{ .name = name, .value = .{ .string = fixed } },
     };
     try model.saveProcessingSettings(allocator, io, config_path, &updates);
@@ -4073,7 +4073,7 @@ fn processingPreviewSize(ui: *const ProcessUiState) i64 {
     return @intCast(@max(ui.preview_size, 1));
 }
 
-fn processAutoDetectOptions(ui: *const ProcessUiState) v600.processing.workflow.AutoDetectOptions {
+fn processAutoDetectOptions(ui: *const ProcessUiState) cerealgrain.processing.workflow.AutoDetectOptions {
     return .{
         .format = process_formats[@min(ui.format_index, process_formats.len - 1)],
         .n_frames = if (ui.n_frames > 0) @intCast(ui.n_frames) else null,
@@ -4088,10 +4088,10 @@ fn validateProcessAutoDetectUiDefaults(ui: *const ProcessUiState) !void {
     if (options.format == null or !std.mem.eql(u8, options.format.?, "35mm")) return error.ProcessAutoDetectDefaultMismatch;
     if (!options.detect_film_extent or !options.apply_clahe) return error.ProcessAutoDetectDefaultMismatch;
     if (ui.scale_percent != 0.0) return error.ProcessAutoDetectDefaultMismatch;
-    if (ui.last_rotation != v600.native_ui.default_process_output_rotation) return error.ProcessAutoDetectDefaultMismatch;
+    if (ui.last_rotation != cerealgrain.native_ui.default_process_output_rotation) return error.ProcessAutoDetectDefaultMismatch;
 }
 
-fn validateProcessExportBasenameUiParity(ui: *ProcessUiState, model: *v600.native_ui.State) !void {
+fn validateProcessExportBasenameUiParity(ui: *ProcessUiState, model: *cerealgrain.native_ui.State) !void {
     const initial_stem = model.currentProcessingImageStem();
     syncProcessExportBasename(ui, model);
     if (!std.mem.eql(u8, ui.exportBasename(), initial_stem)) return error.ProcessExportBasenameSmokeFailed;
@@ -4112,7 +4112,7 @@ fn validateProcessExportBasenameUiParity(ui: *ProcessUiState, model: *v600.nativ
 }
 
 fn startProcessAutoDetect(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     config_path: []const u8,
     ui: *ProcessUiState,
@@ -4127,7 +4127,7 @@ fn startProcessAutoDetect(
 }
 
 fn startProcessRebate(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     process_worker: *ProcessWorker,
     config_path: []const u8,
 ) !void {
@@ -4135,7 +4135,7 @@ fn startProcessRebate(
 }
 
 fn runProcessExport(
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     worker: *ProcessExportWorker,
     ui: *const ProcessUiState,
 ) !void {
@@ -4147,7 +4147,7 @@ fn runProcessExport(
     });
 }
 
-fn setProcessUiError(model: *v600.native_ui.State, err: anyerror) void {
+fn setProcessUiError(model: *cerealgrain.native_ui.State, err: anyerror) void {
     model.setStatus(switch (err) {
         error.NoProcessImageLoaded => "No process image loaded",
         error.InvalidFilmFormat => "Invalid film format",
@@ -4158,7 +4158,7 @@ fn setProcessUiError(model: *v600.native_ui.State, err: anyerror) void {
     });
 }
 
-fn scanControlsEqual(a: v600.native_ui.ScanControls, b: v600.native_ui.ScanControls) bool {
+fn scanControlsEqual(a: cerealgrain.native_ui.ScanControls, b: cerealgrain.native_ui.ScanControls) bool {
     return a.dpi == b.dpi and
         a.mode == b.mode and
         a.exposure == b.exposure and
@@ -4167,7 +4167,7 @@ fn scanControlsEqual(a: v600.native_ui.ScanControls, b: v600.native_ui.ScanContr
         selectionsEqual(a.auto_selection, b.auto_selection);
 }
 
-fn selectionsEqual(a: ?v600.native_ui.PreviewSelection, b: ?v600.native_ui.PreviewSelection) bool {
+fn selectionsEqual(a: ?cerealgrain.native_ui.PreviewSelection, b: ?cerealgrain.native_ui.PreviewSelection) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
     return a.?.x == b.?.x and

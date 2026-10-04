@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 const roll_cli = @import("roll_cli.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -19,13 +19,13 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (std.mem.eql(u8, command, "version")) {
-        std.debug.print("v600-zig scanner foundation\n", .{});
+        std.debug.print("cerealgrain scanner foundation\n", .{});
     } else if (std.mem.eql(u8, command, "scanner-contract")) {
-        std.debug.print("default dpi: {d}\n", .{v600.scanner.contracts.ScanRequest.default_dpi});
+        std.debug.print("default dpi: {d}\n", .{cerealgrain.scanner.contracts.ScanRequest.default_dpi});
         std.debug.print("rgb+ir TIFF pages: RGB={d} thumbnail={d} IR={d}\n", .{
-            v600.scanner.contracts.TiffPageLayout.rgb,
-            v600.scanner.contracts.TiffPageLayout.thumbnail,
-            v600.scanner.contracts.TiffPageLayout.ir,
+            cerealgrain.scanner.contracts.TiffPageLayout.rgb,
+            cerealgrain.scanner.contracts.TiffPageLayout.thumbnail,
+            cerealgrain.scanner.contracts.TiffPageLayout.ir,
         });
     } else if (std.mem.eql(u8, command, "scanner")) {
         handleScanner(init.gpa, io, init.environ_map, &args, stdout) catch |err| {
@@ -87,14 +87,14 @@ fn handleScannerHost(
     var scanner_args = try parseScannerCommonOptions(allocator, args);
     defer scanner_args.deinit();
 
-    var timing_report: ?v600.scanner.events.TimingReport = null;
+    var timing_report: ?cerealgrain.scanner.events.TimingReport = null;
     defer if (timing_report) |*report| report.deinit();
     if (scanner_args.timing_report_path) |path| {
-        timing_report = try v600.scanner.events.TimingReport.open(allocator, io, path);
+        timing_report = try cerealgrain.scanner.events.TimingReport.open(allocator, io, path);
     }
-    const event_sink: ?v600.scanner.events.Sink = if (timing_report) |*report| report.sink() else null;
+    const event_sink: ?cerealgrain.scanner.events.Sink = if (timing_report) |*report| report.sink() else null;
 
-    const runtime = v600.scanner.host.Runtime{
+    const runtime = cerealgrain.scanner.host.Runtime{
         .allocator = allocator,
         .io = io,
         .environ_map = environ_map,
@@ -108,7 +108,7 @@ fn handleScannerHost(
             writeReportStatus(&timing_report, "scanner devices", "error", @errorName(err), null);
             return err;
         };
-        defer v600.scanner.host.freeDevices(allocator, devices);
+        defer cerealgrain.scanner.host.freeDevices(allocator, devices);
         for (devices) |device| {
             try stdout.print("{s}\n", .{device.raw_line});
         }
@@ -151,13 +151,13 @@ fn handleScannerHost(
     } else if (std.mem.eql(u8, subcommand, "smoke")) {
         if (!hardwareSmokeEnabled(environ_map)) {
             try writeReportContext(&timing_report, .{ .command = "scanner smoke" });
-            writeReportStatus(&timing_report, "scanner smoke", "skipped", "set V600_HARDWARE_SMOKE=1 to run", null);
-            try stdout.print("hardware smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
+            writeReportStatus(&timing_report, "scanner smoke", "skipped", "set CEREALGRAIN_HARDWARE_SMOKE=1 to run", null);
+            try stdout.print("hardware smoke skipped: set CEREALGRAIN_HARDWARE_SMOKE=1 to run\n", .{});
             return;
         }
         var options = try parseScanOptions(remaining);
         if (options.output_path.len == 0) {
-            options.output_path = "/tmp/v600-zig-smoke-rgb.tiff";
+            options.output_path = "/tmp/cerealgrain-smoke-rgb.tiff";
         }
         try writeScanReportContext(&timing_report, "scanner smoke", options);
         runtime.scan(options) catch |err| {
@@ -168,13 +168,13 @@ fn handleScannerHost(
     } else if (std.mem.eql(u8, subcommand, "processing-smoke")) {
         if (!hardwareSmokeEnabled(environ_map)) {
             try writeReportContext(&timing_report, .{ .command = "scanner processing-smoke" });
-            writeReportStatus(&timing_report, "scanner processing-smoke", "skipped", "set V600_HARDWARE_SMOKE=1 to run", null);
-            try stdout.print("scanner processing smoke skipped: set V600_HARDWARE_SMOKE=1 to run\n", .{});
+            writeReportStatus(&timing_report, "scanner processing-smoke", "skipped", "set CEREALGRAIN_HARDWARE_SMOKE=1 to run", null);
+            try stdout.print("scanner processing smoke skipped: set CEREALGRAIN_HARDWARE_SMOKE=1 to run\n", .{});
             return;
         }
         var options = try parseScanOptions(remaining);
         if (options.output_path.len == 0) {
-            options.output_path = "/tmp/v600-zig-processing-smoke.tiff";
+            options.output_path = "/tmp/cerealgrain-processing-smoke.tiff";
         }
         if (!options.request.area.isExplicit()) {
             options.request.area.width = 0.25;
@@ -185,7 +185,7 @@ fn handleScannerHost(
             writeReportStatus(&timing_report, "scanner processing-smoke", "error", @errorName(err), reportOutput(options.output_path));
             return err;
         };
-        v600.processing.cli.runCommand(allocator, io, .{ .info = .{ .input = options.output_path } }, stdout, .{}) catch |err| {
+        cerealgrain.processing.cli.runCommand(allocator, io, .{ .info = .{ .input = options.output_path } }, stdout, .{}) catch |err| {
             writeReportStatus(&timing_report, "scanner processing-smoke", "error", @errorName(err), reportOutput(options.output_path));
             return err;
         };
@@ -204,14 +204,14 @@ fn handleMacosScannerSmoke(
     stdout: anytype,
 ) !void {
     if (!macosHardwareSmokeEnabled(environ_map)) {
-        try stdout.print("macOS scanner smoke skipped: set V600_MACOS_HARDWARE_SMOKE=1 to run\n", .{});
+        try stdout.print("macOS scanner smoke skipped: set CEREALGRAIN_MACOS_HARDWARE_SMOKE=1 to run\n", .{});
         return;
     }
     if (builtin.os.tag != .macos) {
         try stdout.print("macOS scanner smoke requires a macOS host\n", .{});
         return error.UnsupportedPlatform;
     }
-    const runtime = v600.scanner.host.Runtime{
+    const runtime = cerealgrain.scanner.host.Runtime{
         .allocator = allocator,
         .io = io,
         .environ_map = environ_map,
@@ -220,12 +220,12 @@ fn handleMacosScannerSmoke(
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
-    const value = environ_map.get("V600_HARDWARE_SMOKE") orelse return false;
+    const value = environ_map.get("CEREALGRAIN_HARDWARE_SMOKE") orelse return false;
     return std.mem.eql(u8, value, "1");
 }
 
 fn macosHardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
-    const value = environ_map.get("V600_MACOS_HARDWARE_SMOKE") orelse return false;
+    const value = environ_map.get("CEREALGRAIN_MACOS_HARDWARE_SMOKE") orelse return false;
     return std.mem.eql(u8, value, "1");
 }
 
@@ -241,15 +241,15 @@ fn handleProcessing(
     while (args.next()) |arg| {
         try remaining.append(arg);
     }
-    var command = v600.processing.cli.parseArgs(remaining.items) catch |err| {
+    var command = cerealgrain.processing.cli.parseArgs(remaining.items) catch |err| {
         try printProcessingUsage();
         return err;
     };
     var roll = try applyRollDefaults(allocator, io, &command, remaining.items);
     defer if (roll) |*open_roll| open_roll.deinit();
-    const processing_gpu_request = try v600.processing.inversion.invertNegativeRequestFromEnvironment(environ_map);
-    v600.processing.cli.runCommand(allocator, io, command, stdout, processing_gpu_request) catch |err| {
-        v600.processing.events.emitProcessingError(.{
+    const processing_gpu_request = try cerealgrain.processing.inversion.invertNegativeRequestFromEnvironment(environ_map);
+    cerealgrain.processing.cli.runCommand(allocator, io, command, stdout, processing_gpu_request) catch |err| {
+        cerealgrain.processing.events.emitProcessingError(.{
             .operation = "processing",
             .detail = @errorName(err),
         });
@@ -262,9 +262,9 @@ fn handleProcessing(
 fn applyRollDefaults(
     allocator: std.mem.Allocator,
     io: std.Io,
-    command: *v600.processing.cli.ProcessingCommand,
+    command: *cerealgrain.processing.cli.ProcessingCommand,
     argv: []const []const u8,
-) !?v600.roll.Roll {
+) !?cerealgrain.roll.Roll {
     const input = switch (command.*) {
         .detect => |options| options.input,
         .export_frames => |options| options.input,
@@ -272,7 +272,7 @@ fn applyRollDefaults(
     };
     const dir = std.fs.path.dirname(input) orelse return null;
     const scans_root = std.fs.path.dirname(dir) orelse ".";
-    var roll = v600.roll.Roll.open(allocator, io, scans_root, roll_cli.frames_root, std.fs.path.basename(dir)) catch return null;
+    var roll = cerealgrain.roll.Roll.open(allocator, io, scans_root, roll_cli.frames_root, std.fs.path.basename(dir)) catch return null;
     errdefer roll.deinit();
     const has_format = hasArg(argv, "--format");
     switch (command.*) {
@@ -321,17 +321,17 @@ fn parseScannerCommonOptions(allocator: std.mem.Allocator, args: *std.process.Ar
 
 /// scans/scan_NNNN_<mode>_<dpi>dpi.tiff, numbered after the highest existing
 /// scan so nothing is overwritten, named with the dpi the scanner delivers.
-fn autoScanOutputPath(buffer: []u8, io: std.Io, request: v600.scanner.contracts.ScanRequest) ![]const u8 {
+fn autoScanOutputPath(buffer: []u8, io: std.Io, request: cerealgrain.scanner.contracts.ScanRequest) ![]const u8 {
     const dir = "scans";
     try std.Io.Dir.cwd().createDirPath(io, dir);
-    const number = try v600.tiff.nextScanNumber(io, dir, "scan_");
+    const number = try cerealgrain.tiff.nextScanNumber(io, dir, "scan_");
     const tag = switch (request.kind) {
         .rgb => "rgb",
         .rgb_ir => "rgbir",
         .ir => "ir",
         .gray => "gray",
     };
-    const dpi = v600.scanner.host.effectiveDpiForRequest(request);
+    const dpi = cerealgrain.scanner.host.effectiveDpiForRequest(request);
     return std.fmt.bufPrint(buffer, "{s}/scan_{d:0>4}_{s}_{d}dpi.tiff", .{ dir, number, tag, dpi });
 }
 
@@ -341,7 +341,7 @@ fn autoScanOutputPath(buffer: []u8, io: std.Io, request: v600.scanner.contracts.
 fn runScannerPreview(
     allocator: std.mem.Allocator,
     io: std.Io,
-    runtime: v600.scanner.host.Runtime,
+    runtime: cerealgrain.scanner.host.Runtime,
     args: []const []const u8,
     stdout: anytype,
 ) !void {
@@ -370,7 +370,7 @@ fn runScannerPreview(
         try stdout.print(",\"lut_file\":null}}\n", .{});
         return;
     };
-    const luts = try v600.scanner.film_lut.computeFilmLuts(
+    const luts = try cerealgrain.scanner.film_lut.computeFilmLuts(
         allocator,
         image.data,
         image.width,
@@ -385,7 +385,7 @@ fn runScannerPreview(
     }
     const lut_path = try std.fmt.allocPrint(allocator, "{s}.lut.bin", .{options.output_path});
     defer allocator.free(lut_path);
-    try v600.scanner.lut.writeRgbFile(
+    try cerealgrain.scanner.lut.writeRgbFile(
         io,
         lut_path,
         if (luts.red) |*table| table else null,
@@ -399,8 +399,8 @@ fn runScannerPreview(
     });
 }
 
-fn parseScanOptions(args: []const []const u8) !v600.scanner.host.ScanOptions {
-    var request = v600.scanner.contracts.ScanRequest{
+fn parseScanOptions(args: []const []const u8) !cerealgrain.scanner.host.ScanOptions {
+    var request = cerealgrain.scanner.contracts.ScanRequest{
         .dpi = 400,
         .source = .tpu,
         .kind = .rgb,
@@ -493,9 +493,9 @@ fn parseUsbResetOptions(args: []const []const u8) !bool {
 }
 
 fn writeScanReportContext(
-    report: *?v600.scanner.events.TimingReport,
+    report: *?cerealgrain.scanner.events.TimingReport,
     command: []const u8,
-    options: v600.scanner.host.ScanOptions,
+    options: cerealgrain.scanner.host.ScanOptions,
 ) !void {
     try writeReportContext(report, .{
         .command = command,
@@ -509,14 +509,14 @@ fn writeScanReportContext(
 }
 
 fn writeReportContext(
-    report: *?v600.scanner.events.TimingReport,
-    event: v600.scanner.events.TimingContextEvent,
+    report: *?cerealgrain.scanner.events.TimingReport,
+    event: cerealgrain.scanner.events.TimingContextEvent,
 ) !void {
     if (report.*) |*item| try item.writeContext(event);
 }
 
 fn writeReportStatus(
-    report: *?v600.scanner.events.TimingReport,
+    report: *?cerealgrain.scanner.events.TimingReport,
     command: []const u8,
     status: []const u8,
     detail: ?[]const u8,
@@ -536,13 +536,13 @@ fn reportOutput(output_path: []const u8) ?[]const u8 {
     return if (output_path.len == 0) null else output_path;
 }
 
-fn parseSource(value: []const u8) !v600.scanner.contracts.Source {
+fn parseSource(value: []const u8) !cerealgrain.scanner.contracts.Source {
     if (std.mem.eql(u8, value, "flatbed")) return .flatbed;
     if (std.mem.eql(u8, value, "tpu")) return .tpu;
     return error.InvalidSource;
 }
 
-fn parseKind(value: []const u8) !v600.scanner.contracts.ScanKind {
+fn parseKind(value: []const u8) !cerealgrain.scanner.contracts.ScanKind {
     if (std.mem.eql(u8, value, "rgb")) return .rgb;
     if (std.mem.eql(u8, value, "gray")) return .gray;
     if (std.mem.eql(u8, value, "ir")) return .ir;
@@ -551,7 +551,7 @@ fn parseKind(value: []const u8) !v600.scanner.contracts.ScanKind {
     return error.InvalidKind;
 }
 
-fn parseDepth(value: []const u8) !v600.scanner.contracts.BitDepth {
+fn parseDepth(value: []const u8) !cerealgrain.scanner.contracts.BitDepth {
     if (std.mem.eql(u8, value, "8")) return .eight;
     if (std.mem.eql(u8, value, "16")) return .sixteen;
     return error.InvalidDepth;
@@ -564,7 +564,7 @@ fn handleServe(
     args: *std.process.Args.Iterator,
     stdout: anytype,
 ) !void {
-    var options = v600.companion.ServeOptions{};
+    var options = cerealgrain.companion.ServeOptions{};
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--port")) {
             const value = args.next() orelse return error.MissingPort;
@@ -579,12 +579,12 @@ fn handleServe(
             return error.UnknownServeOption;
         }
     }
-    try v600.companion.serve(allocator, io, environ_map, options, stdout);
+    try cerealgrain.companion.serve(allocator, io, environ_map, options, stdout);
 }
 
 fn printUsage() !void {
     std.debug.print(
-        \\usage: v600-zig <command>
+        \\usage: cerealgrain <command>
         \\
         \\commands:
         \\  version           print build identity
@@ -599,7 +599,7 @@ fn printUsage() !void {
 
 fn printScannerUsage() !void {
     std.debug.print(
-        \\usage: v600-zig scanner <command>
+        \\usage: cerealgrain scanner <command>
         \\
         \\commands:
         \\  devices                       list scanners
@@ -630,7 +630,7 @@ fn printScannerUsage() !void {
 
 fn printProcessingUsage() !void {
     std.debug.print(
-        \\usage: v600-zig processing <command>
+        \\usage: cerealgrain processing <command>
         \\
         \\commands:
         \\  info --input PATH
@@ -642,7 +642,7 @@ fn printProcessingUsage() !void {
         \\         (x and y are the top-left corner)
         \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]
         \\         [--stock NAME] [--dmin R,G,B] [--format FMT] [--dpi DPI] [--config PATH]
-        \\         (stock and parameters come from scratchndent_config.toml, dpi from the TIFF; Dmin
+        \\         (stock and parameters come from processing.toml, dpi from the TIFF; Dmin
         \\          from --dmin, else this scan's detected rebate, else the saved Dmin, else the image)
         \\
     , .{});

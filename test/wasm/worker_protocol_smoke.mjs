@@ -365,7 +365,7 @@ assert.throws(() => stableStringify({ bad: Number.NaN }), /non-finite/);
 
 const loadModule = createLoadModuleMessage({
   requestId: "req-load-module",
-  wasmUrl: "v600-wasm-core.wasm",
+  wasmUrl: "cerealgrain-wasm-core.wasm",
   wasmSha256: "sha256:module",
 });
 assert.equal(loadModule.type, messageTypes.loadModule);
@@ -399,7 +399,7 @@ const processPreview = createProcessPreviewMessage({
 });
 assert.equal(processPreview.type, messageTypes.processPreview);
 assert.equal(processPreview.cache_key, cacheKey);
-assert.equal(processPreview.cache_key_payload.schema, "v600.webapp.cache-key.v1");
+assert.equal(processPreview.cache_key_payload.schema, "cerealgrain.webapp.cache-key.v1");
 assert.equal(processPreview.cache_key_payload.operation, "process-preview");
 
 const processExport = createProcessExportMessage({
@@ -755,7 +755,7 @@ assert.equal(error.recoverable, true);
 
 console.log(JSON.stringify({
   event: "worker-protocol-smoke",
-  schema: "v600.webapp.event.v1",
+  schema: "cerealgrain.webapp.event.v1",
   cache_key: cacheKey,
   checked_message_types: [
     loadModule.type,

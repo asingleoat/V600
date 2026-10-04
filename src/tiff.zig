@@ -16,7 +16,7 @@ pub const scanner_lut_tag: u32 = 50001;
 pub const scanner_lut_name: [:0]const u8 = "ScannerGammaLUT";
 pub const scanner_lut_len: usize = 768;
 pub const export_metadata_tag: u32 = 65000;
-pub const export_metadata_name: [:0]const u8 = "ScratchNDentMetadata";
+pub const export_metadata_name: [:0]const u8 = "CerealGrainMetadata";
 
 var custom_tags_installed = false;
 var previous_tag_extender: c.TIFFExtendProc = null;
@@ -96,7 +96,7 @@ pub const ImageList = struct {
 pub const ScannerMetadata = struct {
     make: []const u8 = "EPSON",
     model: []const u8 = "Epson Scanner",
-    software: []const u8 = "epdaughter-sane",
+    software: []const u8 = "CerealGrain (SANE)",
     dpi: ?u32 = null,
     datetime: ?[]const u8 = null,
     custom_luts_applied: bool = false,
@@ -1072,7 +1072,7 @@ test "writes scanner TIFF metadata including DPI and custom LUT marker" {
 
     try writeScannerMetadata(allocator, path, .{
         .model = "Epson Perfection V600 Photo",
-        .software = "epdaughter-sane",
+        .software = "CerealGrain (SANE)",
         .dpi = 2400,
         .datetime = "2026:05:15 12:34:56",
         .custom_luts_applied = true,
@@ -1086,7 +1086,7 @@ test "writes scanner TIFF metadata including DPI and custom LUT marker" {
     try std.testing.expectEqualStrings("Epson Perfection V600 Photo", model);
     const software = (try readAsciiTag(allocator, path, c.TIFFTAG_SOFTWARE, "Software")).?;
     defer allocator.free(software);
-    try std.testing.expectEqualStrings("epdaughter-sane", software);
+    try std.testing.expectEqualStrings("CerealGrain (SANE)", software);
     const datetime = (try readAsciiTag(allocator, path, c.TIFFTAG_DATETIME, "DateTime")).?;
     defer allocator.free(datetime);
     try std.testing.expectEqualStrings("2026:05:15 12:34:56", datetime);

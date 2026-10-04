@@ -1,4 +1,4 @@
-# V600
+# CerealGrain
 
 Scanning and film processing for the Epson V600 and related scanners.
 Drives the hardware for 16-bit RGB and infrared acquisition via
@@ -7,7 +7,7 @@ IR-based dust/scratch removal, calibrated negative inversion with
 per-stock color profiles.
 
 The application is written in Zig: a scanner and processing CLI
-(`v600-zig`), a native SDL3/Nuklear UI (`v600-ui`), and a browser
+(`cerealgrain`), a native SDL3/Nuklear UI (`cerealgrain-ui`), and a browser
 WebAssembly processing webapp built from the same processing code. The
 original Python implementation, a work in progress that drove the port,
 stays in-tree for reference.
@@ -16,7 +16,7 @@ stays in-tree for reference.
 
 Requires [Nix](https://nixos.org/download/).
 
-    git clone <repo> && cd V600
+    git clone <repo> cerealgrain && cd cerealgrain
     nix develop                        # or nix-shell
     zig build -Dui=true run-ui         # native scan/process/gallery UI
     zig build run -- scanner devices   # or drive the CLI directly
@@ -37,9 +37,9 @@ to (see `docs/SCANNER_COMPANION.md`):
 - Linux: scanner through the patched epkowa SANE backend, processing CLI,
   and native UI. Scanning has been exercised on a V600.
 - macOS: scanner through Epson's Interpreter bundle over libusb, with
-  per-channel gamma LUTs fitted to the film; CLI and native UI. Scanning
-  has been exercised on a V600 from Apple Silicon. `zig build app-bundle`
-  makes a V600.app and a zip to share (Apple Silicon, macOS 14 or later).
+  per-channel gamma LUTs fitted to the film; CLI and native UI. Scanning has
+  been exercised on a V600 from Apple Silicon. `zig build app-bundle` makes a
+  CerealGrain.app and a zip to share (Apple Silicon, macOS 14 or later).
 - Browser: checked in Chrome and Chromium (older browsers without Wasm
   memory64 get a wasm32 build). Scanning from it needs the companion on a
   Linux host.
@@ -53,28 +53,28 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
 
 ## Usage
 
-    zig build --summary all             # build the CLI (zig-out/bin/v600-zig)
-    zig build -Dui=true --summary all   # build the native UI (zig-out/bin/v600-ui)
+    zig build --summary all             # build the CLI (zig-out/bin/cerealgrain)
+    zig build -Dui=true --summary all   # build the native UI (zig-out/bin/cerealgrain-ui)
     zig build test --summary all        # unit and fixture tests
 
-    v600-zig scanner devices                          # list scanners
-    v600-zig scanner preview                          # TPU preview; prints the film area
+    cerealgrain scanner devices                          # list scanners
+    cerealgrain scanner preview                          # TPU preview; prints the film area
                                                       # and writes its LUTs (macOS)
-    v600-zig scanner scan --source tpu --kind rgb+ir --dpi 3200 \
+    cerealgrain scanner scan --source tpu --kind rgb+ir --dpi 3200 \
         --x IN --y IN --width IN --height IN \
         [--lut-file scans/preview.tiff.lut.bin]       # scans/scan_NNNN_rgbir_3200dpi.tiff
-    v600-zig processing detect --input scans/scan.tiff  # frames, rebate, and its Dmin (saved)
-    v600-zig processing export --input scans/scan.tiff \
+    cerealgrain processing detect --input scans/scan.tiff  # frames, rebate, and its Dmin (saved)
+    cerealgrain processing export --input scans/scan.tiff \
         --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs
-    v600-zig serve                                    # scanner companion for the webapp
+    cerealgrain serve                                    # scanner companion for the webapp
 
 Scanning a roll strip by strip (each strip: preview, film area, one LUT
 for the whole roll, full scan; finished strips export in the background):
 
-    v600-zig roll start gold200-a --stock kodak_gold  # scans/gold200-a/, current roll
-    v600-zig roll scan                                # Enter per strip, q to finish
-    v600-zig roll status | export [--force] | review [--open]
-    v600-zig roll check-frames [--verified 1,2]       # detection vs frames placed by hand
+    cerealgrain roll start gold200-a --stock kodak_gold  # scans/gold200-a/, current roll
+    cerealgrain roll scan                                # Enter per strip, q to finish
+    cerealgrain roll status | export [--force] | review [--open]
+    cerealgrain roll check-frames [--verified 1,2]       # detection vs frames placed by hand
 
 Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
 `scans/<roll>/review/index.html` shows each strip with its detected frames.
@@ -98,7 +98,7 @@ sessions; Debug export is several times slower.
 Scans go to `scans/`, processed frames to `frames/`, relative to the
 directory the app starts in. The native UI takes `--scan-dir DIR` and
 `--output-dir DIR` to use other directories. Hardware smoke steps are
-opt-in via `V600_HARDWARE_SMOKE=1` and never run implicitly.
+opt-in via `CEREALGRAIN_HARDWARE_SMOKE=1` and never run implicitly.
 
 ## Project layout
 

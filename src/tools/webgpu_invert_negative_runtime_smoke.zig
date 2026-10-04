@@ -1,10 +1,10 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const film_stocks = v600.processing.film_stocks;
-const inversion = v600.processing.inversion;
-const numeric = v600.processing.numeric_fixture;
-const webgpu = v600.processing.webgpu;
+const film_stocks = cerealgrain.processing.film_stocks;
+const inversion = cerealgrain.processing.inversion;
+const numeric = cerealgrain.processing.numeric_fixture;
+const webgpu = cerealgrain.processing.webgpu;
 
 const fixture_path = "test/fixtures/processing/numeric/invert-negative-kodak-gold-dmin.json";
 

@@ -4,7 +4,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-extern "C" int v600_estimate_local_grain(
+extern "C" int cerealgrain_estimate_local_grain(
     const double* roi_rgb,
     const unsigned char* roi_mask,
     int width,
@@ -257,7 +257,7 @@ extern "C" int v600_estimate_local_grain(
     return 0;
 }
 
-extern "C" int v600_synthesize_grain_from_noise(
+extern "C" int cerealgrain_synthesize_grain_from_noise(
     const double* noise,
     int width,
     int height,

@@ -2,7 +2,7 @@ const std = @import("std");
 
 const contracts = @import("contracts.zig");
 
-pub const schema = "v600.scanner.event.v1";
+pub const schema = "cerealgrain.scanner.event.v1";
 
 pub const EventName = enum {
     startup,
@@ -639,12 +639,12 @@ test "scanner JSON events render stable field names" {
     });
 
     try std.testing.expectEqualStrings(
-        \\{"event":"startup","schema":"v600.scanner.event.v1","platform":"linux","backend":"sane"}
-        \\{"event":"device-discovery","schema":"v600.scanner.event.v1","discovery_attempted":false,"devices_found":null,"selected_device":"epkowa:interpreter:001:017","selection_source":"cache-hit"}
-        \\{"event":"scan-start","schema":"v600.scanner.event.v1","device":"epkowa:interpreter:001:017","output":"/tmp/out.tiff","source":"tpu","kind":"rgb","requested_dpi":400,"effective_dpi":400}
-        \\{"event":"progress","schema":"v600.scanner.event.v1","percent":82}
-        \\{"event":"scan-complete","schema":"v600.scanner.event.v1","output":"/tmp/out.tiff","metadata":"/tmp/out.tiff.json"}
-        \\{"event":"timing","schema":"v600.scanner.event.v1","stage":"scanimage.wait","elapsed_us":125000,"detail":"rgb pass"}
+        \\{"event":"startup","schema":"cerealgrain.scanner.event.v1","platform":"linux","backend":"sane"}
+        \\{"event":"device-discovery","schema":"cerealgrain.scanner.event.v1","discovery_attempted":false,"devices_found":null,"selected_device":"epkowa:interpreter:001:017","selection_source":"cache-hit"}
+        \\{"event":"scan-start","schema":"cerealgrain.scanner.event.v1","device":"epkowa:interpreter:001:017","output":"/tmp/out.tiff","source":"tpu","kind":"rgb","requested_dpi":400,"effective_dpi":400}
+        \\{"event":"progress","schema":"cerealgrain.scanner.event.v1","percent":82}
+        \\{"event":"scan-complete","schema":"cerealgrain.scanner.event.v1","output":"/tmp/out.tiff","metadata":"/tmp/out.tiff.json"}
+        \\{"event":"timing","schema":"cerealgrain.scanner.event.v1","stage":"scanimage.wait","elapsed_us":125000,"detail":"rgb pass"}
         \\
     , out.bytes.items);
 }
@@ -659,7 +659,7 @@ test "scanner JSON events escape string fields" {
     });
 
     try std.testing.expectEqualStrings(
-        \\{"event":"scan-error","schema":"v600.scanner.event.v1","kind":"scanimage-failed","detail":"quote \" slash \\ newline\n"}
+        \\{"event":"scan-error","schema":"cerealgrain.scanner.event.v1","kind":"scanimage-failed","detail":"quote \" slash \\ newline\n"}
         \\
     , out.bytes.items);
 }
@@ -679,8 +679,8 @@ test "scanner timing event detail can be null or escaped" {
     });
 
     try std.testing.expectEqualStrings(
-        \\{"event":"timing","schema":"v600.scanner.event.v1","stage":"probe.help","elapsed_us":42,"detail":null}
-        \\{"event":"timing","schema":"v600.scanner.event.v1","stage":"worker\nstate","elapsed_us":7,"detail":"quote \" slash \\"}
+        \\{"event":"timing","schema":"cerealgrain.scanner.event.v1","stage":"probe.help","elapsed_us":42,"detail":null}
+        \\{"event":"timing","schema":"cerealgrain.scanner.event.v1","stage":"worker\nstate","elapsed_us":7,"detail":"quote \" slash \\"}
         \\
     , out.bytes.items);
 }
@@ -706,8 +706,8 @@ test "scanner timing report context and status serialize as JSONL" {
     });
 
     try std.testing.expectEqualStrings(
-        \\{"event":"timing-context","schema":"v600.scanner.event.v1","command":"scanner scan","output":"/tmp/out.tiff","device":"epkowa:interpreter:001:017","source":"tpu","kind":"rgb+ir","depth":16,"dpi":800}
-        \\{"event":"timing-status","schema":"v600.scanner.event.v1","command":"scanner scan","status":"error","detail":"scanimage failed","output":"/tmp/out.tiff"}
+        \\{"event":"timing-context","schema":"cerealgrain.scanner.event.v1","command":"scanner scan","output":"/tmp/out.tiff","device":"epkowa:interpreter:001:017","source":"tpu","kind":"rgb+ir","depth":16,"dpi":800}
+        \\{"event":"timing-status","schema":"cerealgrain.scanner.event.v1","command":"scanner scan","status":"error","detail":"scanimage failed","output":"/tmp/out.tiff"}
         \\
     , out.bytes.items);
 }
@@ -751,10 +751,10 @@ test "scanner timing report appends context events and sink events to file" {
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(4096));
     defer allocator.free(text);
     try std.testing.expectEqualStrings(
-        \\{"event":"timing-context","schema":"v600.scanner.event.v1","command":"scanner probe","output":null,"device":null,"source":null,"kind":null,"depth":null,"dpi":null}
-        \\{"event":"timing","schema":"v600.scanner.event.v1","stage":"probe.help","elapsed_us":55,"detail":"ok"}
-        \\{"event":"timing-status","schema":"v600.scanner.event.v1","command":"scanner probe","status":"ok","detail":null,"output":null}
-        \\{"event":"timing-status","schema":"v600.scanner.event.v1","command":"scanner probe","status":"ok","detail":"second-run","output":null}
+        \\{"event":"timing-context","schema":"cerealgrain.scanner.event.v1","command":"scanner probe","output":null,"device":null,"source":null,"kind":null,"depth":null,"dpi":null}
+        \\{"event":"timing","schema":"cerealgrain.scanner.event.v1","stage":"probe.help","elapsed_us":55,"detail":"ok"}
+        \\{"event":"timing-status","schema":"cerealgrain.scanner.event.v1","command":"scanner probe","status":"ok","detail":null,"output":null}
+        \\{"event":"timing-status","schema":"cerealgrain.scanner.event.v1","command":"scanner probe","status":"ok","detail":"second-run","output":null}
         \\
     , text);
 }

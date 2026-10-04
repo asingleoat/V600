@@ -8,7 +8,7 @@ inversion, auto-detect frames, IR-clean, and export 16-bit TIFFs with JSON
 sidecars. It has three tabs: Scan, Process, and Gallery. The processing math
 runs in a WebAssembly build of the shared Zig code in `src/processing/`,
 inside one Web Worker. The browser cannot drive the scanner. The Scan tab
-works only when the page is served by the local companion (`v600-zig serve`,
+works only when the page is served by the local companion (`cerealgrain serve`,
 see `docs/SCANNER_COMPANION.md`), which runs the native Linux SANE stack. The
 native app remains the reference implementation.
 
@@ -19,14 +19,14 @@ zig build wasm-webapp
 ```
 
 This copies `web/` into `zig-out/webapp/` and puts both cores next to
-`index.html`: `v600-wasm-core.wasm` (wasm64) and `v600-wasm-core32.wasm`
-(wasm32). `app.mjs` loads wasm64 when the browser supports Wasm memory64
-(`supportsWasm64()`), and wasm32 otherwise.
+`index.html`: `cerealgrain-wasm-core.wasm` (wasm64) and
+`cerealgrain-wasm-core32.wasm` (wasm32). `app.mjs` loads wasm64 when the
+browser supports Wasm memory64 (`supportsWasm64()`), and wasm32 otherwise.
 
 To serve it with scanning enabled:
 
 ```sh
-./zig-out/bin/v600-zig serve        # http://127.0.0.1:8433/
+./zig-out/bin/cerealgrain serve        # http://127.0.0.1:8433/
 ```
 
 To serve it for processing only:
@@ -57,7 +57,7 @@ zig build wasm-worker-runtime-smoke --summary all    # worker/processor.mjs unde
 zig build wasm-webapp-shell-smoke --summary all      # WebPreviewClient + export pipeline (not app.mjs)
 zig build wasm-tiff-reader-smoke --summary all       # tiff.mjs against test/fixtures/tiff/rgb-thumb-ir.tiff
 zig build wasm-webapp-static-smoke --summary all     # staged files exist; text checks on index.html/app.mjs
-zig build companion-smoke --summary all              # v600-zig serve against a fake scanimage
+zig build companion-smoke --summary all              # cerealgrain serve against a fake scanimage
 zig build bench-wasm-webapp-crop-export --summary all
 ```
 
@@ -65,15 +65,15 @@ Notes on these steps:
 
 - They need `node` on `PATH`, which `flake.nix` and `shell.nix` provide. The
   build passes Node no flags, so that Node must run memory64 modules as is.
-- `companion-smoke` builds the full native `v600-zig`.
-- The bench reads `V600_WASM_BENCH_SCAN` or `--scan`. Without either, it uses
-  the first local `scans/*.tiff` candidate and falls back to the committed
-  fixture TIFF.
+- `companion-smoke` builds the full native `cerealgrain`.
+- The bench reads `CEREALGRAIN_WASM_BENCH_SCAN` or `--scan`. Without either,
+  it uses the first local `scans/*.tiff` candidate and falls back to the
+  committed fixture TIFF.
 
 There is also a manual probe, which is not a build step:
 
 ```sh
-node test/wasm/real_scan_ir_estimate_probe.mjs zig-out/webapp/v600-wasm-core.wasm scans/<file>.tiff
+node test/wasm/real_scan_ir_estimate_probe.mjs zig-out/webapp/cerealgrain-wasm-core.wasm scans/<file>.tiff
 ```
 
 ## Architecture
@@ -83,10 +83,11 @@ node test/wasm/real_scan_ir_estimate_probe.mjs zig-out/webapp/v600-wasm-core.was
 `src/wasm_core.zig` exports the functions defined in `src/wasm/core.zig`.
 `addWasmCore` in `build.zig` builds two targets:
 
-- `wasm64-freestanding` as `v600-wasm-core.wasm` (step `wasm-core`), used by
-  browsers with memory64 (Chrome 133+, current Firefox).
-- `wasm32-freestanding` as `v600-wasm-core32.wasm` (step `wasm32-core`), the
-  fallback for browsers without it; limited to 4 GiB of memory.
+- `wasm64-freestanding` as `cerealgrain-wasm-core.wasm` (step `wasm-core`),
+  used by browsers with memory64 (Chrome 133+, current Firefox).
+- `wasm32-freestanding` as `cerealgrain-wasm-core32.wasm` (step
+  `wasm32-core`), the fallback for browsers without it; limited to 4 GiB of
+  memory.
 
 Both builds are single-threaded, have no entry point, export their memory, and
 set `rdynamic`. They build as ReleaseFast unless `-Doptimize` names another
@@ -107,13 +108,16 @@ The core does not link libc, OpenCV, SuperLU, libtiff, libjpeg, or SDL:
 
 The exports are:
 
-- `v600_wasm_pointer_bits`, `_alloc`, and `_free`
-- `v600_preview_invert_u16_to_u8` and `v600_export_invert_u16_to_u16`
-- `v600_detect_frames_rgb16`
-- `v600_ir_estimate_translation_f32` and `v600_ir_apply_translation_f32`
-- `v600_ir_make_defect_mask_u8`, `v600_ir_make_defect_mask_f32`, and
-  `v600_ir_resize_mask_to_rgb_u8`
-- `v600_ir_biharmonic_inpaint_u16` and `v600_ir_inpaint_grain_u16_with_noise`
+- `cerealgrain_wasm_pointer_bits`, `_alloc`, and `_free`
+- `cerealgrain_preview_invert_u16_to_u8` and
+  `cerealgrain_export_invert_u16_to_u16`
+- `cerealgrain_detect_frames_rgb16`
+- `cerealgrain_ir_estimate_translation_f32` and
+  `cerealgrain_ir_apply_translation_f32`
+- `cerealgrain_ir_make_defect_mask_u8`, `cerealgrain_ir_make_defect_mask_f32`,
+  and `cerealgrain_ir_resize_mask_to_rgb_u8`
+- `cerealgrain_ir_biharmonic_inpaint_u16` and
+  `cerealgrain_ir_inpaint_grain_u16_with_noise`
 
 Each call returns a status: ok, invalid-buffer, invalid-dimensions,
 invalid-stock, out-of-memory, or processing-error.
@@ -137,7 +141,7 @@ Film stocks are fixed ids: 0 identity, 1 Kodak Gold, 2 Kodak Portra.
 | `config.mjs` | Defaults and Wasm option builders |
 | `cache_inputs.mjs`, `util.mjs` | Cache-key payloads, SHA-256 |
 | `tiff.mjs` | Uncompressed classic TIFF reader (RGB16 page, optional 8-bit IR page) and RGB16 writer |
-| `companion.mjs` | Client for the `v600-zig serve` API |
+| `companion.mjs` | Client for the `cerealgrain serve` API |
 | `worker/processor.mjs` | Module Worker: loads Wasm, crops and resizes in JS, calls Wasm |
 | `worker/protocol.mjs` | Message builders, cache-key canonicalization |
 | `worker/wasm_abi.mjs` | Export checks, pointer conversion, option packing |

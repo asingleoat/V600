@@ -1,12 +1,12 @@
 # AGENTS.md
 
-Scanning and film processing for the Epson V600 and related scanners with a
-transparency unit. The application is Zig 0.16: a CLI (`v600-zig`), a native
-SDL3/Nuklear UI (`v600-ui`), a browser WebAssembly processing webapp built
-from the same processing code, and a local scanner companion server that lets
-the webapp drive a Linux scanner. The original Python implementation, a work
-in progress that drove the port, stays in the tree for reference; the Zig app
-has replaced it.
+CerealGrain: scanning and film processing for the Epson V600 and related
+scanners with a transparency unit. The application is Zig 0.16: a CLI
+(`cerealgrain`), a native SDL3/Nuklear UI (`cerealgrain-ui`), a browser
+WebAssembly processing webapp built from the same processing code, and a local
+scanner companion server that lets the webapp drive a Linux scanner. The
+original Python implementation, a work in progress that drove the port, stays
+in the tree for reference; the Zig app has replaced it.
 
 Current state, decisions, and open work: `plan.md`.
 
@@ -46,14 +46,14 @@ diffs for this before committing.
 
 ## Commands
 
-    zig build --summary all                   # CLI: zig-out/bin/v600-zig
-    zig build -Dui=true --summary all         # native UI: zig-out/bin/v600-ui
+    zig build --summary all                   # CLI: zig-out/bin/cerealgrain
+    zig build -Dui=true --summary all         # native UI: zig-out/bin/cerealgrain-ui
     zig build -Dui=true run-ui                # run the native UI
     zig build run -- <args>                   # run the CLI
     zig build test --summary all              # Zig unit and fixture tests
     zig build wasm-webapp                     # stage the webapp in zig-out/webapp
     zig build run -- serve                    # companion: serves zig-out/webapp on 127.0.0.1:8433
-    zig build app-bundle                      # macOS: zig-out/V600.app and a zip to share
+    zig build app-bundle                      # macOS: zig-out/CerealGrain.app and a zip to share
 
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
@@ -66,9 +66,9 @@ Browser and companion tests are separate Node-driven steps, not part of
 `wasm-worker-protocol-smoke`, `wasm-worker-runtime-smoke`,
 `wasm-webapp-shell-smoke`, `wasm-tiff-reader-smoke`,
 `wasm-webapp-static-smoke`, `companion-smoke`. Headless native UI smokes are
-`native-*-smoke` steps under `-Dui=true`. Hardware steps (`scanner-smoke`,
-the preview/scan worker smokes) only run with `V600_HARDWARE_SMOKE=1`; their
-`*-skip` variants check that they stay off otherwise.
+`native-*-smoke` steps under `-Dui=true`. Hardware steps (`scanner-smoke`, the
+preview/scan worker smokes) only run with `CEREALGRAIN_HARDWARE_SMOKE=1`;
+their `*-skip` variants check that they stay off otherwise.
 
 Benchmarks: `zig build -Doptimize=ReleaseFast bench-processing-commands`
 (user-visible Process latency), plus `bench-color`,
@@ -81,10 +81,11 @@ when they are absent, which they are in a fresh clone. The Linux scan path
 shells out to ImageMagick `magick` and `tiffcp`, and the fake `scanimage`
 scripts in the scanner tests and `companion-smoke` use `magick` too.
 
-Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
-`V600_PROCESSING_GPU` (opt-in WebGPU processing in the native UI),
-`V600_UI_THEME`, `V600_UI_SCALE`, `V600_SCANNER_DEVICE_CACHE`,
-`V600_DATA_DIR` (the UI's folder for scans, exports, and configs).
+Environment variables: `CEREALGRAIN_HARDWARE_SMOKE`,
+`CEREALGRAIN_MACOS_HARDWARE_SMOKE`, `CEREALGRAIN_PROCESSING_GPU` (opt-in
+WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
+`CEREALGRAIN_UI_SCALE`, `CEREALGRAIN_SCANNER_DEVICE_CACHE`,
+`CEREALGRAIN_DATA_DIR` (the UI's folder for scans, exports, and configs).
 
 ## Layout
 
@@ -272,14 +273,14 @@ deliberately, not by accident.
 
 ### Config and files
 
-- Two separate TOML configs: scanner `epdaughter_config.toml`, processing
-  `scratchndent_config.toml`. Both are gitignored and generated at runtime.
+- Two separate TOML configs, `scanner.toml` (in the scan folder) and
+  `processing.toml`. Both are gitignored and generated at runtime.
   Saves merge into the existing file; go through the config layer, not raw
   TOML reads.
-- Scans go to `scans/`, exports to `frames/`; both are gitignored. These
-  and both configs resolve from the working directory; the macOS app bundle
-  works in `~/Pictures/V600`, and `V600_DATA_DIR` sets the folder. A roll
-  uses `scans/<roll>/` (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`,
+- Scans go to `scans/`, exports to `frames/`; both are gitignored. These and
+  both configs resolve from the working directory; the macOS app bundle works
+  in `~/Pictures/CerealGrain`, and `CEREALGRAIN_DATA_DIR` sets the folder. A
+  roll uses `scans/<roll>/` (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`,
   hand-placed framing in `strip_NN_*.tiff.frames.json`, `review/`) and
   `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the `[roll]` key in
   the scanner config.

@@ -1,7 +1,7 @@
 const std = @import("std");
 const film_stocks = @import("film_stocks.zig");
 
-pub const config_file = "scratchndent_config.toml";
+pub const config_file = "processing.toml";
 pub const reference_dpi: u32 = 800;
 pub const tiff_exts = [_][]const u8{ ".tif", ".tiff" };
 pub const builtin_stocks = film_stocks.builtin_stocks;
@@ -359,7 +359,7 @@ pub fn serialize(allocator: std.mem.Allocator, loaded: LoadedConfig) ![]u8 {
     var out = std.array_list.Managed(u8).init(allocator);
     errdefer out.deinit();
 
-    try out.appendSlice("# scratchndent configuration\n\n");
+    try out.appendSlice("# CerealGrain processing configuration\n\n");
 
     for (loaded.entries[0..loaded.len]) |entry| {
         const name = entry.name.slice();
@@ -718,7 +718,7 @@ fn appendPythonFloat(out: *std.array_list.Managed(u8), value: f64) !void {
 test "preserves processing config default order, values, and types" {
     try std.testing.expectEqual(@as(u32, 800), reference_dpi);
     try std.testing.expectEqual(@as(usize, 20), defaults.len);
-    try std.testing.expectEqualStrings("scratchndent_config.toml", config_file);
+    try std.testing.expectEqualStrings("processing.toml", config_file);
 
     try defaultValue("ir_threshold").?.expectEqual(.{ .float = 0.10 });
     try defaultValue("ir_hair_sensitivity").?.expectEqual(.{ .float = 0.10 });

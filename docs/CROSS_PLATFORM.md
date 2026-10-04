@@ -7,11 +7,11 @@ What runs where, and what each missing platform needs.
 | Platform | Scanner | Processing CLI | Native UI | Packaging |
 | --- | --- | --- | --- | --- |
 | Linux | SANE via patched epkowa; exercised on a V600 | Yes | SDL3/Nuklear | `packages.cli`, `packages.ui` |
-| macOS | Epson Interpreter bundle over libusb; exercised on a V600 | Yes (arm64) | SDL3/Nuklear (arm64) | `zig build app-bundle` (V600.app, ad hoc signed) |
+| macOS | Epson Interpreter bundle over libusb; exercised on a V600 | Yes (arm64) | SDL3/Nuklear (arm64) | `zig build app-bundle` (CerealGrain.app, ad hoc signed) |
 | Windows | Not planned | Not wired | Not wired | Not wired |
-| Browser | Through the Linux companion (`v600-zig serve`) only | Webapp (Wasm); checked in Chrome and Chromium | Browser UI in `web/` | `zig build wasm-webapp` |
+| Browser | Through the Linux companion (`cerealgrain serve`) only | Webapp (Wasm); checked in Chrome and Chromium | Browser UI in `web/` | `zig build wasm-webapp` |
 
-Linux hardware steps run only with `V600_HARDWARE_SMOKE=1`. See
+Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`. See
 `docs/WEBAPP.md` for the browser app and `docs/SCANNER_COMPANION.md` for the
 companion.
 
@@ -78,10 +78,10 @@ Hardware bring-up, with the scanner attached:
 
 ```sh
 zig build --summary all
-./zig-out/bin/v600-zig scanner devices
-V600_MACOS_HARDWARE_SMOKE=1 ./zig-out/bin/v600-zig scanner macos-smoke   # identity probe
-./zig-out/bin/v600-zig scanner preview        # film area + scans/preview.tiff.lut.bin
-./zig-out/bin/v600-zig scanner scan --kind rgb+ir --dpi 3200 --x .. --y .. --width .. --height .. \
+./zig-out/bin/cerealgrain scanner devices
+CEREALGRAIN_MACOS_HARDWARE_SMOKE=1 ./zig-out/bin/cerealgrain scanner macos-smoke   # identity probe
+./zig-out/bin/cerealgrain scanner preview        # film area + scans/preview.tiff.lut.bin
+./zig-out/bin/cerealgrain scanner scan --kind rgb+ir --dpi 3200 --x .. --y .. --width .. --height .. \
     --lut-file scans/preview.tiff.lut.bin
 ```
 
@@ -97,7 +97,8 @@ second.
 `zig build app-bundle`, on a Mac in the dev shell and with no other options,
 builds the UI on its own (ReleaseFast, stripped, for the oldest Apple Silicon
 CPU and macOS 14), then `scripts/macos_app_bundle.sh` assembles
-`zig-out/V600.app` and `zig-out/V600-<version>-<build>-macos-arm64.zip`: the
+`zig-out/CerealGrain.app` and
+`zig-out/CerealGrain-<version>-<build>-macos-arm64.zip`: the
 app plus `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers.
 
 - The libraries the UI loads from Nix (28, about 48 MB; the zip is about
@@ -112,8 +113,8 @@ app plus `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers.
   need an `x86_64-darwin` build.
 - Testers install Epson's own V600 software for the Interpreter bundle.
 - Started from the bundle, the app keeps scans, exports, and both configs in
-  `~/Pictures/V600`; `V600_DATA_DIR` sets that folder for any run. From a
-  checkout it uses the working directory.
+  `~/Pictures/CerealGrain`; `CEREALGRAIN_DATA_DIR` sets that folder for any
+  run. From a checkout it uses the working directory.
 
 ## Windows
 

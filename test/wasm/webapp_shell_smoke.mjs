@@ -50,7 +50,7 @@ import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "../
 import { assertCloseToFixture, assertDetectedFramesShape, buildAlignmentRgbFixture, frameDetectCount, frameDetectHeight, frameDetectWidth, normalizedToU16, syntheticFrameDetectRawBuffer } from "./helpers.mjs";
 
 const wasmPath = process.argv[2];
-if (!wasmPath) throw new Error("usage: node test/wasm/webapp_shell_smoke.mjs <v600-wasm-core.wasm>");
+if (!wasmPath) throw new Error("usage: node test/wasm/webapp_shell_smoke.mjs <cerealgrain-wasm-core.wasm>");
 
 const worker = new Worker(new URL("../../web/worker/processor.mjs", import.meta.url), {
   type: "module",
@@ -114,7 +114,7 @@ try {
   const badLoadWorker = new Worker(new URL("../../web/worker/processor.mjs", import.meta.url), {
     type: "module",
   });
-  const badLoadClient = new WebPreviewClient({ worker: badLoadWorker, wasmUrl: "test/fixtures/missing-v600-wasm-core.wasm", timeoutMs: 5000 });
+  const badLoadClient = new WebPreviewClient({ worker: badLoadWorker, wasmUrl: "test/fixtures/missing-cerealgrain-wasm-core.wasm", timeoutMs: 5000 });
   await assert.rejects(
     () => badLoadClient.loadModule(),
     /worker load failed:/,
@@ -392,7 +392,7 @@ try {
     dmin: [0.05, 0.06, 0.07],
     cacheKey: exportResult.cacheKey,
     output: {
-      schema: "v600.webapp.rgb16-export.v1",
+      schema: "cerealgrain.webapp.rgb16-export.v1",
       operation: "rgb16-export",
       kind: "rgb16-export",
       format: "tiff",
@@ -981,7 +981,7 @@ try {
 
   console.log(JSON.stringify({
     event: "webapp-shell-smoke",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     cache_key: result.cacheKey,
     output_bytes: result.rgb8.length,
     ir_alignment_max_abs: alignError.maxAbs,

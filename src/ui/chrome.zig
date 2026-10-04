@@ -3,9 +3,9 @@
 //! translation.
 
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 const c = @import("sdl_nuklear.zig").c;
-const ui_theme = v600.native_ui_theme;
+const ui_theme = cerealgrain.native_ui_theme;
 
 pub var runtime_ui_config = ui_theme.Config{};
 pub var active_control_panel_rect: c.struct_nk_rect = c.struct_nk_rect{ .x = 16.0, .y = 16.0, .w = 520.0, .h = 360.0 };
@@ -26,7 +26,7 @@ pub fn footerBarRect() c.struct_nk_rect {
     return active_footer_rect;
 }
 
-pub fn updateUiChromeRects(window: *c.SDL_Window, model: *const v600.native_ui.State) void {
+pub fn updateUiChromeRects(window: *c.SDL_Window, model: *const cerealgrain.native_ui.State) void {
     var window_w: c_int = 0;
     var window_h: c_int = 0;
     if (!c.SDL_GetWindowSize(window, &window_w, &window_h)) {
@@ -119,7 +119,7 @@ pub fn footerBarRectForSize(window_w: f32, window_h: f32) c.struct_nk_rect {
     );
 }
 
-pub fn controlPanelRectForSize(window_w: f32, window_h: f32, model: *const v600.native_ui.State) c.struct_nk_rect {
+pub fn controlPanelRectForSize(window_w: f32, window_h: f32, model: *const cerealgrain.native_ui.State) c.struct_nk_rect {
     const metrics = runtime_ui_config.metrics();
     const available_w = @max(80.0, window_w - metrics.margin * 2.0);
     const width = @min(metrics.panelWidth(window_w), available_w);
@@ -132,7 +132,7 @@ pub fn controlPanelRectForSize(window_w: f32, window_h: f32, model: *const v600.
     );
 }
 
-pub fn controlPanelBaseHeight(model: *const v600.native_ui.State) f32 {
+pub fn controlPanelBaseHeight(model: *const cerealgrain.native_ui.State) f32 {
     return switch (model.active_view) {
         // Tall enough for the roll section and every scan control; the
         // panel is capped at the space above the footer.

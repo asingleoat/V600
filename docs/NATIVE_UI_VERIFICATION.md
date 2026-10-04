@@ -21,11 +21,11 @@ checks
 `native-preview-worker-smoke-skip`, `native-scan-worker-smoke-skip`,
 `native-roll-strip-smoke-skip`.
 
-With the scanner connected, `V600_HARDWARE_SMOKE=1 v600-ui --roll-strip-smoke`
-clicks Scan Strip in a temporary 800 dpi roll and waits until the strip is
-exported.
+With the scanner connected, `CEREALGRAIN_HARDWARE_SMOKE=1 cerealgrain-ui
+--roll-strip-smoke` clicks Scan Strip in a temporary 800 dpi roll and waits
+until the strip is exported.
 
-More smoke modes exist as `v600-ui` flags but are not build steps:
+More smoke modes exist as `cerealgrain-ui` flags but are not build steps:
 
 ```sh
 env SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
@@ -51,7 +51,7 @@ feel, monitor scaling, or overlapping controls.
 
 ```sh
 zig build -Dui=true run-ui
-V600_UI_THEME=lighttable V600_UI_SCALE=1.35 zig build -Dui=true run-ui
+CEREALGRAIN_UI_THEME=lighttable CEREALGRAIN_UI_SCALE=1.35 zig build -Dui=true run-ui
 zig build -Dui=true run-ui -- --ui-theme graphite --ui-scale 1.45
 ```
 

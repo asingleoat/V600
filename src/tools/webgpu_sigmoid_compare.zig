@@ -1,9 +1,9 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const color = v600.processing.color;
-const numeric = v600.processing.numeric_fixture;
-const webgpu = v600.processing.webgpu;
+const color = cerealgrain.processing.color;
+const numeric = cerealgrain.processing.numeric_fixture;
+const webgpu = cerealgrain.processing.webgpu;
 
 const fixture_path = "test/fixtures/processing/numeric/apply-darktable-sigmoid.json";
 

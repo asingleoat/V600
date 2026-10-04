@@ -33,7 +33,7 @@ import { loadIrPageFromTiff, loadRgb16PageFromTiff, rgb16ToTiffBytes } from "./t
 
 // Browsers without Wasm memory64 (Chromium before 133, for example) cannot
 // instantiate the wasm64 core; they get the wasm32 build, limited to 4 GiB.
-const wasmCoreUrl = new URL(supportsWasm64() ? "./v600-wasm-core.wasm" : "./v600-wasm-core32.wasm", import.meta.url).href;
+const wasmCoreUrl = new URL(supportsWasm64() ? "./cerealgrain-wasm-core.wasm" : "./cerealgrain-wasm-core32.wasm", import.meta.url).href;
 
 const state = {
   client: null,

@@ -45,7 +45,7 @@ pub const ExportParallelismDecision = struct {
     memory_limited: bool,
 };
 
-extern fn v600_process_quick_preview(
+extern fn cerealgrain_process_quick_preview(
     input: [*]const u8,
     width: c_int,
     height: c_int,
@@ -64,7 +64,7 @@ extern fn v600_process_quick_preview(
     jpeg_len: *c_int,
 ) c_int;
 
-extern fn v600_process_quick_preview_breakdown(
+extern fn cerealgrain_process_quick_preview_breakdown(
     input: [*]const u8,
     width: c_int,
     height: c_int,
@@ -93,7 +93,7 @@ extern fn v600_process_quick_preview_breakdown(
     jpeg_copy_ns: *u64,
 ) c_int;
 
-extern fn v600_decode_jpeg_rgb(
+extern fn cerealgrain_decode_jpeg_rgb(
     jpeg: [*]const u8,
     jpeg_len: c_int,
     rgb_out: ?[*]u8,
@@ -102,7 +102,7 @@ extern fn v600_decode_jpeg_rgb(
     out_height: *c_int,
 ) c_int;
 
-extern fn v600_encode_rgb_jpeg(
+extern fn cerealgrain_encode_rgb_jpeg(
     rgb: [*]const u8,
     width: c_int,
     height: c_int,
@@ -537,7 +537,7 @@ fn quickPreviewCall(
     timings: *QuickPreviewProcessingTimings,
 ) c_int {
     if (!collect_timings) {
-        return v600_process_quick_preview(
+        return cerealgrain_process_quick_preview(
             image.data.ptr,
             width,
             height,
@@ -556,7 +556,7 @@ fn quickPreviewCall(
             jpeg_len,
         );
     }
-    return v600_process_quick_preview_breakdown(
+    return cerealgrain_process_quick_preview_breakdown(
         image.data.ptr,
         width,
         height,
@@ -599,7 +599,7 @@ pub fn decodeJpegRgb(
     var out_height: c_int = 0;
     const expected_width_c = try toCInt(expected_width);
     const expected_height_c = try toCInt(expected_height);
-    const status = v600_decode_jpeg_rgb(
+    const status = cerealgrain_decode_jpeg_rgb(
         jpeg.ptr,
         try toCInt(jpeg.len),
         decoded.ptr,
@@ -2040,7 +2040,7 @@ pub fn encodeRgbJpeg(
     const sample_count = try std.math.mul(usize, try std.math.mul(usize, width, height), 3);
     if (rgb.len != sample_count) return error.InvalidPreviewBuffer;
     var jpeg_len: c_int = 0;
-    const first = v600_encode_rgb_jpeg(
+    const first = cerealgrain_encode_rgb_jpeg(
         rgb.ptr,
         try toCInt(width),
         try toCInt(height),
@@ -2053,7 +2053,7 @@ pub fn encodeRgbJpeg(
     const jpeg = try allocator.alloc(u8, @intCast(jpeg_len));
     errdefer allocator.free(jpeg);
     var second_len: c_int = 0;
-    const second = v600_encode_rgb_jpeg(
+    const second = cerealgrain_encode_rgb_jpeg(
         rgb.ptr,
         try toCInt(width),
         try toCInt(height),
@@ -2804,7 +2804,7 @@ test "process rebate Dmin workflow mirrors route crop and save" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const config_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scratchndent_config.toml", .{tmp.sub_path[0..]});
+    const config_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/processing.toml", .{tmp.sub_path[0..]});
     defer allocator.free(config_path);
     const route_result = try processRebateFromTiff(
         allocator,

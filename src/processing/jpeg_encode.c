@@ -6,17 +6,17 @@
 
 #include <jpeglib.h>
 
-struct v600_jpeg_error {
+struct cerealgrain_jpeg_error {
     struct jpeg_error_mgr pub;
     jmp_buf setjmp_buffer;
 };
 
-static void v600_jpeg_error_exit(j_common_ptr cinfo) {
-    struct v600_jpeg_error* err = (struct v600_jpeg_error*)cinfo->err;
+static void cerealgrain_jpeg_error_exit(j_common_ptr cinfo) {
+    struct cerealgrain_jpeg_error* err = (struct cerealgrain_jpeg_error*)cinfo->err;
     longjmp(err->setjmp_buffer, 1);
 }
 
-int v600_encode_rgb_jpeg(
+int cerealgrain_encode_rgb_jpeg(
     const unsigned char* rgb,
     int width,
     int height,
@@ -31,12 +31,12 @@ int v600_encode_rgb_jpeg(
     }
 
     struct jpeg_compress_struct cinfo;
-    struct v600_jpeg_error jerr;
+    struct cerealgrain_jpeg_error jerr;
     unsigned char* encoded = NULL;
     unsigned long encoded_len = 0;
 
     cinfo.err = jpeg_std_error(&jerr.pub);
-    jerr.pub.error_exit = v600_jpeg_error_exit;
+    jerr.pub.error_exit = cerealgrain_jpeg_error_exit;
     if (setjmp(jerr.setjmp_buffer)) {
         jpeg_destroy_compress(&cinfo);
         free(encoded);

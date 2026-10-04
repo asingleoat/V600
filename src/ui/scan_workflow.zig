@@ -1037,7 +1037,7 @@ test "preview scan plan matches browser preview request shape" {
         .tpu_height_in = 9.54,
         .scan_counter = 1,
     };
-    const plan = previewScanPlan(info, 200, "/tmp/v600-preview.tiff").?;
+    const plan = previewScanPlan(info, 200, "/tmp/cerealgrain-preview.tiff").?;
     try std.testing.expectEqual(@as(u32, 200), plan.request.dpi);
     try std.testing.expectEqual(scanner_contracts.Source.tpu, plan.request.source);
     try std.testing.expectEqual(scanner_contracts.ScanKind.rgb, plan.request.kind);
@@ -1046,8 +1046,8 @@ test "preview scan plan matches browser preview request shape" {
     try std.testing.expectApproxEqAbs(0.0, plan.request.area.y, 0.0);
     try std.testing.expectApproxEqAbs(2.7, plan.request.area.width.?, 0.0);
     try std.testing.expectApproxEqAbs(9.54, plan.request.area.height.?, 0.0);
-    try std.testing.expectEqualStrings("/tmp/v600-preview.tiff", plan.output_path);
-    try std.testing.expectEqualStrings("/tmp/v600-preview.tiff", plan.request.output_path.?);
+    try std.testing.expectEqualStrings("/tmp/cerealgrain-preview.tiff", plan.output_path);
+    try std.testing.expectEqualStrings("/tmp/cerealgrain-preview.tiff", plan.request.output_path.?);
 
     const missing = app_state.ScannerInfo{
         .preview_width = 0,
@@ -1056,7 +1056,7 @@ test "preview scan plan matches browser preview request shape" {
         .tpu_height_in = 0.0,
         .scan_counter = 1,
     };
-    try std.testing.expect(previewScanPlan(missing, 200, "/tmp/v600-preview.tiff") == null);
+    try std.testing.expect(previewScanPlan(missing, 200, "/tmp/cerealgrain-preview.tiff") == null);
 }
 
 test "scan start plan mirrors browser scan-start request shape" {
@@ -1078,7 +1078,7 @@ test "scan start plan mirrors browser scan-start request shape" {
     const path = try scanOutputPath(&path_buffer, "scans", controls, 1);
     try std.testing.expectEqualStrings("scans/scan_0001_rgbir_3200dpi.tiff", path);
 
-    const plan = scanStartPlan(info, controls, path, ".zig-cache/v600-scan.cancel").?;
+    const plan = scanStartPlan(info, controls, path, ".zig-cache/cerealgrain-scan.cancel").?;
     try std.testing.expectEqual(@as(u32, 3200), plan.request.dpi);
     try std.testing.expectEqual(scanner_contracts.Source.tpu, plan.request.source);
     try std.testing.expectEqual(scanner_contracts.ScanKind.rgb_ir, plan.request.kind);
@@ -1089,7 +1089,7 @@ test "scan start plan mirrors browser scan-start request shape" {
     try std.testing.expectApproxEqAbs(1.0, plan.request.area.height.?, 0.0);
     try std.testing.expectEqualStrings(path, plan.output_path);
     try std.testing.expectEqualStrings(path, plan.request.output_path.?);
-    try std.testing.expectEqualStrings(".zig-cache/v600-scan.cancel", plan.cancel_file_path.?);
+    try std.testing.expectEqualStrings(".zig-cache/cerealgrain-scan.cancel", plan.cancel_file_path.?);
     try std.testing.expectEqual(ExposureMode.affine, plan.exposure);
     try std.testing.expectApproxEqAbs(100.0, plan.preview_selection.?.x, 0.0);
 

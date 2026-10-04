@@ -1924,7 +1924,7 @@ test "frame output paths use Python unique path suffixes" {
 
 test "gallery file listing returns sorted TIFF basenames only" {
     const allocator = std.testing.allocator;
-    const missing = try listGalleryFiles(allocator, std.testing.io, ".zig-cache/tmp/v600-gallery-missing");
+    const missing = try listGalleryFiles(allocator, std.testing.io, ".zig-cache/tmp/cerealgrain-gallery-missing");
     defer missing.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), missing.files.len);
 

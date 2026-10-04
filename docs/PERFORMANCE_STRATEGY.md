@@ -308,8 +308,8 @@ workflow. The CPU columns predate the later CPU work (scan_0004 inverted
 preview `1800749 us` here, `76083 us` now) and have not been re-measured.
 WebGPU stays opt-in and off by default until more stages stay on the GPU.
 
-Opt-in: `V600_PROCESSING_GPU`, read once at startup by the processing CLI
-(`src/main.zig`) and the native UI (`src/ui/main.zig`) through
+Opt-in: `CEREALGRAIN_PROCESSING_GPU`, read once at startup by the processing
+CLI (`src/main.zig`) and the native UI (`src/ui/main.zig`) through
 `webgpu.requestFromEnvironment`. Unset, empty, or `0` selects CPU; `1` or
 `webgpu` selects WebGPU and fails fast; `allow-cpu` or `webgpu-allow-cpu`
 falls back to CPU only when the build lacks `-Dwebgpu=true` or the inversion
@@ -351,9 +351,9 @@ Selected-frame crop must not run on the UI thread. The harness skips when no
 local scan is present.
 
 ```sh
-V600_WASM_BENCH_SCAN=scans/scan_0006_rgbir_800dpi.tiff \
+CEREALGRAIN_WASM_BENCH_SCAN=scans/scan_0006_rgbir_800dpi.tiff \
   zig build bench-wasm-webapp-crop-export --summary all
-node test/wasm/webapp_crop_export_bench.mjs zig-out/webapp/v600-wasm-core.wasm \
+node test/wasm/webapp_crop_export_bench.mjs zig-out/webapp/cerealgrain-wasm-core.wasm \
   --scan scans/scan_0004_rgbir_3200dpi.tiff --max-frames 1 --variant inv-only --crop-repeats 1
 ```
 

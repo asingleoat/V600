@@ -1,7 +1,7 @@
 //! Local scanner companion server for the browser webapp: binds loopback
 //! HTTP, serves the staged static webapp, and exposes the native scanner
 //! stack (scanner.linux.Runtime) through the small job API recorded in
-//! docs/SCANNER_COMPANION.md. Scan progress reuses the v600.scanner.event.v1
+//! docs/SCANNER_COMPANION.md. Scan progress reuses the cerealgrain.scanner.event.v1
 //! JSON lines; the companion adds only ready/status envelope lines.
 
 const std = @import("std");
@@ -10,9 +10,9 @@ const builtin = @import("builtin");
 const scanner = @import("scanner.zig");
 const tiff = @import("tiff.zig");
 
-pub const api_schema = "v600.companion.api.v1";
-pub const event_schema = "v600.companion.event.v1";
-pub const service_name = "v600-companion";
+pub const api_schema = "cerealgrain.companion.api.v1";
+pub const event_schema = "cerealgrain.companion.event.v1";
+pub const service_name = "cerealgrain-companion";
 pub const api_version: u32 = 1;
 
 pub const default_port: u16 = 8433;
@@ -734,7 +734,7 @@ test "maps scan request bodies onto scan requests" {
 test "static content types" {
     try std.testing.expectEqualStrings("text/html", staticContentType("index.html"));
     try std.testing.expectEqualStrings("text/javascript", staticContentType("app_core.mjs"));
-    try std.testing.expectEqualStrings("application/wasm", staticContentType("v600-wasm-core.wasm"));
+    try std.testing.expectEqualStrings("application/wasm", staticContentType("cerealgrain-wasm-core.wasm"));
     try std.testing.expectEqualStrings("image/tiff", staticContentType("scan.tiff"));
     try std.testing.expectEqualStrings("application/octet-stream", staticContentType("unknown.bin"));
 }

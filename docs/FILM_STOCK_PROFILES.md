@@ -177,7 +177,7 @@ well-calibrated profiles.
 
 ## TOML Storage Format
 
-Film stock profiles are stored in `scratchndent_config.toml`. Saving writes
+Film stock profiles are stored in `processing.toml`. Saving writes
 each built-in profile commented out, for reference, the same way settings
 left at their defaults are written:
 
@@ -207,7 +207,7 @@ equal the built-in, or one of its earlier versions (older saves wrote the
 built-ins out live), is not a customization: the stock follows the
 compiled profile and the next save comments it out again.
 
-Custom `[stocks.*]` profiles in `scratchndent_config.toml` are the way to add
+Custom `[stocks.*]` profiles in `processing.toml` are the way to add
 stocks. The native app parses, lists, and re-serializes them; there is no
 profile editor. The browser webapp supports only the built-in stocks.
 

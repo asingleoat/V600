@@ -1,22 +1,22 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const export_pipeline = v600.processing.export_pipeline;
-const film_stocks = v600.processing.film_stocks;
-const frames = v600.processing.frames;
-const inversion = v600.processing.inversion;
-const ir_processing = v600.processing.ir;
-const measurement = v600.processing.measurement;
-const process_cache = v600.native_ui_process_cache;
-const processing_config = v600.processing.config;
-const render = v600.processing.render;
-const tiff = v600.tiff;
-const webgpu = v600.processing.webgpu;
-const workflow = v600.processing.workflow;
+const export_pipeline = cerealgrain.processing.export_pipeline;
+const film_stocks = cerealgrain.processing.film_stocks;
+const frames = cerealgrain.processing.frames;
+const inversion = cerealgrain.processing.inversion;
+const ir_processing = cerealgrain.processing.ir;
+const measurement = cerealgrain.processing.measurement;
+const process_cache = cerealgrain.native_ui_process_cache;
+const processing_config = cerealgrain.processing.config;
+const render = cerealgrain.processing.render;
+const tiff = cerealgrain.tiff;
+const webgpu = cerealgrain.processing.webgpu;
+const workflow = cerealgrain.processing.workflow;
 
 const default_scan = "scans/scan_0006_rgbir_800dpi.tiff";
-const default_output_dir = "/tmp/v600-processing-bench";
-const default_config_path = "/tmp/v600-processing-bench-config.toml";
+const default_output_dir = "/tmp/cerealgrain-processing-bench";
+const default_config_path = "/tmp/cerealgrain-processing-bench-config.toml";
 const benchmark_stock = "kodak_gold";
 const benchmark_dmin = [3]f64{ 0.3229871988296509, 0.48254984617233276, 0.6367867588996887 };
 const benchmark_35mm_width_mm = 36.0;
@@ -658,7 +658,7 @@ fn benchProcessResultCacheRepeat(
         .h = rebate.h,
         .angle = rebate.angle,
     }, preview.info.preview_scale);
-    const dmin_rect: v600.app_state.RebateRect = .{
+    const dmin_rect: cerealgrain.app_state.RebateRect = .{
         .x = full_rebate.x,
         .y = full_rebate.y,
         .w = full_rebate.w,

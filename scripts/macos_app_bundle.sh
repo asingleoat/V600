@@ -1,10 +1,10 @@
 #!/bin/sh
-# Assemble V600.app around a release v600-ui and zip it for sharing. Every
+# Assemble CerealGrain.app around a release cerealgrain-ui and zip it for sharing. Every
 # library it loads from outside macOS goes into Contents/Frameworks with the
 # load commands pointed there, and everything is signed ad hoc: no identity,
 # so nothing in the signature names a person. Run by `zig build app-bundle`.
 #
-# usage: macos_app_bundle.sh <v600-ui> <output dir>
+# usage: macos_app_bundle.sh <cerealgrain-ui> <output dir>
 set -eu
 # codesign, ditto, and plutil are macOS's own; a Nix shell may not list them.
 PATH=$PATH:/usr/bin:/bin
@@ -13,7 +13,7 @@ exe=$1
 out=$2
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
-app=$out/V600.app
+app=$out/CerealGrain.app
 frameworks=$app/Contents/Frameworks
 version=0.1.0
 build=$(git -C "$repo" rev-list --count HEAD 2>/dev/null || echo 0)
@@ -23,18 +23,18 @@ trap 'rm -rf "$work"' EXIT
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$frameworks" "$app/Contents/Resources"
-cp "$exe" "$app/Contents/MacOS/v600-ui"
-chmod 755 "$app/Contents/MacOS/v600-ui"
+cp "$exe" "$app/Contents/MacOS/cerealgrain-ui"
+chmod 755 "$app/Contents/MacOS/cerealgrain-ui"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>V600</string>
-  <key>CFBundleDisplayName</key><string>V600</string>
-  <key>CFBundleIdentifier</key><string>io.github.asingleoat.v600</string>
-  <key>CFBundleExecutable</key><string>v600-ui</string>
+  <key>CFBundleName</key><string>CerealGrain</string>
+  <key>CFBundleDisplayName</key><string>CerealGrain</string>
+  <key>CFBundleIdentifier</key><string>io.github.asingleoat.cerealgrain</string>
+  <key>CFBundleExecutable</key><string>cerealgrain-ui</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$build</string>
@@ -90,7 +90,7 @@ bundled_deps() {
 # OpenCV and for libtiff) each keep their own copy, the second prefixed with
 # its store hash.
 : > "$work/copied"
-echo "$app/Contents/MacOS/v600-ui $exe" > "$work/queue"
+echo "$app/Contents/MacOS/cerealgrain-ui $exe" > "$work/queue"
 while [ -s "$work/queue" ]; do
   mv "$work/queue" "$work/current"
   : > "$work/queue"
@@ -133,7 +133,7 @@ done
 quiet codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 
-for image in "$app/Contents/MacOS/v600-ui" "$frameworks"/*; do
+for image in "$app/Contents/MacOS/cerealgrain-ui" "$frameworks"/*; do
   if otool -L "$image" | grep -q "/nix/store"; then
     echo "app-bundle: $image still loads from the Nix store" >&2
     exit 1
@@ -147,12 +147,12 @@ if grep -rlF "$HOME" "$app" > "$work/leaks"; then
   exit 1
 fi
 
-mkdir "$work/V600"
-ditto "$app" "$work/V600/V600.app"
-cp "$here/macos_app_readme.txt" "$work/V600/Read Me.txt"
-rm -f "$out"/V600-*-macos-arm64.zip
-zip=$out/V600-$version-$build-macos-arm64.zip
-ditto -c -k --sequesterRsrc --keepParent "$work/V600" "$zip"
+mkdir "$work/CerealGrain"
+ditto "$app" "$work/CerealGrain/CerealGrain.app"
+cp "$here/macos_app_readme.txt" "$work/CerealGrain/Read Me.txt"
+rm -f "$out"/CerealGrain-*-macos-arm64.zip
+zip=$out/CerealGrain-$version-$build-macos-arm64.zip
+ditto -c -k --sequesterRsrc --keepParent "$work/CerealGrain" "$zip"
 
 echo "app-bundle: $app ($(ls "$frameworks" | wc -l | tr -d ' ') libraries, $(du -sh "$app" | cut -f1))"
 echo "app-bundle: $zip ($(du -h "$zip" | cut -f1))"

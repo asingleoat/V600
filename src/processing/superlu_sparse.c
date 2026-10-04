@@ -5,7 +5,7 @@
 
 #include <slu_ddefs.h>
 
-int v600_solve_sparse_lu(
+int cerealgrain_solve_sparse_lu(
     size_t n,
     const size_t* row_offsets,
     const size_t* columns,

@@ -1,7 +1,7 @@
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 
-const ir = v600.processing.ir;
+const ir = cerealgrain.processing.ir;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;

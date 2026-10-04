@@ -25,7 +25,7 @@ thread. See `docs/WEBAPP.md`.
 
 Every message includes:
 
-- `schema`: `v600.webapp.worker.v1`
+- `schema`: `cerealgrain.webapp.worker.v1`
 - `version`: `1`
 - `direction`: `main-to-worker` or `worker-to-main`
 - `type`
@@ -97,8 +97,8 @@ Worker-to-main messages:
 ## Cache Key
 
 Preview results are keyed by a canonical JSON payload with schema
-`v600.webapp.cache-key.v1`. The digest should be a sufficiently large hash of
-the canonical payload, currently represented as `sha256:<hex>`.
+`cerealgrain.webapp.cache-key.v1`. The digest should be a sufficiently large
+hash of the canonical payload, currently represented as `sha256:<hex>`.
 
 The preview/export cache key must include:
 

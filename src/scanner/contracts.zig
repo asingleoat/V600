@@ -79,7 +79,7 @@ pub const TiffPageLayout = struct {
 pub const TiffMetadata = struct {
     make: []const u8 = "EPSON",
     model: []const u8 = "Epson Scanner",
-    software: []const u8 = "v600-zig",
+    software: []const u8 = "cerealgrain",
     dpi: u32,
     custom_luts_applied: bool = false,
 };

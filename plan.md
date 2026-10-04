@@ -1,4 +1,4 @@
-# V600 plan
+# CerealGrain plan
 
 Current state, decisions on record, and open work. This file replaces the
 11,000-line rewrite plan and verification log kept during the May-July 2026
@@ -18,9 +18,9 @@ As of 2026-09-28, on branch `zig-rewrite`:
 - macOS: scanning works on a V600 from Apple Silicon through Epson's
   Interpreter bundle over libusb, with per-channel gamma LUTs fitted to the
   film. CLI, native UI, and tests build there. `zig build app-bundle`
-  makes a shareable, ad hoc signed V600.app (Apple Silicon, macOS 14+)
-  that works in `~/Pictures/V600`.
-- Rolls: `v600-zig roll ...` and the Scan view's roll controls scan a film
+  makes a shareable, ad hoc signed CerealGrain.app (Apple Silicon, macOS 14+)
+  that works in `~/Pictures/CerealGrain`.
+- Rolls: `cerealgrain roll ...` and the Scan view's roll controls scan a film
   roll strip by strip (preview, film area, one LUT per roll, full scan) and
   export each strip in the background with a review page. Exercised on the
   V600 from the CLI and the UI's Scan Strip at 800 dpi.
@@ -28,7 +28,7 @@ As of 2026-09-28, on branch `zig-rewrite`:
 - Browser webapp: processing and export in WebAssembly, built from the same
   Zig processing code. Node smokes plus a manual headless Chrome/Chromium
   check; Firefox and Safari untried.
-- Scanner companion (`v600-zig serve`): lets the webapp scan through a Linux
+- Scanner companion (`cerealgrain serve`): lets the webapp scan through a Linux
   host. Tested only against a fake `scanimage`; has known bugs (below).
 - Python: frozen at 2026-04-17, kept for reference only. Its fixtures are
   now regression baselines. A 2026-09-28 check found that the native UI
@@ -114,7 +114,7 @@ Open:
     sky of KODAKGOLD_200_120_0 strip 1 frame 2 passed the ratio test but
     not that one. `ir_threshold` sets both tests and moves them opposite
     ways.
-- `v600-ui --process-interaction-smoke` (not a build step) fails with
+- `cerealgrain-ui --process-interaction-smoke` (not a build step) fails with
   ProcessInteractionSmokeFailed.
 - Loading an image, auto-detect, and export in the Process view copy the
   cached RGB page on the UI thread before starting their worker
@@ -141,7 +141,7 @@ Open:
   _2, strip 1). Needs a per-frame evidence test before dropping frames.
 
 - Linux custom film LUTs are not applied, but scans are marked as if they
-  were. `src/scanner/linux.zig` sets `V600_LUT_FILE` and writes
+  were. `src/scanner/linux.zig` sets `CEREALGRAIN_LUT_FILE` and writes
   `custom_luts_applied=true` and TIFF tag 50000; nothing installed reads the
   variable (only the unbuilt `lut_dispatcher.c` shim does). Decide whether to
   package the shim in `nixos/` or stop setting the marker, then verify on
@@ -259,6 +259,9 @@ Open:
   `test/test-combined-features.sh`.
 - macOS app bundle: no icon yet, and Intel Macs would need an
   `x86_64-darwin` build.
+- Some UI worker tests (`src/ui/process_worker.zig`) load `processing.toml`
+  from the working directory, so a test run reads the developer's own
+  config at the repo root; they should use a temporary config.
 - With parity dropped, decide whether the Python tree stays in HEAD or only
   in history (commit 48a4c79). `docs/PYTHON_PORT_MAP.md` line references
   would then point at that commit.

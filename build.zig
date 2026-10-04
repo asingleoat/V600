@@ -34,9 +34,9 @@ const ui_smoke_steps = [_]UiSmokeSpec{
     .{ .arg = "--roll-close-smoke", .name = "native-roll-close-smoke", .description = "Verify Close Roll returns while a strip exports and the export finishes after" },
     .{ .arg = "--process-dump-smoke", .name = "native-process-dump-smoke", .description = "Verify native Process selection dump diagnostics" },
     .{ .arg = "--process-export-smoke", .name = "native-process-export-smoke", .description = "Verify native Process export flow starts from the UI" },
-    .{ .arg = "--preview-worker-smoke", .name = "native-preview-worker-smoke-skip", .description = "Verify native preview hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
-    .{ .arg = "--scan-worker-smoke", .name = "native-scan-worker-smoke-skip", .description = "Verify native scan hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
-    .{ .arg = "--roll-strip-smoke", .name = "native-roll-strip-smoke-skip", .description = "Verify the native Scan Strip hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .arg = "--preview-worker-smoke", .name = "native-preview-worker-smoke-skip", .description = "Verify native preview hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .arg = "--scan-worker-smoke", .name = "native-scan-worker-smoke-skip", .description = "Verify native scan hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .arg = "--roll-strip-smoke", .name = "native-roll-strip-smoke-skip", .description = "Verify the native Scan Strip hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
 };
 
 const ScannerSmokeSpec = struct {
@@ -48,9 +48,9 @@ const ScannerSmokeSpec = struct {
 
 const scanner_smoke_steps = [_]ScannerSmokeSpec{
     .{ .args = &.{ "scanner", "smoke" }, .name = "scanner-smoke", .description = "Run gated scanner hardware smoke test" },
-    .{ .args = &.{ "scanner", "smoke" }, .name = "scanner-smoke-skip", .description = "Verify scanner hardware smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
-    .{ .args = &.{ "scanner", "processing-smoke" }, .name = "scanner-processing-smoke-skip", .description = "Verify scanner processing smoke skips without V600_HARDWARE_SMOKE=1", .clear_env = true },
-    .{ .args = &.{ "scanner", "macos-smoke" }, .name = "macos-scanner-smoke-skip", .description = "Verify future macOS scanner hardware smoke skips without V600_MACOS_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .args = &.{ "scanner", "smoke" }, .name = "scanner-smoke-skip", .description = "Verify scanner hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .args = &.{ "scanner", "processing-smoke" }, .name = "scanner-processing-smoke-skip", .description = "Verify scanner processing smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
+    .{ .args = &.{ "scanner", "macos-smoke" }, .name = "macos-scanner-smoke-skip", .description = "Verify future macOS scanner hardware smoke skips without CEREALGRAIN_MACOS_HARDWARE_SMOKE=1", .clear_env = true },
 };
 
 const WasmNodeSpec = struct {
@@ -79,11 +79,11 @@ const WebgpuProgramSpec = struct {
 };
 
 const webgpu_programs = [_]WebgpuProgramSpec{
-    .{ .step_name = "webgpu-smoke", .description = "Run optional WebGPU adapter/device smoke test", .exe_name = "v600-webgpu-smoke", .source = "src/tools/webgpu_smoke.zig" },
-    .{ .step_name = "webgpu-sigmoid-compare", .description = "Compare the apply_sigmoid WGSL kernel against the CPU reference", .exe_name = "v600-webgpu-sigmoid-compare", .source = "src/tools/webgpu_sigmoid_compare.zig" },
-    .{ .step_name = "webgpu-invert-negative-compare", .description = "Compare the invert_negative WGSL kernel against the Zig CPU oracle", .exe_name = "v600-webgpu-invert-negative-compare", .source = "src/tools/webgpu_invert_negative_compare.zig" },
-    .{ .step_name = "webgpu-sigmoid-runtime-smoke", .description = "Verify V600_PROCESSING_GPU selects the apply_sigmoid backend explicitly", .exe_name = "v600-webgpu-sigmoid-runtime-smoke", .source = "src/tools/webgpu_sigmoid_runtime_smoke.zig", .gpu_env_pair = true },
-    .{ .step_name = "webgpu-invert-negative-runtime-smoke", .description = "Verify V600_PROCESSING_GPU selects the invert_negative backend explicitly", .exe_name = "v600-webgpu-invert-negative-runtime-smoke", .source = "src/tools/webgpu_invert_negative_runtime_smoke.zig", .gpu_env_pair = true },
+    .{ .step_name = "webgpu-smoke", .description = "Run optional WebGPU adapter/device smoke test", .exe_name = "cerealgrain-webgpu-smoke", .source = "src/tools/webgpu_smoke.zig" },
+    .{ .step_name = "webgpu-sigmoid-compare", .description = "Compare the apply_sigmoid WGSL kernel against the CPU reference", .exe_name = "cerealgrain-webgpu-sigmoid-compare", .source = "src/tools/webgpu_sigmoid_compare.zig" },
+    .{ .step_name = "webgpu-invert-negative-compare", .description = "Compare the invert_negative WGSL kernel against the Zig CPU oracle", .exe_name = "cerealgrain-webgpu-invert-negative-compare", .source = "src/tools/webgpu_invert_negative_compare.zig" },
+    .{ .step_name = "webgpu-sigmoid-runtime-smoke", .description = "Verify CEREALGRAIN_PROCESSING_GPU selects the apply_sigmoid backend explicitly", .exe_name = "cerealgrain-webgpu-sigmoid-runtime-smoke", .source = "src/tools/webgpu_sigmoid_runtime_smoke.zig", .gpu_env_pair = true },
+    .{ .step_name = "webgpu-invert-negative-runtime-smoke", .description = "Verify CEREALGRAIN_PROCESSING_GPU selects the invert_negative backend explicitly", .exe_name = "cerealgrain-webgpu-invert-negative-runtime-smoke", .source = "src/tools/webgpu_invert_negative_runtime_smoke.zig", .gpu_env_pair = true },
     .{ .step_name = "bench-webgpu-sigmoid", .description = "Benchmark apply_sigmoid CPU vs WebGPU at realistic sizes", .exe_name = "bench-webgpu-sigmoid", .source = "src/benchmarks/webgpu_sigmoid.zig" },
     .{ .step_name = "bench-webgpu-invert-negative", .description = "Benchmark invert_negative CPU vs WebGPU at realistic sizes", .exe_name = "bench-webgpu-invert-negative", .source = "src/benchmarks/webgpu_invert_negative.zig" },
 };
@@ -101,13 +101,13 @@ pub fn build(b: *std.Build) void {
     const root_module = addRootModule(b, target, optimize, build_options, enable_webgpu, null);
 
     const exe = b.addExecutable(.{
-        .name = "v600-zig",
+        .name = "cerealgrain",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "v600", .module = root_module },
+                .{ .name = "cerealgrain", .module = root_module },
             },
         }),
     });
@@ -151,7 +151,7 @@ pub fn build(b: *std.Build) void {
         bundle_cmd.addArtifactArg(bundle_ui);
         bundle_cmd.addArg(b.getInstallPath(.prefix, ""));
         bundle_cmd.has_side_effects = true;
-        const bundle_step = b.step("app-bundle", "Build zig-out/V600.app and a zip of it to share (macOS, Apple Silicon)");
+        const bundle_step = b.step("app-bundle", "Build zig-out/CerealGrain.app and a zip of it to share (macOS, Apple Silicon)");
         bundle_step.dependOn(&bundle_cmd.step);
     }
 
@@ -163,7 +163,7 @@ pub fn build(b: *std.Build) void {
         else => optimize,
     };
     const wasm_core = addWasmCore(b, .{
-        .name = "v600-wasm-core",
+        .name = "cerealgrain-wasm-core",
         .cpu_arch = .wasm64,
         .optimize = wasm_optimize,
         .options = wasm_build_options,
@@ -171,7 +171,7 @@ pub fn build(b: *std.Build) void {
         .step_description = "Build the dependency-free browser WebAssembly processing core",
     });
     const wasm32_core = addWasmCore(b, .{
-        .name = "v600-wasm-core32",
+        .name = "cerealgrain-wasm-core32",
         .cpu_arch = .wasm32,
         .optimize = wasm_optimize,
         .options = wasm_build_options,
@@ -199,12 +199,12 @@ pub fn build(b: *std.Build) void {
     const install_webapp_wasm = b.addInstallFileWithDir(
         wasm_core.getEmittedBin(),
         .prefix,
-        "webapp/v600-wasm-core.wasm",
+        "webapp/cerealgrain-wasm-core.wasm",
     );
     const install_webapp_wasm32 = b.addInstallFileWithDir(
         wasm32_core.getEmittedBin(),
         .prefix,
-        "webapp/v600-wasm-core32.wasm",
+        "webapp/cerealgrain-wasm-core32.wasm",
     );
     const wasm_webapp_step = b.step("wasm-webapp", "Stage the static browser WebAssembly webapp");
     wasm_webapp_step.dependOn(&install_webapp_assets.step);
@@ -236,11 +236,11 @@ pub fn build(b: *std.Build) void {
     }
     if (enable_webgpu) {
         for (webgpu_programs, 0..) |spec, index| {
-            const program = addV600Program(b, root_module, target, optimize, spec.exe_name, spec.source);
+            const program = addProgram(b, root_module, target, optimize, spec.exe_name, spec.source);
             if (spec.gpu_env_pair) {
                 const cpu_cmd = b.addRunArtifact(program);
                 const gpu_cmd = b.addRunArtifact(program);
-                gpu_cmd.setEnvironmentVariable("V600_PROCESSING_GPU", "1");
+                gpu_cmd.setEnvironmentVariable("CEREALGRAIN_PROCESSING_GPU", "1");
                 webgpu_steps[index].dependOn(&cpu_cmd.step);
                 webgpu_steps[index].dependOn(&gpu_cmd.step);
             } else {
@@ -263,7 +263,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run the V600 Zig CLI");
+    const run_step = b.step("run", "Run the CerealGrain CLI");
     run_step.dependOn(&run_cmd.step);
 
     for (scanner_smoke_steps) |spec| {
@@ -274,7 +274,7 @@ pub fn build(b: *std.Build) void {
         step.dependOn(&cmd.step);
     }
 
-    const bench_color = addV600Program(b, root_module, target, optimize, "bench-color-paths", "src/benchmarks/color_paths.zig");
+    const bench_color = addProgram(b, root_module, target, optimize, "bench-color-paths", "src/benchmarks/color_paths.zig");
     const bench_color_cmd = b.addRunArtifact(bench_color);
     const bench_color_step = b.step("bench-color", "Run headless processing color-path benchmarks");
     bench_color_step.dependOn(&bench_color_cmd.step);
@@ -285,12 +285,12 @@ pub fn build(b: *std.Build) void {
     const bench_gpu_readiness_step = b.step("bench-gpu-readiness", "Run CPU benchmark coverage gate before GPU backend work");
     bench_gpu_readiness_step.dependOn(&bench_gpu_readiness_cmd.step);
 
-    const bench_ir_inpaint = addV600Program(b, root_module, target, optimize, "bench-ir-inpaint", "src/benchmarks/ir_inpaint.zig");
+    const bench_ir_inpaint = addProgram(b, root_module, target, optimize, "bench-ir-inpaint", "src/benchmarks/ir_inpaint.zig");
     const bench_ir_inpaint_cmd = b.addRunArtifact(bench_ir_inpaint);
     const bench_ir_inpaint_step = b.step("bench-ir-inpaint", "Run headless IR biharmonic inpaint benchmark");
     bench_ir_inpaint_step.dependOn(&bench_ir_inpaint_cmd.step);
 
-    const bench_processing_commands = addV600Program(b, root_module, target, optimize, "bench-processing-commands", "src/benchmarks/processing_commands.zig");
+    const bench_processing_commands = addProgram(b, root_module, target, optimize, "bench-processing-commands", "src/benchmarks/processing_commands.zig");
     const bench_processing_commands_cmd = b.addRunArtifact(bench_processing_commands);
     if (b.args) |args| {
         bench_processing_commands_cmd.addArgs(args);
@@ -362,7 +362,7 @@ fn addWasmCore(b: *std.Build, spec: WasmCoreSpec) *std.Build.Step.Compile {
     return core;
 }
 
-fn addV600Program(
+fn addProgram(
     b: *std.Build,
     root_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
@@ -377,7 +377,7 @@ fn addV600Program(
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "v600", .module = root_module },
+                .{ .name = "cerealgrain", .module = root_module },
             },
         }),
     });
@@ -456,7 +456,7 @@ fn addUiExecutable(
         .optimize = optimize,
         .strip = strip,
         .imports = &.{
-            .{ .name = "v600", .module = root_module },
+            .{ .name = "cerealgrain", .module = root_module },
         },
     });
     ui_module.linkSystemLibrary("c", .{});
@@ -466,7 +466,7 @@ fn addUiExecutable(
     ui_module.addObjectFile(nuklear_obj);
 
     return b.addExecutable(.{
-        .name = "v600-ui",
+        .name = "cerealgrain-ui",
         .root_module = ui_module,
     });
 }

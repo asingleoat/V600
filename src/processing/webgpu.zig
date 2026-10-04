@@ -19,7 +19,7 @@ pub const Request = struct {
     fallback: FallbackPolicy = .fail,
 };
 
-pub const processing_gpu_env_var = "V600_PROCESSING_GPU";
+pub const processing_gpu_env_var = "CEREALGRAIN_PROCESSING_GPU";
 
 pub const Capability = struct {
     compiled: bool,

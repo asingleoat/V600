@@ -1,5 +1,5 @@
 {
-  description = "V600 scanner and film-processing rewrite";
+  description = "CerealGrain: film scanning and processing for the Epson V600";
 
   inputs = {
     nixpkgs.url = "nixpkgs/nixos-unstable";
@@ -58,8 +58,8 @@ EOF
                 "zig-out"
               ];
               generatedFile =
-                base == "epdaughter_config.toml" ||
-                base == "scratchndent_config.toml" ||
+                base == "scanner.toml" ||
+                base == "processing.toml" ||
                 base == "test_direct_usb" ||
                 base == "test_epson2" ||
                 base == "usb_reset" ||
@@ -85,7 +85,7 @@ EOF
           nuklear = nuklearPackage pkgs;
           mkPackage = { enableUi }:
             pkgs.stdenv.mkDerivation {
-              pname = if enableUi then "v600-zig-ui" else "v600-zig-cli";
+              pname = if enableUi then "cerealgrain-ui" else "cerealgrain-cli";
               version = "0.1.0";
               src = cleanSource pkgs;
               nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc ];
@@ -117,7 +117,7 @@ EOF
                 runHook postInstall
               '';
               meta = {
-                mainProgram = if enableUi then "v600-ui" else "v600-zig";
+                mainProgram = if enableUi then "cerealgrain-ui" else "cerealgrain";
               };
             };
           cli = mkPackage { enableUi = false; };
@@ -130,7 +130,7 @@ EOF
 
       checks = forAllSystems (pkgs:
         let nuklear = nuklearPackage pkgs; in {
-        zig-tests = pkgs.runCommand "v600-zig-tests" {
+        zig-tests = pkgs.runCommand "cerealgrain-tests" {
           nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc pkgs.imagemagick pkgs.exiftool ];
           buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.opencv pkgs.superlu pkgs.sdl3 nuklear ];
         } ''
@@ -214,7 +214,7 @@ EOF
           WGPU_NATIVE_LIBRARY_DIR = "${pkgs.wgpu-native}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath webgpuRuntimeInputs;
           shellHook = shellHook + ''
-            echo "V600 WebGPU shell: using nixpkgs wgpu-native (libwgpu_native, include/webgpu)" >&2
+            echo "CerealGrain WebGPU shell: using nixpkgs wgpu-native (libwgpu_native, include/webgpu)" >&2
           '';
         };
       });

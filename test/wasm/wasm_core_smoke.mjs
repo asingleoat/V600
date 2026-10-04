@@ -209,7 +209,7 @@ function runPreview(exports, ptrs, optionOverrides = {}) {
   new Uint16Array(exports.memory.buffer, ptrs.raw, rawFixture.length).set(rawFixture);
   writePreviewOptions(ptrs.options, optionOverrides);
   return abi.callCore(
-    "v600_preview_invert_u16_to_u8",
+    "cerealgrain_preview_invert_u16_to_u8",
     ptrs.raw,
     rawFixture.length,
     ptrs.output,
@@ -222,7 +222,7 @@ function runExport(exports, ptrs, optionOverrides = {}) {
   new Uint16Array(exports.memory.buffer, ptrs.raw, rawFixture.length).set(rawFixture);
   writePreviewOptions(ptrs.options, optionOverrides);
   return abi.callCore(
-    "v600_export_invert_u16_to_u16",
+    "cerealgrain_export_invert_u16_to_u16",
     ptrs.raw,
     rawFixture.length,
     ptrs.exportOutput,
@@ -235,7 +235,7 @@ function runIrMask(exports, ptrs, optionOverrides = {}) {
   new Uint8Array(exports.memory.buffer, ptrs.ir, irFixture.length).set(irFixture);
   writeIrMaskOptions(ptrs.irOptions, optionOverrides);
   return abi.callCore(
-    "v600_ir_make_defect_mask_u8",
+    "cerealgrain_ir_make_defect_mask_u8",
     ptrs.ir,
     irFixture.length,
     ptrs.irMask,
@@ -248,7 +248,7 @@ function runIrMaskF32(exports, ptrs, optionOverrides = {}) {
   new Float32Array(exports.memory.buffer, ptrs.irF32, irFixture.length).set(irFixture);
   writeIrMaskOptions(ptrs.irOptions, optionOverrides);
   return abi.callCore(
-    "v600_ir_make_defect_mask_f32",
+    "cerealgrain_ir_make_defect_mask_f32",
     ptrs.irF32,
     irFixture.length,
     ptrs.irMask,
@@ -272,7 +272,7 @@ function runIrAlignFixture(exports, ptrs) {
     ty: fixture.expected_offset[1],
   });
   const statusCode = abi.callCore(
-    "v600_ir_apply_translation_f32",
+    "cerealgrain_ir_apply_translation_f32",
     ptrs.alignInput,
     samples,
     ptrs.alignOutput,
@@ -313,7 +313,7 @@ function runIrEstimateFixture(exports, ptrs) {
     irHeight: height,
   });
   const statusCode = abi.callCore(
-    "v600_ir_estimate_translation_f32",
+    "cerealgrain_ir_estimate_translation_f32",
     ptrs.estimateRgb,
     rgbSamples,
     ptrs.alignInput,
@@ -330,7 +330,7 @@ function runIrEstimateFixture(exports, ptrs) {
   const shifted = view.getUint32(16, true);
   writeIrAlignOptions(ptrs.alignOptions, { width, height, tx, ty });
   const alignStatus = abi.callCore(
-    "v600_ir_apply_translation_f32",
+    "cerealgrain_ir_apply_translation_f32",
     ptrs.alignInput,
     irSamples,
     ptrs.alignOutput,
@@ -438,7 +438,7 @@ function assertIrMaskResizeFixture(exports) {
       maxCoverage: fixture.max_coverage,
     });
     const maskStatus = abi.callCore(
-      "v600_ir_make_defect_mask_f32",
+      "cerealgrain_ir_make_defect_mask_f32",
       irPtr,
       ir.length,
       irMaskPtr,
@@ -458,7 +458,7 @@ function assertIrMaskResizeFixture(exports) {
       rgbHeight,
     });
     const resizeStatus = abi.callCore(
-      "v600_ir_resize_mask_to_rgb_u8",
+      "cerealgrain_ir_resize_mask_to_rgb_u8",
       irMaskPtr,
       expectedIrMaskFixture.length,
       rgbMaskPtr,
@@ -501,7 +501,7 @@ function assertBiharmonicInpaintFixture(exports) {
     new Uint8Array(exports.memory.buffer, maskPtr, mask.length).set(mask);
     writeIrInpaintOptions(optionsPtr, { width, height });
     const result = abi.callCore(
-      "v600_ir_biharmonic_inpaint_u16",
+      "cerealgrain_ir_biharmonic_inpaint_u16",
       rgbPtr,
       input.length,
       maskPtr,
@@ -563,7 +563,7 @@ function assertGrainInpaintFixture(exports) {
       grainPadding: fixture.grain_padding,
     });
     const result = abi.callCore(
-      "v600_ir_inpaint_grain_u16_with_noise",
+      "cerealgrain_ir_inpaint_grain_u16_with_noise",
       rgbPtr,
       input.length,
       maskPtr,
@@ -612,7 +612,7 @@ function countNonZero(values) {
 }
 
 const wasmPath = process.argv[2];
-if (!wasmPath) fail("usage: node test/wasm/wasm_core_smoke.mjs <v600-wasm-core.wasm>");
+if (!wasmPath) fail("usage: node test/wasm/wasm_core_smoke.mjs <cerealgrain-wasm-core.wasm>");
 
 const wasmBytes = fs.readFileSync(wasmPath);
 const instantiateStart = performance.now();
@@ -621,18 +621,18 @@ const coldInstantiateUs = Math.round((performance.now() - instantiateStart) * 10
 const exports = instance.exports;
 
 requireExport(exports, "memory");
-requireExport(exports, "v600_wasm_pointer_bits", "function");
-requireExport(exports, "v600_wasm_alloc", "function");
-requireExport(exports, "v600_wasm_free", "function");
-requireExport(exports, "v600_preview_invert_u16_to_u8", "function");
-requireExport(exports, "v600_export_invert_u16_to_u16", "function");
-requireExport(exports, "v600_ir_make_defect_mask_u8", "function");
-requireExport(exports, "v600_ir_make_defect_mask_f32", "function");
-requireExport(exports, "v600_ir_resize_mask_to_rgb_u8", "function");
-requireExport(exports, "v600_ir_biharmonic_inpaint_u16", "function");
-requireExport(exports, "v600_ir_inpaint_grain_u16_with_noise", "function");
-requireExport(exports, "v600_ir_apply_translation_f32", "function");
-requireExport(exports, "v600_ir_estimate_translation_f32", "function");
+requireExport(exports, "cerealgrain_wasm_pointer_bits", "function");
+requireExport(exports, "cerealgrain_wasm_alloc", "function");
+requireExport(exports, "cerealgrain_wasm_free", "function");
+requireExport(exports, "cerealgrain_preview_invert_u16_to_u8", "function");
+requireExport(exports, "cerealgrain_export_invert_u16_to_u16", "function");
+requireExport(exports, "cerealgrain_ir_make_defect_mask_u8", "function");
+requireExport(exports, "cerealgrain_ir_make_defect_mask_f32", "function");
+requireExport(exports, "cerealgrain_ir_resize_mask_to_rgb_u8", "function");
+requireExport(exports, "cerealgrain_ir_biharmonic_inpaint_u16", "function");
+requireExport(exports, "cerealgrain_ir_inpaint_grain_u16_with_noise", "function");
+requireExport(exports, "cerealgrain_ir_apply_translation_f32", "function");
+requireExport(exports, "cerealgrain_ir_estimate_translation_f32", "function");
 const abi = createWasmAbi(exports);
 const wasmPointerBits = abi.pointerBits;
 
@@ -701,7 +701,7 @@ try {
 
   console.log(JSON.stringify({
     event: "wasm-core-smoke",
-    schema: "v600.webapp.event.v1",
+    schema: "cerealgrain.webapp.event.v1",
     wasm: wasmPath,
     pointer_bits: wasmPointerBits,
     cold_instantiate_us: coldInstantiateUs,

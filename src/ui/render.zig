@@ -3,7 +3,7 @@
 //! overlay drawing.
 
 const std = @import("std");
-const v600 = @import("v600");
+const cerealgrain = @import("cerealgrain");
 const c = @import("sdl_nuklear.zig").c;
 const selection_geometry = @import("selection_geometry.zig");
 const chrome = @import("chrome.zig");
@@ -13,11 +13,11 @@ const ProcessScreenPoint = selection_geometry.ProcessScreenPoint;
 const processImageRect = selection_geometry.processImageRect;
 const selectionLocalToScreen = selection_geometry.selectionLocalToScreen;
 const processRotationHandleOffsetPreview = selection_geometry.processRotationHandleOffsetPreview;
-const ProcessCache = v600.native_ui_process_cache;
-const InvertedPreviewWorker = v600.native_ui_inverted_preview_worker.Worker;
-const InvertedPreviewKey = v600.native_ui_inverted_preview_worker.Key;
-const InvertedPreviewResult = v600.native_ui_inverted_preview_worker.Result;
-const PreviewBuffer = v600.native_ui_preview_worker.PreviewBuffer;
+const ProcessCache = cerealgrain.native_ui_process_cache;
+const InvertedPreviewWorker = cerealgrain.native_ui_inverted_preview_worker.Worker;
+const InvertedPreviewKey = cerealgrain.native_ui_inverted_preview_worker.Key;
+const InvertedPreviewResult = cerealgrain.native_ui_inverted_preview_worker.Result;
+const PreviewBuffer = cerealgrain.native_ui_preview_worker.PreviewBuffer;
 
 pub const process_selection_line_width: f32 = 3.0;
 pub const process_selection_antialias_width: f32 = 1.0;
@@ -82,7 +82,7 @@ pub const ProcessPreviewTextureCache = struct {
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
         io: std.Io,
-        model: *v600.native_ui.State,
+        model: *cerealgrain.native_ui.State,
         inverted_preview_worker: *InvertedPreviewWorker,
     ) !*c.SDL_Texture {
         const preview = model.processing_preview orelse return error.NoProcessImageLoaded;
@@ -123,7 +123,7 @@ pub const ProcessPreviewTextureCache = struct {
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
         io: std.Io,
-        model: *v600.native_ui.State,
+        model: *cerealgrain.native_ui.State,
         result: *InvertedPreviewResult,
     ) !bool {
         const preview = model.processing_preview orelse return false;
@@ -158,10 +158,10 @@ pub const ProcessPreviewTextureCache = struct {
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
         io: std.Io,
-        model: *v600.native_ui.State,
-        preview: v600.processing.workflow.QuickPreview,
+        model: *cerealgrain.native_ui.State,
+        preview: cerealgrain.processing.workflow.QuickPreview,
         generation: usize,
-        options: v600.processing.workflow.InvertedPreviewOptions,
+        options: cerealgrain.processing.workflow.InvertedPreviewOptions,
         worker: *InvertedPreviewWorker,
     ) !void {
         if (options.stock == null or preview.info.is_grayscale or worker.isRunning()) return;
@@ -189,10 +189,10 @@ pub const ProcessPreviewTextureCache = struct {
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
         io: std.Io,
-        model: *v600.native_ui.State,
-        preview: v600.processing.workflow.QuickPreview,
+        model: *cerealgrain.native_ui.State,
+        preview: cerealgrain.processing.workflow.QuickPreview,
         generation: usize,
-        options: v600.processing.workflow.InvertedPreviewOptions,
+        options: cerealgrain.processing.workflow.InvertedPreviewOptions,
     ) !bool {
         var key = invertedPreviewCacheKey(allocator, io, model, preview, options) catch return false;
         defer key.deinit(allocator);
@@ -251,9 +251,9 @@ pub const ProcessPreviewTextureCache = struct {
 pub fn invertedPreviewCacheKey(
     allocator: std.mem.Allocator,
     io: std.Io,
-    model: *const v600.native_ui.State,
-    preview: v600.processing.workflow.QuickPreview,
-    options: v600.processing.workflow.InvertedPreviewOptions,
+    model: *const cerealgrain.native_ui.State,
+    preview: cerealgrain.processing.workflow.QuickPreview,
+    options: cerealgrain.processing.workflow.InvertedPreviewOptions,
 ) !ProcessCache.Key {
     const path = model.currentProcessingImagePathForWorker() orelse return error.NoProcessImageLoaded;
     return ProcessCache.invertedPreviewKey(allocator, io, path, &model.processing_config, .{
@@ -270,9 +270,9 @@ pub fn invertedPreviewCacheKey(
 pub fn cacheInvertedPreviewResult(
     allocator: std.mem.Allocator,
     io: std.Io,
-    model: *v600.native_ui.State,
-    preview: v600.processing.workflow.QuickPreview,
-    options: v600.processing.workflow.InvertedPreviewOptions,
+    model: *cerealgrain.native_ui.State,
+    preview: cerealgrain.processing.workflow.QuickPreview,
+    options: cerealgrain.processing.workflow.InvertedPreviewOptions,
     rgb8: []const u8,
 ) !void {
     var key = try invertedPreviewCacheKey(allocator, io, model, preview, options);
@@ -443,7 +443,7 @@ pub const GalleryTextureCache = struct {
         self: *GalleryTextureCache,
         renderer: *c.SDL_Renderer,
         allocator: std.mem.Allocator,
-        model: *const v600.native_ui.State,
+        model: *const cerealgrain.native_ui.State,
     ) !?*c.SDL_Texture {
         const name = model.currentGalleryFileName() orelse return null;
         const path = try std.fs.path.join(allocator, &.{ model.processing.output_dir, name });
@@ -455,7 +455,7 @@ pub const GalleryTextureCache = struct {
         }
 
         self.deinit(allocator);
-        var image = try v600.tiff.loadRgbPage(allocator, path);
+        var image = try cerealgrain.tiff.loadRgbPage(allocator, path);
         defer image.deinit(allocator);
         const rgb = try galleryImageRgb8(allocator, image);
         defer allocator.free(rgb);
@@ -544,12 +544,12 @@ pub const GalleryThumbnailCache = struct {
 
         const path = try std.fs.path.join(allocator, &.{ output_dir, name });
         defer allocator.free(path);
-        var image = try v600.tiff.loadRgbPage(allocator, path);
+        var image = try cerealgrain.tiff.loadRgbPage(allocator, path);
         defer image.deinit(allocator);
         const rgb = try galleryImageRgb8(allocator, image);
         defer allocator.free(rgb);
         const dimensions = thumbnailDimensions(image.width, image.height);
-        const resized = try v600.processing.frames.resizeImageArea(
+        const resized = try cerealgrain.processing.frames.resizeImageArea(
             allocator,
             rgb,
             @intCast(image.width),
@@ -748,9 +748,9 @@ pub fn renderPreviewTexture(
     renderer: *c.SDL_Renderer,
     cache: *PreviewTextureCache,
     preview: ?PreviewBuffer,
-    model: *const v600.native_ui.State,
-    transform: *v600.native_ui.ProcessViewTransform,
-    sweep: ?v600.native_ui_scan_sweep.Sweep,
+    model: *const cerealgrain.native_ui.State,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
+    sweep: ?cerealgrain.native_ui_scan_sweep.Sweep,
     now_ms: u64,
 ) void {
     const image = preview orelse return;
@@ -772,11 +772,11 @@ pub fn renderPreviewTexture(
 /// before any lines arrive it pulses at the top of the area.
 pub fn renderScanSweep(
     renderer: *c.SDL_Renderer,
-    image_rect: v600.native_ui.PreviewScreenRect,
-    sweep: v600.native_ui_scan_sweep.Sweep,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    sweep: cerealgrain.native_ui_scan_sweep.Sweep,
     now_ms: u64,
 ) void {
-    const area = if (sweep.area) |sel| v600.native_ui.PreviewScreenRect{
+    const area = if (sweep.area) |sel| cerealgrain.native_ui.PreviewScreenRect{
         .x = image_rect.x + sel.x * image_rect.scale,
         .y = image_rect.y + sel.y * image_rect.scale,
         .w = sel.w * image_rect.scale,
@@ -842,9 +842,9 @@ pub fn renderProcessTexture(
     io: std.Io,
     cache: *ProcessPreviewTextureCache,
     inverted_preview_worker: *InvertedPreviewWorker,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     interaction: *const ProcessSelectionInteraction,
-    transform: *v600.native_ui.ProcessViewTransform,
+    transform: *cerealgrain.native_ui.ProcessViewTransform,
 ) void {
     if (model.processing.loading or model.processing_preview == null) return;
     const rect = processImageRect(renderer, model, transform) orelse return;
@@ -863,7 +863,7 @@ pub fn renderGalleryTexture(
     renderer: *c.SDL_Renderer,
     cache: *GalleryTextureCache,
     transform: *GalleryViewTransform,
-    model: *v600.native_ui.State,
+    model: *cerealgrain.native_ui.State,
     allocator: std.mem.Allocator,
 ) void {
     const texture = cache.textureFor(renderer, allocator, model) catch |err| {
@@ -881,7 +881,7 @@ pub fn renderGalleryTexture(
     _ = c.SDL_RenderTexture(renderer, texture, null, &dst);
 }
 
-pub fn galleryImageRgb8(allocator: std.mem.Allocator, image: v600.tiff.Image) ![]u8 {
+pub fn galleryImageRgb8(allocator: std.mem.Allocator, image: cerealgrain.tiff.Image) ![]u8 {
     const pixels = try std.math.mul(usize, image.width, image.height);
     const samples = try std.math.mul(usize, pixels, 3);
     const out = try allocator.alloc(u8, samples);
@@ -920,8 +920,8 @@ pub fn galleryImageRgb8(allocator: std.mem.Allocator, image: v600.tiff.Image) ![
 
 pub fn renderSelectionOverlay(
     renderer: *c.SDL_Renderer,
-    image_rect: v600.native_ui.PreviewScreenRect,
-    selection: ?v600.native_ui.PreviewSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    selection: ?cerealgrain.native_ui.PreviewSelection,
 ) void {
     const sel = selection orelse return;
     if (!sel.isDrawable()) return;
@@ -949,8 +949,8 @@ pub fn renderSelectionOverlay(
 
 pub fn renderProcessSelections(
     renderer: *c.SDL_Renderer,
-    image_rect: v600.native_ui.PreviewScreenRect,
-    model: *const v600.native_ui.State,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    model: *const cerealgrain.native_ui.State,
     interaction: *const ProcessSelectionInteraction,
 ) void {
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -983,8 +983,8 @@ pub fn renderProcessSelections(
 /// topmost corner and clear of its handles, or below it when there is no room.
 fn renderSelectionLabel(
     renderer: *c.SDL_Renderer,
-    image_rect: v600.native_ui.PreviewScreenRect,
-    selection: v600.native_ui.ProcessSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.ProcessSelection,
     label: [:0]const u8,
     color: c.SDL_FColor,
 ) void {
@@ -1017,8 +1017,8 @@ fn renderCanvasLabel(renderer: *c.SDL_Renderer, text: [:0]const u8, x: f64, y: f
 
 pub fn renderProcessSelectionRect(
     renderer: *c.SDL_Renderer,
-    image_rect: v600.native_ui.PreviewScreenRect,
-    selection: v600.native_ui.ProcessSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.ProcessSelection,
     show_handles: bool,
     color: c.SDL_FColor,
     fill_alpha: f32,
@@ -1149,8 +1149,8 @@ pub fn renderSelectionHandles(renderer: *c.SDL_Renderer, x: f64, y: f64, w: f64,
 }
 
 pub fn processSelectionScreenCorners(
-    image_rect: v600.native_ui.PreviewScreenRect,
-    selection: v600.native_ui.ProcessSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.ProcessSelection,
 ) [4]ProcessScreenPoint {
     const half_w = selection.w / 2.0;
     const half_h = selection.h / 2.0;
@@ -1164,8 +1164,8 @@ pub fn processSelectionScreenCorners(
 
 pub fn renderProcessSelectionHandles(
     renderer: *c.SDL_Renderer,
-    image_rect: v600.native_ui.PreviewScreenRect,
-    selection: v600.native_ui.ProcessSelection,
+    image_rect: cerealgrain.native_ui.PreviewScreenRect,
+    selection: cerealgrain.native_ui.ProcessSelection,
 ) void {
     const handle_size = 8.0;
     const half_handle = handle_size / 2.0;
@@ -1231,7 +1231,7 @@ pub fn containsGalleryName(files: []const []const u8, name: []const u8) bool {
     return false;
 }
 
-pub fn setGalleryUiError(model: *v600.native_ui.State, err: anyerror) void {
+pub fn setGalleryUiError(model: *cerealgrain.native_ui.State, err: anyerror) void {
     model.setStatus(switch (err) {
         error.NoGalleryFileSelected => "No exports found",
         error.FileNotFound => "File not found",

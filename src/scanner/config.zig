@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const file_name = "epdaughter_config.toml";
+pub const file_name = "scanner.toml";
 
 pub const FixedString = struct {
     bytes: [64]u8 = [_]u8{0} ** 64,
