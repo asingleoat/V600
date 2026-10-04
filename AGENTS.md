@@ -244,6 +244,13 @@ deliberately, not by accident.
   real-scan tests. Do not test or tune framing on synthetic strips.
 - If detection returns exactly one frame covering less than 30% of the
   image, treat it as a failure and fall back to a full-image frame.
+- The `exact_aspect` processing setting (the Process view's "Exact aspect",
+  `processing detect --exact-aspect`; roll exports follow the setting)
+  trims each detected frame about its center to the format's exact aspect,
+  for prints: the largest such rectangle inside the frame the camera
+  exposed. The rebate is placed from the untrimmed frames, the full-image
+  fallback is never trimmed, and `roll check-frames` always measures the
+  detector's own frames.
 
 ### Processing
 

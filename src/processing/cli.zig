@@ -32,6 +32,7 @@ pub const DetectOptions = struct {
     save: bool = true,
     apply_clahe: bool = true,
     detect_film_extent: bool = true,
+    exact_aspect: bool = false,
 };
 
 pub const RebateOptions = struct {
@@ -151,6 +152,8 @@ fn parseDetectArgs(argv: []const []const u8) !DetectOptions {
             options.apply_clahe = false;
         } else if (std.mem.eql(u8, arg, "--no-film-extent")) {
             options.detect_film_extent = false;
+        } else if (std.mem.eql(u8, arg, "--exact-aspect")) {
+            options.exact_aspect = true;
         } else {
             return error.UnknownProcessingOption;
         }
@@ -343,6 +346,7 @@ fn runDetect(allocator: std.mem.Allocator, io: std.Io, options: DetectOptions, s
         .n_frames = options.n_frames,
         .detect_film_extent = options.detect_film_extent,
         .apply_clahe = options.apply_clahe,
+        .exact_aspect = options.exact_aspect,
     });
     defer result.deinit(allocator);
     const to_full = 1.0 / preview.info.preview_scale;

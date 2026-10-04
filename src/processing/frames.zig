@@ -1571,6 +1571,39 @@ pub fn estimateAngleTheilSen(
     };
 }
 
+/// `frame` trimmed about its center to the format's exact frame aspect, for
+/// prints: the largest such rectangle inside it, at the same angle. Detection
+/// measures the frame each camera actually exposed, a little off the format's.
+pub fn exactAspectFrame(frame: FrameRect, format: FilmFormat, is_vertical: bool) FrameRect {
+    const across = format.acrossMm();
+    const along = format.alongMm();
+    const width_over_height = if (is_vertical) across / along else along / across;
+    var trimmed = frame;
+    if (frame.w > frame.h * width_over_height) {
+        trimmed.w = frame.h * width_over_height;
+    } else {
+        trimmed.h = frame.w / width_over_height;
+    }
+    return trimmed;
+}
+
+test "exact aspect trims a detected frame inside itself to the format's ratio" {
+    // A vertical strip: 24 across (x) by 36 along (y), measured a touch wide.
+    const wide = exactAspectFrame(.{ .cx = 50, .cy = 80, .w = 250, .h = 360, .angle = 0.2 }, format_35mm, true);
+    try std.testing.expectApproxEqAbs(240.0, wide.w, 1e-9);
+    try std.testing.expectApproxEqAbs(360.0, wide.h, 1e-9);
+    try std.testing.expectEqual(@as(f64, 50), wide.cx);
+    try std.testing.expectEqual(@as(f64, 0.2), wide.angle);
+    // Measured a touch long instead.
+    const long = exactAspectFrame(.{ .cx = 50, .cy = 80, .w = 240, .h = 370, .angle = 0 }, format_35mm, true);
+    try std.testing.expectApproxEqAbs(360.0, long.h, 1e-9);
+    // A horizontal strip turns the ratio; 645 runs its long side across.
+    const horizontal = exactAspectFrame(.{ .cx = 0, .cy = 0, .w = 370, .h = 240, .angle = 0 }, format_35mm, false);
+    try std.testing.expectApproxEqAbs(360.0, horizontal.w, 1e-9);
+    const f645 = exactAspectFrame(.{ .cx = 0, .cy = 0, .w = 560, .h = 420, .angle = 0 }, format_645, true);
+    try std.testing.expectApproxEqAbs(560.0 * 41.5 / 56.0, f645.h, 1e-9);
+}
+
 pub fn singleFrameFallback(frame_count: usize, frame: FrameRect, preview_width: f64, preview_height: f64) !?FrameRect {
     if (!std.math.isFinite(preview_width) or !std.math.isFinite(preview_height) or preview_width <= 0.0 or preview_height <= 0.0) {
         return error.InvalidSingleFrameFallbackInput;

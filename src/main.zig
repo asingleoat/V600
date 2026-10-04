@@ -635,9 +635,10 @@ fn printProcessingUsage() !void {
         \\commands:
         \\  info --input PATH
         \\  detect --input PATH [--format 35mm|645|6x6|6x7|6x9] [--n-frames N] [--preview-size PX]
-        \\         [--config PATH] [--no-save]
+        \\         [--exact-aspect] [--config PATH] [--no-save]
         \\         (detects on a preview, max side PX, default 8192; prints full-resolution frames
-        \\          and the rebate as center, size, and angle_deg, and saves the rebate's Dmin)
+        \\          and the rebate as center, size, and angle_deg, and saves the rebate's Dmin;
+        \\          --exact-aspect trims frames to the format's exact aspect, for prints)
         \\  rebate --input PATH --x PX --y PX --width PX --height PX [--angle DEG] [--config PATH] [--no-save]
         \\         (x and y are the top-left corner)
         \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]

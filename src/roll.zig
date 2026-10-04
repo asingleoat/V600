@@ -349,7 +349,10 @@ pub const Roll = struct {
         try self.removePreviousExports(io, strip_path);
         // Hand-placed frames still use detection for the rebate, but not
         // when detection fails outright.
-        var detected: ?workflow.AutoDetectResult = workflow.autoDetectPreview(allocator, preview, .{ .format = self.format }) catch |err|
+        var detected: ?workflow.AutoDetectResult = workflow.autoDetectPreview(allocator, preview, .{
+            .format = self.format,
+            .exact_aspect = loaded_config.flag("exact_aspect"),
+        }) catch |err|
             if (framing == null) return err else null;
         defer if (detected) |*result| result.deinit(allocator);
         const to_full = 1.0 / preview.info.preview_scale;

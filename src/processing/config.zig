@@ -178,6 +178,15 @@ pub const LoadedConfig = struct {
         return found.value;
     }
 
+    /// A boolean setting, false when absent.
+    pub fn flag(self: *const LoadedConfig, name: []const u8) bool {
+        const found = self.value(name) orelse return false;
+        return switch (found) {
+            .boolean => |boolean| boolean,
+            else => false,
+        };
+    }
+
     pub fn active(self: *const LoadedConfig, name: []const u8) bool {
         return self.value(name) != null;
     }
@@ -307,6 +316,7 @@ pub const comments = [_]ParamComment{
     .{ .name = "invert", .text = "Enable film negative inversion" },
     .{ .name = "preview_inversion", .text = "Show inverted preview instead of CLAHE" },
     .{ .name = "aspect", .text = "Last used aspect ratio for frame selection" },
+    .{ .name = "exact_aspect", .text = "Trim auto-detected frames to the format's exact aspect ratio, for prints" },
 };
 
 pub fn defaultValue(name: []const u8) ?Value {
@@ -753,7 +763,8 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 26), comments.len);
+    try std.testing.expectEqual(@as(usize, 27), comments.len);
+    try std.testing.expect(comment("exact_aspect") != null);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);
     try std.testing.expectEqualStrings("Show inverted preview instead of CLAHE", comment("preview_inversion").?);

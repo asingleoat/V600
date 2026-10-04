@@ -106,6 +106,7 @@ const setGalleryUiError = render_layer.setGalleryUiError;
 const ProcessUiState = struct {
     preview_size: c_int = 8192,
     format_index: usize = 0,
+    exact_aspect: bool = false,
     aspect_index: usize = default_process_aspect_index,
     n_frames: c_int = 0,
     scale_percent: f32 = 0.0,
@@ -3492,6 +3493,14 @@ fn drawProcessView(
             ui.format_index = index;
         }
     }
+    layoutRow(ctx, 24.0, 1);
+    tooltip(ctx, "Trim auto-detected frames to the format's exact aspect ratio (2:3 for 35mm), for prints. Off keeps the frame each camera actually exposed. Roll exports follow it too");
+    var exact_aspect = nkBool(ui.exact_aspect);
+    if (c.nk_checkbox_label(ctx, "Exact aspect (for prints)", &exact_aspect) != 0) {
+        ui.exact_aspect = exact_aspect != 0;
+        const updates = [_]cerealgrain.processing.config.Override{.{ .name = "exact_aspect", .value = .{ .boolean = ui.exact_aspect } }};
+        model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
+    }
     const old_scale = ui.scale_percent;
     layoutRow(ctx, 28.0, 2);
     tooltip(ctx, "Number of frames to detect. 0 lets auto-detection decide");
@@ -3957,6 +3966,7 @@ fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const cerealgrain.native
     ui.export_ir_neg = processSettingBool(model, "export_ir_neg", ui.export_ir_neg);
     ui.export_ir_inv = processSettingBool(model, "export_ir_inv", ui.export_ir_inv);
     ui.export_inv_only = processSettingBool(model, "export_inv_only", ui.export_inv_only);
+    ui.exact_aspect = processSettingBool(model, "exact_aspect", ui.exact_aspect);
     if (processSettingString(model, "aspect")) |aspect| {
         ui.aspect_index = processAspectIndexForValue(aspect) orelse default_process_aspect_index;
     }
@@ -4096,6 +4106,7 @@ fn processAutoDetectOptions(ui: *const ProcessUiState) cerealgrain.processing.wo
         .n_frames = if (ui.n_frames > 0) @intCast(ui.n_frames) else null,
         .detect_film_extent = true,
         .apply_clahe = true,
+        .exact_aspect = ui.exact_aspect,
     };
 }
 
@@ -4103,7 +4114,7 @@ fn validateProcessAutoDetectUiDefaults(ui: *const ProcessUiState) !void {
     const options = processAutoDetectOptions(ui);
     if (options.n_frames != null) return error.ProcessAutoDetectDefaultMismatch;
     if (options.format == null or !std.mem.eql(u8, options.format.?, "35mm")) return error.ProcessAutoDetectDefaultMismatch;
-    if (!options.detect_film_extent or !options.apply_clahe) return error.ProcessAutoDetectDefaultMismatch;
+    if (!options.detect_film_extent or !options.apply_clahe or options.exact_aspect) return error.ProcessAutoDetectDefaultMismatch;
     if (ui.scale_percent != 0.0) return error.ProcessAutoDetectDefaultMismatch;
     if (ui.last_rotation != cerealgrain.native_ui.default_process_output_rotation) return error.ProcessAutoDetectDefaultMismatch;
 }

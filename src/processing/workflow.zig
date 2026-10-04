@@ -199,12 +199,17 @@ pub const AutoDetectOptions = struct {
     n_frames: ?usize = null,
     detect_film_extent: bool = true,
     apply_clahe: bool = true,
+    /// Trim each detected frame to the format's exact aspect (for prints)
+    /// instead of the frame the camera exposed.
+    exact_aspect: bool = false,
 };
 
 pub const AutoDetectResult = struct {
     frames: []frames.FrameRect,
     aspect: []const u8,
     rebate: ?frames.RebateRect,
+    /// Detection failed and the one frame is the whole image.
+    full_image_fallback: bool = false,
 
     pub fn deinit(self: *AutoDetectResult, allocator: std.mem.Allocator) void {
         allocator.free(self.frames);
@@ -729,7 +734,13 @@ pub fn autoDetectPreview(
         },
     );
     errdefer detected.deinit(allocator);
-    return try autoDetectDetectedFrames(&detected, preview.preview_width, preview.preview_height);
+    const is_vertical = detected.strip_info.is_vertical;
+    const result = try autoDetectDetectedFrames(&detected, preview.preview_width, preview.preview_height);
+    // After the rebate is placed, from the frames as exposed.
+    if (options.exact_aspect and !result.full_image_fallback) {
+        for (result.frames) |*frame| frame.* = frames.exactAspectFrame(frame.*, format, is_vertical);
+    }
+    return result;
 }
 
 /// The rebate auto-detect suggests, converted from preview center form to a
@@ -763,6 +774,7 @@ pub fn autoDetectDetectedFrames(
                 .frames = owned_frames,
                 .aspect = detected.aspect,
                 .rebate = null,
+                .full_image_fallback = true,
             };
         }
     }
