@@ -68,7 +68,9 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
         [--lut-file scans/preview.tiff.lut.bin]       # scans/scan_NNNN_rgbir_3200dpi.tiff
     cerealgrain processing detect --input scans/scan.tiff  # frames, rebate, and its Dmin (saved)
     cerealgrain processing export --input scans/scan.tiff \
-        --frame CX,CY,W,H[,ANGLE_DEG]                 # inverted/IR-cleaned TIFFs
+        --frame CX,CY,W,H[,ANGLE_DEG] \
+        [--print 8x10 --print-dpi 300]                # inverted/IR-cleaned TIFFs,
+                                                      # plus print-sized JPEGs
     cerealgrain serve                                    # scanner companion for the webapp
 
 Scanning a roll strip by strip (each strip: preview, film area, one LUT
@@ -81,9 +83,12 @@ for the whole roll, full scan; finished strips export in the background):
 
 Exports land in `frames/<roll>/<roll>_sNN_FF.tif` (strip NN, frame FF), and
 `scans/<roll>/review/index.html` shows each strip with its detected frames.
-Each export is the IR-cleaned positive with the scan's DPI and date. 35mm,
-6x7, and 6x9 frames are turned to landscape (the `rotation` in `roll.json`,
-clockwise degrees; `roll start --rotation` sets it).
+Each export is the IR-cleaned positive with the scan's DPI and date. Pick a
+print size and resolution (the Process view's Export pulldowns, or
+`print_size` and `print_dpi` in `processing.toml`) and each export also gets
+an 8-bit JPEG fitted to that print, such as `<roll>_sNN_FF_8x10_300dpi.jpg`.
+35mm, 6x7, and 6x9 frames are turned to landscape (the `rotation` in
+`roll.json`, clockwise degrees; `roll start --rotation` sets it).
 To fix a strip's framing, open it in the Process view with its roll open
 (the view takes the roll's format and rotation) and adjust the frames. Edits
 save to `strip_NN_….tiff.frames.json` once they settle, Undo Frames (Cmd+Z)

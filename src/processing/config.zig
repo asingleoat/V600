@@ -3,6 +3,8 @@ const film_stocks = @import("film_stocks.zig");
 
 pub const config_file = "processing.toml";
 pub const reference_dpi: u32 = 800;
+/// Settings one config holds, and the size of an override buffer for them.
+pub const max_entries = 48;
 pub const tiff_exts = [_][]const u8{ ".tif", ".tiff" };
 pub const builtin_stocks = film_stocks.builtin_stocks;
 
@@ -145,7 +147,7 @@ pub const StockProfile = struct {
 };
 
 pub const LoadedConfig = struct {
-    entries: [32]Entry = undefined,
+    entries: [max_entries]Entry = undefined,
     len: usize = 0,
     stocks: [8]StockProfile = undefined,
     stock_len: usize = 0,
@@ -218,7 +220,7 @@ pub const LoadedConfig = struct {
 
     /// Every loaded setting as an override list for getParam, minus the
     /// custom stock table.
-    pub fn overrides(self: *const LoadedConfig, out: *[32]Override) []const Override {
+    pub fn overrides(self: *const LoadedConfig, out: *[max_entries]Override) []const Override {
         var count: usize = 0;
         for (self.entries[0..self.len]) |*item| {
             const name = item.name.slice();
@@ -317,6 +319,8 @@ pub const comments = [_]ParamComment{
     .{ .name = "preview_inversion", .text = "Show inverted preview instead of CLAHE" },
     .{ .name = "aspect", .text = "Last used aspect ratio for frame selection" },
     .{ .name = "exact_aspect", .text = "Trim auto-detected frames to the format's exact aspect ratio, for prints" },
+    .{ .name = "print_size", .text = "Also export an 8-bit JPEG sized for this print (4x6 to 24x36, letter, a4, a3), or off" },
+    .{ .name = "print_dpi", .text = "Print copy resolution: 300 for labs, 360 or 720 for Epson printers" },
 };
 
 pub fn defaultValue(name: []const u8) ?Value {
@@ -763,7 +767,7 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 27), comments.len);
+    try std.testing.expectEqual(@as(usize, 29), comments.len);
     try std.testing.expect(comment("exact_aspect") != null);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);

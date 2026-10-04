@@ -103,6 +103,26 @@ const processSelectionScreenCorners = render_layer.processSelectionScreenCorners
 const containsGalleryName = render_layer.containsGalleryName;
 const setGalleryUiError = render_layer.setGalleryUiError;
 
+const print_sizes = cerealgrain.processing.print.sizes;
+const print_resolutions = cerealgrain.processing.print.resolutions;
+const print_size_labels = blk: {
+    var labels: [print_sizes.len + 1][*:0]const u8 = undefined;
+    labels[0] = "No print copy";
+    for (print_sizes, 1..) |size, index| labels[index] = size.label;
+    break :blk labels;
+};
+const print_resolution_labels = blk: {
+    var labels: [print_resolutions.len][*:0]const u8 = undefined;
+    for (print_resolutions, 0..) |resolution, index| labels[index] = resolution.label;
+    break :blk labels;
+};
+const default_print_resolution_index: c_int = blk: {
+    for (print_resolutions, 0..) |resolution, index| {
+        if (resolution.dpi == cerealgrain.processing.print.default_dpi) break :blk index;
+    }
+    unreachable;
+};
+
 const ProcessUiState = struct {
     preview_size: c_int = 8192,
     format_index: usize = 0,
@@ -132,6 +152,9 @@ const ProcessUiState = struct {
     export_ir_neg: bool = false,
     export_ir_inv: bool = true,
     export_inv_only: bool = false,
+    /// 0 for no print copy, else one past the index in `print.sizes`.
+    print_size_index: c_int = 0,
+    print_resolution_index: c_int = default_print_resolution_index,
     export_basename_buffer: [128]u8 = [_]u8{0} ** 128,
     export_basename_len: c_int = 0,
     export_basename_source_buffer: [std.fs.max_path_bytes]u8 = [_]u8{0} ** std.fs.max_path_bytes,
@@ -3558,6 +3581,7 @@ fn drawProcessView(
     syncProcessExportBasename(ui, model);
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Export", c.NK_TEXT_LEFT);
+    drawProcessPrintControls(ctx, model, allocator, io, config_path, ui);
     // A strip of the open roll exports through the roll: its names, and the
     // frames are kept as the strip's framing for later re-exports.
     const image_path = model.currentProcessingImagePathForWorker();
@@ -3967,6 +3991,16 @@ fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const cerealgrain.native
     ui.export_ir_inv = processSettingBool(model, "export_ir_inv", ui.export_ir_inv);
     ui.export_inv_only = processSettingBool(model, "export_inv_only", ui.export_inv_only);
     ui.exact_aspect = processSettingBool(model, "exact_aspect", ui.exact_aspect);
+    ui.print_size_index = 0;
+    if (processSettingString(model, "print_size")) |name| {
+        if (cerealgrain.processing.print.sizeIndex(name)) |index| ui.print_size_index = @intCast(index + 1);
+    }
+    ui.print_resolution_index = default_print_resolution_index;
+    if (model.processing_config.value("print_dpi")) |value| {
+        for (print_resolutions, 0..) |resolution, index| {
+            if (@as(f64, @floatFromInt(resolution.dpi)) == value.asFloat()) ui.print_resolution_index = @intCast(index);
+        }
+    }
     if (processSettingString(model, "aspect")) |aspect| {
         ui.aspect_index = processAspectIndexForValue(aspect) orelse default_process_aspect_index;
     }
@@ -3995,7 +4029,7 @@ fn processSettingBool(model: *const cerealgrain.native_ui.State, name: []const u
 fn processSettingString(model: *const cerealgrain.native_ui.State, name: []const u8) ?[]const u8 {
     const entry = model.processing_config.entry(name) orelse return null;
     return switch (entry.value) {
-        .string => |string| string.slice(),
+        .string => |*string| string.slice(),
         else => null,
     };
 }
@@ -4022,6 +4056,35 @@ fn selectProcessStock(
         .{ .name = "export_ir_inv", .value = .{ .boolean = true } },
     };
     try model.saveProcessingSettings(allocator, io, config_path, &updates);
+}
+
+/// The print copy: an 8-bit JPEG sized for a print, written next to each
+/// exported positive.
+fn drawProcessPrintControls(
+    ctx: *c.struct_nk_context,
+    model: *cerealgrain.native_ui.State,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config_path: []const u8,
+    ui: *ProcessUiState,
+) void {
+    const metrics = chrome.runtime_ui_config.metrics();
+    const item_height: c_int = @intFromFloat(metrics.row(24.0));
+    layoutRow(ctx, 28.0, 2);
+    tooltip(ctx, "Also write an 8-bit sRGB JPEG of each frame scaled to fit this print size, uncropped, next to the full-resolution TIFF. Roll exports follow it too");
+    const size_index = c.nk_combo(ctx, &print_size_labels, print_size_labels.len, ui.print_size_index, item_height, c.nk_vec2(metrics.row(200.0), metrics.row(420.0)));
+    tooltip(ctx, "Print copy resolution: labs print at 300 dpi, Epson printers at 360, or 720 at their finest. Never upscales: a frame too small for the size keeps its pixels at a lower dpi");
+    const resolution_index = c.nk_combo(ctx, &print_resolution_labels, print_resolution_labels.len, ui.print_resolution_index, item_height, c.nk_vec2(metrics.row(200.0), metrics.row(120.0)));
+    if (size_index != ui.print_size_index) {
+        ui.print_size_index = size_index;
+        const name = if (size_index == 0) "off" else print_sizes[@intCast(size_index - 1)].name;
+        saveProcessStringSetting(model, allocator, io, config_path, "print_size", name) catch |err| setProcessUiError(model, err);
+    }
+    if (resolution_index != ui.print_resolution_index) {
+        ui.print_resolution_index = resolution_index;
+        const updates = [_]cerealgrain.processing.config.Override{.{ .name = "print_dpi", .value = .{ .integer = print_resolutions[@intCast(resolution_index)].dpi } }};
+        model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
+    }
 }
 
 fn drawProcessExportVariant(

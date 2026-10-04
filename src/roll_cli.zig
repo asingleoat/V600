@@ -326,8 +326,8 @@ fn optionValue(argv: []const []const u8, name: []const u8) ?[]const u8 {
 fn printOutcome(stdout: anytype, strip: []const u8, outcome: cerealgrain.roll.StripOutcome, seconds: i64) !void {
     try stdout.print("{s}: {d} frame{s} exported, Dmin from {s} ({d}s)\n", .{
         std.fs.path.basename(strip),
-        outcome.files.len,
-        if (outcome.files.len == 1) "" else "s",
+        outcome.frames,
+        if (outcome.frames == 1) "" else "s",
         outcome.dmin_source,
         seconds,
     });
@@ -559,8 +559,8 @@ fn printDone(_: ?*anyopaque, done: cerealgrain.roll.Processor.Done) void {
     if (done.outcome) |outcome| {
         std.debug.print("\n[processing] {s}: {d} frame{s} exported, Dmin from {s} ({d}s)\n", .{
             name,
-            outcome.files.len,
-            if (outcome.files.len == 1) "" else "s",
+            outcome.frames,
+            if (outcome.frames == 1) "" else "s",
             outcome.dmin_source,
             done.seconds,
         });

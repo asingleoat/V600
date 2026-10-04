@@ -337,7 +337,7 @@ pub const Roll = struct {
     pub fn processStrip(self: *Roll, io: std.Io, strip_path: []const u8, options: ProcessOptions) !StripOutcome {
         const allocator = self.allocator;
         const loaded_config = try processing_config.loadFile(allocator, io, options.processing_config_path);
-        var override_buffer: [32]processing_config.Override = undefined;
+        var override_buffer: [processing_config.max_entries]processing_config.Override = undefined;
         const overrides = loaded_config.overrides(&override_buffer);
         const stock = loaded_config.availableStock(self.stock) orelse return error.UnknownFilmStock;
 
@@ -471,8 +471,8 @@ pub const Roll = struct {
     }
 
     /// The frames the strip's last export cut, from the crop each exported
-    /// file records; null when the strip has no export. The caller frees the
-    /// slice.
+    /// TIFF records (print copies beside them are skipped); null when the
+    /// strip has no export. The caller frees the slice.
     pub fn loadExportedFrames(self: *const Roll, io: std.Io, strip_path: []const u8) !?[]FrameRect {
         const allocator = self.allocator;
         const marker_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, processed_suffix });
@@ -485,11 +485,19 @@ pub const Roll = struct {
         const marker = std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true }) catch
             return Error.InvalidExportRecord;
         defer marker.deinit();
-        if (marker.value.files.len == 0) return null;
+        var tiff_count: usize = 0;
+        for (marker.value.files) |file| {
+            if (tiff.isTiffFileName(file)) tiff_count += 1;
+        }
+        if (tiff_count == 0) return null;
 
-        const rects = try allocator.alloc(FrameRect, marker.value.files.len);
+        const rects = try allocator.alloc(FrameRect, tiff_count);
         errdefer allocator.free(rects);
-        for (marker.value.files, rects) |file, *rect| {
+        var index: usize = 0;
+        for (marker.value.files) |file| {
+            if (!tiff.isTiffFileName(file)) continue;
+            const rect = &rects[index];
+            index += 1;
             const file_path = try std.fs.path.join(allocator, &.{ self.frames_dir, file });
             defer allocator.free(file_path);
             const json = (try tiff.readExportMetadataJson(allocator, file_path)) orelse return Error.InvalidExportRecord;
@@ -1614,6 +1622,55 @@ test "hand-placed frames replace detection, even where detection fails" {
     defer framed.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), framed.files.len);
     try std.testing.expect(std.mem.endsWith(u8, framed.files[0], "plain_s02_01.tif"));
+}
+
+test "print copies export beside the frames, which ignore them, and are replaced on re-export" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    const exports_root = try std.fs.path.join(allocator, &.{ root, "frames" });
+    defer allocator.free(exports_root);
+    var roll = try Roll.create(allocator, io, root, exports_root, "prints", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    try writeFeaturelessStrip(allocator, strip, 240, 480);
+    try roll.saveFraming(io, strip, .{ .frames = &.{
+        .{ .cx = 60.0, .cy = 120.0, .w = 100.0, .h = 150.0, .rotation = 0 },
+        .{ .cx = 60.0, .cy = 320.0, .w = 100.0, .h = 150.0, .rotation = 0 },
+    } });
+    const config_path = try std.fs.path.join(allocator, &.{ root, "processing.toml" });
+    defer allocator.free(config_path);
+
+    // 100 x 150 px is too few pixels for 4 x 6 in: the copies keep them, at
+    // the 25 dpi that fills the print.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = "print_size = \"4x6\"\nprint_dpi = 300\n" });
+    const outcome = try roll.processStrip(io, strip, .{ .processing_config_path = config_path });
+    defer outcome.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), outcome.frames);
+    try std.testing.expectEqual(@as(usize, 4), outcome.files.len);
+    try std.testing.expect(std.mem.endsWith(u8, outcome.files[0], "prints_s01_01.tif"));
+    try std.testing.expect(std.mem.endsWith(u8, outcome.files[1], "prints_s01_01_4x6_25dpi.jpg"));
+    const rects = (try roll.loadExportedFrames(io, strip)).?;
+    defer allocator.free(rects);
+    try std.testing.expectEqual(@as(usize, 2), rects.len);
+
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config_path, .data = "print_size = \"5x7\"\n" });
+    const again = try roll.processStrip(io, strip, .{ .processing_config_path = config_path });
+    defer again.deinit(allocator);
+    var dir = try std.Io.Dir.cwd().openDir(io, roll.frames_dir, .{ .iterate = true });
+    defer dir.close(io);
+    var iterator = dir.iterate();
+    var copies: usize = 0;
+    while (try iterator.next(io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".jpg")) continue;
+        try std.testing.expect(std.mem.indexOf(u8, entry.name, "_5x7_22dpi") != null);
+        copies += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), copies);
 }
 
 test "a strip needs exporting until exported, and again when its saved frames change" {

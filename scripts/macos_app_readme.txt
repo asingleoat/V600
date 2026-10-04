@@ -20,7 +20,8 @@ First launch
 Where your files go
 Everything lives in the Pictures folder under CerealGrain:
 - scans/   the scans, as 16-bit TIFFs (rolls get a folder each)
-- frames/  exported frames
+- frames/  exported frames, plus print-sized JPEGs when you pick a print
+           size under Export
 - two .toml settings files
 
 Scanners other than the V600

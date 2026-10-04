@@ -6,6 +6,7 @@ const film_stocks = @import("film_stocks.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
+const print = @import("print.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
@@ -1002,6 +1003,7 @@ pub fn processExportFromTiff(
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(full.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(full.rgb.height)) else 1.0;
     const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
+    const print_spec = print.specForConfig(options.config_overrides);
     var ir_clean_options = irCleanOptionsForConfig(current_dpi, irDpi(current_dpi, ir_scale_x), options.config_overrides);
     if (options.adaptive_dust_precision_override) |precision| {
         ir_clean_options.defect_mask.adaptive_precision = precision;
@@ -1022,7 +1024,7 @@ pub fn processExportFromTiff(
         jobs[jobs_len] = .{
             .frame_index = frame_index,
             .rect = rect,
-            .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs),
+            .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs, print_spec),
         };
         jobs_len += 1;
     }
@@ -1265,6 +1267,7 @@ fn processExportDirectRgbCropFromLoadedPage(
     );
 
     const render_options = renderOptionsForConfig(current_dpi, options.config_overrides);
+    const print_spec = print.specForConfig(options.config_overrides);
     // This path never cleans with IR.
     var ir_clean_options = irCleanOptionsForConfig(current_dpi, current_dpi, options.config_overrides);
     if (options.adaptive_dust_precision_override) |precision| {
@@ -1286,7 +1289,7 @@ fn processExportDirectRgbCropFromLoadedPage(
         jobs[jobs_len] = .{
             .frame_index = frame_index,
             .rect = rect,
-            .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs),
+            .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs, print_spec),
         };
         jobs_len += 1;
     }
@@ -2627,8 +2630,9 @@ fn outputPathsForFrame(
     basename: []const u8,
     frame_index: usize,
     outputs: export_pipeline.OutputSelection,
+    print_spec: ?print.Spec,
 ) !OwnedOutputPaths {
-    var result = OwnedOutputPaths{ .paths = .{} };
+    var result = OwnedOutputPaths{ .paths = .{ .print = print_spec } };
     errdefer result.deinit(allocator);
     if (outputs.ir_neg) result.paths.ir_neg = try export_pipeline.uniqueFrameOutputPath(allocator, io, output_dir, basename, frame_index, .ir_neg);
     if (outputs.ir_inv) result.paths.ir_inv = try export_pipeline.uniqueFrameOutputPath(allocator, io, output_dir, basename, frame_index, .ir_inv);

@@ -297,6 +297,17 @@ deliberately, not by accident.
   hand-placed framing in `strip_NN_*.tiff.frames.json`, `review/`) and
   `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the `[roll]` key in
   the scanner config.
+- Print copies: with the `print_size` and `print_dpi` processing settings
+  (the Process view's Export pulldowns, `processing export --print SIZE
+  --print-dpi DPI`; roll exports follow them), each positive TIFF gets an
+  8-bit sRGB JPEG beside it, `<tiff stem>_<size>_<dpi>dpi.jpg`, with its DPI
+  in the JFIF header. The frame is fitted inside the print uncropped, turned
+  like the frame, and area-averaged in linear light; never upscaled, so a
+  frame with too few pixels keeps them at the DPI that fits. The copy takes
+  the frame's true aspect, not its whole-pixel crop's, so exact-aspect frames
+  give exact-aspect copies. Sizes are common lab prints and the paper Epson's
+  EcoTank photo printers take; resolutions are 300 dpi (labs) and 360 or 720
+  (Epson's printer drivers).
 - TIFF metadata: make, model, software, resolution, datetime. Custom tag
   50000 marks scanner custom LUTs; BYTE tag 50001 holds the applied LUT,
   which the RGB loaders invert; tag 65000 holds export metadata JSON.

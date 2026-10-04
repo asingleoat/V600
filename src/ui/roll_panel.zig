@@ -495,8 +495,8 @@ pub const RollPanel = struct {
         const text = if (done.outcome) |outcome|
             std.fmt.bufPrint(&self.result_buffer, "{s}: {d} frame{s}{s} exported, Dmin from {s}", .{
                 name,
-                outcome.files.len,
-                if (outcome.files.len == 1) "" else "s",
+                outcome.frames,
+                if (outcome.frames == 1) "" else "s",
                 if (outcome.manual) " placed by hand" else "",
                 outcome.dmin_source,
             }) catch ""

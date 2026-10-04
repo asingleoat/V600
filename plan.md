@@ -234,8 +234,9 @@ Open:
 
 - Features the native app has and the webapp lacks: custom stocks, output
   rotation, manual rebate selection, settings persistence, multi-image
-  browsing, the embedded metadata tag, and preview or LUT scans through the
-  companion (details in `docs/WEBAPP.md`).
+  browsing, the embedded metadata tag, exact-aspect frames, print copies,
+  and preview or LUT scans through the companion (details in
+  `docs/WEBAPP.md`).
 - After auto-detect sets the rebate Dmin, the preview is not re-rendered
   until Update Preview is pressed.
 

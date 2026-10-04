@@ -344,7 +344,7 @@ pub const ProcessSettingsInfo = struct {
 };
 
 pub const ProcessSettingsDraft = struct {
-    entries: [32]processing_config.Override = undefined,
+    entries: [processing_config.max_entries]processing_config.Override = undefined,
     len: usize = 0,
 
     pub fn put(self: *ProcessSettingsDraft, name: []const u8, value: processing_config.Value) !void {
@@ -1022,7 +1022,7 @@ pub const State = struct {
 
     pub fn processingSettingsInfo(
         self: *const State,
-        out_entries: *[32]processing_config.Entry,
+        out_entries: *[processing_config.max_entries]processing_config.Entry,
     ) ProcessSettingsInfo {
         var count: usize = 0;
         for (self.processing_config.entries[0..self.processing_config.len]) |entry| {
@@ -1850,7 +1850,7 @@ pub const State = struct {
             self.processing.setProgress(self.status);
             return error.NoProcessImageLoaded;
         };
-        var overrides_buffer: [32]processing_config.Override = undefined;
+        var overrides_buffer: [processing_config.max_entries]processing_config.Override = undefined;
         const overrides = self.processing_config.overrides(&overrides_buffer);
         const active_stock = self.processing_config.activeStock();
         const stock_coeffs = if (active_stock) |stock_name| blk: {
@@ -3278,7 +3278,7 @@ test "native UI process settings and stocks mirror process_handlers routes" {
     state.applyProcessingConfig(processing_config.parseText(custom_text));
     try state.processing_config.set("_stocks", .{ .boolean = true });
 
-    var entries_buffer: [32]processing_config.Entry = undefined;
+    var entries_buffer: [processing_config.max_entries]processing_config.Entry = undefined;
     const settings = state.processingSettingsInfo(&entries_buffer);
     try std.testing.expectEqualStrings("custom_c41", settings.active_stock.?);
     try std.testing.expect(!settings.preview_inversion);

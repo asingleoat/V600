@@ -6,6 +6,7 @@ const export_pipeline = @import("export.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
+const print = @import("print.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
 const workflow = @import("workflow.zig");
@@ -62,6 +63,9 @@ pub const ExportOptions = struct {
     align_ir: bool = true,
     emit_events: bool = false,
     cancel_file: ?[]const u8 = null,
+    /// A print size name, or "off"; with `print_dpi`, overrides the config.
+    print_size: ?[]const u8 = null,
+    print_dpi: ?u32 = null,
 };
 
 pub const ProcessingCommand = union(CommandTag) {
@@ -275,6 +279,17 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
             index += 1;
             if (index >= argv.len) return error.MissingCancelFile;
             options.cancel_file = argv[index];
+        } else if (std.mem.eql(u8, arg, "--print")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingPrintSize;
+            if (!std.mem.eql(u8, argv[index], "off") and print.sizeNamed(argv[index]) == null) return error.UnknownPrintSize;
+            options.print_size = argv[index];
+        } else if (std.mem.eql(u8, arg, "--print-dpi")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingPrintDpi;
+            const dpi = try std.fmt.parseInt(u32, argv[index], 10);
+            if (dpi < print.min_dpi or dpi > print.max_dpi) return error.InvalidPrintDpi;
+            options.print_dpi = dpi;
         } else {
             return error.UnknownProcessingOption;
         }
@@ -418,7 +433,7 @@ fn runExport(
 ) !void {
     // Settings come from the processing config, as in the native UI; flags override.
     const loaded_config = try config.loadFile(allocator, io, options.config_path);
-    var override_buffer: [32]config.Override = undefined;
+    var override_buffer: [config.max_entries]config.Override = undefined;
     const overrides = loaded_config.overrides(&override_buffer);
     const stock_name = options.film_stock orelse loaded_config.activeStock() orelse "kodak_gold";
     const stock = loaded_config.availableStock(stock_name) orelse return error.UnknownFilmStock;
@@ -472,6 +487,13 @@ fn runExport(
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
     const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
+    var print_spec = print.specForConfig(overrides);
+    if (options.print_size) |name| {
+        print_spec = if (print.sizeNamed(name)) |size| .{ .size = size, .dpi = if (print_spec) |spec| spec.dpi else print.default_dpi } else null;
+    }
+    if (options.print_dpi) |dpi| {
+        if (print_spec) |*spec| spec.dpi = dpi;
+    }
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0;
     // Frames go one at a time here, so each may use every core.
@@ -509,7 +531,7 @@ fn runExport(
             try writeExportCancelledResult(stdout, written.items);
             return;
         }
-        const paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs);
+        const paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs, print_spec);
         defer paths.deinit(allocator);
         var prng = std.Random.DefaultPrng.init(workflow.frameExportSeed(frame_index));
         const result = try export_pipeline.processFrame(
@@ -599,8 +621,9 @@ fn outputPathsForFrame(
     basename: []const u8,
     frame_index: usize,
     outputs: export_pipeline.OutputSelection,
+    print_spec: ?print.Spec,
 ) !OwnedOutputPaths {
-    var result = OwnedOutputPaths{ .paths = .{} };
+    var result = OwnedOutputPaths{ .paths = .{ .print = print_spec } };
     errdefer result.deinit(allocator);
     if (outputs.ir_neg) result.paths.ir_neg = try export_pipeline.uniqueFrameOutputPath(allocator, io, output_dir, basename, frame_index, .ir_neg);
     if (outputs.ir_inv) result.paths.ir_inv = try export_pipeline.uniqueFrameOutputPath(allocator, io, output_dir, basename, frame_index, .ir_inv);

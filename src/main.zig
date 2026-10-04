@@ -643,8 +643,12 @@ fn printProcessingUsage() !void {
         \\         (x and y are the top-left corner)
         \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]
         \\         [--stock NAME] [--dmin R,G,B] [--format FMT] [--dpi DPI] [--config PATH]
+        \\         [--print SIZE|off] [--print-dpi DPI]
         \\         (stock and parameters come from processing.toml, dpi from the TIFF; Dmin
-        \\          from --dmin, else this scan's detected rebate, else the saved Dmin, else the image)
+        \\          from --dmin, else this scan's detected rebate, else the saved Dmin, else the image;
+        \\          --print also writes each frame as an 8-bit JPEG fitted to a print, at --print-dpi
+        \\          (default 360): 4x6 5x7 8x8 8x10 letter 8x12 a4 12x12 11x14 11x17 a3 12x18
+        \\          13x19 16x20 16x24 20x30 24x36)
         \\
     , .{});
 }
