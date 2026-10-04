@@ -98,41 +98,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "webgpu", enable_webgpu);
     build_options.addOption(bool, "native_libs", true);
 
-    const root_module = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    root_module.addOptions("build_options", build_options);
-    root_module.linkSystemLibrary("c", .{});
-    root_module.linkSystemLibrary("libtiff-4", .{});
-    root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
-    root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
-    root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
-    root_module.linkSystemLibrary("opencv4", .{ .use_pkg_config = .force });
-    root_module.linkSystemLibrary("superlu", .{ .use_pkg_config = .no });
-    if (target.result.os.tag.isDarwin()) {
-        // The OpenCV objects need libc++ named directly under the two-level
-        // namespace; OpenCV itself links the system /usr/lib/libc++.
-        root_module.linkSystemLibrary("c++", .{ .use_pkg_config = .no });
-    }
-    if (target.result.os.tag == .macos) {
-        // USB transport for the Epson interpreter scanner backend.
-        root_module.linkSystemLibrary("libusb-1.0", .{ .use_pkg_config = .force });
-    }
-
-    if (enable_webgpu) {
-        const include_dir = requiredEnvPath(b, "WGPU_NATIVE_INCLUDE_DIR");
-        const library_dir = requiredEnvPath(b, "WGPU_NATIVE_LIBRARY_DIR");
-        root_module.addSystemIncludePath(.{ .cwd_relative = include_dir });
-        root_module.addLibraryPath(.{ .cwd_relative = library_dir });
-        root_module.addRPath(.{ .cwd_relative = library_dir });
-        root_module.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
-    }
-
-    for (root_native_objects) |spec| {
-        root_module.addObjectFile(compileNativeObject(b, spec));
-    }
+    const root_module = addRootModule(b, target, optimize, build_options, enable_webgpu, null);
 
     const exe = b.addExecutable(.{
         .name = "v600-zig",
@@ -148,31 +114,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     if (enable_ui) {
-        const nuklear_obj = compileNativeObject(b, .{
-            .command = "cc -std=c99 -fPIC $(pkg-config --cflags nuklear) -c \"$1\" -o \"$2\"",
-            .label = "compile-nuklear",
-            .source = "src/ui/nuklear_impl.c",
-            .output = "nuklear_impl.o",
-        });
-
-        const ui_module = b.createModule(.{
-            .root_source_file = b.path("src/ui/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "v600", .module = root_module },
-            },
-        });
-        ui_module.linkSystemLibrary("c", .{});
-        ui_module.linkSystemLibrary("m", .{});
-        ui_module.linkSystemLibrary("sdl3", .{ .use_pkg_config = .force });
-        ui_module.linkSystemLibrary("nuklear", .{ .use_pkg_config = .force });
-        ui_module.addObjectFile(nuklear_obj);
-
-        const ui_exe = b.addExecutable(.{
-            .name = "v600-ui",
-            .root_module = ui_module,
-        });
+        const ui_exe = addUiExecutable(b, target, optimize, root_module, null);
         b.installArtifact(ui_exe);
 
         const ui_run_cmd = b.addRunArtifact(ui_exe);
@@ -189,6 +131,28 @@ pub fn build(b: *std.Build) void {
             const step = b.step(spec.name, spec.description);
             step.dependOn(&cmd.step);
         }
+    }
+
+    if (b.graph.host.result.os.tag == .macos) {
+        // Its own release build whatever the other options: the oldest
+        // Apple Silicon CPU, and the newest macOS the Nix libraries require.
+        const bundle_target = b.resolveTargetQuery(.{
+            .cpu_arch = .aarch64,
+            .os_tag = .macos,
+            .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } },
+            .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.apple_m1 },
+        });
+        const bundle_options = b.addOptions();
+        bundle_options.addOption(bool, "webgpu", false);
+        bundle_options.addOption(bool, "native_libs", true);
+        const bundle_root = addRootModule(b, bundle_target, .ReleaseFast, bundle_options, false, true);
+        const bundle_ui = addUiExecutable(b, bundle_target, .ReleaseFast, bundle_root, true);
+        const bundle_cmd = b.addSystemCommand(&.{ "sh", "scripts/macos_app_bundle.sh" });
+        bundle_cmd.addArtifactArg(bundle_ui);
+        bundle_cmd.addArg(b.getInstallPath(.prefix, ""));
+        bundle_cmd.has_side_effects = true;
+        const bundle_step = b.step("app-bundle", "Build zig-out/V600.app and a zip of it to share (macOS, Apple Silicon)");
+        bundle_step.dependOn(&bundle_cmd.step);
     }
 
     const wasm_build_options = b.addOptions();
@@ -417,6 +381,107 @@ fn addV600Program(
             },
         }),
     });
+}
+
+fn addRootModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options: *std.Build.Step.Options,
+    enable_webgpu: bool,
+    strip: ?bool,
+) *std.Build.Module {
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = strip,
+    });
+    root_module.addOptions("build_options", build_options);
+    root_module.linkSystemLibrary("c", .{});
+    root_module.linkSystemLibrary("libtiff-4", .{});
+    root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
+    root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
+    root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
+    // The C++ helpers use these three modules only; all of opencv4 would
+    // also load its video, codec, and network dependencies (225 dylibs on
+    // macOS against 28).
+    for ([_][]const u8{ "opencv_core", "opencv_imgproc", "opencv_imgcodecs" }) |name| {
+        root_module.linkSystemLibrary(name, .{ .use_pkg_config = .no });
+    }
+    root_module.linkSystemLibrary("superlu", .{ .use_pkg_config = .no });
+    if (!target.query.isNativeOs()) addNixLibraryPaths(b, root_module);
+    if (target.result.os.tag.isDarwin()) {
+        // The OpenCV objects need libc++ named directly under the two-level
+        // namespace; OpenCV itself links the system /usr/lib/libc++.
+        root_module.linkSystemLibrary("c++", .{ .use_pkg_config = .no });
+    }
+    if (target.result.os.tag == .macos) {
+        // USB transport for the Epson interpreter scanner backend.
+        root_module.linkSystemLibrary("libusb-1.0", .{ .use_pkg_config = .force });
+    }
+
+    if (enable_webgpu) {
+        const include_dir = requiredEnvPath(b, "WGPU_NATIVE_INCLUDE_DIR");
+        const library_dir = requiredEnvPath(b, "WGPU_NATIVE_LIBRARY_DIR");
+        root_module.addSystemIncludePath(.{ .cwd_relative = include_dir });
+        root_module.addLibraryPath(.{ .cwd_relative = library_dir });
+        root_module.addRPath(.{ .cwd_relative = library_dir });
+        root_module.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
+    }
+
+    for (root_native_objects) |spec| {
+        root_module.addObjectFile(compileNativeObject(b, spec));
+    }
+    return root_module;
+}
+
+fn addUiExecutable(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    root_module: *std.Build.Module,
+    strip: ?bool,
+) *std.Build.Step.Compile {
+    const nuklear_obj = compileNativeObject(b, .{
+        .command = "cc -std=c99 -fPIC $(pkg-config --cflags nuklear) -c \"$1\" -o \"$2\"",
+        .label = "compile-nuklear",
+        .source = "src/ui/nuklear_impl.c",
+        .output = "nuklear_impl.o",
+    });
+
+    const ui_module = b.createModule(.{
+        .root_source_file = b.path("src/ui/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = strip,
+        .imports = &.{
+            .{ .name = "v600", .module = root_module },
+        },
+    });
+    ui_module.linkSystemLibrary("c", .{});
+    ui_module.linkSystemLibrary("m", .{});
+    ui_module.linkSystemLibrary("sdl3", .{ .use_pkg_config = .force });
+    ui_module.linkSystemLibrary("nuklear", .{ .use_pkg_config = .force });
+    ui_module.addObjectFile(nuklear_obj);
+
+    return b.addExecutable(.{
+        .name = "v600-ui",
+        .root_module = ui_module,
+    });
+}
+
+/// Zig takes the Nix dev shell's library paths only when building for the
+/// native OS. A target with an explicit OS version (the app bundle's macOS
+/// minimum) needs them for the libraries linked without pkg-config.
+fn addNixLibraryPaths(b: *std.Build, module: *std.Build.Module) void {
+    const flags = b.graph.environ_map.get("NIX_LDFLAGS") orelse return;
+    var words = std.mem.tokenizeAny(u8, flags, " \t\n");
+    while (words.next()) |word| {
+        if (std.mem.startsWith(u8, word, "-L") and word.len > 2) {
+            module.addLibraryPath(.{ .cwd_relative = word[2..] });
+        }
+    }
 }
 
 fn requiredEnvPath(b: *std.Build, name: []const u8) []const u8 {

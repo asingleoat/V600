@@ -2593,6 +2593,27 @@ pub fn processingConfigPath(buffer: []u8) ![]u8 {
     return std.fmt.bufPrint(buffer, "{s}", .{processing_config.config_file});
 }
 
+/// The folder for scans, exports, and both configs, which all resolve from
+/// the working directory: `V600_DATA_DIR` if set, else Pictures/V600 in the
+/// home folder for the macOS app bundle (Finder starts apps in "/"). Null
+/// keeps the working directory, as when run from a checkout.
+pub fn dataDirPath(buffer: []u8, data_dir_env: ?[]const u8, home: ?[]const u8, exe_path: []const u8) !?[]const u8 {
+    if (data_dir_env) |dir| return dir;
+    if (std.mem.indexOf(u8, exe_path, ".app/Contents/MacOS/") == null) return null;
+    const home_dir = home orelse return error.MissingHomeDirectory;
+    return try std.fmt.bufPrint(buffer, "{s}/Pictures/V600", .{home_dir});
+}
+
+test "the data folder is the override, else Pictures/V600 for the app bundle" {
+    var buffer: [256]u8 = undefined;
+    const bundle_exe = "/Applications/V600.app/Contents/MacOS/v600-ui";
+    try std.testing.expectEqualStrings("/Users/someone/Pictures/V600", (try dataDirPath(&buffer, null, "/Users/someone", bundle_exe)).?);
+    try std.testing.expectEqualStrings("/data/v600", (try dataDirPath(&buffer, "/data/v600", "/Users/someone", bundle_exe)).?);
+    try std.testing.expectEqualStrings("/data/v600", (try dataDirPath(&buffer, "/data/v600", null, "/repo/zig-out/bin/v600-ui")).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), try dataDirPath(&buffer, null, "/Users/someone", "/repo/zig-out/bin/v600-ui"));
+    try std.testing.expectError(error.MissingHomeDirectory, dataDirPath(&buffer, null, null, bundle_exe));
+}
+
 fn scanModeFromConfig(value: []const u8) ?ScanMode {
     if (std.mem.eql(u8, value, "rgb+ir")) return .rgb_ir;
     if (std.mem.eql(u8, value, "rgb")) return .rgb;

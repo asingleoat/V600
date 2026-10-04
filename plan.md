@@ -17,7 +17,9 @@ As of 2026-09-28, on branch `zig-rewrite`:
   exercised on a V600 in May 2026.
 - macOS: scanning works on a V600 from Apple Silicon through Epson's
   Interpreter bundle over libusb, with per-channel gamma LUTs fitted to the
-  film. CLI, native UI, and tests build there.
+  film. CLI, native UI, and tests build there. `zig build app-bundle`
+  makes a shareable, ad hoc signed V600.app (Apple Silicon, macOS 14+)
+  that works in `~/Pictures/V600`.
 - Rolls: `v600-zig roll ...` and the Scan view's roll controls scan a film
   roll strip by strip (preview, film area, one LUT per roll, full scan) and
   export each strip in the background with a review page. Exercised on the
@@ -251,9 +253,12 @@ Open:
 ### Repo, Nix, tests
 
 - Remove orphaned files once the LUT decision is made: `lut_dispatcher.c`,
-  `unified_dispatcher.c`, `test_unified_dispatcher.sh`, `scripts/`,
+  `unified_dispatcher.c`, `test_unified_dispatcher.sh`, the Python files in
+  `scripts/` (the macOS app bundle script there stays),
   `lut_capturexhc1.pcapng` (cited by `docs/SCANNER_INTERNALS.md`),
   `test/test-combined-features.sh`.
+- macOS app bundle: no icon yet, and Intel Macs would need an
+  `x86_64-darwin` build.
 - With parity dropped, decide whether the Python tree stays in HEAD or only
   in history (commit 48a4c79). `docs/PYTHON_PORT_MAP.md` line references
   would then point at that commit.

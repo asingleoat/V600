@@ -53,6 +53,7 @@ diffs for this before committing.
     zig build test --summary all              # Zig unit and fixture tests
     zig build wasm-webapp                     # stage the webapp in zig-out/webapp
     zig build run -- serve                    # companion: serves zig-out/webapp on 127.0.0.1:8433
+    zig build app-bundle                      # macOS: zig-out/V600.app and a zip to share
 
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
@@ -82,7 +83,8 @@ scripts in the scanner tests and `companion-smoke` use `magick` too.
 
 Environment variables: `V600_HARDWARE_SMOKE`, `V600_MACOS_HARDWARE_SMOKE`,
 `V600_PROCESSING_GPU` (opt-in WebGPU processing in the native UI),
-`V600_UI_THEME`, `V600_UI_SCALE`, `V600_SCANNER_DEVICE_CACHE`.
+`V600_UI_THEME`, `V600_UI_SCALE`, `V600_SCANNER_DEVICE_CACHE`,
+`V600_DATA_DIR` (the UI's folder for scans, exports, and configs).
 
 ## Layout
 
@@ -274,7 +276,9 @@ deliberately, not by accident.
   `scratchndent_config.toml`. Both are gitignored and generated at runtime.
   Saves merge into the existing file; go through the config layer, not raw
   TOML reads.
-- Scans go to `scans/`, exports to `frames/`; both are gitignored. A roll
+- Scans go to `scans/`, exports to `frames/`; both are gitignored. These
+  and both configs resolve from the working directory; the macOS app bundle
+  works in `~/Pictures/V600`, and `V600_DATA_DIR` sets the folder. A roll
   uses `scans/<roll>/` (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`,
   hand-placed framing in `strip_NN_*.tiff.frames.json`, `review/`) and
   `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the `[roll]` key in

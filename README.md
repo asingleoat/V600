@@ -38,7 +38,8 @@ to (see `docs/SCANNER_COMPANION.md`):
   and native UI. Scanning has been exercised on a V600.
 - macOS: scanner through Epson's Interpreter bundle over libusb, with
   per-channel gamma LUTs fitted to the film; CLI and native UI. Scanning
-  has been exercised on a V600 from Apple Silicon.
+  has been exercised on a V600 from Apple Silicon. `zig build app-bundle`
+  makes a V600.app and a zip to share (Apple Silicon, macOS 14 or later).
 - Browser: checked in Chrome and Chromium (older browsers without Wasm
   memory64 get a wasm32 build). Scanning from it needs the companion on a
   Linux host.

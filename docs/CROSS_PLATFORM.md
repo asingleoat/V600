@@ -7,7 +7,7 @@ What runs where, and what each missing platform needs.
 | Platform | Scanner | Processing CLI | Native UI | Packaging |
 | --- | --- | --- | --- | --- |
 | Linux | SANE via patched epkowa; exercised on a V600 | Yes | SDL3/Nuklear | `packages.cli`, `packages.ui` |
-| macOS | Epson Interpreter bundle over libusb; fake-tested, hardware bring-up pending | Yes (arm64) | SDL3/Nuklear (arm64) | Built from the dev shell only |
+| macOS | Epson Interpreter bundle over libusb; exercised on a V600 | Yes (arm64) | SDL3/Nuklear (arm64) | `zig build app-bundle` (V600.app, ad hoc signed) |
 | Windows | Not planned | Not wired | Not wired | Not wired |
 | Browser | Through the Linux companion (`v600-zig serve`) only | Webapp (Wasm); checked in Chrome and Chromium | Browser UI in `web/` | `zig build wasm-webapp` |
 
@@ -91,6 +91,29 @@ at 6400 dpi with IR at 3200 (a 3.3 GB file). Time follows the strip's length
 in scan lines, not its data size; see `passSeconds` in
 `src/ui/scan_workflow.zig`. Opening the connection takes well under a
 second.
+
+### Sharing the app
+
+`zig build app-bundle`, on a Mac in the dev shell and with no other options,
+builds the UI on its own (ReleaseFast, stripped, for the oldest Apple Silicon
+CPU and macOS 14), then `scripts/macos_app_bundle.sh` assembles
+`zig-out/V600.app` and `zig-out/V600-<version>-<build>-macos-arm64.zip`: the
+app plus `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers.
+
+- The libraries the UI loads from Nix (28, about 48 MB; the zip is about
+  19 MB) are copied into `Contents/Frameworks` and their load commands
+  pointed there. The step fails if a reference into `/nix/store` or the
+  build machine's home directory remains.
+- Signing is ad hoc: no Apple account and no identity in the signature. A
+  Developer ID would need a paid membership and would put the account
+  holder's legal name in every signature; testers approve the app once
+  instead (System Settings, Privacy & Security, Open Anyway).
+- macOS 14 is the newest minimum among the Nix libraries. Intel Macs would
+  need an `x86_64-darwin` build.
+- Testers install Epson's own V600 software for the Interpreter bundle.
+- Started from the bundle, the app keeps scans, exports, and both configs in
+  `~/Pictures/V600`; `V600_DATA_DIR` sets that folder for any run. From a
+  checkout it uses the working directory.
 
 ## Windows
 

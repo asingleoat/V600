@@ -347,6 +347,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     chrome.runtime_ui_config = chrome.runtime_ui_config.normalized();
+    // Smokes run in the checkout and keep their paths there unless
+    // V600_DATA_DIR moves them.
+    if (!any_smoke or init.environ_map.get("V600_DATA_DIR") != null) try enterDataDir(init.io, init.environ_map);
     if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke) {
         scan_dir = roll_smoke_root ++ "/scans";
         output_dir = roll_smoke_root ++ "/frames";
@@ -1328,6 +1331,16 @@ fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {
 /// sideways swipe (0) does not zoom.
 fn wheelZoomFactor(wheel_y: f32, base: f64) f64 {
     return std.math.pow(f64, base, std.math.clamp(@as(f64, wheel_y), -3.0, 3.0));
+}
+
+fn enterDataDir(io: std.Io, environ_map: *std.process.Environ.Map) !void {
+    var exe_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_len = std.process.executablePath(io, &exe_buffer) catch 0;
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try v600.native_ui.dataDirPath(&path_buffer, environ_map.get("V600_DATA_DIR"), environ_map.get("HOME"), exe_buffer[0..exe_len]) orelse return;
+    const dir = try std.Io.Dir.cwd().createDirPathOpen(io, path, .{});
+    defer dir.close(io);
+    try std.process.setCurrentDir(io, dir);
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
