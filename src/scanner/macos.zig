@@ -63,59 +63,6 @@ pub const valid_resolutions = [_]u32{
 
 pub const valid_ir_resolutions = [_]u32{ 800, 1600, 3200 };
 
-pub const ScannerModel = struct {
-    product_id: u16,
-    name: []const u8,
-    interp_id: []const u8,
-    ir_supported: bool,
-    max_dpi: u32,
-};
-
-pub const scanner_models = [_]ScannerModel{
-    .{ .product_id = 0x0142, .name = "Perfection V39", .interp_id = "A2", .ir_supported = false, .max_dpi = 4800 },
-    .{ .product_id = 0x014b, .name = "Perfection V850", .interp_id = "A3", .ir_supported = true, .max_dpi = 6400 },
-    .{ .product_id = 0x013a, .name = "Perfection V600 / GT-X820", .interp_id = "A1", .ir_supported = true, .max_dpi = 6400 },
-    .{ .product_id = 0x0143, .name = "Perfection V550", .interp_id = "A1", .ir_supported = false, .max_dpi = 6400 },
-    .{ .product_id = 0x0130, .name = "Perfection V700 / V750", .interp_id = "AZ", .ir_supported = true, .max_dpi = 6400 },
-};
-
-pub const UnknownScannerModel = struct {
-    product_id: u16,
-    interp_id: []const u8 = "A1",
-    ir_supported: bool = false,
-    max_dpi: u32 = 6400,
-
-    pub fn formatName(self: UnknownScannerModel, buffer: []u8) ![]u8 {
-        return std.fmt.bufPrint(buffer, "Unknown (0x{x:0>4})", .{self.product_id});
-    }
-};
-
-pub const ScannerModelSelection = union(enum) {
-    known: ScannerModel,
-    unknown: UnknownScannerModel,
-
-    pub fn interpId(self: ScannerModelSelection) []const u8 {
-        return switch (self) {
-            .known => |model| model.interp_id,
-            .unknown => |model| model.interp_id,
-        };
-    }
-
-    pub fn irSupported(self: ScannerModelSelection) bool {
-        return switch (self) {
-            .known => |model| model.ir_supported,
-            .unknown => |model| model.ir_supported,
-        };
-    }
-
-    pub fn maxDpi(self: ScannerModelSelection) u32 {
-        return switch (self) {
-            .known => |model| model.max_dpi,
-            .unknown => |model| model.max_dpi,
-        };
-    }
-};
-
 pub const UsbEndpointPair = struct {
     out_address: u8,
     in_address: u8,
@@ -143,17 +90,6 @@ pub const UsbTransferError = error{
     UsbWriteFailed,
     UnexpectedAck,
 };
-
-pub fn scannerModelForProductId(product_id: u16) ScannerModelSelection {
-    for (scanner_models) |model| {
-        if (model.product_id == product_id) return .{ .known = model };
-    }
-    return .{ .unknown = .{ .product_id = product_id } };
-}
-
-pub fn knownProductIds() []const ScannerModel {
-    return &scanner_models;
-}
 
 pub fn selectEndpointPair(endpoint_addresses: []const u8) ?UsbEndpointPair {
     var ep_out: ?u8 = null;
@@ -252,6 +188,60 @@ pub const LoadedInterpreter = struct {
         self.* = undefined;
     }
 };
+
+/// ESC/I sent straight to the scanner, for models whose firmware speaks it
+/// and that have no Epson interpreter: writes go to bulk OUT, and each read
+/// collects exactly the bytes asked for from bulk IN, as `INTRead` does.
+pub const DirectEscI = struct {
+    usb: UsbIo,
+
+    pub fn api(self: *DirectEscI) InterpreterApi {
+        return .{
+            .context = self,
+            .initFn = directInit,
+            .writeFn = directWrite,
+            .readFn = directRead,
+            .closeFn = directClose,
+            .usbErrorFn = directUsbError,
+            .interpreterErrorFn = directInterpreterError,
+        };
+    }
+};
+
+/// Long enough for the first block of a high-resolution pass, which the
+/// scanner takes a while to deliver.
+const direct_esci_timeout_ms: u32 = 60_000;
+
+fn directInit(_: *anyopaque, _: UsbCallback, _: UsbCallback, _: ?*anyopaque) bool {
+    return true;
+}
+
+fn directWrite(context: *anyopaque, data: []const u8) bool {
+    const self: *DirectEscI = @ptrCast(@alignCast(context));
+    self.usb.write(data, direct_esci_timeout_ms) catch return false;
+    return true;
+}
+
+fn directRead(context: *anyopaque, buffer: []u8) bool {
+    const self: *DirectEscI = @ptrCast(@alignCast(context));
+    var filled: usize = 0;
+    while (filled < buffer.len) {
+        const n = self.usb.read(buffer[filled..], direct_esci_timeout_ms) catch return false;
+        if (n == 0) return false;
+        filled += n;
+    }
+    return true;
+}
+
+fn directClose(_: *anyopaque) void {}
+
+fn directUsbError(_: *anyopaque) i16 {
+    return 0;
+}
+
+fn directInterpreterError(_: *anyopaque) i32 {
+    return 0;
+}
 
 /// Callback context used instead of the callback handle while a detached
 /// session is open. The Python driver passed a NULL handle to INTInit and
@@ -875,6 +865,8 @@ const FakeUsb = struct {
     write_len: usize = 0,
     fail_read: bool = false,
     fail_write: bool = false,
+    /// Most bytes one read returns (0: no limit), like short USB transfers.
+    read_chunk: usize = 0,
     last_read_timeout: u32 = 0,
     last_write_timeout: u32 = 0,
 
@@ -891,7 +883,8 @@ const FakeUsb = struct {
         self.last_read_timeout = timeout_ms;
         if (self.fail_read) return UsbTransferError.UsbReadFailed;
         const available = self.read_bytes[self.read_offset..];
-        const n = @min(buffer.len, available.len);
+        var n = @min(buffer.len, available.len);
+        if (self.read_chunk != 0) n = @min(n, self.read_chunk);
         @memcpy(buffer[0..n], available[0..n]);
         self.read_offset += n;
         return n;
@@ -1064,34 +1057,22 @@ test "builds macOS interpreter search paths like Python" {
     );
 }
 
-test "scanner model table preserves Python SCANNER_MODELS constants" {
-    const v600 = scannerModelForProductId(0x013a);
-    try std.testing.expectEqualStrings("A1", v600.interpId());
-    try std.testing.expect(v600.irSupported());
-    try std.testing.expectEqual(@as(u32, 6400), v600.maxDpi());
+test "direct ESC/I writes straight through and reads exactly the requested bytes" {
+    var fake = FakeUsb{ .read_bytes = &.{ 0x06, 1, 2, 3, 4, 5, 6, 7, 8 }, .read_chunk = 3 };
+    var direct = DirectEscI{ .usb = fake.io() };
+    var session = InterpreterSession{ .api = direct.api(), .callback_context = .{ .usb = fake.io() } };
+    try session.init();
 
-    const v39 = scannerModelForProductId(0x0142);
-    try std.testing.expectEqualStrings("A2", v39.interpId());
-    try std.testing.expect(!v39.irSupported());
-    try std.testing.expectEqual(@as(u32, 4800), v39.maxDpi());
-
-    const models = knownProductIds();
-    try std.testing.expectEqual(@as(usize, 5), models.len);
-    try std.testing.expectEqual(@as(u16, 0x04b8), epson_vendor_id);
-}
-
-test "unknown scanner model keeps Python fallback interpreter and name shape" {
-    const unknown = scannerModelForProductId(0x9999);
-    try std.testing.expectEqualStrings("A1", unknown.interpId());
-    try std.testing.expect(!unknown.irSupported());
-    try std.testing.expectEqual(@as(u32, 6400), unknown.maxDpi());
-
-    var name_buf: [32]u8 = undefined;
-    const name = try switch (unknown) {
-        .known => error.ExpectedUnknown,
-        .unknown => |model| model.formatName(&name_buf),
-    };
-    try std.testing.expectEqualStrings("Unknown (0x9999)", name);
+    try std.testing.expect(commandAck(&session, &interpreter.resetCommand()));
+    try std.testing.expectEqualSlices(u8, &interpreter.resetCommand(), fake.written());
+    var block: [8]u8 = undefined;
+    try session.read(&block);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6, 7, 8 }, &block);
+    try std.testing.expectEqual(direct_esci_timeout_ms, fake.last_read_timeout);
+    // Nothing more to read: the read fails instead of returning short.
+    try std.testing.expectError(error.InterpreterReadFailed, session.read(&block));
+    try session.reinit();
+    session.close();
 }
 
 test "select_endpoint_pair preserves first OUT and first IN descriptor behavior" {

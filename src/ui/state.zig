@@ -65,7 +65,8 @@ pub fn stableScannerCapabilities(
 ) scanner_contracts.ScannerCapabilities {
     return .{
         .device_name = "",
-        .model = "Epson Perfection V600 Photo",
+        .model = if (capabilities.known_model) |known| known.name else "Epson scanner",
+        .known_model = capabilities.known_model,
         .optical_dpi = capabilities.optical_dpi,
         .max_resolution = capabilities.max_resolution,
         .flatbed_width_in = capabilities.flatbed_width_in,
@@ -570,6 +571,7 @@ pub const State = struct {
         self.scanner.tpu_width_in = capabilities.tpu_width_in;
         self.scanner.tpu_height_in = capabilities.tpu_height_in;
         self.scanner_capabilities = stableScannerCapabilities(capabilities);
+        self.scan_controls.useScanner(.fromCapabilities(&self.scanner_capabilities.?));
         self.scanner.scan_status = "";
         self.applyPendingScannerConfigSelection();
     }
@@ -861,6 +863,7 @@ pub const State = struct {
     ) void {
         self.scanner.connection = .connected;
         self.scanner_capabilities = stableScannerCapabilities(capabilities);
+        self.scan_controls.useScanner(.fromCapabilities(&self.scanner_capabilities.?));
         self.scanner.tpu_width_in = capabilities.tpu_width_in;
         self.scanner.tpu_height_in = capabilities.tpu_height_in;
         self.scanner.preview_width = image.width;
@@ -942,7 +945,7 @@ pub const State = struct {
                 self.scan_controls.setMode(mode);
             }
         }
-        if (loaded.active.dpi and scanModeSupportsDpi(self.scan_controls.mode, loaded.values.dpi)) {
+        if (loaded.active.dpi and scanModeSupportsDpi(&self.scan_controls, self.scan_controls.mode, loaded.values.dpi)) {
             self.scan_controls.dpi = loaded.values.dpi;
         }
         if (loaded.active.sel_x_in and
@@ -2578,6 +2581,9 @@ pub fn scannerErrorText(detail: []const u8) []const u8 {
     if (std.mem.eql(u8, detail, "ScannerNotFound")) return "No scanner found. Check the USB cable and power.";
     if (std.mem.eql(u8, detail, "InterpreterNotInstalled")) return "Epson's scanner driver is not installed.";
     if (std.mem.eql(u8, detail, "NoFilmFound")) return "No film found on the preview.";
+    if (std.mem.eql(u8, detail, "InfraredUnsupported")) return "This scanner has no infrared channel. Scan in RGB.";
+    if (std.mem.eql(u8, detail, "InfraredEnableFailed")) return "The scanner refused an infrared scan. Scan in RGB, and please report it.";
+    if (std.mem.eql(u8, detail, "ScanParametersRejected")) return "The scanner refused these settings, most likely the resolution. Try another, and please report it.";
     return detail;
 }
 
@@ -2605,6 +2611,12 @@ pub fn dataDirPath(buffer: []u8, data_dir_env: ?[]const u8, home: ?[]const u8, e
     return try std.fmt.bufPrint(buffer, "{s}/Pictures/CerealGrain", .{home_dir});
 }
 
+test "scanner errors read as advice, including the ones other models may hit" {
+    try std.testing.expectEqualStrings("This scanner has no infrared channel. Scan in RGB.", scannerErrorText("InfraredUnsupported"));
+    try std.testing.expect(std.mem.indexOf(u8, scannerErrorText("ScanParametersRejected"), "resolution") != null);
+    try std.testing.expectEqualStrings("SomethingElse", scannerErrorText("SomethingElse"));
+}
+
 test "the data folder is the override, else Pictures/CerealGrain for the app bundle" {
     var buffer: [256]u8 = undefined;
     const bundle_exe = "/Applications/CerealGrain.app/Contents/MacOS/cerealgrain-ui";
@@ -2622,8 +2634,8 @@ fn scanModeFromConfig(value: []const u8) ?ScanMode {
     return null;
 }
 
-fn scanModeSupportsDpi(mode: ScanMode, dpi: u32) bool {
-    for (mode.validDpis()) |valid| {
+fn scanModeSupportsDpi(controls: *const ScanControls, mode: ScanMode, dpi: u32) bool {
+    for (controls.validDpis(mode)) |valid| {
         if (valid == dpi) return true;
     }
     return false;

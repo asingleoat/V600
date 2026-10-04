@@ -489,7 +489,8 @@ pub fn scanPreview(allocator: std.mem.Allocator, io: std.Io, runtime: cerealgrai
 pub fn loadPreview(allocator: std.mem.Allocator, path: []const u8) !Preview {
     const image = try cerealgrain.tiff.loadRgbPage(allocator, path);
     errdefer image.deinit(allocator);
-    const dpi: f64 = @floatFromInt(cerealgrain.scanner.sane.effectiveDpiForRequest(.{ .dpi = preview_dpi, .source = .tpu }));
+    // Each scanner snaps the preview to its own resolution; the TIFF says which.
+    const dpi: f64 = @floatFromInt((try cerealgrain.tiff.readDpi(allocator, path)) orelse preview_dpi);
     const info = cerealgrain.app_state.ScannerInfo{
         .preview_width = image.width,
         .preview_height = image.height,

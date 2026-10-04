@@ -1,5 +1,6 @@
 const std = @import("std");
 const contracts = @import("contracts.zig");
+const models = @import("models.zig");
 
 pub const millimeters_per_inch = 25.4;
 const safety_margin_mm = 0.1;
@@ -58,7 +59,7 @@ pub fn planCommand(
     };
     errdefer plan.deinit(allocator);
 
-    plan.effective_dpi = effectiveDpiForRequest(request);
+    plan.effective_dpi = effectiveDpiForCaps(request, caps);
 
     if (request.kind == .ir) {
         if (wrappers.scanimage_v600_ir) {
@@ -102,6 +103,17 @@ pub fn planCommand(
     }
 
     return plan;
+}
+
+/// The resolution a request scans at on the scanner `caps` describes: the
+/// V600's Linux resolutions for a V600 or an unknown device, the model's own
+/// for any other.
+pub fn effectiveDpiForCaps(request: contracts.ScanRequest, caps: contracts.ScannerCapabilities) u32 {
+    const model = caps.known_model orelse return effectiveDpiForRequest(request);
+    if (model.product_id == models.v600.product_id) return effectiveDpiForRequest(request);
+    if (request.kind == .ir) return models.nearestDpi(request.dpi, model.ir_dpis, caps.max_resolution);
+    if (request.source == .tpu) return models.nearestDpi(request.dpi, model.tpu_dpis, caps.max_resolution);
+    return request.dpi;
 }
 
 pub fn effectiveDpiForRequest(request: contracts.ScanRequest) u32 {

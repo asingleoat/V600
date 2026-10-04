@@ -20,6 +20,9 @@ As of 2026-09-28, on branch `zig-rewrite`:
   film. CLI, native UI, and tests build there. `zig build app-bundle`
   makes a shareable, ad hoc signed CerealGrain.app (Apple Silicon, macOS 14+)
   that works in `~/Pictures/CerealGrain`.
+- Other Epson film scanners: ten more models are in `scanner/models.zig`
+  from Epson's driver tables, untested and awaiting beta testers' reports
+  (`docs/CROSS_PLATFORM.md`, Scanner models).
 - Rolls: `cerealgrain roll ...` and the Scan view's roll controls scan a film
   roll strip by strip (preview, film area, one LUT per roll, full scan) and
   export each strip in the background with a review page. Exercised on the
@@ -259,6 +262,11 @@ Open:
   `test/test-combined-features.sh`.
 - macOS app bundle: no icon yet, and Intel Macs would need an
   `x86_64-darwin` build.
+- Other scanner models, from testers' reports: the resolutions each accepts
+  (the 4800 dpi and interpreter-less ones are guesses), whether IR and the
+  IR challenge work beyond the V600, whether their film scans need a TPU
+  calibration sequence like the V600's (a USB capture of Epson Scan on the
+  model), and whether the interpreter-less ESC/I path runs at all.
 - Some UI worker tests (`src/ui/process_worker.zig`) load `processing.toml`
   from the working directory, so a test run reads the developer's own
   config at the repo root; they should use a temporary config.

@@ -175,11 +175,17 @@ deliberately, not by accident.
 
 - Linux and macOS scanner paths are separate. Linux drives SANE through
   `scanimage` subprocesses; macOS loads Epson's interpreter library and
-  supplies USB callbacks over libusb (`scanner/interpreter_runtime.zig`).
+  supplies USB callbacks over libusb (`scanner/interpreter_runtime.zig`),
+  or sends ESC/I straight over USB to a model without an interpreter.
   `scanner.host` picks the runtime for the build target.
-- Linux RGB TPU scans use the `scanimage-v600` wrapper; IR scans require
-  `scanimage-v600-ir` (installed by `nixos/`). Plain `scanimage` with
-  `SCAN_IR_MODE=1` is not a supported fallback. IR and RGB+IR device
+- Models: `scanner/models.zig`, from Epson's ICA driver tables (USB IDs,
+  interpreters, resolutions). Only the V600 is tested. The facts below are
+  the V600's; other models take their resolutions from the table, IR only
+  where the scanner reports it, and never the V600's TPU program or
+  wrappers. See `docs/CROSS_PLATFORM.md` (Scanner models).
+- Linux RGB TPU scans of a V600 use the `scanimage-v600` wrapper; IR scans
+  require `scanimage-v600-ir` (installed by `nixos/`). Plain `scanimage`
+  with `SCAN_IR_MODE=1` is not a supported fallback. IR and RGB+IR device
   selection must use an `epkowa` / `epkowa:interpreter` device, never a
   cached `epson2` one.
 - Sources are `Transparency Unit` and `Flatbed`. TPU resolutions: 400, 800,

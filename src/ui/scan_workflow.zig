@@ -25,32 +25,33 @@ pub const ScanMode = enum {
             .ir => "IR",
         };
     }
+};
 
-    // Linux TPU scans run only at 400, 800, 1600, and 3200 dpi
-    // (scanner/sane.zig); anything else would be delivered at a different dpi.
-    /// RGB modes go as high as this host's scanner backend allows (6400 on
-    /// macOS); IR alone stops at 3200.
-    pub fn validDpis(self: ScanMode) []const u32 {
-        return switch (self) {
-            .rgb_ir, .rgb => &scanner_host.film_dpis,
-            .ir => &.{ 800, 1600, 3200 },
-        };
-    }
+/// What the connected scanner offers. Before one connects, this host's
+/// defaults: the V600's resolutions (Linux TPU scans stop at 3200 dpi;
+/// scanner/sane.zig) and an IR channel.
+pub const ScannerChoices = struct {
+    film_dpis: []const u32 = &scanner_host.film_dpis,
+    ir_dpis: []const u32 = &.{ 800, 1600, 3200 },
+    infrared: bool = true,
 
-    pub fn closestDpi(self: ScanMode, requested: u32) u32 {
-        const valid = self.validDpis();
-        var closest = valid[0];
-        var closest_delta = absDiff(closest, requested);
-        for (valid[1..]) |dpi| {
-            const delta = absDiff(dpi, requested);
-            if (delta < closest_delta) {
-                closest = dpi;
-                closest_delta = delta;
-            }
-        }
-        return closest;
+    pub fn fromCapabilities(caps: *const scanner_contracts.ScannerCapabilities) ScannerChoices {
+        return .{ .film_dpis = caps.filmDpis(), .ir_dpis = caps.irDpis(), .infrared = caps.ir_supported };
     }
 };
+
+fn closestDpi(valid: []const u32, requested: u32) u32 {
+    var closest = valid[0];
+    var closest_delta = absDiff(closest, requested);
+    for (valid[1..]) |dpi| {
+        const delta = absDiff(dpi, requested);
+        if (delta < closest_delta) {
+            closest = dpi;
+            closest_delta = delta;
+        }
+    }
+    return closest;
+}
 
 pub const ExposureMode = enum {
     linear,
@@ -346,14 +347,35 @@ pub const ScanControls = struct {
     autoselect: bool = true,
     selection: ?PreviewSelection = null,
     auto_selection: ?PreviewSelection = null,
+    choices: ScannerChoices = .{},
 
+    /// RGB modes offer film resolutions; IR alone its own.
+    pub fn validDpis(self: *const ScanControls, mode: ScanMode) []const u32 {
+        return switch (mode) {
+            .rgb_ir, .rgb => self.choices.film_dpis,
+            .ir => self.choices.ir_dpis,
+        };
+    }
+
+    pub fn modeAvailable(self: *const ScanControls, mode: ScanMode) bool {
+        return mode == .rgb or self.choices.infrared;
+    }
+
+    /// A mode the scanner lacks falls back to RGB.
     pub fn setMode(self: *ScanControls, mode: ScanMode) void {
-        self.mode = mode;
-        self.dpi = mode.closestDpi(self.dpi);
+        self.mode = if (self.modeAvailable(mode)) mode else .rgb;
+        self.dpi = closestDpi(self.validDpis(self.mode), self.dpi);
     }
 
     pub fn setDpi(self: *ScanControls, dpi: u32) void {
-        self.dpi = self.mode.closestDpi(dpi);
+        self.dpi = closestDpi(self.validDpis(self.mode), dpi);
+    }
+
+    /// Takes the connected scanner's choices and moves the mode and
+    /// resolution onto them.
+    pub fn useScanner(self: *ScanControls, choices: ScannerChoices) void {
+        self.choices = choices;
+        self.setMode(self.mode);
     }
 
     pub fn setSelection(self: *ScanControls, selection: PreviewSelection) void {
@@ -783,6 +805,25 @@ fn roundToPlaces(value: f64, comptime places: u8) f64 {
 
 fn roundToU64(value: f64) u64 {
     return @intFromFloat(@round(value));
+}
+
+test "scan controls take a connected scanner's resolutions and drop IR it lacks" {
+    const models = @import("../scanner/models.zig");
+    var controls = ScanControls{ .dpi = 3200, .mode = .rgb_ir };
+    controls.useScanner(.fromCapabilities(&.{ .known_model = models.forProductId(0x014a).?, .max_resolution = 4800, .ir_supported = false }));
+    try std.testing.expectEqual(ScanMode.rgb, controls.mode);
+    try std.testing.expectEqual(@as(u32, 2400), controls.dpi);
+    try std.testing.expect(!controls.modeAvailable(.ir));
+    controls.setMode(.ir);
+    try std.testing.expectEqual(ScanMode.rgb, controls.mode);
+    controls.setDpi(6400);
+    try std.testing.expectEqual(@as(u32, 4800), controls.dpi);
+
+    // A V600 reporting 12800 dpi still offers its own film resolutions.
+    controls.useScanner(.fromCapabilities(&.{ .known_model = &models.v600, .max_resolution = 12800, .ir_supported = true }));
+    try std.testing.expectEqualSlices(u32, &.{ 800, 1600, 3200, 6400 }, controls.validDpis(.rgb));
+    controls.setMode(.rgb_ir);
+    try std.testing.expectEqual(ScanMode.rgb_ir, controls.mode);
 }
 
 test "scan controls preserve browser mode dpi choices" {

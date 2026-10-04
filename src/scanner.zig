@@ -8,6 +8,7 @@ pub const film_lut = @import("scanner/film_lut.zig");
 pub const lut = @import("scanner/lut.zig");
 pub const linux = @import("scanner/linux.zig");
 pub const macos = @import("scanner/macos.zig");
+pub const models = @import("scanner/models.zig");
 pub const sane = @import("scanner/sane.zig");
 pub const interpreter = @import("scanner/interpreter.zig");
 pub const interpreter_runtime = @import("scanner/interpreter_runtime.zig");
@@ -36,6 +37,7 @@ pub fn backendKindForCurrentHost() BackendKind {
 
 test {
     _ = contracts;
+    _ = models;
     _ = config;
     _ = events;
     _ = film_lut;

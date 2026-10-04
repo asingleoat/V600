@@ -3108,6 +3108,14 @@ fn drawScanView(
         tooltip(ctx, "Connect to the scanner again, for example after turning it on or quitting another program that held it");
         if (c.nk_button_label(ctx, "Reconnect Scanner") != 0) model.requestReconnect();
     }
+    if (model.scanner_capabilities) |caps| {
+        layoutRow(ctx, 20.0, 1);
+        c.nk_label(ctx, scannerNameZ(caps.model), c.NK_TEXT_LEFT);
+        if (!caps.tested()) {
+            layoutRow(ctx, 40.0, 1);
+            c.nk_label_wrap(ctx, "Not yet tested with CerealGrain: please report how it goes.");
+        }
+    }
     rolls.draw(ctx, model, preview);
     layoutRow(ctx, 28.0, 3);
     if (scanner_busy) c.nk_widget_disable_begin(ctx);
@@ -3135,11 +3143,20 @@ fn drawScanView(
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Mode", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 3);
+    const infrared = model.scan_controls.choices.infrared;
+    if (!infrared) c.nk_widget_disable_begin(ctx);
     if (chrome.optionClicked(ctx, "RGB + IR", model.scan_controls.mode == .rgb_ir)) model.scan_controls.setMode(.rgb_ir);
+    if (!infrared) c.nk_widget_disable_end(ctx);
     if (chrome.optionClicked(ctx, "RGB", model.scan_controls.mode == .rgb)) model.scan_controls.setMode(.rgb);
+    if (!infrared) c.nk_widget_disable_begin(ctx);
     if (chrome.optionClicked(ctx, "IR", model.scan_controls.mode == .ir)) model.scan_controls.setMode(.ir);
+    if (!infrared) c.nk_widget_disable_end(ctx);
+    if (!infrared) {
+        layoutRow(ctx, 40.0, 1);
+        c.nk_label_wrap(ctx, "This scanner has no infrared channel, so no dust removal.");
+    }
 
-    const dpis = model.scan_controls.mode.validDpis();
+    const dpis = model.scan_controls.validDpis(model.scan_controls.mode);
     layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "DPI", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, @as(c_int, @intCast(dpis.len)));
@@ -4266,11 +4283,26 @@ fn parseSmokeWindowSize(value: []const u8) !SmokeWindowSize {
 
 fn dpiLabelZ(dpi: u32) [*:0]const u8 {
     return switch (dpi) {
+        300 => "300",
+        600 => "600",
         800 => "800",
         1200 => "1200",
         1600 => "1600",
+        2400 => "2400",
         3200 => "3200",
+        4800 => "4800",
         6400 => "6400",
         else => "unknown",
     };
+}
+
+/// Nuklear takes NUL-terminated text; model names are plain slices.
+fn scannerNameZ(name: []const u8) [*:0]const u8 {
+    const Static = struct {
+        var buffer: [96:0]u8 = undefined;
+    };
+    const len = @min(name.len, Static.buffer.len);
+    @memcpy(Static.buffer[0..len], name[0..len]);
+    Static.buffer[len] = 0;
+    return &Static.buffer;
 }

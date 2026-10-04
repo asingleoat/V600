@@ -137,14 +137,14 @@ fn handleScannerHost(
     } else if (std.mem.eql(u8, subcommand, "usb-reset")) {
         const confirmed = try parseUsbResetOptions(remaining);
         if (!confirmed) {
-            try stdout.print("USB reset not run: pass --yes to reset the Epson V600 USB device\n", .{});
+            try stdout.print("USB reset not run: pass --yes to reset the scanner's USB device\n", .{});
             return;
         }
         const outcome = try runtime.usbReset();
         defer outcome.deinit(allocator);
         switch (outcome.status) {
             .reset_performed => try stdout.print("USB reset performed on {s}\n", .{outcome.path.?}),
-            .device_not_found => try stdout.print("USB reset failed: Epson V600 USB device not found\n", .{}),
+            .device_not_found => try stdout.print("USB reset failed: no known Epson scanner on USB\n", .{}),
             .permission_denied => try stdout.print("USB reset failed: permission denied for {s}\n", .{outcome.path.?}),
             .reset_failed => try stdout.print("USB reset failed for {s}\n", .{outcome.path.?}),
         }
@@ -603,12 +603,12 @@ fn printScannerUsage() !void {
         \\
         \\commands:
         \\  devices                       list scanners
-        \\  probe                         report selected V600 capabilities
+        \\  probe                         report the scanner's model and capabilities
         \\  preview [--out PATH]           400 dpi TPU preview; prints the film area for scan
         \\                                 and writes the film's LUTs to PATH.lut.bin
         \\  scan [--out PATH] [options]    run a real scanner pass; default output is
         \\                                 scans/scan_NNNN_<mode>_<dpi>dpi.tiff
-        \\  usb-reset --yes                explicitly reset the V600 USB device (Linux)
+        \\  usb-reset --yes                explicitly reset the scanner's USB device (Linux)
         \\  smoke [--out PATH] [options]   gated hardware smoke scan
         \\  processing-smoke [options]     gated scan then processing load smoke
         \\  macos-smoke                    gated macOS scanner identity probe

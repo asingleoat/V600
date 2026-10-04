@@ -21,13 +21,21 @@ The scanner driver has three communication layers:
 ## USB Device Setup
 
 - Vendor ID: `0x04b8` (Epson)
-- Product IDs:
-  - `0x0128` — Perfection 4870 / GT-X700 (Interpreter 41)
-  - `0x012a` — Perfection 4990 / GT-X800 (Interpreter 52)
-  - `0x012c` — Perfection V700/V750 / GT-X900 (Interpreter 7A)
-  - `0x0135` — GT-X970 (Interpreter 86)
+- Product IDs and interpreters, from Epson's own ICA driver tables
+  (`/Library/Image Capture/Devices/EPSON Scanner.app/Contents/Resources/ModelInfo.plist`,
+  which `src/scanner/models.zig` follows). Models without an interpreter
+  speak ESC/I in firmware, over the same bulk endpoints.
   - `0x013a` — Perfection V600 / GT-X820 (Interpreter A1) **[tested]**
-  - `0x0151` — Perfection V800/V850 / GT-X980 (Interpreter AD)
+  - `0x013b` — Perfection V550 (Interpreter EB)
+  - `0x0151` — Perfection V800/V850 / GT-X980 (Interpreter FE)
+  - `0x0130` — Perfection V500 / GT-X770 (Interpreter 7C)
+  - `0x0119` — Perfection 4490 / GT-X750 (Interpreter 54)
+  - `0x014a` — Perfection V370/V37 / GT-F740/GT-S640 (Interpreter DD)
+  - `0x0142` — Perfection V330/V33 / GT-F730/GT-S630 (Interpreter AD)
+  - `0x012c` — Perfection V700/V750 / GT-X900 (no interpreter)
+  - `0x0135` — GT-X970 (no interpreter)
+  - `0x012a` — Perfection 4990 / GT-X800 (no interpreter)
+  - `0x0128` — Perfection 4870 / GT-X700 (no interpreter)
 - Interface: `(0, 0)` — configuration 0, alternate setting 0
 - Endpoints: 2 bulk — one IN (0x81), one OUT (0x02)
 
@@ -141,7 +149,7 @@ Search paths on Linux:
 /opt/epson/Interpreter {ID}
 ```
 
-The interpreter ID (e.g., "A1" for V600) maps to the scanner model — see the product ID table above.
+The interpreter ID (e.g., "A1" for the V600) maps to the scanner model; see the product ID table above.
 
 ## Scan Flow
 

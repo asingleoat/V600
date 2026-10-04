@@ -4,13 +4,10 @@ const builtin = @import("builtin");
 const contracts = @import("contracts.zig");
 const events = @import("events.zig");
 const lut = @import("lut.zig");
+const models = @import("models.zig");
 const sane = @import("sane.zig");
 const tiff = @import("../tiff.zig");
 
-pub const cerealgrain_vendor_id = "04b8";
-pub const cerealgrain_product_id = "013a";
-pub const cerealgrain_vendor_id_int: u16 = 0x04b8;
-pub const cerealgrain_product_id_int: u16 = 0x013a;
 pub const usbdevfs_reset: u32 = 0x5514;
 pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
 
@@ -75,11 +72,24 @@ pub const Device = struct {
         };
     }
 
-    pub fn looksLikeV600(self: Device) bool {
-        return containsAny(self.raw_line, &.{ "V600", "GT-X820", "Perfection V600" }) or
-            containsAny(self.name, &.{ "epkowa:interpreter", "epson2" });
+    pub fn looksLikeScanner(self: Device) bool {
+        return self.knownModel() != null or containsAny(self.name, &.{ "epkowa:interpreter", "epson2" });
+    }
+
+    /// The model the device's `scanimage -L` line names, if it is one the
+    /// app knows.
+    pub fn knownModel(self: Device) ?*const models.Model {
+        return models.forSaneLine(self.raw_line);
     }
 };
+
+/// The `scanimage-v600` wrappers preload the V600's interpreter (and the IR
+/// one patches it), so they are only for a V600, or a device that does not
+/// say what it is, as before other models were known.
+fn usesV600Wrappers(model: ?*const models.Model) bool {
+    const known = model orelse return true;
+    return known.product_id == models.v600.product_id;
+}
 
 pub const ProgressEvent = events.ProgressEvent;
 pub const FailureKind = events.FailureKind;
@@ -213,6 +223,13 @@ pub const Runtime = struct {
         };
     }
 
+    /// The wrappers a scan of `model` may use: none for a known model other
+    /// than the V600.
+    fn wrappersFor(self: Runtime, model: ?*const models.Model) WrapperAvailability {
+        if (!usesV600Wrappers(model)) return .{};
+        return self.wrappers();
+    }
+
     pub fn close(self: Runtime) void {
         _ = self;
     }
@@ -339,12 +356,15 @@ pub const Runtime = struct {
         defer freeDevices(self.allocator, devices);
 
         const select_start = monotonicNowNs();
-        const device = selectDeviceForKind(devices, .rgb_ir) orelse return error.NoV600Device;
+        // A scanner without IR may only be reachable through epson2.
+        const device = selectDeviceForKind(devices, .rgb_ir) orelse selectDeviceForKind(devices, .rgb) orelse
+            return error.ScannerNotFound;
         self.emitTimingSince("linux.probe.select_device", select_start, "selected");
         const cache_write_start = monotonicNowNs();
         self.writeCachedDeviceName(device.name);
         self.emitTimingSince("linux.probe.cache_write", cache_write_start, "attempted");
-        const wrappers_available = self.wrappers();
+        const known_model = device.knownModel();
+        const wrappers_available: WrapperAvailability = if (usesV600Wrappers(known_model)) self.wrappers() else .{};
         const help_cmd = if (wrappers_available.scanimage_v600) "scanimage-v600" else "scanimage";
 
         const flatbed_help = try self.helpFor(help_cmd, device.name, .flatbed);
@@ -355,6 +375,8 @@ pub const Runtime = struct {
         const parse_start = monotonicNowNs();
         var caps = sane.parseCombinedCapabilities(flatbed_help, tpu_help);
         if (caps.device_name.len == 0) caps.device_name = device.name;
+        caps.known_model = known_model;
+        caps.model = if (known_model) |model| model.name else "Epson scanner";
         caps.ir_supported = wrappers_available.scanimage_v600_ir and device.canUseForKind(.ir);
         self.emitTimingSince("linux.probe.parse_combined_capabilities", parse_start, "ok");
         self.emitProbe(.{
@@ -483,20 +505,21 @@ pub const Runtime = struct {
         self.emitTimingSince("linux.scan_rgb_ir.combine_tiff_pages", combine_start, "ok");
         const pass_dpis = combinedPassDpis(options.request);
         const metadata_tags_start = monotonicNowNs();
+        const model_name = if (options.capabilities) |caps| caps.model else (contracts.ScannerCapabilities{}).model;
         try self.applyTiffMetadataTags(options.output_path, .{
-            .model = "Epson Perfection V600 Photo",
+            .model = model_name,
             .software = tiff_software,
             .dpi = pass_dpis.rgb,
             .custom_luts_applied = customLutsApplied(options.request),
         });
         try tiff.writeScannerPageMetadata(self.allocator, options.output_path, contracts.TiffPageLayout.ir, .{
-            .model = "Epson Perfection V600 Photo",
+            .model = model_name,
             .software = tiff_software,
             .dpi = pass_dpis.ir,
         });
         self.emitTimingSince("linux.scan_rgb_ir.metadata_tags", metadata_tags_start, "ok");
         const sidecar_start = monotonicNowNs();
-        const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name, pass_dpis);
+        const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name, model_name, pass_dpis);
         self.emitTimingSince("linux.scan_rgb_ir.metadata_sidecar", sidecar_start, "ok");
         defer self.allocator.free(metadata_path);
         self.emitScanComplete(.{
@@ -559,7 +582,7 @@ pub const Runtime = struct {
             caps_detail = "default-no-area";
             break :caps contracts.ScannerCapabilities{ .device_name = device_name };
         } else caps: {
-            const help_cmd = if (self.wrappers().scanimage_v600) "scanimage-v600" else "scanimage";
+            const help_cmd = if (self.wrappersFor(null).scanimage_v600) "scanimage-v600" else "scanimage";
             const flatbed_help = try self.helpFor(help_cmd, device_name, .flatbed);
             defer self.allocator.free(flatbed_help);
             const tpu_help = try self.helpFor(help_cmd, device_name, .tpu);
@@ -577,7 +600,7 @@ pub const Runtime = struct {
         request.output_path = options.output_path;
         self.emitTimingSince("linux.scan_once.request_normalize", normalize_start, "ok");
         const plan_start = monotonicNowNs();
-        var plan = sane.planCommand(self.allocator, request, caps, self.wrappers()) catch |err| switch (err) {
+        var plan = sane.planCommand(self.allocator, request, caps, self.wrappersFor(caps.known_model)) catch |err| switch (err) {
             error.IrWrapperRequired => {
                 self.emitTimingSince("linux.scan_once.command_plan", plan_start, "missing-ir-wrapper");
                 total_detail = "unsupported-ir-wrapper";
@@ -871,7 +894,7 @@ pub const Runtime = struct {
     fn discoverAndCacheDeviceName(self: Runtime, kind: contracts.ScanKind) !DeviceChoice {
         const devices = try self.discoverDevicesForKind(kind);
         defer freeDevices(self.allocator, devices);
-        const selected = selectDeviceForKind(devices, kind) orelse return error.NoV600Device;
+        const selected = selectDeviceForKind(devices, kind) orelse return error.ScannerNotFound;
         const name = try self.allocator.dupe(u8, selected.name);
         self.writeCachedDeviceName(name);
         return .{ .name = name, .source = .discovered };
@@ -939,7 +962,7 @@ pub const Runtime = struct {
                 const path = try usbDevicePath(self.allocator, bus, dev);
                 const device_id = self.readUsbDeviceId(path) catch null;
                 if (device_id) |id| {
-                    if (isV600UsbDevice(id)) {
+                    if (isSupportedUsbDevice(id)) {
                         return self.resetUsbDevicePath(path);
                     }
                 }
@@ -1133,7 +1156,7 @@ pub fn selectDevice(devices: []const Device) ?Device {
 pub fn selectDeviceForKind(devices: []const Device, kind: contracts.ScanKind) ?Device {
     var selected: ?Device = null;
     for (devices) |device| {
-        if (!device.looksLikeV600()) continue;
+        if (!device.looksLikeScanner()) continue;
         if (!device.canUseForKind(kind)) continue;
         if (selected == null or device.backendRankForKind(kind) < selected.?.backendRankForKind(kind)) {
             selected = device;
@@ -1209,8 +1232,8 @@ pub fn parseUsbDeviceDescriptor(descriptor: []const u8) ?UsbDeviceId {
     };
 }
 
-pub fn isV600UsbDevice(device_id: UsbDeviceId) bool {
-    return device_id.vendor_id == cerealgrain_vendor_id_int and device_id.product_id == cerealgrain_product_id_int;
+pub fn isSupportedUsbDevice(device_id: UsbDeviceId) bool {
+    return device_id.vendor_id == models.epson_vendor_id and models.forProductId(device_id.product_id) != null;
 }
 
 pub fn usbDevicePath(allocator: std.mem.Allocator, bus: usize, dev: usize) ![]u8 {
@@ -1392,6 +1415,7 @@ fn writeCombinedMetadataSidecar(
     io: std.Io,
     options: ScanOptions,
     device_name: []const u8,
+    model_name: []const u8,
     pass_dpis: CombinedPassDpis,
 ) ![]u8 {
     const metadata_path = if (options.metadata_path) |path|
@@ -1410,7 +1434,7 @@ fn writeCombinedMetadataSidecar(
         \\{{
         \\  "software": "cerealgrain",
         \\  "device": "{s}",
-        \\  "model": "Epson Perfection V600 Photo",
+        \\  "model": "{s}",
         \\  "source": "{t}",
         \\  "kind": "rgb+ir",
         \\  "requested_dpi": {d},
@@ -1422,7 +1446,7 @@ fn writeCombinedMetadataSidecar(
         \\  "custom_luts_applied": {any},
         \\  "tiff_metadata": {{
         \\    "make": "EPSON",
-        \\    "model": "Epson Perfection V600 Photo",
+        \\    "model": "{s}",
         \\    "software": "{s}"
         \\  }},
         \\  "pages": [
@@ -1434,6 +1458,7 @@ fn writeCombinedMetadataSidecar(
         \\
     , .{
         device_name,
+        model_name,
         options.request.source,
         options.request.dpi,
         pass_dpis.rgb,
@@ -1441,6 +1466,7 @@ fn writeCombinedMetadataSidecar(
         pass_dpis.ir,
         options.output_path,
         customLutsApplied(options.request),
+        model_name,
         tiff_software,
     });
     try out.flush();
@@ -1863,7 +1889,45 @@ test "maps TIFF metadata tags to Python SANE parity values" {
     try std.testing.expectEqualStrings("Epson Scanner", fallback[1].value);
 }
 
-test "parses USB descriptors and matches Epson V600 product id" {
+test "devices are matched by model, and only a V600 or an unnamed device gets the V600 wrappers" {
+    const v370 = Device{ .name = "epkowa:interpreter:001:004", .raw_line = "device `epkowa:interpreter:001:004' is a Epson Perfection V370 flatbed scanner" };
+    const v600 = Device{ .name = "epkowa:interpreter:001:017", .raw_line = "device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner" };
+    const v750 = Device{ .name = "epson2:libusb:002:003", .raw_line = "device `epson2:libusb:002:003' is a Epson GT-X900 flatbed scanner" };
+    const other = Device{ .name = "pixma:04A91234", .raw_line = "device `pixma:04A91234' is a Canon CanoScan flatbed scanner" };
+    try std.testing.expect(v370.looksLikeScanner() and v600.looksLikeScanner() and v750.looksLikeScanner());
+    try std.testing.expect(!other.looksLikeScanner());
+    try std.testing.expectEqual(@as(u16, 0x014a), v370.knownModel().?.product_id);
+
+    try std.testing.expect(usesV600Wrappers(v600.knownModel()));
+    try std.testing.expect(usesV600Wrappers(null));
+    try std.testing.expect(!usesV600Wrappers(v370.knownModel()));
+    try std.testing.expect(!usesV600Wrappers(v750.knownModel()));
+
+    // Only epkowa does IR; an epson2-only scanner is still found for RGB.
+    try std.testing.expect(selectDeviceForKind(&.{v750}, .rgb_ir) == null);
+    try std.testing.expectEqualStrings(v750.name, selectDeviceForKind(&.{v750}, .rgb).?.name);
+}
+
+test "a known non-V600 model plans plain scanimage at its own resolutions" {
+    const allocator = std.testing.allocator;
+    const caps = contracts.ScannerCapabilities{
+        .device_name = "epkowa:interpreter:001:004",
+        .known_model = models.forProductId(0x014a).?,
+        .max_resolution = 4800,
+    };
+    var plan = try sane.planCommand(allocator, .{ .dpi = 3200, .source = .tpu, .kind = .rgb }, caps, .{});
+    defer plan.deinit(allocator);
+    try std.testing.expectEqualStrings("scanimage", plan.argv.items[0]);
+    try std.testing.expectEqual(@as(u32, 2400), plan.effective_dpi);
+
+    // The V600 keeps its Linux resolutions.
+    var v600_plan = try sane.planCommand(allocator, .{ .dpi = 6400, .source = .tpu, .kind = .rgb }, .{ .device_name = "epkowa:interpreter:001:017" }, .{ .scanimage_v600 = true });
+    defer v600_plan.deinit(allocator);
+    try std.testing.expectEqualStrings("scanimage-v600", v600_plan.argv.items[0]);
+    try std.testing.expectEqual(@as(u32, 3200), v600_plan.effective_dpi);
+}
+
+test "parses USB descriptors and matches known Epson product ids" {
     var descriptor = [_]u8{0} ** 18;
     descriptor[8] = 0xb8;
     descriptor[9] = 0x04;
@@ -1873,10 +1937,12 @@ test "parses USB descriptors and matches Epson V600 product id" {
     const device_id = parseUsbDeviceDescriptor(&descriptor).?;
     try std.testing.expectEqual(@as(u16, 0x04b8), device_id.vendor_id);
     try std.testing.expectEqual(@as(u16, 0x013a), device_id.product_id);
-    try std.testing.expect(isV600UsbDevice(device_id));
+    try std.testing.expect(isSupportedUsbDevice(device_id));
 
+    descriptor[10] = 0x51; // 0x0151, the V800/V850
+    try std.testing.expect(isSupportedUsbDevice(parseUsbDeviceDescriptor(&descriptor).?));
     descriptor[10] = 0xff;
-    try std.testing.expect(!isV600UsbDevice(parseUsbDeviceDescriptor(&descriptor).?));
+    try std.testing.expect(!isSupportedUsbDevice(parseUsbDeviceDescriptor(&descriptor).?));
     try std.testing.expect(parseUsbDeviceDescriptor(descriptor[0..17]) == null);
 }
 
@@ -2254,7 +2320,7 @@ test "writes RGB plus IR sidecar with stable page layout" {
         .metadata_path = metadata_path,
     };
 
-    const written_path = try writeCombinedMetadataSidecar(allocator, std.testing.io, options, "epkowa:interpreter:001:017", combinedPassDpis(options.request));
+    const written_path = try writeCombinedMetadataSidecar(allocator, std.testing.io, options, "epkowa:interpreter:001:017", "Epson Perfection V600 Photo", combinedPassDpis(options.request));
     defer allocator.free(written_path);
     try std.testing.expectEqualStrings(metadata_path, written_path);
 
@@ -2408,8 +2474,8 @@ test "SANE backend init state mirrors Python constructor defaults" {
     try std.testing.expect(default_state.product_id == null);
     try std.testing.expect(default_state.cached_capabilities == null);
 
-    const explicit_state = SaneBackendState.init(cerealgrain_product_id_int);
-    try std.testing.expectEqual(@as(?u16, cerealgrain_product_id_int), explicit_state.product_id);
+    const explicit_state = SaneBackendState.init(models.v600.product_id);
+    try std.testing.expectEqual(@as(?u16, models.v600.product_id), explicit_state.product_id);
     try std.testing.expect(explicit_state.device_name == null);
     try std.testing.expect(explicit_state.model_name == null);
     try std.testing.expect(explicit_state.cached_capabilities == null);

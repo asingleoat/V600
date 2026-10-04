@@ -111,10 +111,64 @@ app plus `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers.
   instead (System Settings, Privacy & Security, Open Anyway).
 - macOS 14 is the newest minimum among the Nix libraries. Intel Macs would
   need an `x86_64-darwin` build.
-- Testers install Epson's own V600 software for the Interpreter bundle.
+- Testers install Epson's own software for their scanner, for its
+  Interpreter bundle. The bundle also carries the CLI
+  (`Contents/MacOS/cerealgrain`), so testers can send `scanner probe`
+  output.
 - Started from the bundle, the app keeps scans, exports, and both configs in
   `~/Pictures/CerealGrain`; `CEREALGRAIN_DATA_DIR` sets that folder for any
   run. From a checkout it uses the working directory.
+
+## Scanner models
+
+`src/scanner/models.zig` lists the Epson film scanners the app knows, from
+Epson's own ICA driver tables (`EPSON Scanner.app`, `ModelInfo.plist` and
+`ResolutionInfo.plist`): USB product IDs, interpreters, and resolutions. Only
+the V600 has been tested; the others are a best effort for beta testers.
+
+| Model | USB ID | Transport | Film dpi | IR |
+| --- | --- | --- | --- | --- |
+| Perfection V600 / GT-X820 | `0x013a` | Interpreter A1 | 800-6400 | yes, tested |
+| Perfection V550 | `0x013b` | Interpreter EB | 800-6400 | if the scanner reports it |
+| Perfection V800 / V850 | `0x0151` | Interpreter FE | 800-6400 | if reported |
+| Perfection V500 / GT-X770 | `0x0130` | Interpreter 7C | 800-6400 | if reported |
+| Perfection 4490 / GT-X750 | `0x0119` | Interpreter 54 | 1200-4800 | if reported |
+| Perfection V370 / V37 | `0x014a` | Interpreter DD | 2400, 4800 | no |
+| Perfection V330 / V33 | `0x0142` | Interpreter AD | 2400, 4800 | no |
+| Perfection V700 / V750 / GT-X900 | `0x012c` | ESC/I, no interpreter | 800-6400 | if reported |
+| GT-X970 | `0x0135` | ESC/I, no interpreter | 800-6400 | if reported |
+| Perfection 4990 / GT-X800 | `0x012a` | ESC/I, no interpreter | 1200-4800 | if reported |
+| Perfection 4870 / GT-X700 | `0x0128` | ESC/I, no interpreter | 1200-4800 | if reported |
+
+Every model gets:
+- Scan area, maximum resolution, and IR capability from the scanner's own
+  identity (FS I).
+- Resolutions snapped to the model's list, capped by that maximum. The UI
+  offers only those, and turns off the IR modes, saying why, on a scanner
+  without IR.
+- Its model name in TIFF and sidecar metadata, and a note in the UI when it
+  is untested.
+
+What stays V600-only, or is a guess:
+- The TPU calibration and gamma-table program: direct RS register writes
+  captured from a V600. Other models scan without them, so without film
+  LUTs; their files say no LUT was applied. Without that calibration a V600
+  shows a strong green cast; another model may need its own sequence, which
+  only a USB capture of Epson Scan on that model can provide.
+- The IR challenge (ESC # with the XOR key) was captured on a V600. On
+  another model a refusal fails the IR pass instead of scanning on.
+- Resolutions for the 4800 dpi models and the interpreter-less ones are
+  read from Epson's tables or assumed. A resolution the scanner rejects
+  fails the pass with `ScanParametersRejected`.
+- Interpreter-less models get ESC/I straight over the bulk endpoints
+  (`macos.DirectEscI`): the byte stream the interpreters emulate. Untried.
+- Linux: the `scanimage-v600` wrappers preload the V600's interpreter, so
+  only a V600, or a device whose SANE line names no model, uses them and
+  gets IR. Other models scan RGB through plain `scanimage` with whichever
+  backend lists them (epkowa with Epson's plugin for the model, or epson2).
+  The NixOS udev rule covers every listed USB ID.
+- The Perfection V39 was in the Python model table, but it has no
+  transparency unit, so it is left out.
 
 ## Windows
 

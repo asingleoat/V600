@@ -40,6 +40,9 @@ to (see `docs/SCANNER_COMPANION.md`):
   per-channel gamma LUTs fitted to the film; CLI and native UI. Scanning has
   been exercised on a V600 from Apple Silicon. `zig build app-bundle` makes a
   CerealGrain.app and a zip to share (Apple Silicon, macOS 14 or later).
+- Other Epson film scanners (V550, V800/V850, V700/V750, V500, V370, V330,
+  4990, 4870, 4490, GT-X970) are known but untested; see
+  `docs/CROSS_PLATFORM.md`.
 - Browser: checked in Chrome and Chromium (older browsers without Wasm
   memory64 get a wasm32 build). Scanning from it needs the companion on a
   Linux host.

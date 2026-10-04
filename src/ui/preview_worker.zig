@@ -309,8 +309,10 @@ fn runScannerPreview(context: *Context) !void {
     errdefer preview.deinit(context.allocator);
     context.pushTimingSince("native.preview.tiff_load", load_start, "ok");
     const downsample_start = monotonicNowNs();
-    const downsample_detail: []const u8 = if (request.dpi == effectiveTpuDpi(request.dpi)) "skipped" else "applied";
-    preview = try downsamplePreviewIfNeeded(context.allocator, preview, request.dpi, effectiveTpuDpi(request.dpi));
+    // Each scanner snaps the preview to its own resolution; the TIFF says which.
+    const scanned_dpi = (try tiff.readDpi(context.allocator, context.output_path)) orelse request.dpi;
+    const downsample_detail: []const u8 = if (request.dpi == scanned_dpi) "skipped" else "applied";
+    preview = try downsamplePreviewIfNeeded(context.allocator, preview, request.dpi, scanned_dpi);
     context.pushTimingSince("native.preview.downsample", downsample_start, downsample_detail);
     context.preview_buffer = preview;
     total_detail = "ok";
@@ -424,20 +426,6 @@ fn scaledDimension(input: u32, requested_dpi: u32, effective_dpi: u32) u32 {
         @as(f64, @floatFromInt(requested_dpi)) /
         @as(f64, @floatFromInt(effective_dpi));
     return @max(1, @as(u32, @intFromFloat(@floor(scaled))));
-}
-
-fn effectiveTpuDpi(requested_dpi: u32) u32 {
-    const valid = [_]u32{ 400, 800, 1600, 3200 };
-    var closest = valid[0];
-    var closest_delta = absDiff(closest, requested_dpi);
-    for (valid[1..]) |dpi| {
-        const delta = absDiff(dpi, requested_dpi);
-        if (delta < closest_delta) {
-            closest = dpi;
-            closest_delta = delta;
-        }
-    }
-    return closest;
 }
 
 fn resizeLanczosRgb8(
@@ -582,10 +570,6 @@ fn sinc(x: f64) f64 {
 fn roundU8(value: f64) u8 {
     const clamped = @min(255.0, @max(0.0, value));
     return @intFromFloat(@floor(clamped + 0.5));
-}
-
-fn absDiff(a: u32, b: u32) u32 {
-    return if (a > b) a - b else b - a;
 }
 
 fn monotonicNowNs() u64 {

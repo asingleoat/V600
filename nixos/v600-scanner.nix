@@ -25,11 +25,32 @@
   environment.etc."sane-config/dll.d/epkowa.conf".text = "epkowa";
   environment.etc."sane.d/dll.d/epkowa.conf".text = "epkowa";
   
-  # udev rule for Epson Perfection V600 Photo scanner
+  # udev rules for the Epson film scanners CerealGrain knows (the model table
+  # in src/scanner/models.zig); only the V600 has been tested.
   # This grants proper permissions for USB access
   services.udev.extraRules = ''
-    # Epson Perfection V600 Photo scanner
+    # Perfection V600 / GT-X820 (tested)
     SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013a", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection V550
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013b", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection V800 / V850
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0151", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection V700 / V750 / GT-X900
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="012c", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # GT-X970
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0135", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection V500 / GT-X770
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0130", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection 4990 / GT-X800
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="012a", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection 4870 / GT-X700
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0128", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection 4490 / GT-X750
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0119", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection V370 / V37
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="014a", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    # Perfection V330 / V33
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0142", MODE="0666", GROUP="scanner", TAG+="uaccess"
   '';
   
   # Add scanner utilities to system packages

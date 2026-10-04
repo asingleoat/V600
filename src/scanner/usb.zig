@@ -6,6 +6,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const macos = @import("macos.zig");
+const models = @import("models.zig");
 
 /// libusb is linked only on macOS, the one host that uses this transport.
 pub const available = builtin.os.tag == .macos;
@@ -135,11 +136,9 @@ fn findScanner(devices: []?*c.libusb_device, wanted: ?u16) ?struct { *c.libusb_d
 fn supportedProductId(device: *c.libusb_device) ?u16 {
     var descriptor: c.libusb_device_descriptor = undefined;
     if (c.libusb_get_device_descriptor(device, &descriptor) != 0) return null;
-    if (descriptor.idVendor != macos.epson_vendor_id) return null;
-    for (macos.knownProductIds()) |model| {
-        if (model.product_id == descriptor.idProduct) return descriptor.idProduct;
-    }
-    return null;
+    if (descriptor.idVendor != models.epson_vendor_id) return null;
+    if (models.forProductId(descriptor.idProduct) == null) return null;
+    return descriptor.idProduct;
 }
 
 fn bulkEndpoints(device: *c.libusb_device) OpenError!macos.UsbEndpointPair {

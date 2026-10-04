@@ -16,6 +16,7 @@ const interpreter = @import("interpreter.zig");
 const linux = @import("linux.zig");
 const lut = @import("lut.zig");
 const macos = @import("macos.zig");
+const models = @import("models.zig");
 const tiff = @import("../tiff.zig");
 const usb = @import("usb.zig");
 
@@ -31,29 +32,24 @@ pub const device_name = "epson-interpreter";
 
 const thumbnail_max_height: u32 = 256;
 
-/// Film (TPU) resolutions this backend offers for RGB scans. IR tops out at
-/// 3200, so RGB + IR at 6400 scans its IR pass at 3200.
+/// Film (TPU) resolutions offered before a scanner is connected: the V600's.
+/// A connected scanner's come from its capabilities.
 pub const film_dpis = [_]u32{ 800, 1600, 3200, 6400 };
-const tpu_resolutions = [_]u32{ 400, 800, 1600, 3200, 6400 };
-const ir_resolutions = [_]u32{ 800, 1600, 3200 };
 
-/// The resolution a request actually scans at: film scans snap to
-/// `tpu_resolutions`, IR to `ir_resolutions`; flatbed requests pass through
-/// to planScan's own snapping.
+/// The resolution a request scans at on a V600, for callers that name files
+/// before a scanner is connected.
 pub fn effectiveDpiForRequest(request: contracts.ScanRequest) u32 {
-    if (request.kind == .ir) return nearest(request.dpi, &ir_resolutions);
-    if (request.source == .tpu) return nearest(request.dpi, &tpu_resolutions);
-    return request.dpi;
+    return effectiveDpiForModel(request, &models.v600, std.math.maxInt(u32));
 }
 
-fn nearest(dpi: u32, candidates: []const u32) u32 {
-    var best = candidates[0];
-    for (candidates[1..]) |candidate| {
-        const best_delta = if (best > dpi) best - dpi else dpi - best;
-        const delta = if (candidate > dpi) candidate - dpi else dpi - candidate;
-        if (delta < best_delta) best = candidate;
-    }
-    return best;
+/// The resolution a request actually scans at on `model`: film scans snap to
+/// its transparency-unit resolutions, IR to its IR ones, both no higher than
+/// `max_dpi` where possible; flatbed requests pass through to planScan's own
+/// snapping.
+pub fn effectiveDpiForModel(request: contracts.ScanRequest, model: *const models.Model, max_dpi: u32) u32 {
+    if (request.kind == .ir) return models.nearestDpi(request.dpi, model.ir_dpis, max_dpi);
+    if (request.source == .tpu) return models.nearestDpi(request.dpi, model.tpu_dpis, max_dpi);
+    return request.dpi;
 }
 
 /// Shown when another program holds the scanner's USB interface.
@@ -67,7 +63,8 @@ pub const busy_hint =
 
 const Hardware = struct {
     device: usb.Device,
-    library: macos.LoadedInterpreter,
+    /// Epson's interpreter; null for a scanner that speaks ESC/I itself.
+    library: ?macos.LoadedInterpreter,
 };
 
 const Connection = struct {
@@ -76,15 +73,14 @@ const Connection = struct {
     hardware: ?Hardware,
     usb_io: macos.UsbIo,
     session: macos.InterpreterSession,
-    model: macos.ScannerModelSelection,
+    model: *const models.Model,
+    /// The session's transport for a scanner without an interpreter.
+    direct: macos.DirectEscI = undefined,
     tpu_configured: bool = false,
     uploaded_luts: ?[lut.serialized_len]u8 = null,
 
     fn modelName(self: *const Connection) []const u8 {
-        return switch (self.model) {
-            .known => |model| model.name,
-            .unknown => "Epson Scanner",
-        };
+        return self.model.name;
     }
 };
 
@@ -140,10 +136,7 @@ pub const Runtime = struct {
     }
 
     fn describeDevice(self: Runtime, entry: usb.Found) !Device {
-        const model_name = switch (macos.scannerModelForProductId(entry.product_id)) {
-            .known => |known| known.name,
-            .unknown => "Unknown Epson scanner",
-        };
+        const model_name = if (models.forProductId(entry.product_id)) |model| model.name else "Unknown Epson scanner";
         const name = try std.fmt.allocPrint(self.allocator, "{s}:usb:{d:0>3}:{d:0>3}", .{ device_name, entry.bus, entry.address });
         errdefer self.allocator.free(name);
         const vendor = try self.allocator.dupe(u8, "Epson");
@@ -175,6 +168,31 @@ pub const Runtime = struct {
         try out.print("tpu: {d:.3}in x {d:.3}in\n", .{ caps.tpu_width_in, caps.tpu_height_in });
         try out.print("max_resolution: {d}\n", .{caps.max_resolution});
         try out.print("ir_supported: {any}\n", .{caps.ir_supported});
+        // For reports from scanners other than the tested V600.
+        try out.print("usb_product_id: 0x{x:0>4}\n", .{conn.model.product_id});
+        try out.print("tested: {any}\n", .{conn.model.tested});
+        switch (conn.model.transport) {
+            .interpreter => |id| try out.print("transport: Epson interpreter {s}\n", .{id}),
+            .native => try out.print("transport: ESC/I direct (no interpreter)\n", .{}),
+        }
+        try out.print("film_dpis:", .{});
+        for (caps.filmDpis()) |dpi| try out.print(" {d}", .{dpi});
+        try out.print("\n", .{});
+        if (macos.getExtendedIdentity(&conn.session)) |identity| {
+            try out.print("identity: name=\"{s}\" level={c}{c} optical_dpi={d} min_dpi={d} max_dpi={d} capabilities=0x{x:0>2} depth_in={d} depth_out={d}\n", .{
+                identity.modelName(),
+                identity.command_level_major,
+                identity.command_level_minor,
+                identity.optical_dpi,
+                identity.min_dpi,
+                identity.max_dpi,
+                identity.capabilities,
+                identity.input_depth,
+                identity.max_output_depth,
+            });
+        } else {
+            try out.print("identity: unavailable on a second query\n", .{});
+        }
         ok = true;
         return caps;
     }
@@ -210,8 +228,13 @@ pub const Runtime = struct {
 
     fn scanWithConnection(self: Runtime, conn: *Connection, options: ScanOptions) !void {
         const caps = try self.identify(conn);
+        if ((options.request.kind == .ir or options.request.kind == .rgb_ir) and !caps.ir_supported) {
+            return error.InfraredUnsupported;
+        }
         var luts_buffer: [lut.serialized_len]u8 = undefined;
-        const luts = try self.loadLuts(options.request, &luts_buffer);
+        // Film LUTs reach the scanner through the V600's TPU program; other
+        // models scan without them, and their files say so.
+        const luts = if (conn.model.v600_tpu_program) try self.loadLuts(options.request, &luts_buffer) else null;
 
         if (options.request.kind == .rgb_ir) {
             var rgb_request = options.request;
@@ -224,7 +247,7 @@ pub const Runtime = struct {
             ir_request.kind = .ir;
             ir_request.depth = .eight;
             ir_request.source = .tpu;
-            ir_request.dpi = @min(options.request.dpi, 3200);
+            ir_request.dpi = @min(options.request.dpi, conn.model.maxIrDpi());
             const ir = try self.scanPass(conn, caps, ir_request, options, luts);
             defer ir.deinit(self.allocator);
 
@@ -275,7 +298,7 @@ pub const Runtime = struct {
         luts: ?*const [lut.serialized_len]u8,
     ) !Pass {
         var planned = request;
-        planned.dpi = effectiveDpiForRequest(request);
+        planned.dpi = effectiveDpiForModel(request, conn.model, caps.max_resolution);
         planned.area = clampArea(request.area, request.source, caps);
         // Python always scanned IR at 8 bits.
         if (request.kind == .ir) planned.depth = .eight;
@@ -293,13 +316,15 @@ pub const Runtime = struct {
 
         const session = &conn.session;
         if (!macos.reset(session)) return error.ScannerResetFailed;
-        if (request.kind == .ir) {
-            // Python only warned here and carried on.
-            if (!macos.enableInfrared(session)) self.emitTiming(.{ .stage = "macos.scan.enable_ir", .elapsed_us = 0, .detail = "failed" });
+        if (request.kind == .ir and !macos.enableInfrared(session)) {
+            // The challenge was captured on a V600, where Python only warned
+            // and carried on; on any other model a refusal means no IR.
+            if (!conn.model.tested) return error.InfraredEnableFailed;
+            self.emitTiming(.{ .stage = "macos.scan.enable_ir", .elapsed_us = 0, .detail = "failed" });
         }
         if (!macos.setScanningParameters(session, plan.params)) return error.ScanParametersRejected;
 
-        if (request.source == .tpu or request.kind == .ir) {
+        if (conn.model.v600_tpu_program and (request.source == .tpu or request.kind == .ir)) {
             const wanted: ?[lut.serialized_len]u8 = if (request.kind == .rgb and luts != null) luts.?.* else null;
             if (!conn.tpu_configured or !sameLuts(conn.uploaded_luts, wanted)) {
                 conn.uploaded_luts = wanted;
@@ -511,21 +536,31 @@ pub const Runtime = struct {
         errdefer std.heap.page_allocator.destroy(conn);
 
         const open_start = monotonicNowNs();
-        conn.hardware = .{ .device = try usb.Device.open(null), .library = undefined };
+        conn.hardware = .{ .device = try usb.Device.open(null), .library = null };
         const hardware = &conn.hardware.?;
         errdefer hardware.device.close();
-        conn.model = macos.scannerModelForProductId(hardware.device.product_id);
+        // Discovery only accepts product IDs in the model table.
+        conn.model = models.forProductId(hardware.device.product_id) orelse return error.ScannerNotFound;
         self.emitTimingSince("macos.open.usb", open_start, "ok");
 
-        const path = try macos.findInterpreter(self.allocator, self.io, ".", conn.model.interpId()) orelse
-            return error.InterpreterNotInstalled;
-        defer self.allocator.free(path);
-        hardware.library = try macos.LoadedInterpreter.open(path);
-        errdefer hardware.library.close();
-
         conn.usb_io = hardware.device.io();
+        const api = switch (conn.model.transport) {
+            .interpreter => |id| blk: {
+                const path = try macos.findInterpreter(self.allocator, self.io, ".", id) orelse
+                    return error.InterpreterNotInstalled;
+                defer self.allocator.free(path);
+                hardware.library = try macos.LoadedInterpreter.open(path);
+                break :blk hardware.library.?.api();
+            },
+            .native => blk: {
+                conn.direct = .{ .usb = conn.usb_io };
+                break :blk conn.direct.api();
+            },
+        };
+        errdefer if (hardware.library) |*library| library.close();
+
         conn.session = .{
-            .api = hardware.library.api(),
+            .api = api,
             .callback_context = .{ .usb = conn.usb_io },
             .detached = true,
         };
@@ -612,7 +647,7 @@ fn freeDeviceFields(allocator: std.mem.Allocator, device: Device) void {
 fn closeConnection(conn: *Connection) void {
     conn.session.close();
     if (conn.hardware) |*hardware| {
-        hardware.library.close();
+        if (hardware.library) |*library| library.close();
         hardware.device.close();
     }
     std.heap.page_allocator.destroy(conn);
@@ -624,8 +659,9 @@ fn capabilities(conn: *Connection) !contracts.ScannerCapabilities {
     // The identity's model string lives on this stack frame; name the
     // scanner from the static model table instead.
     caps.model = conn.modelName();
+    caps.known_model = conn.model;
     caps.device_name = device_name;
-    caps.ir_supported = caps.ir_supported and conn.model.irSupported();
+    caps.ir_supported = caps.ir_supported and conn.model.infrared;
     return caps;
 }
 
@@ -776,7 +812,7 @@ test "clamps the scan area to the source bounds" {
 /// enough to run whole scans: FS I identity, ACKs, FS S parameters, FS G
 /// block layouts from `starts`, and patterned block data.
 const FakeScanner = struct {
-    const State = enum { ack, identity, params, start, data };
+    const State = enum { ack, nak, identity, params, start, data };
 
     starts: []const interpreter.StartScanInfo,
     start_index: usize = 0,
@@ -790,6 +826,10 @@ const FakeScanner = struct {
     /// reinitialized, which made every other roll strip fail.
     stale_after_scan: bool = false,
     stale: bool = false,
+    /// The IR capability bit in FS I.
+    ir_capable: bool = true,
+    /// Answer the IR challenge (ESC #) with NAK.
+    refuse_ir: bool = false,
 
     fn api(self: *FakeScanner) macos.InterpreterApi {
         return .{
@@ -838,7 +878,7 @@ const FakeScanner = struct {
             }
         } else if (data.len == 2 and data[0] == interpreter.ESC and data[1] == 0x23) {
             self.ir_enable_count += 1;
-            self.state = .ack;
+            self.state = if (self.refuse_ir) .nak else .ack;
         } else if (data.len == 1 and data[0] == interpreter.ACK and self.state == .data) {
             // Block acknowledgement; the next read is the next block.
         } else {
@@ -851,6 +891,7 @@ const FakeScanner = struct {
         const self: *FakeScanner = @ptrCast(@alignCast(context));
         switch (self.state) {
             .ack => buffer[0] = interpreter.ACK,
+            .nak => buffer[0] = interpreter.NAK,
             .identity => {
                 if (self.stale) return false;
                 @memset(buffer, 0);
@@ -860,7 +901,7 @@ const FakeScanner = struct {
                 std.mem.writeInt(u32, buffer[24..28], 74880, .little);
                 std.mem.writeInt(u32, buffer[36..40], 17280, .little);
                 std.mem.writeInt(u32, buffer[40..44], 61056, .little);
-                buffer[44] = 0x02;
+                buffer[44] = if (self.ir_capable) 0x02 else 0x00;
                 @memcpy(buffer[46..62], "GT-X820         ");
             },
             .params => @memset(buffer, 0x11),
@@ -911,6 +952,107 @@ const AckUsb = struct {
     }
 };
 
+/// A fake connection to `model`, installed as the shared one.
+fn installFakeConnection(fake: *FakeScanner, usb_fake: *AckUsb, model: *const models.Model) !void {
+    const conn = try std.heap.page_allocator.create(Connection);
+    conn.* = .{
+        .hardware = null,
+        .usb_io = usb_fake.io(),
+        .session = .{ .api = fake.api(), .callback_context = .{ .usb = usb_fake.io() } },
+        .model = model,
+    };
+    shared_connection = conn;
+}
+
+fn dropFakeConnection() void {
+    if (shared_connection) |leftover| std.heap.page_allocator.destroy(leftover);
+    shared_connection = null;
+}
+
+test "another model scans film without the V600's TPU program or its film LUTs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scan.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(output);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "film.lut", .data = &([_]u8{0x40} ** lut.serialized_len) });
+    const lut_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/film.lut", .{tmp.sub_path[0..]});
+    defer allocator.free(lut_path);
+
+    // 12 x 6 RGB16 pixels at 800 dpi: 432 bytes.
+    var fake = FakeScanner{ .starts = &.{.{ .status = 0, .block_size = 100, .block_count = 4, .last_block_size = 32 }} };
+    var ack_usb = AckUsb{};
+    try installFakeConnection(&fake, &ack_usb, models.forProductId(0x013b).?);
+    defer dropFakeConnection();
+
+    var env = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer env.deinit();
+    const runtime = Runtime{ .allocator = allocator, .io = std.testing.io, .environ_map = &env };
+    try runtime.scan(.{
+        .request = .{
+            .dpi = 800,
+            .source = .tpu,
+            .kind = .rgb,
+            .depth = .sixteen,
+            .area = .{ .x = 0.25, .y = 1.0, .width = 1.0 / 64.0, .height = 1.0 / 128.0 },
+            .lut_file_path = lut_path,
+        },
+        .output_path = output,
+    });
+
+    try std.testing.expectEqual(@as(usize, 0), ack_usb.writes);
+    const sidecar_path = try std.fmt.allocPrint(allocator, "{s}.json", .{output});
+    defer allocator.free(sidecar_path);
+    const sidecar = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, sidecar_path, allocator, .limited(8192));
+    defer allocator.free(sidecar);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, sidecar, .{});
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.object.get("custom_luts_applied").?.bool);
+    try std.testing.expectEqualStrings("Epson Perfection V550", parsed.value.object.get("model").?.string);
+}
+
+test "IR is refused on a scanner without it, and on an untested model that refuses the challenge" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const output = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/scan.tiff", .{tmp.sub_path[0..]});
+    defer allocator.free(output);
+    var env = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer env.deinit();
+    const runtime = Runtime{ .allocator = allocator, .io = std.testing.io, .environ_map = &env };
+    const request = contracts.ScanRequest{
+        .dpi = 800,
+        .source = .tpu,
+        .kind = .ir,
+        .area = .{ .x = 0.25, .y = 1.0, .width = 1.0 / 64.0, .height = 1.0 / 128.0 },
+    };
+
+    {
+        var fake = FakeScanner{ .starts = &.{}, .ir_capable = false };
+        var ack_usb = AckUsb{};
+        try installFakeConnection(&fake, &ack_usb, &models.v600);
+        defer dropFakeConnection();
+        try std.testing.expectError(error.InfraredUnsupported, runtime.scan(.{ .request = request, .output_path = output }));
+        try std.testing.expectEqual(@as(usize, 0), fake.ir_enable_count);
+    }
+    {
+        var fake = FakeScanner{ .starts = &.{}, .refuse_ir = true };
+        var ack_usb = AckUsb{};
+        try installFakeConnection(&fake, &ack_usb, models.forProductId(0x0151).?);
+        defer dropFakeConnection();
+        try std.testing.expectError(error.InfraredEnableFailed, runtime.scan(.{ .request = request, .output_path = output }));
+        try std.testing.expectEqual(@as(usize, 1), fake.ir_enable_count);
+    }
+}
+
+test "a 4800 dpi transparency unit snaps to its own resolutions" {
+    const v370 = models.forProductId(0x014a).?;
+    try std.testing.expectEqual(@as(u32, 300), effectiveDpiForModel(.{ .dpi = 400, .kind = .rgb, .source = .tpu }, v370, 4800));
+    try std.testing.expectEqual(@as(u32, 2400), effectiveDpiForModel(.{ .dpi = 3200, .kind = .rgb, .source = .tpu }, v370, 4800));
+    const v600_max = effectiveDpiForModel(.{ .dpi = 6400, .kind = .rgb, .source = .tpu }, &models.v600, 12800);
+    try std.testing.expectEqual(@as(u32, 6400), v600_max);
+}
+
 test "runs an RGB+IR scan through the interpreter conversation into a three-page TIFF" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -929,7 +1071,7 @@ test "runs an RGB+IR scan through the interpreter conversation into a three-page
         .hardware = null,
         .usb_io = ack_usb.io(),
         .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
-        .model = macos.scannerModelForProductId(0x013a),
+        .model = &models.v600,
     };
     shared_connection = conn;
     defer {
@@ -1003,7 +1145,7 @@ test "scans on one connection keep answering FS I when passes need no calibratio
         .hardware = null,
         .usb_io = ack_usb.io(),
         .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
-        .model = macos.scannerModelForProductId(0x013a),
+        .model = &models.v600,
     };
     shared_connection = conn;
     defer {
@@ -1044,7 +1186,7 @@ test "a kept connection that fails FS I is reinitialized and asked again" {
         .hardware = null,
         .usb_io = ack_usb.io(),
         .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
-        .model = macos.scannerModelForProductId(0x013a),
+        .model = &models.v600,
     };
     shared_connection = conn;
     defer {
@@ -1083,7 +1225,7 @@ test "a cancel file stops the scan, sends CAN, and drops the connection" {
         .hardware = null,
         .usb_io = ack_usb.io(),
         .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
-        .model = macos.scannerModelForProductId(0x013a),
+        .model = &models.v600,
     };
     shared_connection = conn;
 
@@ -1128,7 +1270,7 @@ test "an RGB+IR scan at 6400 dpi scans its IR pass at 3200" {
         .hardware = null,
         .usb_io = ack_usb.io(),
         .session = .{ .api = fake.api(), .callback_context = .{ .usb = ack_usb.io() } },
-        .model = macos.scannerModelForProductId(0x013a),
+        .model = &models.v600,
     };
     shared_connection = conn;
     defer {

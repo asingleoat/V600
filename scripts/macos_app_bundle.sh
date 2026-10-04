@@ -4,13 +4,14 @@
 # load commands pointed there, and everything is signed ad hoc: no identity,
 # so nothing in the signature names a person. Run by `zig build app-bundle`.
 #
-# usage: macos_app_bundle.sh <cerealgrain-ui> <output dir>
+# usage: macos_app_bundle.sh <cerealgrain-ui> <cerealgrain> <output dir>
 set -eu
 # codesign, ditto, and plutil are macOS's own; a Nix shell may not list them.
 PATH=$PATH:/usr/bin:/bin
 
 exe=$1
-out=$2
+cli=$2
+out=$3
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
 app=$out/CerealGrain.app
@@ -24,7 +25,8 @@ trap 'rm -rf "$work"' EXIT
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$frameworks" "$app/Contents/Resources"
 cp "$exe" "$app/Contents/MacOS/cerealgrain-ui"
-chmod 755 "$app/Contents/MacOS/cerealgrain-ui"
+cp "$cli" "$app/Contents/MacOS/cerealgrain"
+chmod 755 "$app/Contents/MacOS/cerealgrain-ui" "$app/Contents/MacOS/cerealgrain"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -84,13 +86,13 @@ bundled_deps() {
   done
 }
 
-# Breadth first from the executable: copy each library once, by the name of
+# Breadth first from the executables: copy each library once, by the name of
 # the file behind any symlinks, and point every reference at the copy. Two
 # different builds of one library (Nix can carry both, e.g. libwebp for
 # OpenCV and for libtiff) each keep their own copy, the second prefixed with
 # its store hash.
 : > "$work/copied"
-echo "$app/Contents/MacOS/cerealgrain-ui $exe" > "$work/queue"
+printf '%s\n' "$app/Contents/MacOS/cerealgrain-ui $exe" "$app/Contents/MacOS/cerealgrain $cli" > "$work/queue"
 while [ -s "$work/queue" ]; do
   mv "$work/queue" "$work/current"
   : > "$work/queue"
@@ -127,13 +129,13 @@ while [ -s "$work/queue" ]; do
   done < "$work/current"
 done
 
-for library in "$frameworks"/*; do
+for library in "$frameworks"/* "$app/Contents/MacOS/cerealgrain"; do
   quiet codesign --force --sign - "$library"
 done
 quiet codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 
-for image in "$app/Contents/MacOS/cerealgrain-ui" "$frameworks"/*; do
+for image in "$app/Contents/MacOS/"* "$frameworks"/*; do
   if otool -L "$image" | grep -q "/nix/store"; then
     echo "app-bundle: $image still loads from the Nix store" >&2
     exit 1

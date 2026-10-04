@@ -147,8 +147,22 @@ pub fn build(b: *std.Build) void {
         bundle_options.addOption(bool, "native_libs", true);
         const bundle_root = addRootModule(b, bundle_target, .ReleaseFast, bundle_options, false, true);
         const bundle_ui = addUiExecutable(b, bundle_target, .ReleaseFast, bundle_root, true);
+        // The CLI goes in too, so testers can send `scanner probe` output.
+        const bundle_cli = b.addExecutable(.{
+            .name = "cerealgrain",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = bundle_target,
+                .optimize = .ReleaseFast,
+                .strip = true,
+                .imports = &.{
+                    .{ .name = "cerealgrain", .module = bundle_root },
+                },
+            }),
+        });
         const bundle_cmd = b.addSystemCommand(&.{ "sh", "scripts/macos_app_bundle.sh" });
         bundle_cmd.addArtifactArg(bundle_ui);
+        bundle_cmd.addArtifactArg(bundle_cli);
         bundle_cmd.addArg(b.getInstallPath(.prefix, ""));
         bundle_cmd.has_side_effects = true;
         const bundle_step = b.step("app-bundle", "Build zig-out/CerealGrain.app and a zip of it to share (macOS, Apple Silicon)");
