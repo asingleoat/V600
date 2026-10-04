@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 const c = @cImport({
     @cInclude("tiffio.h");
-    @cInclude("zlib.h");
+    @cInclude("libdeflate.h");
     @cInclude("time.h");
 });
 
@@ -538,9 +538,12 @@ fn writeImageDirectory(
     }
 }
 
-/// Deflate with horizontal differencing, as libtiff encodes it (zlib level
-/// 6 on each strip's differenced rows), but strips compressed on several
-/// threads and handed to libtiff as raw strips in order. Exports are
+/// libtiff's level for libdeflate when none is set.
+const deflate_level: c_int = 6;
+
+/// Deflate with horizontal differencing, as libtiff encodes it (libdeflate,
+/// zlib-wrapped, on each strip's differenced rows), but strips compressed on
+/// several threads and handed to libtiff as raw strips in order. Exports are
 /// hundreds of megabytes, and libtiff compresses one strip at a time.
 fn writeDeflateStripsParallel(allocator: std.mem.Allocator, tiff: *c.TIFF, image: ImageView, rows_per_strip: u32) !void {
     const scanline = image.data.len / @max(image.height, 1);
@@ -549,7 +552,17 @@ fn writeDeflateStripsParallel(allocator: std.mem.Allocator, tiff: *c.TIFF, image
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const worker_count = @max(1, @min(strip_count, if (cpu_count > 1) cpu_count - 1 else 1));
     const batch = @min(strip_count, worker_count * 2);
-    const bound: usize = c.compressBound(@intCast(strip_bytes));
+
+    // A compressor holds its own state, so each thread gets one.
+    const compressors = try allocator.alloc(*c.struct_libdeflate_compressor, worker_count);
+    defer allocator.free(compressors);
+    var allocated: usize = 0;
+    defer for (compressors[0..allocated]) |compressor| c.libdeflate_free_compressor(compressor);
+    for (compressors) |*compressor| {
+        compressor.* = c.libdeflate_alloc_compressor(deflate_level) orelse return error.OutOfMemory;
+        allocated += 1;
+    }
+    const bound = c.libdeflate_zlib_compress_bound(compressors[0], strip_bytes);
 
     const slots = try allocator.alloc(DeflateSlot, batch);
     defer allocator.free(slots);
@@ -578,7 +591,7 @@ fn writeDeflateStripsParallel(allocator: std.mem.Allocator, tiff: *c.TIFF, image
         var started: usize = 0;
         errdefer for (threads[0..started]) |thread| thread.join();
         for (0..workers) |worker| {
-            threads[worker] = try std.Thread.spawn(.{}, compressDeflateSlots, .{ slots[0..count], worker, workers });
+            threads[worker] = try std.Thread.spawn(.{}, compressDeflateSlots, .{ slots[0..count], compressors[worker], worker, workers });
             started += 1;
         }
         for (threads[0..workers]) |thread| thread.join();
@@ -603,18 +616,18 @@ const DeflateSlot = struct {
     failed: bool = false,
 };
 
-fn compressDeflateSlots(slots: []DeflateSlot, worker: usize, workers: usize) void {
+fn compressDeflateSlots(slots: []DeflateSlot, compressor: *c.struct_libdeflate_compressor, worker: usize, workers: usize) void {
     var index = worker;
     while (index < slots.len) : (index += workers) {
         const slot = &slots[index];
         const scratch = slot.scratch[0..slot.source.len];
         horizontalDifference(slot.source, scratch, slot.scanline, slot.samples_per_pixel, slot.bits_per_sample);
-        var compressed_len: c.uLongf = @intCast(slot.compressed.len);
-        if (c.compress2(slot.compressed.ptr, &compressed_len, scratch.ptr, @intCast(scratch.len), 6) != c.Z_OK) {
+        const compressed_len = c.libdeflate_zlib_compress(compressor, scratch.ptr, scratch.len, slot.compressed.ptr, slot.compressed.len);
+        if (compressed_len == 0) {
             slot.failed = true;
             continue;
         }
-        slot.compressed_len = @intCast(compressed_len);
+        slot.compressed_len = compressed_len;
     }
 }
 

@@ -107,6 +107,7 @@ pub fn build(b: *std.Build) void {
     root_module.linkSystemLibrary("c", .{});
     root_module.linkSystemLibrary("libtiff-4", .{});
     root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
+    root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("opencv4", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("superlu", .{ .use_pkg_config = .no });

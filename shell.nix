@@ -92,6 +92,7 @@ in pkgs.mkShell {
     libtiff
     libpng
     zlib
+    libdeflate
     opencv
     superlu
 

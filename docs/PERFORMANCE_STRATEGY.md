@@ -167,9 +167,13 @@ Preview load, export, caches:
 - Rebate Dmin cropped from TIFF samples: adopted, same Dmin.
 - Native `RgbPageCache` (1 GiB, two slots, LRU) and result caches (quick
   preview, Dmin, auto-detect, inverted preview): adopted, exact replay.
-- Deflate TIFF strips compressed on all cores with zlib and written raw in
-  order: adopted, same pixels, files `0.4%` smaller than libtiff's libdeflate
-  output; the 6x7 strip's six 1.45 GB files `75.6 s` to `31.3 s`.
+- Deflate TIFF strips compressed on all cores and written raw in order:
+  adopted, same pixels. With zlib, the 6x7 strip's six 1.45 GB files took
+  `75.6 s` to `31.3 s` on the Mac, files `0.4%` to `0.6%` smaller than
+  libtiff's. With libdeflate at libtiff's level 6 (adopted): file sizes as
+  libtiff wrote them, writing `15.2 s` to `8.3 s` against zlib on Linux (31
+  threads), and a two-frame 6x7 `processing export` on the Mac `115.1 s` to
+  `86.4 s`.
 
 `auto_detect`:
 
@@ -374,9 +378,9 @@ split.
   repeats; first reads and CLI runs still pay it.
 - RGB+IR export is the slowest command (`13366626 us` on scan_0004).
   Adaptive dust leads (`27518442 us` aggregate), then line detection and
-  close. On the Mac 6x7 strip, writing leads (`31345250 us`, zlib), then
-  adaptive dust and the fills (about `16 s` each). `f32_down4_coarse` awaits
-  a decision.
+  close. On the Mac 6x7 strip, adaptive dust and the fills lead (about
+  `16 s` each); writing led with zlib (`31345250 us`) and takes about half
+  that with libdeflate. `f32_down4_coarse` awaits a decision.
 - Row-band passes take every core even when frames export in parallel: on
   scan_0004 (5 frames at once) line detection went from `6.1 s` to `6.7 s`
   aggregate while the export as a whole sped up `2.61x`.

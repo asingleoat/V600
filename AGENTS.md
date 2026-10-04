@@ -34,8 +34,9 @@ diffs for this before committing.
 ### Nix and the build environment
 
 - Assume you are inside the project's Nix dev shell and use plain `zig ...`
-  commands. OpenCV, libjpeg, SuperLU, libtiff, SDL3, and Nuklear come from
-  that shell; outside it the build fails at the C/C++ objects.
+  commands. OpenCV, libjpeg, SuperLU, libtiff, libdeflate, SDL3, and
+  Nuklear come from that shell; outside it the build fails at the C/C++
+  objects.
 - Do not run `nix develop`, `nix-shell`, `nix build`, or `nix flake check` in
   ordinary build/test loops. If a dependency or the Zig version is missing,
   edit `flake.nix`/`shell.nix` if needed, then stop and ask the owner to

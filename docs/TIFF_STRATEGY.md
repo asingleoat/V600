@@ -28,8 +28,9 @@ the scanner `_tiff_metadata` helpers.
 - Export metadata is JSON in private ASCII tag 65000
   (`readExportMetadataJson`).
 - Exported frames are lossless Deflate (level 6, horizontal predictor, 4 MiB
-  strips), about 20-30% smaller than raw, and carry the scan's resolution
-  and DateTime (`readDateTime`). Scans and other writes are
+  strips; 8- and 16-bit strips are compressed on all cores with libdeflate
+  and handed to libtiff raw), about 20-30% smaller than raw, and carry the
+  scan's resolution and DateTime (`readDateTime`). Scans and other writes are
   uncompressed; the webapp's `tiff.mjs` reads only uncompressed files, so it
   opens scans but not native exports. `writeImage` can write BigTIFF, but no
   caller enables it, so exports over 4 GiB would fail. `writeScanPages`

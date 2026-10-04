@@ -92,6 +92,7 @@ EOF
               buildInputs = [
                 pkgs.libtiff
                 pkgs.zlib
+                pkgs.libdeflate
                 pkgs.libjpeg
                 pkgs.opencv
                 pkgs.superlu
@@ -131,7 +132,7 @@ EOF
         let nuklear = nuklearPackage pkgs; in {
         zig-tests = pkgs.runCommand "v600-zig-tests" {
           nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc pkgs.imagemagick pkgs.exiftool ];
-          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libjpeg pkgs.opencv pkgs.superlu pkgs.sdl3 nuklear ];
+          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.opencv pkgs.superlu pkgs.sdl3 nuklear ];
         } ''
           cp -R ${cleanSource pkgs} source
           chmod -R u+w source
@@ -187,6 +188,7 @@ EOF
             libusb1
             libtiff
             zlib
+            libdeflate
             libjpeg
             opencv
             superlu
