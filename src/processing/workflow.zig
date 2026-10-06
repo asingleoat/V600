@@ -1201,7 +1201,7 @@ pub fn newtonRingFrames(
     var found = std.array_list.Managed(usize).init(allocator);
     errdefer found.deinit();
     for (rects, 0..) |rect, index| {
-        const area = try newton_rings.ringArea(
+        const score = try newton_rings.ringScore(
             f64,
             f64,
             allocator,
@@ -1211,7 +1211,7 @@ pub fn newtonRingFrames(
             .{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h },
             scan_dpi,
         );
-        if (newton_rings.warns(area)) try found.append(index + 1);
+        if (newton_rings.warns(score)) try found.append(index + 1);
     }
     return found.toOwnedSlice();
 }

@@ -281,12 +281,15 @@ deliberately, not by accident.
   name frames with strong rings in the export message, the roll panel,
   `roll` output, and the review page. The narrow-band IR shows interference
   fringes wherever the film nears the glass, which is normal with the film
-  flat on the bed, so the IR only says where to look. Visible rings are
-  counted where the picture is smooth, inside IR fringe fields, in tiles
-  whose red channel peaks at 1.3-1.95x the IR fringe frequency along the
-  fringes (the same gap at red's wavelength; picture detail sits at one
-  frequency in every channel). Warns at 5 mm² of ring area; tuned on real
-  6400 dpi frames, with no frame yet confirmed ring-free.
+  flat on the bed, so the IR only says where to look. Visible rings, around
+  a dust speck or where the film bows onto the glass, are the same gap seen
+  at the dyes' wavelengths: red-minus-green density runs 1.3-1.8 cycles per
+  IR fringe, which picture content does not. The check finds IR ring
+  centres by radial symmetry over the whole frame, fits red-minus-green
+  along rays from each as a sinusoid of a multiple of the IR fringe phase,
+  and scores the variance explained at 1.3-1.8 above that 0.3 either side.
+  Warns at 0.06. Tune and judge it only on real scans against frames the
+  owner reviewed, never on synthetic rings.
 - Parameters are defined at 800 dpi. Linear parameters scale by
   `dpi / 800`, area parameters by `(dpi / 800)^2`, at the dpi of the image
   they act on: the defect mask's sizes by the IR page's dpi (6400 dpi RGB

@@ -1,30 +1,32 @@
-//! Newton's rings: interference fringes where the film touches the scanner
-//! glass. The scanner's IR light is narrow-band, so the IR page shows fringes
-//! wherever the film comes within tens of microns of the glass, even with the
-//! matte emulsion side down. White light shows them only near true contact,
-//! and a viewer sees them only where the picture is smooth. The check measures
-//! how much of a frame shows rings a viewer would see:
+//! Newton's rings: interference fringes where the film comes within a few
+//! microns of the scanner glass, around a speck of dust that holds it off or
+//! where it bows onto the glass. The scanner's IR light is narrow-band, so the
+//! IR page shows fringes wherever the film is within tens of microns of the
+//! glass, even with the matte emulsion side down, and most frames have some.
+//! White light shows them only where the gap is smallest, as coloured rings:
+//! the same gap seen at the dyes' shorter wavelengths, so red-minus-green
+//! density runs through 1.3 to 1.8 cycles for each IR fringe. Picture content
+//! does not follow the IR fringes at a fixed ratio. The check:
 //!
-//! - The picture is regressed out of the IR (it leaks in through the dyes),
-//!   which leaves fringes and dust.
-//! - Candidate pixels lie in a broad IR fringe field, where the picture is
-//!   smooth at fine scale and its band-passed density varies well above the
-//!   frame's grain.
-//! - They count only inside tiles where the red channel peaks at 1.3 to 1.95
-//!   times the IR fringe frequency, along the IR fringes: the same gap seen at
-//!   red's shorter wavelength. Picture detail sits at one frequency in every
-//!   channel.
+//! - regresses the picture out of the IR (it leaks in through the dyes),
+//!   which leaves fringes and dust;
+//! - finds the centres of IR ring systems by radial symmetry;
+//! - along rays from each centre, takes the IR fringe phase and fits
+//!   red-minus-green density as a sinusoid of a multiple of it;
+//! - scores a centre by how much more of that density's variance the fit
+//!   explains at its best ratio from 1.3 to 1.8 than 0.3 either side, and a
+//!   frame by its best centre.
 //!
 //! Tuned on 136 real 35mm and 6x7 frames scanned at 6400 dpi; pixel
-//! parameters are at the check's 533 dpi grid and scale with it.
+//! parameters are at the check's 1067 dpi grid and scale with it.
 const std = @import("std");
 const parallelism = @import("parallelism.zig");
 
-/// The grid the check runs on: 6400 dpi scans average 12 x 12 pixels.
-const grid_dpi: f64 = 6400.0 / 12.0;
-/// Frames with at least this much ring area get a warning: strong rings
-/// only. Faint ones are hard to see and harder to measure.
-pub const warning_mm2: f64 = 5.0;
+/// The grid the check runs on: 6400 dpi scans average 6 x 6 pixels.
+const grid_dpi: f64 = 6400.0 / 6.0;
+/// Frames scoring at least this get a warning: strong rings only. Faint ones
+/// are hard to see and harder to measure.
+pub const warning_score: f64 = 0.06;
 
 pub fn View(comptime T: type) type {
     return struct {
@@ -35,7 +37,7 @@ pub fn View(comptime T: type) type {
     };
 }
 
-/// A frame in RGB pixel coordinates; the check covers its middle 90% each way.
+/// A frame in RGB pixel coordinates; the check covers all of it.
 pub const Frame = struct {
     cx: f64,
     cy: f64,
@@ -43,8 +45,8 @@ pub const Frame = struct {
     h: f64,
 };
 
-pub fn warns(area_mm2: f64) bool {
-    return area_mm2 >= warning_mm2;
+pub fn warns(score: f64) bool {
+    return score >= warning_score;
 }
 
 /// "Newton's rings in frame 3: consider rescanning it", or "frames 2 and 4",
@@ -73,10 +75,13 @@ pub const Rows = struct {
     page_height: ?usize = null,
 };
 
-/// The area, in mm² of film, showing visible Newton's rings. `frame` is in
-/// whole-scan coordinates; `rgb` holds the page or the rows `rows` says. `ir`
-/// is the whole IR page, at any resolution.
-pub fn ringArea(
+/// How strongly a frame shows visible Newton's rings: the share of the
+/// variance of red-minus-green density about its strongest IR ring centre
+/// that the IR fringes explain at the dyes' wavelengths, above their share
+/// at other ratios. 0.1 and up where rings are plain to see, under 0.03
+/// without them. `frame` is in whole-scan coordinates; `rgb` holds the page
+/// or the rows `rows` says. `ir` is the whole IR page, at any resolution.
+pub fn ringScore(
     comptime Rgb: type,
     comptime Ir: type,
     allocator: std.mem.Allocator,
@@ -87,54 +92,81 @@ pub fn ringArea(
     dpi: u32,
 ) !f64 {
     const factor: usize = @max(1, @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(dpi)) / grid_dpi))));
-    const grid_px_per_mm = @as(f64, @floatFromInt(dpi)) / @as(f64, @floatFromInt(factor)) / 25.4;
-    const params = Params.init(grid_px_per_mm * 25.4 / grid_dpi);
+    const params = Params.init(@as(f64, @floatFromInt(dpi)) / @as(f64, @floatFromInt(factor)) / grid_dpi);
 
     const first: f64 = @floatFromInt(rows.first);
-    const x0 = clampToExtent(frame.cx - 0.45 * frame.w, rgb.width);
-    const x1 = clampToExtent(frame.cx + 0.45 * frame.w, rgb.width);
-    const y0 = clampToExtent(frame.cy - 0.45 * frame.h - first, rgb.height);
-    const y1 = clampToExtent(frame.cy + 0.45 * frame.h - first, rgb.height);
+    const x0 = clampToExtent(frame.cx - 0.5 * frame.w, rgb.width);
+    const x1 = clampToExtent(frame.cx + 0.5 * frame.w, rgb.width);
+    const y0 = clampToExtent(frame.cy - 0.5 * frame.h - first, rgb.height);
+    const y1 = clampToExtent(frame.cy + 0.5 * frame.h - first, rgb.height);
     const width = (x1 -| x0) / factor;
     const height = (y1 -| y0) / factor;
-    if (width < params.tile + 2 or height < params.tile + 2) return 0;
+    if (width < 2 * params.window or height < 2 * params.window) return 0;
 
-    var grid = try Grid.init(allocator, width, height);
-    defer grid.deinit(allocator);
-    sampleRgb(Rgb, rgb, x0, y0, factor, &grid);
-    sampleIr(Ir, ir, rgb.width, rows.page_height orelse rgb.height, x0, rows.first + y0, factor, &grid);
-    try regressOutPicture(&grid);
+    var bands = bands: {
+        var grid = try Grid.init(allocator, width, height);
+        defer grid.deinit(allocator);
+        try sampleRgb(Rgb, allocator, rgb, x0, y0, factor, &grid);
+        sampleIr(Ir, ir, rgb.width, rows.page_height orelse rgb.height, x0, rows.first + y0, factor, &grid);
+        try regressOutPicture(&grid);
+        break :bands try Bands.init(allocator, &grid, params);
+    };
+    defer bands.deinit(allocator);
 
-    const visible = try visibleRingPixels(allocator, &grid, params);
-    defer allocator.free(visible);
-    const matched = try redMatchedTiles(allocator, &grid, params);
-    defer allocator.free(matched);
+    const centres = try ringCentres(allocator, bands.centres, width, height, params);
+    defer allocator.free(centres);
 
-    var count: usize = 0;
-    for (visible, matched) |v, m| count += @intFromBool(v and m);
-    const mm_per_px = 1.0 / grid_px_per_mm;
-    return @as(f64, @floatFromInt(count)) * mm_per_px * mm_per_px;
+    var fitter = try RayFitter.init(allocator, params.ray_length);
+    defer fitter.deinit(allocator);
+    var best: f64 = 0;
+    for (centres) |centre| {
+        const score = fitter.score(bands.ir, bands.colour, width, height, centre, params) orelse continue;
+        best = @max(best, score);
+    }
+    return best;
 }
 
 fn clampToExtent(value: f64, extent: usize) usize {
     return @intFromFloat(std.math.clamp(@floor(value), 0, @as(f64, @floatFromInt(extent))));
 }
 
+/// Pixel sizes on the check's grid, from the sizes at 1067 dpi.
 const Params = struct {
-    scale: f64,
-    tile: usize,
-    min_field_px: usize,
+    /// Gaussian sigmas: the fine detail the fringes are kept to, the picture
+    /// shading taken out, and the smoothing of the IR its ring centres are
+    /// found on.
+    fine: f64,
+    broad: f64,
+    centre_fine: f64,
+    /// Ring radii the symmetry votes look for, 0.5 to 4.5 mm.
+    radii: [7]usize,
+    /// Centres are the strongest symmetry in this square, 2 mm across.
+    peak_window: usize,
+    /// Rays reach about 6 mm; a power of two for the FFT.
+    ray_length: usize,
+    /// Fits run over windows of this many samples, half-overlapping, from
+    /// `ray_start` out.
+    window: usize,
+    ray_start: usize,
 
     fn init(scale: f64) Params {
+        var radii: [7]usize = undefined;
+        for (&radii, [_]f64{ 20, 30, 44, 64, 92, 132, 190 }) |*radius, at_grid| radius.* = @max(2, px(at_grid, scale));
         return .{
-            .scale = scale,
-            .tile = @max(16, @as(usize, @intFromFloat(@round(96 * scale)))),
-            .min_field_px = @intFromFloat(@round(2000 * scale * scale)),
+            .fine = scale,
+            .broad = 60 * scale,
+            .centre_fine = 3 * scale,
+            .radii = radii,
+            .peak_window = px(83, scale) | 1,
+            // The power of two nearest 256 px.
+            .ray_length = std.math.ceilPowerOfTwoAssert(usize, @max(64, px(256.0 / std.math.sqrt2, scale))),
+            .window = @max(16, px(80, scale)),
+            .ray_start = px(12, scale),
         };
     }
 
-    fn px(self: Params, at_grid: f64) f64 {
-        return at_grid * self.scale;
+    fn px(at_grid: f64, scale: f64) usize {
+        return @intFromFloat(@round(at_grid * scale));
     }
 };
 
@@ -172,21 +204,32 @@ fn density(value: f64) f32 {
     return @floatCast(-std.math.log10(@max(value, 1.0)));
 }
 
-fn sampleRgb(comptime T: type, rgb: View(T), x0: usize, y0: usize, factor: usize, grid: *Grid) void {
-    const area: f64 = @floatFromInt(factor * factor);
-    for (0..grid.height) |gy| {
-        for (0..grid.width) |gx| {
-            var sums = [3]f64{ 0, 0, 0 };
-            for (0..factor) |dy| {
-                const row = (y0 + gy * factor + dy) * rgb.width;
-                for (0..factor) |dx| {
-                    const base = (row + x0 + gx * factor + dx) * rgb.channels;
-                    for (&sums, 0..) |*sum, ch| sum.* += toF64(T, rgb.pixels[base + ch]);
+fn sampleRgb(comptime T: type, allocator: std.mem.Allocator, rgb: View(T), x0: usize, y0: usize, factor: usize, grid: *Grid) !void {
+    const Pass = struct {
+        rgb: View(T),
+        x0: usize,
+        y0: usize,
+        factor: usize,
+        grid: *Grid,
+
+        fn rows(p: @This(), row_start: usize, row_end: usize) void {
+            const area: f64 = @floatFromInt(p.factor * p.factor);
+            for (row_start..row_end) |gy| {
+                for (0..p.grid.width) |gx| {
+                    var sums = [3]f64{ 0, 0, 0 };
+                    for (0..p.factor) |dy| {
+                        const row = (p.y0 + gy * p.factor + dy) * p.rgb.width;
+                        for (0..p.factor) |dx| {
+                            const base = (row + p.x0 + gx * p.factor + dx) * p.rgb.channels;
+                            for (&sums, 0..) |*sum, ch| sum.* += toF64(T, p.rgb.pixels[base + ch]);
+                        }
+                    }
+                    for (sums, 0..) |sum, ch| p.grid.density[ch][gy * p.grid.width + gx] = density(sum / area);
                 }
             }
-            for (sums, 0..) |sum, ch| grid.density[ch][gy * grid.width + gx] = density(sum / area);
         }
-    }
+    };
+    try parallelism.forRowBands(allocator, grid.height, Pass{ .rgb = rgb, .x0 = x0, .y0 = y0, .factor = factor, .grid = grid }, Pass.rows);
 }
 
 fn sampleIr(comptime T: type, ir: View(T), rgb_width: usize, rgb_height: usize, x0: usize, y0: usize, factor: usize, grid: *Grid) void {
@@ -259,110 +302,130 @@ fn solve4(augmented: [4][5]f64) ?[4]f64 {
     return .{ m[0][4] / m[0][0], m[1][4] / m[1][1], m[2][4] / m[2][2], m[3][4] / m[3][3] };
 }
 
-/// Smooth pixels inside broad IR fringe fields whose band-passed density
-/// varies well above the frame's grain.
-fn visibleRingPixels(allocator: std.mem.Allocator, grid: *const Grid, params: Params) ![]bool {
-    const n = grid.len();
-    var scratch = try Scratch.init(allocator, grid.width, grid.height);
-    defer scratch.deinit(allocator);
+/// The band-passed planes the check reads, each with the picture's shading
+/// taken out: the IR leftover and red-minus-green density at fine detail,
+/// and the IR smoothed for finding ring centres.
+const Bands = struct {
+    ir: []f32,
+    colour: []f32,
+    centres: []f32,
 
-    // IR fringe fields: local amplitude of the band-passed IR leftover.
-    const fringe = try allocator.alloc(bool, n);
-    defer allocator.free(fringe);
-    {
-        const b = try scratch.bandPass(allocator, grid.ir, params.px(3), params.px(16));
-        defer allocator.free(b);
-        const amp = try scratch.localAmplitude(allocator, &.{b}, params.px(8));
-        defer allocator.free(amp);
-        for (amp, fringe) |a, *f| f.* = a > 0.004;
-    }
-    try keepLargeComponents(allocator, fringe, grid.width, grid.height, params.min_field_px);
+    fn init(allocator: std.mem.Allocator, grid: *Grid, params: Params) !Bands {
+        const w = grid.width;
+        const h = grid.height;
+        for (grid.density[0], grid.density[1]) |*r, g| r.* -= g;
+        // The blue and green planes are free from here on: scratch.
+        const tmp = grid.density[1];
+        const broad = grid.density[2];
+        var self: Bands = .{ .ir = &.{}, .colour = &.{}, .centres = &.{} };
+        errdefer self.deinit(allocator);
 
-    // Fine-scale texture: where the picture itself has detail.
-    const texture = try allocator.alloc(f32, n);
-    defer allocator.free(texture);
-    @memset(texture, 0);
-    for (grid.density) |plane| {
-        const b = try scratch.bandPass(allocator, plane, params.px(0.7), params.px(2.5));
-        defer allocator.free(b);
-        const amp = try scratch.localAmplitude(allocator, &.{b}, params.px(8));
-        defer allocator.free(amp);
-        for (texture, amp) |*t, a| t.* = @max(t.*, a);
-    }
-    const smooth = try allocator.alloc(bool, n);
-    defer allocator.free(smooth);
-    const texture_floor = try percentile(allocator, texture, null, 0.10, 1) orelse return error.EmptyGrid;
-    for (texture, smooth) |t, *s| s.* = t < 1.6 * texture_floor;
-
-    // Ring-scale variation of all three dye densities.
-    var bands: [3][]f32 = undefined;
-    var made: usize = 0;
-    defer for (bands[0..made]) |b| allocator.free(b);
-    for (grid.density, 0..) |plane, ch| {
-        bands[ch] = try scratch.bandPass(allocator, plane, params.px(3), params.px(16));
-        made += 1;
-    }
-    const variation = try scratch.localAmplitude(allocator, &bands, params.px(8));
-    defer allocator.free(variation);
-
-    // The frame's grain level: smooth pixels away from fringes, else any.
-    const quiet = try allocator.alloc(bool, n);
-    defer allocator.free(quiet);
-    for (smooth, fringe, quiet) |s, f, *q| q.* = s and !f;
-    const base = try percentile(allocator, variation, quiet, 0.5, 501) orelse
-        try percentile(allocator, variation, smooth, 0.5, 501) orelse
-        try percentile(allocator, variation, null, 0.5, 1) orelse return error.EmptyGrid;
-
-    const visible = try allocator.alloc(bool, n);
-    for (visible, smooth, fringe, variation) |*v, s, f, c| v.* = s and f and c > 2.0 * base;
-    return visible;
-}
-
-/// Gaussian filtering on one grid size, with a reusable buffer.
-const Scratch = struct {
-    width: usize,
-    height: usize,
-    tmp: []f32,
-
-    fn init(allocator: std.mem.Allocator, width: usize, height: usize) !Scratch {
-        return .{ .width = width, .height = height, .tmp = try allocator.alloc(f32, width * height) };
-    }
-
-    fn deinit(self: *Scratch, allocator: std.mem.Allocator) void {
-        allocator.free(self.tmp);
-    }
-
-    fn blur(self: *Scratch, allocator: std.mem.Allocator, src: []const f32, sigma: f64, dst: []f32) !void {
-        try gaussianBlur(allocator, src, self.width, self.height, sigma, self.tmp, dst);
-    }
-
-    /// G(sigma_lo) - G(sigma_hi): a caller-owned band-pass of `src`.
-    fn bandPass(self: *Scratch, allocator: std.mem.Allocator, src: []const f32, lo: f64, hi: f64) ![]f32 {
-        const out = try allocator.alloc(f32, src.len);
-        errdefer allocator.free(out);
-        const wide = try allocator.alloc(f32, src.len);
-        defer allocator.free(wide);
-        try self.blur(allocator, src, lo, out);
-        try self.blur(allocator, src, hi, wide);
-        for (out, wide) |*o, w| o.* -= w;
-        return out;
-    }
-
-    /// sqrt(G(sum of squares, sigma)): a caller-owned local amplitude.
-    fn localAmplitude(self: *Scratch, allocator: std.mem.Allocator, signals: []const []const f32, sigma: f64) ![]f32 {
-        const sq = try allocator.alloc(f32, signals[0].len);
-        defer allocator.free(sq);
-        @memset(sq, 0);
-        for (signals) |signal| {
-            for (sq, signal) |*q, v| q.* += v * v;
+        try blur(allocator, grid.ir, w, h, params.broad, tmp, broad);
+        self.ir = try allocator.alloc(f32, grid.len());
+        try blur(allocator, grid.ir, w, h, params.fine, tmp, self.ir);
+        self.centres = try allocator.alloc(f32, grid.len());
+        try blur(allocator, grid.ir, w, h, params.centre_fine, tmp, self.centres);
+        for (self.ir, self.centres, broad) |*fine, *centre, b| {
+            fine.* -= b;
+            centre.* -= b;
         }
-        const out = try allocator.alloc(f32, sq.len);
-        errdefer allocator.free(out);
-        try self.blur(allocator, sq, sigma, out);
-        for (out) |*o| o.* = @sqrt(@max(o.*, 0));
-        return out;
+
+        try blur(allocator, grid.density[0], w, h, params.broad, tmp, broad);
+        self.colour = try allocator.alloc(f32, grid.len());
+        try blur(allocator, grid.density[0], w, h, params.fine, tmp, self.colour);
+        for (self.colour, broad) |*fine, b| fine.* -= b;
+        return self;
+    }
+
+    fn deinit(self: *Bands, allocator: std.mem.Allocator) void {
+        allocator.free(self.ir);
+        allocator.free(self.colour);
+        allocator.free(self.centres);
     }
 };
+
+/// Gaussian blur with mirrored edges (the edge pixel repeated): exact for
+/// small sigmas, three box passes of the same variance for wide ones.
+fn blur(allocator: std.mem.Allocator, src: []const f32, width: usize, height: usize, sigma: f64, tmp: []f32, dst: []f32) !void {
+    if (sigma <= 4) return gaussianBlur(allocator, src, width, height, sigma, tmp, dst);
+    const radii = boxRadii(sigma);
+    try boxPass(allocator, src, tmp, width, height, radii[0], .horizontal);
+    try boxPass(allocator, tmp, dst, width, height, radii[1], .horizontal);
+    try boxPass(allocator, dst, tmp, width, height, radii[2], .horizontal);
+    try boxPass(allocator, tmp, dst, width, height, radii[0], .vertical);
+    try boxPass(allocator, dst, tmp, width, height, radii[1], .vertical);
+    try boxPass(allocator, tmp, dst, width, height, radii[2], .vertical);
+}
+
+/// Radii of three boxes whose variances sum closest to sigma squared: a box
+/// of width 2r + 1 has variance r (r + 1) / 3, so the radii differ by at
+/// most one.
+fn boxRadii(sigma: f64) [3]usize {
+    const variance = struct {
+        fn of(r: usize) f64 {
+            const rf: f64 = @floatFromInt(r);
+            return rf * (rf + 1) / 3;
+        }
+    }.of;
+    const r: usize = @intFromFloat(@floor(0.5 * (@sqrt(4 * sigma * sigma + 1) - 1)));
+    const smaller = std.math.clamp(@round((3 * variance(r + 1) - sigma * sigma) / (variance(r + 1) - variance(r))), 0, 3);
+    var radii = [3]usize{ r + 1, r + 1, r + 1 };
+    for (radii[0..@intFromFloat(smaller)]) |*radius| radius.* = r;
+    return radii;
+}
+
+/// One running-sum box filter of width 2 * radius + 1 along rows or columns.
+fn boxPass(allocator: std.mem.Allocator, src: []const f32, dst: []f32, width: usize, height: usize, radius: usize, comptime direction: enum { horizontal, vertical }) !void {
+    const Pass = struct {
+        src: []const f32,
+        dst: []f32,
+        width: usize,
+        height: usize,
+        radius: usize,
+        sums: []f64,
+
+        /// Rows `start..end` for a horizontal pass, columns for a vertical one.
+        fn lines(p: @This(), start: usize, end: usize) void {
+            const r: isize = @intCast(p.radius);
+            const scale = 1.0 / @as(f64, @floatFromInt(2 * p.radius + 1));
+            if (direction == .horizontal) {
+                for (start..end) |y| {
+                    const row = p.src[y * p.width ..][0..p.width];
+                    var sum: f64 = 0;
+                    var k: isize = -r;
+                    while (k <= r) : (k += 1) sum += row[mirror(k, p.width)];
+                    for (0..p.width) |x| {
+                        p.dst[y * p.width + x] = @floatCast(sum * scale);
+                        const xi: isize = @intCast(x);
+                        sum += @as(f64, row[mirror(xi + r + 1, p.width)]) - row[mirror(xi - r, p.width)];
+                    }
+                }
+            } else {
+                // Down the image a row at a time, one running sum per column.
+                const sums = p.sums[start..end];
+                @memset(sums, 0);
+                var k: isize = -r;
+                while (k <= r) : (k += 1) {
+                    const row = p.src[mirror(k, p.height) * p.width ..];
+                    for (sums, start..) |*sum, x| sum.* += row[x];
+                }
+                for (0..p.height) |y| {
+                    const yi: isize = @intCast(y);
+                    const enter = p.src[mirror(yi + r + 1, p.height) * p.width ..];
+                    const leave = p.src[mirror(yi - r, p.height) * p.width ..];
+                    for (sums, start..) |*sum, x| {
+                        p.dst[y * p.width + x] = @floatCast(sum.* * scale);
+                        sum.* += @as(f64, enter[x]) - leave[x];
+                    }
+                }
+            }
+        }
+    };
+    const sums = try allocator.alloc(f64, if (direction == .vertical) width else 0);
+    defer allocator.free(sums);
+    const pass = Pass{ .src = src, .dst = dst, .width = width, .height = height, .radius = radius, .sums = sums };
+    try parallelism.forRowBands(allocator, if (direction == .horizontal) height else width, pass, Pass.lines);
+}
 
 /// Separable Gaussian with mirrored edges (the edge pixel repeated), kernel
 /// radius 4 sigma.
@@ -423,297 +486,423 @@ fn mirror(index: isize, extent: usize) usize {
     return @intCast(i);
 }
 
-/// The q-quantile (linear between ranks) of `values` where `mask` is set, or
-/// null when fewer than `min_count` qualify.
-fn percentile(allocator: std.mem.Allocator, values: []const f32, mask: ?[]const bool, q: f64, min_count: usize) !?f32 {
-    var count: usize = 0;
-    for (values, 0..) |_, i| {
-        if (mask == null or mask.?[i]) count += 1;
+const Centre = struct {
+    x: usize,
+    y: usize,
+    strength: f32,
+};
+
+/// At most this many ring centres are fitted, the strongest first.
+const max_centres = 20;
+
+/// The strongest ring centres in `src`: radial symmetry of its gradients,
+/// at its local maxima.
+fn ringCentres(allocator: std.mem.Allocator, src: []const f32, width: usize, height: usize, params: Params) ![]Centre {
+    const n = width * height;
+    const symmetry = try allocator.alloc(f32, n);
+    defer allocator.free(symmetry);
+    const votes = try allocator.alloc(f32, n);
+    defer allocator.free(votes);
+    const tmp = try allocator.alloc(f32, n);
+    defer allocator.free(tmp);
+    const blurred = try allocator.alloc(f32, n);
+    defer allocator.free(blurred);
+
+    // Gradients count when well above the frame's typical one.
+    for (0..height) |y| {
+        for (0..width) |x| votes[y * width + x] = @floatCast(sobel(src, width, height, x, y).magnitude);
     }
-    if (count < min_count or count == 0) return null;
-    const picked = try allocator.alloc(f32, count);
-    defer allocator.free(picked);
-    var n: usize = 0;
-    for (values, 0..) |v, i| {
-        if (mask == null or mask.?[i]) {
-            picked[n] = v;
-            n += 1;
+    const threshold = 3 * median(votes);
+    var voters = std.array_list.Managed(Voter).init(allocator);
+    defer voters.deinit();
+    for (0..height) |y| {
+        for (0..width) |x| {
+            const g = sobel(src, width, height, x, y);
+            if (!(g.magnitude > threshold)) continue;
+            try voters.append(.{ .x = @floatFromInt(x), .y = @floatFromInt(y), .ux = @floatCast(g.dx / g.magnitude), .uy = @floatCast(g.dy / g.magnitude) });
         }
     }
-    std.mem.sort(f32, picked, {}, std.sort.asc(f32));
-    const rank = q * @as(f64, @floatFromInt(count - 1));
-    const lo: usize = @intFromFloat(@floor(rank));
-    const hi = @min(lo + 1, count - 1);
-    const t: f32 = @floatCast(rank - @floor(rank));
-    return picked[lo] + (picked[hi] - picked[lo]) * t;
+
+    // Each strong gradient votes for the points one radius along and against
+    // it; a ring's centre collects votes from all round it.
+    @memset(symmetry, 0);
+    for (params.radii) |radius| {
+        @memset(votes, 0);
+        const r: f32 = @floatFromInt(radius);
+        for (voters.items) |v| {
+            for ([_]f32{ 1, -1 }) |sign| {
+                const vy = @round(v.y + sign * r * v.uy);
+                const vx = @round(v.x + sign * r * v.ux);
+                if (vy < 0 or vx < 0) continue;
+                const iy: usize = @intFromFloat(vy);
+                const ix: usize = @intFromFloat(vx);
+                if (iy < height and ix < width) votes[iy * width + ix] += 1;
+            }
+        }
+        try blur(allocator, votes, width, height, 0.25 * @as(f64, r), tmp, blurred);
+        const per_circumference: f32 = @floatCast(1 / (2 * std.math.pi * r));
+        for (symmetry, blurred) |*s, b| s.* += b * per_circumference;
+    }
+
+    // Local maxima over the peak window.
+    try maxFilter(allocator, symmetry, width, height, params.peak_window / 2, tmp, blurred);
+    var centres = std.array_list.Managed(Centre).init(allocator);
+    defer centres.deinit();
+    for (symmetry, blurred, 0..) |s, peak, i| {
+        if (s > 0 and s == peak) try centres.append(.{ .x = i % width, .y = i / width, .strength = s });
+    }
+    std.mem.sort(Centre, centres.items, {}, struct {
+        fn stronger(_: void, a: Centre, b: Centre) bool {
+            return a.strength > b.strength;
+        }
+    }.stronger);
+    const count = @min(centres.items.len, max_centres);
+    return allocator.dupe(Centre, centres.items[0..count]);
 }
 
-/// Clears 4-connected components of `mask` smaller than `min_size`.
-fn keepLargeComponents(allocator: std.mem.Allocator, mask: []bool, width: usize, height: usize, min_size: usize) !void {
-    const seen = try allocator.alloc(bool, mask.len);
-    defer allocator.free(seen);
-    @memset(seen, false);
-    var stack = std.array_list.Managed(usize).init(allocator);
-    defer stack.deinit();
-    var members = std.array_list.Managed(usize).init(allocator);
-    defer members.deinit();
-    for (0..mask.len) |start| {
-        if (!mask[start] or seen[start]) continue;
-        stack.clearRetainingCapacity();
-        members.clearRetainingCapacity();
-        try stack.append(start);
-        seen[start] = true;
-        while (stack.pop()) |i| {
-            try members.append(i);
-            const x = i % width;
-            const y = i / width;
-            const neighbours = [4]?usize{
-                if (x > 0) i - 1 else null,
-                if (x + 1 < width) i + 1 else null,
-                if (y > 0) i - width else null,
-                if (y + 1 < height) i + width else null,
-            };
-            for (neighbours) |neighbour| {
-                const j = neighbour orelse continue;
-                if (mask[j] and !seen[j]) {
-                    seen[j] = true;
-                    try stack.append(j);
+const Voter = struct {
+    x: f32,
+    y: f32,
+    /// The unit gradient.
+    ux: f32,
+    uy: f32,
+};
+
+const Gradient = struct {
+    dx: f64,
+    dy: f64,
+    magnitude: f64,
+};
+
+/// Sobel gradient with mirrored edges.
+fn sobel(src: []const f32, width: usize, height: usize, x: usize, y: usize) Gradient {
+    const xi: isize = @intCast(x);
+    const yi: isize = @intCast(y);
+    var dx: f64 = 0;
+    var dy: f64 = 0;
+    for ([_]isize{ -1, 0, 1 }, [_]f64{ 1, 2, 1 }) |o, weight| {
+        const row_up = mirror(yi - 1, height) * width;
+        const row_down = mirror(yi + 1, height) * width;
+        const col = mirror(xi + o, width);
+        dy += weight * (src[row_down + col] - src[row_up + col]);
+        const row = mirror(yi + o, height) * width;
+        dx += weight * (src[row + mirror(xi + 1, width)] - src[row + mirror(xi - 1, width)]);
+    }
+    return .{ .dx = dx, .dy = dy, .magnitude = @sqrt(dx * dx + dy * dy) };
+}
+
+/// The middle value of `values` (the upper one of an even count), which it
+/// reorders: quickselect with three-way partitions.
+fn median(values: []f32) f32 {
+    const k = values.len / 2;
+    var lo: usize = 0;
+    var hi: usize = values.len;
+    while (hi - lo > 1) {
+        const a = values[lo];
+        const b = values[lo + (hi - lo) / 2];
+        const c = values[hi - 1];
+        const pivot = @max(@min(a, b), @min(@max(a, b), c));
+        var lt = lo;
+        var i = lo;
+        var gt = hi;
+        while (i < gt) {
+            if (values[i] < pivot) {
+                std.mem.swap(f32, &values[lt], &values[i]);
+                lt += 1;
+                i += 1;
+            } else if (values[i] > pivot) {
+                gt -= 1;
+                std.mem.swap(f32, &values[i], &values[gt]);
+            } else {
+                i += 1;
+            }
+        }
+        if (k < lt) {
+            hi = lt;
+        } else if (k >= gt) {
+            lo = gt;
+        } else {
+            return pivot;
+        }
+    }
+    return values[k];
+}
+
+/// The maximum over a (2 * radius + 1) square about each pixel, clipped at
+/// the edges.
+fn maxFilter(allocator: std.mem.Allocator, src: []const f32, width: usize, height: usize, radius: usize, tmp: []f32, dst: []f32) !void {
+    const Pass = struct {
+        src: []const f32,
+        dst: []f32,
+        width: usize,
+        height: usize,
+        radius: usize,
+        horizontal: bool,
+
+        fn rows(p: @This(), row_start: usize, row_end: usize) void {
+            for (row_start..row_end) |y| {
+                const out = p.dst[y * p.width ..][0..p.width];
+                if (p.horizontal) {
+                    const row = p.src[y * p.width ..][0..p.width];
+                    for (out, 0..) |*o, x| o.* = std.mem.max(f32, row[x -| p.radius..@min(p.width, x + p.radius + 1)]);
+                } else {
+                    @memcpy(out, p.src[y * p.width ..][0..p.width]);
+                    for (y -| p.radius..@min(p.height, y + p.radius + 1)) |yy| {
+                        for (out, p.src[yy * p.width ..][0..p.width]) |*o, v| o.* = @max(o.*, v);
+                    }
                 }
             }
         }
-        if (members.items.len < min_size) {
-            for (members.items) |i| mask[i] = false;
-        }
-    }
+    };
+    try parallelism.forRowBands(allocator, height, Pass{ .src = src, .dst = tmp, .width = width, .height = height, .radius = radius, .horizontal = true }, Pass.rows);
+    try parallelism.forRowBands(allocator, height, Pass{ .src = tmp, .dst = dst, .width = width, .height = height, .radius = radius, .horizontal = false }, Pass.rows);
 }
 
-/// Pixels of tiles where the red channel peaks at 1.3-1.95x the IR fringe
-/// frequency, along the fringes, far above its power the other ways round.
-fn redMatchedTiles(allocator: std.mem.Allocator, grid: *const Grid, params: Params) ![]bool {
-    var scratch = try Scratch.init(allocator, grid.width, grid.height);
-    defer scratch.deinit(allocator);
-    const ir = try scratch.bandPass(allocator, grid.ir, params.px(1), params.px(30));
-    defer allocator.free(ir);
-    const red = try scratch.bandPass(allocator, grid.density[0], params.px(1), params.px(30));
-    defer allocator.free(red);
+const ray_count = 96;
+/// Ratios of red-minus-green cycles to IR fringes the fits try: 1.0 to 2.1.
+const ratio_first = 1.0;
+const ratio_step = 0.05;
+const ratio_count = 23;
+/// Visible rings sit at ratios 1.3 to 1.8 (indices 6 to 16), compared with
+/// the fits 0.3 (6 steps) either side.
+const ratio_lo = 6;
+const ratio_hi = 16;
+const ratio_offset = 6;
 
-    const matched = try allocator.alloc(bool, grid.len());
-    errdefer allocator.free(matched);
-    @memset(matched, false);
-
-    var tiles = try TileSpectra.init(allocator, params.tile);
-    defer tiles.deinit(allocator);
-    const t = params.tile;
-    const step = t / 2;
-    // Fringe periods 0.4 to 4 mm.
-    const min_freq = 1.0 / params.px(84);
-    const max_freq = 1.0 / params.px(8.4);
-    var y: usize = 0;
-    while (y + t <= grid.height) : (y += step) {
-        var x: usize = 0;
-        while (x + t <= grid.width) : (x += step) {
-            if (try tiles.matchedZ(ir, red, grid.width, x, y, min_freq, max_freq) > 60) {
-                for (y..y + t) |yy| @memset(matched[yy * grid.width + x ..][0..t], true);
-            }
-        }
-    }
-    return matched;
-}
-
-const TileSpectra = struct {
-    size: usize,
-    window: []f64,
-    window_sum: f64,
-    cos_table: []f64,
-    sin_table: []f64,
-    ir_tile: []f64,
-    red_tile: []f64,
+/// Fits along the rays from one centre; buffers sized for one ray length.
+const RayFitter = struct {
+    fft: Fft,
     re: []f64,
     im: []f64,
-    row_re: []f64,
-    row_im: []f64,
+    /// Per ray: the IR fringe phase and red-minus-green density at each
+    /// sample, and how many samples from the centre lie inside the frame.
+    phase: []f64,
+    colour: []f64,
+    inside: [ray_count]usize,
 
-    fn init(allocator: std.mem.Allocator, size: usize) !TileSpectra {
-        const n = size * size;
-        var self: TileSpectra = undefined;
-        self.size = size;
-        self.window = try allocator.alloc(f64, n);
-        errdefer allocator.free(self.window);
-        self.cos_table = try allocator.alloc(f64, size);
-        errdefer allocator.free(self.cos_table);
-        self.sin_table = try allocator.alloc(f64, size);
-        errdefer allocator.free(self.sin_table);
-        self.ir_tile = try allocator.alloc(f64, n);
-        errdefer allocator.free(self.ir_tile);
-        self.red_tile = try allocator.alloc(f64, n);
-        errdefer allocator.free(self.red_tile);
-        self.re = try allocator.alloc(f64, n);
+    fn init(allocator: std.mem.Allocator, length: usize) !RayFitter {
+        var self: RayFitter = undefined;
+        self.fft = try Fft.init(allocator, length);
+        errdefer self.fft.deinit(allocator);
+        self.re = try allocator.alloc(f64, length);
         errdefer allocator.free(self.re);
-        self.im = try allocator.alloc(f64, n);
+        self.im = try allocator.alloc(f64, length);
         errdefer allocator.free(self.im);
-        self.row_re = try allocator.alloc(f64, n);
-        errdefer allocator.free(self.row_re);
-        self.row_im = try allocator.alloc(f64, n);
-        const sizef: f64 = @floatFromInt(size);
-        var hann: [512]f64 = undefined;
-        for (0..size) |i| {
-            hann[i] = 0.5 - 0.5 * @cos(2 * std.math.pi * @as(f64, @floatFromInt(i)) / (sizef - 1));
-            const angle = 2 * std.math.pi * @as(f64, @floatFromInt(i)) / sizef;
-            self.cos_table[i] = @cos(angle);
-            self.sin_table[i] = @sin(angle);
-        }
-        self.window_sum = 0;
-        for (0..size) |r| {
-            for (0..size) |c| {
-                self.window[r * size + c] = hann[r] * hann[c];
-                self.window_sum += hann[r] * hann[c];
-            }
-        }
+        self.phase = try allocator.alloc(f64, ray_count * length);
+        errdefer allocator.free(self.phase);
+        self.colour = try allocator.alloc(f64, ray_count * length);
         return self;
     }
 
-    fn deinit(self: *TileSpectra, allocator: std.mem.Allocator) void {
-        for ([_][]f64{ self.window, self.cos_table, self.sin_table, self.ir_tile, self.red_tile, self.re, self.im, self.row_re, self.row_im }) |buffer| allocator.free(buffer);
+    fn deinit(self: *RayFitter, allocator: std.mem.Allocator) void {
+        self.fft.deinit(allocator);
+        allocator.free(self.re);
+        allocator.free(self.im);
+        allocator.free(self.phase);
+        allocator.free(self.colour);
     }
 
-    /// Mean-removed, windowed copy of the tile at (x, y).
-    fn load(self: *TileSpectra, src: []const f32, width: usize, x: usize, y: usize, dst: []f64) void {
-        const n = self.size;
-        var mean: f64 = 0;
-        for (0..n) |r| {
-            for (0..n) |c| mean += src[(y + r) * width + x + c];
-        }
-        mean /= @floatFromInt(n * n);
-        for (0..n) |r| {
-            for (0..n) |c| dst[r * n + c] = (src[(y + r) * width + x + c] - mean) * self.window[r * n + c];
-        }
-    }
-
-    /// Full 2-D DFT power of `tile` into `self.re` (power), by rows then columns.
-    fn powerSpectrum(self: *TileSpectra, tile: []const f64) void {
-        const n = self.size;
-        for (0..n) |r| {
-            for (0..n) |k| {
-                var sr: f64 = 0;
-                var si: f64 = 0;
-                for (0..n) |c| {
-                    const idx = (k * c) % n;
-                    sr += tile[r * n + c] * self.cos_table[idx];
-                    si -= tile[r * n + c] * self.sin_table[idx];
-                }
-                self.row_re[r * n + k] = sr;
-                self.row_im[r * n + k] = si;
+    /// The centre's score, or null when no window of the rays lies inside the
+    /// frame.
+    fn score(self: *RayFitter, ir: []const f32, colour: []const f32, width: usize, height: usize, centre: Centre, params: Params) ?f64 {
+        const length = params.ray_length;
+        const cx: f64 = @floatFromInt(centre.x);
+        const cy: f64 = @floatFromInt(centre.y);
+        const max_x: f64 = @floatFromInt(width - 1);
+        const max_y: f64 = @floatFromInt(height - 1);
+        const flip_at = @min(length - 1, 3 * params.window / 2);
+        for (0..ray_count) |k| {
+            const angle = 2 * std.math.pi * @as(f64, @floatFromInt(k)) / ray_count;
+            const dx = @cos(angle);
+            const dy = @sin(angle);
+            const phase = self.phase[k * length ..][0..length];
+            const ray_colour = self.colour[k * length ..][0..length];
+            self.inside[k] = length;
+            for (0..length) |r| {
+                const rf: f64 = @floatFromInt(r);
+                const x = cx + rf * dx;
+                const y = cy + rf * dy;
+                if (self.inside[k] == length and (x < 0 or y < 0 or x > max_x or y > max_y)) self.inside[k] = r;
+                self.re[r] = bilinear(ir, width, height, x, y);
+                ray_colour[r] = bilinear(colour, width, height, x, y);
+            }
+            analyticPhase(&self.fft, self.re, self.im, phase);
+            // Phase grows outward, whichever way the fringes run.
+            if (phase[flip_at] - phase[params.ray_start] + 1e-12 < 0) {
+                for (phase) |*p| p.* = -p.*;
             }
         }
-        for (0..n) |k| {
-            for (0..n) |ky| {
-                var sr: f64 = 0;
-                var si: f64 = 0;
-                for (0..n) |r| {
-                    const idx = (ky * r) % n;
-                    const cr = self.cos_table[idx];
-                    const ci = -self.sin_table[idx];
-                    const ar = self.row_re[r * n + k];
-                    const ai = self.row_im[r * n + k];
-                    sr += ar * cr - ai * ci;
-                    si += ar * ci + ai * cr;
-                }
-                self.re[ky * n + k] = sr * sr + si * si;
+
+        var explained = [_]f64{0} ** ratio_count;
+        var fits: usize = 0;
+        var start = params.ray_start;
+        while (start + params.window <= length) : (start += params.window / 2) {
+            var rays_inside: usize = 0;
+            for (self.inside) |inside| rays_inside += @intFromBool(start + params.window <= inside);
+            if (rays_inside < 8) continue;
+            for (self.inside, 0..) |inside, k| {
+                if (start + params.window > inside) continue;
+                const offset = k * length + start;
+                fitWindow(self.phase[offset..][0..params.window], self.colour[offset..][0..params.window], &explained);
+                fits += 1;
             }
         }
-    }
-
-    /// DFT power of `tile` at an arbitrary frequency (cycles per pixel).
-    fn powerAt(self: *TileSpectra, tile: []const f64, fy: f64, fx: f64) f64 {
-        const n = self.size;
-        var sr: f64 = 0;
-        var si: f64 = 0;
-        for (0..n) |r| {
-            var rr: f64 = 0;
-            var ri: f64 = 0;
-            for (0..n) |c| {
-                const a = -2 * std.math.pi * fx * @as(f64, @floatFromInt(c));
-                rr += tile[r * n + c] * @cos(a);
-                ri += tile[r * n + c] * @sin(a);
-            }
-            const b = -2 * std.math.pi * fy * @as(f64, @floatFromInt(r));
-            const cb = @cos(b);
-            const sb = @sin(b);
-            sr += rr * cb - ri * sb;
-            si += rr * sb + ri * cb;
-        }
-        return sr * sr + si * si;
-    }
-
-    fn freq(self: TileSpectra, bin: usize) f64 {
-        const n: isize = @intCast(self.size);
-        const b: isize = @intCast(bin);
-        const signed = if (b < @divTrunc(n + 1, 2)) b else b - n;
-        return @as(f64, @floatFromInt(signed)) / @as(f64, @floatFromInt(n));
-    }
-
-    /// How far the red channel's power at its IR-predicted frequency stands
-    /// above its power there in other directions, or 0 without clean IR
-    /// fringes in the tile.
-    fn matchedZ(self: *TileSpectra, ir: []const f32, red: []const f32, width: usize, x: usize, y: usize, min_freq: f64, max_freq: f64) !f64 {
-        const n = self.size;
-        self.load(ir, width, x, y, self.ir_tile);
-        self.powerSpectrum(self.ir_tile);
-        var total: f64 = 0;
+        if (fits == 0) return null;
         var best: f64 = -1;
-        var best_r: usize = 0;
-        var best_c: usize = 0;
-        for (0..n) |r| {
-            for (0..n) |c| {
-                const radius = std.math.hypot(self.freq(r), self.freq(c));
-                if (radius < min_freq or radius > max_freq) continue;
-                const p = self.re[r * n + c];
-                total += p;
-                if (p > best) {
-                    best = p;
-                    best_r = r;
-                    best_c = c;
+        for (ratio_lo..ratio_hi + 1) |i| {
+            const others = @max(explained[i - ratio_offset], explained[i + ratio_offset]);
+            best = @max(best, (explained[i] - others) / @as(f64, @floatFromInt(fits)));
+        }
+        return best;
+    }
+};
+
+/// Bilinear sample with coordinates clamped to the plane.
+fn bilinear(plane: []const f32, width: usize, height: usize, x: f64, y: f64) f64 {
+    const cx = std.math.clamp(x, 0, @as(f64, @floatFromInt(width - 1)));
+    const cy = std.math.clamp(y, 0, @as(f64, @floatFromInt(height - 1)));
+    const x0: usize = @intFromFloat(@floor(cx));
+    const y0: usize = @intFromFloat(@floor(cy));
+    const x1 = @min(x0 + 1, width - 1);
+    const y1 = @min(y0 + 1, height - 1);
+    const tx = cx - @as(f64, @floatFromInt(x0));
+    const ty = cy - @as(f64, @floatFromInt(y0));
+    const top = (1 - tx) * plane[y0 * width + x0] + tx * plane[y0 * width + x1];
+    const bottom = (1 - tx) * plane[y1 * width + x0] + tx * plane[y1 * width + x1];
+    return (1 - ty) * top + ty * bottom;
+}
+
+/// Adds to `explained`, for each ratio, the share of `colour`'s variance
+/// that a sinusoid of that multiple of `phase` explains (least squares).
+fn fitWindow(phase: []const f64, colour: []const f64, explained: *[ratio_count]f64) void {
+    var mean: f64 = 0;
+    for (colour) |c| mean += c;
+    mean /= @floatFromInt(colour.len);
+    var total: f64 = 1e-30;
+    var cc = [_]f64{0} ** ratio_count;
+    var ss = [_]f64{0} ** ratio_count;
+    var cs = [_]f64{0} ** ratio_count;
+    var vc = [_]f64{0} ** ratio_count;
+    var vs = [_]f64{0} ** ratio_count;
+    for (phase, colour) |p, c| {
+        const v = c - mean;
+        total += v * v;
+        // cos and sin of each ratio times p, stepping the ratio by rotation.
+        var re = @cos(ratio_first * p);
+        var im = @sin(ratio_first * p);
+        const step_re = @cos(ratio_step * p);
+        const step_im = @sin(ratio_step * p);
+        for (0..ratio_count) |j| {
+            cc[j] += re * re;
+            ss[j] += im * im;
+            cs[j] += re * im;
+            vc[j] += v * re;
+            vs[j] += v * im;
+            const next_re = re * step_re - im * step_im;
+            im = re * step_im + im * step_re;
+            re = next_re;
+        }
+    }
+    for (0..ratio_count) |j| {
+        const det = cc[j] * ss[j] - cs[j] * cs[j] + 1e-30;
+        const a = (vc[j] * ss[j] - vs[j] * cs[j]) / det;
+        const b = (vs[j] * cc[j] - vc[j] * cs[j]) / det;
+        explained[j] += (a * vc[j] + b * vs[j]) / total;
+    }
+}
+
+/// The unwrapped phase of the analytic signal of `re` (the Hilbert transform
+/// by FFT); `re` and `im` are scratch of the FFT's length.
+fn analyticPhase(fft: *const Fft, re: []f64, im: []f64, phase: []f64) void {
+    const n = fft.n;
+    @memset(im, 0);
+    fft.transform(re, im, false);
+    for (1..n / 2) |k| {
+        re[k] *= 2;
+        im[k] *= 2;
+    }
+    @memset(re[n / 2 + 1 ..], 0);
+    @memset(im[n / 2 + 1 ..], 0);
+    fft.transform(re, im, true);
+    var correction: f64 = 0;
+    var previous: f64 = 0;
+    for (0..n) |i| {
+        const raw = std.math.atan2(im[i], re[i]);
+        if (i > 0) {
+            const step = raw - previous;
+            if (@abs(step) >= std.math.pi) {
+                var wrapped = @mod(step + std.math.pi, 2 * std.math.pi) - std.math.pi;
+                if (wrapped == -std.math.pi and step > 0) wrapped = std.math.pi;
+                correction += wrapped - step;
+            }
+        }
+        phase[i] = raw + correction;
+        previous = raw;
+    }
+}
+
+/// Radix-2 complex FFT of one power-of-two length.
+const Fft = struct {
+    n: usize,
+    cos: []f64,
+    sin: []f64,
+
+    fn init(allocator: std.mem.Allocator, n: usize) !Fft {
+        const cos = try allocator.alloc(f64, n / 2);
+        errdefer allocator.free(cos);
+        const sin = try allocator.alloc(f64, n / 2);
+        for (cos, sin, 0..) |*c, *s, k| {
+            const angle = 2 * std.math.pi * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(n));
+            c.* = @cos(angle);
+            s.* = @sin(angle);
+        }
+        return .{ .n = n, .cos = cos, .sin = sin };
+    }
+
+    fn deinit(self: *Fft, allocator: std.mem.Allocator) void {
+        allocator.free(self.cos);
+        allocator.free(self.sin);
+    }
+
+    /// In place; the inverse divides by n.
+    fn transform(self: *const Fft, re: []f64, im: []f64, inverse: bool) void {
+        const n = self.n;
+        var j: usize = 0;
+        for (1..n) |i| {
+            var bit = n >> 1;
+            while (j & bit != 0) : (bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) {
+                std.mem.swap(f64, &re[i], &re[j]);
+                std.mem.swap(f64, &im[i], &im[j]);
+            }
+        }
+        var len: usize = 2;
+        while (len <= n) : (len <<= 1) {
+            const stride = n / len;
+            var i: usize = 0;
+            while (i < n) : (i += len) {
+                for (0..len / 2) |k| {
+                    const wr = self.cos[k * stride];
+                    const wi = if (inverse) self.sin[k * stride] else -self.sin[k * stride];
+                    const a = i + k;
+                    const b = a + len / 2;
+                    const tr = re[b] * wr - im[b] * wi;
+                    const ti = re[b] * wi + im[b] * wr;
+                    re[b] = re[a] - tr;
+                    im[b] = im[a] - ti;
+                    re[a] += tr;
+                    im[a] += ti;
                 }
             }
         }
-        if (best <= 0 or total <= 0) return 0;
-        var peak: f64 = 0;
-        for ([_]usize{ n - 1, 0, 1 }) |dr| {
-            for ([_]usize{ n - 1, 0, 1 }) |dc| {
-                const r = (best_r + dr) % n;
-                const c = (best_c + dc) % n;
-                const radius = std.math.hypot(self.freq(r), self.freq(c));
-                if (radius >= min_freq and radius <= max_freq) peak += self.re[r * n + c];
+        if (inverse) {
+            const scale = 1 / @as(f64, @floatFromInt(n));
+            for (re, im) |*r, *m| {
+                r.* *= scale;
+                m.* *= scale;
             }
         }
-        const share = 2 * peak / total;
-        const ir_amp = 2 * @sqrt(best) / self.window_sum;
-        if (share < 0.25 or ir_amp < 0.002) return 0;
-        const ky = self.freq(best_r);
-        const kx = self.freq(best_c);
-        // A sinusoidal fringe has little power at twice its frequency; an edge does.
-        if (std.math.hypot(2 * ky, 2 * kx) <= 0.5 and self.powerAt(self.ir_tile, 2 * ky, 2 * kx) > 0.15 * best) return 0;
-
-        self.load(red, width, x, y, self.red_tile);
-        var best_z: f64 = 0;
-        for (0..14) |i| {
-            const rho = 1.30 + 0.05 * @as(f64, @floatFromInt(i));
-            const fy = rho * ky;
-            const fx = rho * kx;
-            const radius = std.math.hypot(fy, fx);
-            if (radius > 0.25) continue;
-            const matched = self.powerAt(self.red_tile, fy, fx);
-            const angle = std.math.atan2(fy, fx);
-            var others: [10]f64 = undefined;
-            for (&others, 0..) |*o, j| {
-                const a = angle + 0.4 + (std.math.pi - 0.8) * @as(f64, @floatFromInt(j)) / 9.0;
-                o.* = self.powerAt(self.red_tile, radius * @sin(a), radius * @cos(a));
-            }
-            std.mem.sort(f64, &others, {}, std.sort.asc(f64));
-            const reference = 0.5 * (others[4] + others[5]);
-            if (reference > 0) best_z = @max(best_z, matched / reference);
-        }
-        return best_z;
     }
 };
 
@@ -730,103 +919,127 @@ test "warnings name the frames" {
     }
 }
 
-test "gaussian blur keeps a flat field and spreads an impulse symmetrically" {
+test "blurs keep a flat field and spread an impulse symmetrically to the asked sigma" {
     const allocator = std.testing.allocator;
-    const w = 21;
-    const h = 15;
-    var src = [_]f32{0} ** (w * h);
-    var tmp = [_]f32{0} ** (w * h);
-    var dst = [_]f32{0} ** (w * h);
-    src[7 * w + 10] = 1;
-    try gaussianBlur(allocator, &src, w, h, 1.5, &tmp, &dst);
-    var total: f32 = 0;
-    for (dst) |v| total += v;
-    try std.testing.expectApproxEqAbs(@as(f32, 1), total, 1e-4);
-    try std.testing.expectApproxEqAbs(dst[7 * w + 8], dst[7 * w + 12], 1e-6);
-    try std.testing.expectApproxEqAbs(dst[5 * w + 10], dst[9 * w + 10], 1e-6);
-    @memset(&src, 3);
-    try gaussianBlur(allocator, &src, w, h, 4, &tmp, &dst);
-    for (dst) |v| try std.testing.expectApproxEqAbs(@as(f32, 3), v, 1e-4);
-}
-
-test "the tile spectrum finds a fringe's frequency and power at any frequency agrees with it" {
-    const allocator = std.testing.allocator;
-    var tiles = try TileSpectra.init(allocator, 32);
-    defer tiles.deinit(allocator);
-    var plane = [_]f32{0} ** (32 * 32);
-    for (0..32) |r| {
-        for (0..32) |c| plane[r * 32 + c] = @floatCast(@cos(2 * std.math.pi * (3.0 * @as(f64, @floatFromInt(r)) + 5.0 * @as(f64, @floatFromInt(c))) / 32.0));
-    }
-    tiles.load(&plane, 32, 0, 0, tiles.ir_tile);
-    tiles.powerSpectrum(tiles.ir_tile);
-    var best: f64 = 0;
-    var at: usize = 0;
-    for (tiles.re, 0..) |p, i| {
-        if (p > best) {
-            best = p;
-            at = i;
+    const w = 161;
+    const h = 141;
+    const src = try allocator.alloc(f32, w * h);
+    defer allocator.free(src);
+    const tmp = try allocator.alloc(f32, w * h);
+    defer allocator.free(tmp);
+    const dst = try allocator.alloc(f32, w * h);
+    defer allocator.free(dst);
+    for ([_]f64{ 1.5, 12 }) |sigma| {
+        @memset(src, 0);
+        src[70 * w + 80] = 1;
+        try blur(allocator, src, w, h, sigma, tmp, dst);
+        var total: f64 = 0;
+        var variance: f64 = 0;
+        for (dst, 0..) |v, i| {
+            total += v;
+            const dx = @as(f64, @floatFromInt(i % w)) - 80;
+            variance += v * dx * dx;
         }
+        try std.testing.expectApproxEqAbs(@as(f64, 1), total, 1e-4);
+        try std.testing.expectApproxEqRel(sigma * sigma, variance, 0.05);
+        try std.testing.expectApproxEqAbs(dst[70 * w + 77], dst[70 * w + 83], 1e-6);
+        try std.testing.expectApproxEqAbs(dst[66 * w + 80], dst[74 * w + 80], 1e-6);
+        @memset(src, 3);
+        try blur(allocator, src, w, h, sigma, tmp, dst);
+        for (dst) |v| try std.testing.expectApproxEqAbs(@as(f32, 3), v, 1e-4);
     }
-    const r = at / 32;
-    const c = at % 32;
-    try std.testing.expect((r == 3 and c == 5) or (r == 29 and c == 27));
-    try std.testing.expectApproxEqRel(best, tiles.powerAt(tiles.ir_tile, tiles.freq(r), tiles.freq(c)), 1e-9);
 }
 
-test "small components go and large ones stay" {
+test "the analytic phase of a chirp follows it" {
     const allocator = std.testing.allocator;
-    var mask = [_]bool{false} ** (6 * 4);
-    for ([_]usize{ 0, 1, 6, 7, 12 }) |i| mask[i] = true; // 5 pixels
-    mask[4] = true; // 1 pixel
-    try keepLargeComponents(allocator, &mask, 6, 4, 3);
-    try std.testing.expect(mask[0] and mask[12]);
-    try std.testing.expect(!mask[4]);
+    var fft = try Fft.init(allocator, 256);
+    defer fft.deinit(allocator);
+    var re: [256]f64 = undefined;
+    var im: [256]f64 = undefined;
+    var phase: [256]f64 = undefined;
+    const expected = struct {
+        fn at(i: usize) f64 {
+            const t: f64 = @floatFromInt(i);
+            return 0.3 * t + 0.0004 * t * t;
+        }
+    }.at;
+    for (&re, 0..) |*r, i| r.* = @cos(expected(i));
+    analyticPhase(&fft, &re, &im, &phase);
+    for (40..216) |i| try std.testing.expectApproxEqAbs(expected(i) - expected(128), phase[i] - phase[128], 0.15);
 }
 
-/// A synthetic frame at the check's grid scale: smooth sky, film grain, and,
-/// when `rings`, Newton's rings about a contact point in red as well as IR.
-fn syntheticFrame(allocator: std.mem.Allocator, rings: bool) ![]u16 {
-    const w = 480;
-    const h = 480;
+test "a fit explains colour that runs at its ratio to the phase and little else" {
+    var phase: [80]f64 = undefined;
+    var colour: [80]f64 = undefined;
+    for (&phase, &colour, 0..) |*p, *c, i| {
+        p.* = 0.5 * @as(f64, @floatFromInt(i));
+        c.* = @cos(1.5 * p.* + 0.7);
+    }
+    var explained = [_]f64{0} ** ratio_count;
+    fitWindow(&phase, &colour, &explained);
+    // Not quite 1: the window's mean comes off first.
+    try std.testing.expect(explained[10] > 0.99);
+    try std.testing.expect(explained[10 - ratio_offset] < 0.3);
+    try std.testing.expect(explained[10 + ratio_offset] < 0.3);
+}
+
+test "the median is the middle value" {
+    var values = [_]f32{ 5, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5 };
+    try std.testing.expectEqual(@as(f32, 5), median(&values));
+    var even = [_]f32{ 8, 2, 7, 1 };
+    try std.testing.expectEqual(@as(f32, 7), median(&even));
+}
+
+/// A synthetic frame at the check's grid: a smooth picture with a soft edge,
+/// film grain, and Newton's rings about a dust speck in the IR. With
+/// `visible`, red and green show them too, at the dyes' wavelengths. It
+/// tests the plumbing only; the check is tuned and judged on real scans.
+fn syntheticFrame(allocator: std.mem.Allocator, visible: bool) ![]u16 {
+    const w = 400;
+    const h = 400;
     const pixels = try allocator.alloc(u16, w * h * 4);
     var prng = std.Random.DefaultPrng.init(7);
     const random = prng.random();
     for (0..h) |y| {
         for (0..w) |x| {
-            const dx = @as(f64, @floatFromInt(x)) - 240;
-            const dy = @as(f64, @floatFromInt(y)) - 240;
-            // Gap in micrometres: film bowed with a 20 m radius, touching the
-            // glass at the centre, at 21 px per mm. The white light's fringes
-            // fade sooner than the narrow-band IR's.
-            const r_mm = @sqrt(dx * dx + dy * dy) / 21.0;
-            const gap_um = r_mm * r_mm / 40.0;
-            const ir_mod = 0.04 * @exp(-(r_mm * r_mm) / 64.0) * @cos(4 * std.math.pi * gap_um / 0.94);
-            const red_mod = if (rings) 0.03 * @exp(-(r_mm * r_mm) / 16.0) * @cos(4 * std.math.pi * gap_um / 0.61) else 0;
-            const grain = 0.004 * (random.float(f64) - 0.5);
+            const dx = @as(f64, @floatFromInt(x)) - 190;
+            const dy = @as(f64, @floatFromInt(y)) - 210;
+            // Gap in micrometres, 42 px per mm: the film slopes down from a
+            // speck at the centre, and the white light's fringes fade
+            // faster than the narrow-band IR's.
+            const r_mm = @sqrt(dx * dx + dy * dy) / 42.0;
+            const gap_um = 6 - 0.25 * r_mm * r_mm;
+            const ir_mod = 0.04 * @cos(4 * std.math.pi * gap_um / 0.94);
+            const fade = @exp(-(r_mm * r_mm) / 9.0);
+            const red_mod = if (visible) 0.03 * fade * @cos(4 * std.math.pi * gap_um / 0.61) else 0;
+            const green_mod = if (visible) 0.02 * fade * @cos(4 * std.math.pi * gap_um / 0.54) else 0;
+            const picture = 0.3 * std.math.tanh((@as(f64, @floatFromInt(x)) - 300) / 6);
+            var grain: [4]f64 = undefined;
+            for (&grain) |*g| g.* = 0.01 * (random.float(f64) - 0.5);
             const base = (y * w + x) * 4;
-            pixels[base] = @intFromFloat(30000 * @exp(red_mod + grain));
-            pixels[base + 1] = @intFromFloat(28000 * @exp(grain));
-            pixels[base + 2] = @intFromFloat(26000 * @exp(grain));
-            pixels[base + 3] = @intFromFloat(@min(65535, 40000 * @exp(ir_mod + grain)));
+            pixels[base] = @intFromFloat(30000 * @exp(picture + red_mod + grain[0]));
+            pixels[base + 1] = @intFromFloat(28000 * @exp(picture + green_mod + grain[1]));
+            pixels[base + 2] = @intFromFloat(26000 * @exp(picture + grain[2]));
+            pixels[base + 3] = @intFromFloat(@min(65535, 40000 * @exp(ir_mod + 0.2 * picture + grain[3])));
         }
     }
     return pixels;
 }
 
-test "rings in red and IR about a contact point read as visible rings; IR alone does not" {
+test "the check runs end to end: synthetic rings in colour warn, IR alone does not" {
     const allocator = std.testing.allocator;
-    for ([_]bool{ true, false }) |rings| {
-        const all = try syntheticFrame(allocator, rings);
+    for ([_]bool{ true, false }) |visible| {
+        const all = try syntheticFrame(allocator, visible);
         defer allocator.free(all);
-        const rgb = try allocator.alloc(u16, 480 * 480 * 3);
+        const rgb = try allocator.alloc(u16, 400 * 400 * 3);
         defer allocator.free(rgb);
-        const ir = try allocator.alloc(u16, 480 * 480);
+        const ir = try allocator.alloc(u16, 400 * 400);
         defer allocator.free(ir);
-        for (0..480 * 480) |i| {
+        for (0..400 * 400) |i| {
             @memcpy(rgb[i * 3 ..][0..3], all[i * 4 ..][0..3]);
             ir[i] = all[i * 4 + 3];
         }
-        const area = try ringArea(u16, u16, allocator, .{ .pixels = rgb, .width = 480, .height = 480, .channels = 3 }, .{}, .{ .pixels = ir, .width = 480, .height = 480, .channels = 1 }, .{ .cx = 240, .cy = 240, .w = 480, .h = 480 }, 533);
-        if (rings) try std.testing.expect(warns(area)) else try std.testing.expect(!warns(area));
+        const score = try ringScore(u16, u16, allocator, .{ .pixels = rgb, .width = 400, .height = 400, .channels = 3 }, .{}, .{ .pixels = ir, .width = 400, .height = 400, .channels = 1 }, .{ .cx = 200, .cy = 200, .w = 400, .h = 400 }, 1067);
+        try std.testing.expectEqual(visible, warns(score));
     }
 }

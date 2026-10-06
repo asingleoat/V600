@@ -82,19 +82,19 @@ Open:
 
 ### Bugs
 
-- The Newton's rings check flags large contact fields (both confirmed:
-  KODAKGOLD_200_0 s01_03, KODAKGOLD_200_1 s01_03) and none of the frames
-  the owner confirmed ring-free, but misses the visible rings around dust
-  specks the owner confirmed in KODAKGOLD_200_1 s01_02, KODAKGOLD_200_2
-  s02_04, s05_04, KODAKGOLD_200_3 s05_03, KODAKGOLD_200_120_0 s03_02, and
-  KODAKGOLD_200_0 s03_03. Those rings look nearly achromatic (one spacing
-  in R, G, and B) and reach past the IR's rings, so the
-  red-at-IR-wavelength-ratio test does not apply to them.
-  KODAKGOLD_200_2 s05_01 also has rings, but is too noisy for an
-  inexpensive check to be expected to find them (owner's call). Confirmed ring-free: KODAKGOLD_200_0 s04_03,
-  KODAKPORTRA_400_0 s01_02, and two leader frames (KODAKGOLD_200_2 s01_06,
-  UNKNOWNSTOCK_0 s05_01); KODAKGOLD_200_2 s02_03 has a faint ring the owner
-  finds unobjectionable.
+- The Newton's rings check's threshold awaits the owner's review of the
+  frames it flags that nobody has looked at: KODAKGOLD_200_1 s01_04,
+  KODAKGOLD_200_3 s02_04, s03_05, s05_02, s04_04, s04_03, and
+  KODAKGOLD_200_0 s01_01, s02_03 (and, just under the threshold,
+  KODAKGOLD_200_2 s04_04). Owner-confirmed rings it flags:
+  KODAKGOLD_200_0 s01_03, s03_03, KODAKGOLD_200_1 s01_02, s01_03,
+  KODAKGOLD_200_2 s02_04, s05_04, KODAKGOLD_200_120_0 s03_02. It misses
+  KODAKGOLD_200_3 s05_03, underexposed and noisy; KODAKGOLD_200_2 s05_01
+  is too noisy for an inexpensive check (owner's call). Confirmed
+  ring-free, and not flagged: KODAKGOLD_200_0 s04_03, KODAKPORTRA_400_0
+  s01_02, and two leader frames (KODAKGOLD_200_2 s01_06, UNKNOWNSTOCK_0
+  s05_01); KODAKGOLD_200_2 s02_03 has a faint ring the owner finds
+  unobjectionable, and is not flagged.
 - IR dust removal leaves over-smooth patches in KODAKGOLD_200_2 s02_03
   (owner review): inpainted areas without enough synthetic grain.
 

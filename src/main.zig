@@ -643,7 +643,7 @@ fn printProcessingUsage() !void {
         \\  rebate --input PATH --x PX --y PX --width PX --height PX [--angle DEG] [--config PATH] [--no-save]
         \\         (x and y are the top-left corner)
         \\  rings --input PATH --frame CX,CY,W,H[,ANGLE_DEG] [--frame ...]
-        \\         (Newton's rings: area of each frame showing them, from the IR page)
+        \\         (Newton's rings: how strongly each frame shows them, from the IR page)
         \\  export --input PATH --frame CX,CY,W,H[,ANGLE_DEG[,ROT]] [--out-dir DIR] [--basename NAME] [--ir-neg] [--no-ir-inv] [--inv-only]
         \\         [--stock NAME] [--dmin R,G,B] [--format FMT] [--dpi DPI] [--config PATH]
         \\         [--print SIZE|off] [--print-dpi DPI]

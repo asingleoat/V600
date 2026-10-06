@@ -161,21 +161,21 @@ fn runRings(allocator: std.mem.Allocator, options: RingsOptions, stdout: anytype
         const count: u32 = @intFromFloat(@ceil(2 * half) + 2);
         const rgb = try tiff.loadRgbPageRows(allocator, options.input, first, count);
         defer rgb.deinit(allocator);
-        const area = try ringAreaOfPages(allocator, rgb, .{ .first = first, .page_height = info.rgb.height }, ir_page, rect, dpi);
+        const score = try ringScoreOfPages(allocator, rgb, .{ .first = first, .page_height = info.rgb.height }, ir_page, rect, dpi);
         if (index != 0) try stdout.print(",", .{});
-        try stdout.print("{{\"frame\":{d},\"ring_area_mm2\":{d:.2},\"rings\":{}}}", .{ index + 1, area, newton_rings.warns(area) });
+        try stdout.print("{{\"frame\":{d},\"ring_score\":{d:.3},\"rings\":{}}}", .{ index + 1, score, newton_rings.warns(score) });
     }
     try stdout.print("]}}\n", .{});
 }
 
-/// `ringArea` over TIFF pages as read: 8- or 16-bit samples.
-fn ringAreaOfPages(allocator: std.mem.Allocator, rgb: tiff.Image, rows: newton_rings.Rows, ir: tiff.Image, rect: export_pipeline.FrameRect, dpi: u32) !f64 {
+/// `ringScore` over TIFF pages as read: 8- or 16-bit samples.
+fn ringScoreOfPages(allocator: std.mem.Allocator, rgb: tiff.Image, rows: newton_rings.Rows, ir: tiff.Image, rect: export_pipeline.FrameRect, dpi: u32) !f64 {
     const frame = newton_rings.Frame{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h };
     if (rgb.bits_per_sample != 16) return error.UnsupportedTiff;
     const rgb_view = newton_rings.View(u16){ .pixels = samples16(rgb.data), .width = rgb.width, .height = rgb.height, .channels = rgb.samples_per_pixel };
     return switch (ir.bits_per_sample) {
-        8 => newton_rings.ringArea(u16, u8, allocator, rgb_view, rows, .{ .pixels = ir.data, .width = ir.width, .height = ir.height, .channels = ir.samples_per_pixel }, frame, dpi),
-        16 => newton_rings.ringArea(u16, u16, allocator, rgb_view, rows, .{ .pixels = samples16(ir.data), .width = ir.width, .height = ir.height, .channels = ir.samples_per_pixel }, frame, dpi),
+        8 => newton_rings.ringScore(u16, u8, allocator, rgb_view, rows, .{ .pixels = ir.data, .width = ir.width, .height = ir.height, .channels = ir.samples_per_pixel }, frame, dpi),
+        16 => newton_rings.ringScore(u16, u16, allocator, rgb_view, rows, .{ .pixels = samples16(ir.data), .width = ir.width, .height = ir.height, .channels = ir.samples_per_pixel }, frame, dpi),
         else => error.UnsupportedTiff,
     };
 }
