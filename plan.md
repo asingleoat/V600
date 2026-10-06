@@ -82,6 +82,11 @@ Open:
 
 ### Bugs
 
+- The Newton's rings check is calibrated on two confirmed strong cases and
+  two confirmed faint ones, with no frame confirmed ring-free; the owner is
+  reviewing the frames it ranks highest without flagging. Revisit the
+  5 mm² threshold once those are known.
+
 - Colour tuning has no repeatable check on real frames, the way framing has
   `roll check-frames`: a `roll check-colour` reporting casts per tone band,
   channel density ratios, and dust-fill statistics would replace the

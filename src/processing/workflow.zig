@@ -6,6 +6,7 @@ const film_stocks = @import("film_stocks.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
+const newton_rings = @import("newton_rings.zig");
 const print = @import("print.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
@@ -293,12 +294,15 @@ pub const ExportWorkflowResult = struct {
     parallelism: ?ExportParallelismDecision = null,
     ir_adaptive_worker_count: usize = 1,
     progress: export_pipeline.ExportProgressList,
+    /// Frames, numbered from 1, showing strong Newton's rings (scans with IR).
+    ring_frames: []usize = &.{},
 
     pub fn deinit(self: ExportWorkflowResult, allocator: std.mem.Allocator) void {
         allocator.free(self.message);
         for (self.files) |file| allocator.free(file);
         allocator.free(self.files);
         self.progress.deinit(allocator);
+        allocator.free(self.ring_frames);
     }
 };
 
@@ -1127,6 +1131,9 @@ pub fn processExportFromTiff(
     }
     if (options.timings) |timings| timings.frame_processing_ns += monotonicNowNs() - frame_processing_started;
 
+    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, full.rgb, aligned_ir orelse full.ir, current_dpi);
+    errdefer allocator.free(ring_frames);
+
     const files = try written.toOwnedSlice();
     errdefer {
         for (files) |file| allocator.free(file);
@@ -1147,11 +1154,18 @@ pub fn processExportFromTiff(
     if (options.timings) |timings| timings.progress_build_ns += monotonicNowNs() - progress_started;
     errdefer progress.deinit(allocator);
     const message_started = monotonicNowNs();
-    const message = try std.fmt.allocPrint(allocator, "Exported {d} file{s} to {s}/ ({d:.1}s)", .{
+    const rings_note = if (ring_frames.len == 0) try allocator.dupe(u8, "") else blk: {
+        const text = try newton_rings.warningText(allocator, ring_frames);
+        defer allocator.free(text);
+        break :blk try std.fmt.allocPrint(allocator, ". {s}", .{text});
+    };
+    defer allocator.free(rings_note);
+    const message = try std.fmt.allocPrint(allocator, "Exported {d} file{s} to {s}/ ({d:.1}s){s}", .{
         files.len,
         if (files.len == 1) "" else "s",
         options.output_dir,
         total_seconds,
+        rings_note,
     });
     if (options.timings) |timings| timings.final_message_ns += monotonicNowNs() - message_started;
     errdefer allocator.free(message);
@@ -1167,7 +1181,39 @@ pub fn processExportFromTiff(
         .parallelism = parallel_decision,
         .ir_adaptive_worker_count = ir_adaptive_worker_count,
         .progress = progress,
+        .ring_frames = ring_frames,
     };
+}
+
+/// Frames, numbered from 1, that show strong Newton's rings; none without IR
+/// or a DPI.
+pub fn newtonRingFrames(
+    allocator: std.mem.Allocator,
+    sink: ?ExportProgressSink,
+    rects: []const export_pipeline.FrameRect,
+    rgb: export_pipeline.Image,
+    ir: ?export_pipeline.Image,
+    dpi: ?u32,
+) ![]usize {
+    const ir_image = ir orelse return allocator.alloc(usize, 0);
+    const scan_dpi = dpi orelse return allocator.alloc(usize, 0);
+    emitExportProgress(sink, .{ .kind = .processing, .message = "Checking for Newton's rings..." });
+    var found = std.array_list.Managed(usize).init(allocator);
+    errdefer found.deinit();
+    for (rects, 0..) |rect, index| {
+        const area = try newton_rings.ringArea(
+            f64,
+            f64,
+            allocator,
+            .{ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels },
+            .{},
+            .{ .pixels = ir_image.pixels, .width = ir_image.width, .height = ir_image.height, .channels = ir_image.channels },
+            .{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h },
+            scan_dpi,
+        );
+        if (newton_rings.warns(area)) try found.append(index + 1);
+    }
+    return found.toOwnedSlice();
 }
 
 pub fn processExportFromCachedRgbPage(

@@ -6,6 +6,7 @@ const export_pipeline = @import("export.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
+const newton_rings = @import("newton_rings.zig");
 const print = @import("print.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
@@ -16,6 +17,7 @@ pub const CommandTag = enum {
     detect,
     rebate,
     export_frames,
+    rings,
 };
 
 pub const InfoOptions = struct {
@@ -73,6 +75,13 @@ pub const ProcessingCommand = union(CommandTag) {
     detect: DetectOptions,
     rebate: RebateOptions,
     export_frames: ExportOptions,
+    rings: RingsOptions,
+};
+
+pub const RingsOptions = struct {
+    input: []const u8 = "",
+    frames: [64]export_pipeline.FrameRect = undefined,
+    frame_count: usize = 0,
 };
 
 pub fn parseArgs(argv: []const []const u8) !ProcessingCommand {
@@ -90,6 +99,9 @@ pub fn parseArgs(argv: []const []const u8) !ProcessingCommand {
     if (std.mem.eql(u8, subcommand, "export")) {
         return .{ .export_frames = try parseExportArgs(argv[1..]) };
     }
+    if (std.mem.eql(u8, subcommand, "rings")) {
+        return .{ .rings = try parseRingsArgs(argv[1..]) };
+    }
     return error.UnknownProcessingCommand;
 }
 
@@ -105,7 +117,71 @@ pub fn runCommand(
         .detect => |options| try runDetect(allocator, io, options, stdout),
         .rebate => |options| try runRebate(allocator, io, options, stdout),
         .export_frames => |options| try runExport(allocator, io, options, stdout, processing_gpu_request),
+        .rings => |options| try runRings(allocator, options, stdout),
     }
+}
+
+fn parseRingsArgs(argv: []const []const u8) !RingsOptions {
+    var options = RingsOptions{};
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (std.mem.eql(u8, arg, "--input")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingInputPath;
+            options.input = argv[index];
+        } else if (std.mem.eql(u8, arg, "--frame")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingFrameSpec;
+            if (options.frame_count >= options.frames.len) return error.TooManyFrames;
+            options.frames[options.frame_count] = try parseFrameSpec(argv[index]);
+            options.frame_count += 1;
+        } else {
+            return error.UnknownProcessingOption;
+        }
+    }
+    if (options.input.len == 0) return error.MissingInputPath;
+    if (options.frame_count == 0) return error.MissingFrameSpec;
+    return options;
+}
+
+/// Newton's rings per frame, reading one frame's rows of the RGB at a time.
+fn runRings(allocator: std.mem.Allocator, options: RingsOptions, stdout: anytype) !void {
+    const dpi = (try tiff.readDpi(allocator, options.input)) orelse return error.MissingDpi;
+    const info = try tiff.readRgbIrPageInfo(allocator, options.input);
+    const ir_page = (try tiff.loadIrPage(allocator, options.input)) orelse {
+        try stdout.print("{{\"ir\":false,\"frames\":[]}}\n", .{});
+        return;
+    };
+    defer ir_page.deinit(allocator);
+    try stdout.print("{{\"ir\":true,\"frames\":[", .{});
+    for (options.frames[0..options.frame_count], 0..) |rect, index| {
+        const half = 0.5 * @max(rect.w, rect.h);
+        const first: u32 = @intFromFloat(std.math.clamp(@floor(rect.cy - half), 0, @as(f64, @floatFromInt(info.rgb.height - 1))));
+        const count: u32 = @intFromFloat(@ceil(2 * half) + 2);
+        const rgb = try tiff.loadRgbPageRows(allocator, options.input, first, count);
+        defer rgb.deinit(allocator);
+        const area = try ringAreaOfPages(allocator, rgb, .{ .first = first, .page_height = info.rgb.height }, ir_page, rect, dpi);
+        if (index != 0) try stdout.print(",", .{});
+        try stdout.print("{{\"frame\":{d},\"ring_area_mm2\":{d:.2},\"rings\":{}}}", .{ index + 1, area, newton_rings.warns(area) });
+    }
+    try stdout.print("]}}\n", .{});
+}
+
+/// `ringArea` over TIFF pages as read: 8- or 16-bit samples.
+fn ringAreaOfPages(allocator: std.mem.Allocator, rgb: tiff.Image, rows: newton_rings.Rows, ir: tiff.Image, rect: export_pipeline.FrameRect, dpi: u32) !f64 {
+    const frame = newton_rings.Frame{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h };
+    if (rgb.bits_per_sample != 16) return error.UnsupportedTiff;
+    const rgb_view = newton_rings.View(u16){ .pixels = samples16(rgb.data), .width = rgb.width, .height = rgb.height, .channels = rgb.samples_per_pixel };
+    return switch (ir.bits_per_sample) {
+        8 => newton_rings.ringArea(u16, u8, allocator, rgb_view, rows, .{ .pixels = ir.data, .width = ir.width, .height = ir.height, .channels = ir.samples_per_pixel }, frame, dpi),
+        16 => newton_rings.ringArea(u16, u16, allocator, rgb_view, rows, .{ .pixels = samples16(ir.data), .width = ir.width, .height = ir.height, .channels = ir.samples_per_pixel }, frame, dpi),
+        else => error.UnsupportedTiff,
+    };
+}
+
+fn samples16(data: []const u8) []const u16 {
+    return std.mem.bytesAsSlice(u16, @as([]align(2) const u8, @alignCast(data)));
 }
 
 fn parseInfoArgs(argv: []const []const u8) !InfoOptions {
@@ -586,7 +662,14 @@ fn runExport(
     }
     try stdout.print("],\"dmin\":", .{});
     try writeDminJson(stdout, dmin);
-    try stdout.print(",\"dmin_source\":\"{s}\"}}\n", .{dmin_source});
+    const rects = try allocator.alloc(export_pipeline.FrameRect, options.frame_count);
+    defer allocator.free(rects);
+    @memcpy(rects, options.frames[0..options.frame_count]);
+    const ring_frames = try workflow.newtonRingFrames(allocator, null, rects, pages.rgb, aligned_ir orelse pages.ir, current_dpi);
+    defer allocator.free(ring_frames);
+    try stdout.print(",\"dmin_source\":\"{s}\",\"newton_rings\":[", .{dmin_source});
+    for (ring_frames, 0..) |frame, index| try stdout.print("{s}{d}", .{ if (index == 0) "" else ",", frame });
+    try stdout.print("]}}\n", .{});
 }
 
 fn isCancelled(io: std.Io, cancel_file: ?[]const u8) bool {

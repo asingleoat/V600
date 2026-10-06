@@ -15,6 +15,7 @@ const processing_config = @import("processing/config.zig");
 const export_pipeline = @import("processing/export.zig");
 const film_formats = @import("processing/film_formats.zig");
 const frames = @import("processing/frames.zig");
+const newton_rings = @import("processing/newton_rings.zig");
 const webgpu = @import("processing/webgpu.zig");
 const workflow = @import("processing/workflow.zig");
 const tiff = @import("tiff.zig");
@@ -400,6 +401,7 @@ pub const Roll = struct {
             });
             defer result.deinit(allocator);
             outcome.dmin = result.dmin;
+            if (result.ring_frames.len != 0) outcome.ring_frames = try allocator.dupe(usize, result.ring_frames);
             outcome.files = try allocator.alloc([]u8, result.files.len);
             for (outcome.files) |*file| file.* = &.{};
             for (result.files, outcome.files) |file, *copy| copy.* = try allocator.dupe(u8, file);
@@ -595,6 +597,11 @@ pub const Roll = struct {
         try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, framing, outcome.dmin_source });
         try appendTriple(&out, "dmin", outcome.dmin);
         if (outcome.framing_hash) |hash| try out.print(",\n  \"framing_hash\": \"{x:0>16}\"", .{hash});
+        if (outcome.ring_frames.len != 0) {
+            try out.appendSlice(",\n  \"newton_rings\": [");
+            for (outcome.ring_frames, 0..) |frame, index| try out.print("{s}{d}", .{ if (index == 0) "" else ", ", frame });
+            try out.appendSlice("]");
+        }
         try out.appendSlice(",\n  \"files\": [");
         for (outcome.files, 0..) |file, index| {
             try out.print("{s}\"{s}\"", .{ if (index == 0) "" else ", ", std.fs.path.basename(file) });
@@ -701,6 +708,11 @@ pub const Roll = struct {
                         "";
                     try out.print("{d} frame{s}{s}, Dmin from {s}", .{ m.frames, if (m.frames == 1) "" else "s", by_hand, m.dmin_source });
                     if (m.dmin) |dmin| try out.print(" ({d:.3} / {d:.3} / {d:.3})", .{ dmin[0], dmin[1], dmin[2] });
+                    if (m.newton_rings.len != 0) {
+                        const warning = try newton_rings.warningText(allocator, m.newton_rings);
+                        defer allocator.free(warning);
+                        try out.print("<br><span class=warn>{s}</span>", .{warning});
+                    }
                     try out.appendSlice("<br><span class=files>");
                     for (m.files) |file| try out.print("{s}<br>", .{file});
                     try out.appendSlice("</span>");
@@ -995,12 +1007,15 @@ pub const StripOutcome = struct {
     /// "rebate" (this strip), "roll" (another strip's), or "image".
     dmin_source: []const u8,
     files: [][]u8,
+    /// Frames, numbered from 1, showing strong Newton's rings.
+    ring_frames: []usize = &.{},
 
     pub fn deinit(self: StripOutcome, allocator: std.mem.Allocator) void {
         for (self.files) |file| {
             if (file.len != 0) allocator.free(file);
         }
         if (self.files.len != 0) allocator.free(self.files);
+        if (self.ring_frames.len != 0) allocator.free(self.ring_frames);
     }
 };
 
@@ -1093,6 +1108,7 @@ const MarkerJson = struct {
     files: []const []const u8 = &.{},
     framing: []const u8 = "auto",
     framing_hash: ?[]const u8 = null,
+    newton_rings: []const usize = &.{},
 };
 
 /// Names of the rolls under `scans_root` (directories with a `roll.json`),
@@ -1288,6 +1304,7 @@ const review_head =
     \\figure img {{ display:block; max-height:80vh; max-width:100%; border:1px solid var(--line); }}
     \\figcaption {{ font-size:13px; margin-top:6px; }}
     \\.files {{ color:var(--muted); font-size:12px; }}
+    \\.warn {{ color:#c0392b; font-weight:600; }}
     \\</style></head><body><main>
     \\<h1>Roll {s}</h1>
     \\<p class=meta>{s}, {s}, {d} dpi, {s}</p>
@@ -1671,6 +1688,28 @@ test "print copies export beside the frames, which ignore them, and are replaced
         copies += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), copies);
+}
+
+test "strips with Newton's rings say so on the review page" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    defer allocator.free(root);
+    var roll = try Roll.create(allocator, io, root, root, "rings", .{ .dpi = 800 });
+    defer roll.deinit();
+    const strip = try roll.nextStripPath(io);
+    defer allocator.free(strip);
+    try writeFeaturelessStrip(allocator, strip, 240, 480);
+    var ring_frames = [_]usize{ 2, 4 };
+    try roll.writeMarker(io, strip, .{ .frames = 4, .dmin_source = "image", .files = &.{}, .ring_frames = &ring_frames });
+    try roll.writeReviewIndex(io);
+    const review = try roll.path(allocator, "review/index.html");
+    defer allocator.free(review);
+    const html = try std.Io.Dir.cwd().readFileAlloc(io, review, allocator, .limited(64 * 1024));
+    defer allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=warn>Newton's rings in frames 2 and 4: consider rescanning them</span>") != null);
 }
 
 test "a strip needs exporting until exported, and again when its saved frames change" {

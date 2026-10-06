@@ -492,17 +492,23 @@ pub const RollPanel = struct {
         self.result_mutex.lockUncancelable(self.io);
         defer self.result_mutex.unlock(self.io);
         const name = std.fs.path.stem(std.fs.path.basename(done.strip));
-        const text = if (done.outcome) |outcome|
-            std.fmt.bufPrint(&self.result_buffer, "{s}: {d} frame{s}{s} exported, Dmin from {s}", .{
+        var writer = std.Io.Writer.fixed(&self.result_buffer);
+        if (done.outcome) |outcome| {
+            writer.print("{s}: {d} frame{s}{s} exported, Dmin from {s}", .{
                 name,
                 outcome.frames,
                 if (outcome.frames == 1) "" else "s",
                 if (outcome.manual) " placed by hand" else "",
                 outcome.dmin_source,
-            }) catch ""
-        else
-            std.fmt.bufPrint(&self.result_buffer, "{s}: export failed ({s})", .{ name, @errorName(done.err orelse error.Unknown) }) catch "";
-        self.result_len = text.len;
+            }) catch {};
+            if (outcome.ring_frames.len != 0) {
+                writer.writeAll(". ") catch {};
+                cerealgrain.processing.newton_rings.writeWarning(&writer, outcome.ring_frames) catch {};
+            }
+        } else {
+            writer.print("{s}: export failed ({s})", .{ name, @errorName(done.err orelse error.Unknown) }) catch {};
+        }
+        self.result_len = writer.buffered().len;
         _ = self.completed.fetchAdd(1, .release);
     }
 

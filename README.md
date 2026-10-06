@@ -90,6 +90,9 @@ print size and resolution (the Process view's Export pulldowns, or
 an 8-bit JPEG fitted to that print, such as `<roll>_sNN_FF_8x10_300dpi.jpg`.
 35mm, 6x7, and 6x9 frames are turned to landscape (the `rotation` in
 `roll.json`, clockwise degrees; `roll start --rotation` sets it).
+Exports of RGB+IR scans also check each frame for strong Newton's rings and
+name the frames worth rescanning, in the export message and on the review
+page; `cerealgrain processing rings` checks a scan without exporting it.
 To fix a strip's framing, open it in the Process view with its roll open
 (the view takes the roll's format and rotation) and adjust the frames. Edits
 save to `strip_NN_….tiff.frames.json` once they settle, Undo Frames (Cmd+Z)

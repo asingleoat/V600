@@ -276,6 +276,17 @@ deliberately, not by accident.
   fills each defect with a biharmonic fill of the picture (a low-pass of
   the clean pixels around it) plus synthetic grain matched to the
   surround's level and spectrum.
+- Newton's rings: exports of scans with IR check each frame
+  (`processing/newton_rings.zig`; `processing rings` runs it alone) and
+  name frames with strong rings in the export message, the roll panel,
+  `roll` output, and the review page. The narrow-band IR shows interference
+  fringes wherever the film nears the glass, which is normal with the film
+  flat on the bed, so the IR only says where to look. Visible rings are
+  counted where the picture is smooth, inside IR fringe fields, in tiles
+  whose red channel peaks at 1.3-1.95x the IR fringe frequency along the
+  fringes (the same gap at red's wavelength; picture detail sits at one
+  frequency in every channel). Warns at 5 mm² of ring area; tuned on real
+  6400 dpi frames, with no frame yet confirmed ring-free.
 - Parameters are defined at 800 dpi. Linear parameters scale by
   `dpi / 800`, area parameters by `(dpi / 800)^2`, at the dpi of the image
   they act on: the defect mask's sizes by the IR page's dpi (6400 dpi RGB

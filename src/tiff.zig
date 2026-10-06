@@ -245,6 +245,18 @@ pub fn readIrPageInfo(allocator: std.mem.Allocator, path: []const u8) !?PageInfo
     return try readCurrentPageInfo(tiff);
 }
 
+/// The IR page, without reading the RGB; null when the scan has none.
+pub fn loadIrPage(allocator: std.mem.Allocator, path: []const u8) !?Image {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+
+    if (c.TIFFSetDirectory(tiff, 2) == 0) return null;
+    return try readCurrentPage(allocator, tiff);
+}
+
 pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);

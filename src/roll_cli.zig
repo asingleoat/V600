@@ -331,6 +331,17 @@ fn printOutcome(stdout: anytype, strip: []const u8, outcome: cerealgrain.roll.St
         outcome.dmin_source,
         seconds,
     });
+    if (outcome.ring_frames.len != 0) try stdout.print("  {s}\n", .{ringWarning(outcome.ring_frames)});
+}
+
+/// The strip's Newton's rings warning, in a buffer that lives for the call.
+fn ringWarning(frames: []const usize) []const u8 {
+    const State = struct {
+        threadlocal var buffer: [512]u8 = undefined;
+    };
+    var writer = std.Io.Writer.fixed(&State.buffer);
+    cerealgrain.processing.newton_rings.writeWarning(&writer, frames) catch {};
+    return writer.buffered();
 }
 
 fn runScan(
@@ -564,6 +575,7 @@ fn printDone(_: ?*anyopaque, done: cerealgrain.roll.Processor.Done) void {
             outcome.dmin_source,
             done.seconds,
         });
+        if (outcome.ring_frames.len != 0) std.debug.print("[processing] {s}: {s}\n", .{ name, ringWarning(outcome.ring_frames) });
     } else {
         std.debug.print("\n[processing] {s}: failed ({s})\n", .{ name, @errorName(done.err orelse error.Unknown) });
     }

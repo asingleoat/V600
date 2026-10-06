@@ -11,6 +11,7 @@ pub const gpu_boundary = @import("processing/gpu_boundary.zig");
 pub const inversion = @import("processing/inversion.zig");
 pub const ir = @import("processing/ir.zig");
 pub const measurement = @import("processing/measurement.zig");
+pub const newton_rings = @import("processing/newton_rings.zig");
 pub const numeric_fixture = @import("processing/numeric_fixture.zig");
 pub const print = @import("processing/print.zig");
 pub const render = @import("processing/render.zig");
