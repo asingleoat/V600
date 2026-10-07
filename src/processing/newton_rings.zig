@@ -78,8 +78,9 @@ pub const Rows = struct {
 /// How strongly a frame shows visible Newton's rings: the share of the
 /// variance of red-minus-green density about its strongest IR ring centre
 /// that the IR fringes explain at the dyes' wavelengths, above their share
-/// at other ratios. 0.1 and up where rings are plain to see, under 0.03
-/// without them. `frame` is in whole-scan coordinates; `rgb` holds the page
+/// at other ratios. Over 0.05 where the owner sees rings plainly, 0.05 and
+/// under where they are faint or absent; the warning keeps a margin above
+/// the faint ones. `frame` is in whole-scan coordinates; `rgb` holds the page
 /// or the rows `rows` says. `ir` is the whole IR page, at any resolution.
 pub fn ringScore(
     comptime Rgb: type,

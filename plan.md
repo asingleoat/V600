@@ -82,19 +82,19 @@ Open:
 
 ### Bugs
 
-- The Newton's rings check's threshold awaits the owner's review of the
-  frames it flags that nobody has looked at: KODAKGOLD_200_1 s01_04,
-  KODAKGOLD_200_3 s02_04, s03_05, s05_02, s04_04, s04_03, and
-  KODAKGOLD_200_0 s01_01, s02_03 (and, just under the threshold,
-  KODAKGOLD_200_2 s04_04). Owner-confirmed rings it flags:
-  KODAKGOLD_200_0 s01_03, s03_03, KODAKGOLD_200_1 s01_02, s01_03,
-  KODAKGOLD_200_2 s02_04, s05_04, KODAKGOLD_200_120_0 s03_02. It misses
-  KODAKGOLD_200_3 s05_03, underexposed and noisy; KODAKGOLD_200_2 s05_01
-  is too noisy for an inexpensive check (owner's call). Confirmed
-  ring-free, and not flagged: KODAKGOLD_200_0 s04_03, KODAKPORTRA_400_0
-  s01_02, and two leader frames (KODAKGOLD_200_2 s01_06, UNKNOWNSTOCK_0
-  s05_01); KODAKGOLD_200_2 s02_03 has a faint ring the owner finds
-  unobjectionable, and is not flagged.
+- The Newton's rings check misses the rings in underexposed, noisy frames:
+  KODAKGOLD_200_3 s05_03, and KODAKGOLD_200_2 s05_01, which the owner
+  judges out of reach for an inexpensive check. Its threshold also leaves
+  the weakest plain rings (KODAKGOLD_200_2 s04_04) unflagged, for a margin
+  above the faint ones (owner's call). The owner's verdicts to
+  judge changes against (other frames are unreviewed): visible rings in
+  KODAKGOLD_200_0 s01_01, s01_03, s02_03, s03_03; KODAKGOLD_200_1 s01_02,
+  s01_03, s01_04; KODAKGOLD_200_2 s02_04, s04_04, s05_04; KODAKGOLD_200_3
+  s02_04, s03_05, s04_03, s04_04, s05_02; KODAKGOLD_200_120_0 s03_02
+  (faint, but plain). Faint or none: KODAKGOLD_200_0 s01_04, s04_03;
+  KODAKGOLD_200_1 s01_06; KODAKGOLD_200_2 s01_06 (leader), s02_03, s03_03;
+  KODAKGOLD_200_3 s03_04; KODAKPORTRA_400_0 s01_02; UNKNOWNSTOCK_0 s05_01
+  (leader).
 - IR dust removal leaves over-smooth patches in KODAKGOLD_200_2 s02_03
   (owner review): inpainted areas without enough synthetic grain.
 

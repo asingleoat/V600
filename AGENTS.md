@@ -288,8 +288,8 @@ deliberately, not by accident.
   centres by radial symmetry over the whole frame, fits red-minus-green
   along rays from each as a sinusoid of a multiple of the IR fringe phase,
   and scores the variance explained at 1.3-1.8 above that 0.3 either side.
-  Warns at 0.06. Tune and judge it only on real scans against frames the
-  owner reviewed, never on synthetic rings.
+  Warns at 0.06. Tune and judge it only on real scans against the frames
+  the owner reviewed (listed in `plan.md`), never on synthetic rings.
 - Parameters are defined at 800 dpi. Linear parameters scale by
   `dpi / 800`, area parameters by `(dpi / 800)^2`, at the dpi of the image
   they act on: the defect mask's sizes by the IR page's dpi (6400 dpi RGB
