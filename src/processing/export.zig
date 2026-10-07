@@ -280,6 +280,8 @@ pub const ExportProgressKind = enum {
     aligning_ir,
     processing,
     wrote_file,
+    /// Frames with strong Newton's rings, found before the frames export.
+    newton_rings,
     complete,
 };
 

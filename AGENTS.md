@@ -279,7 +279,11 @@ deliberately, not by accident.
 - Newton's rings: exports of scans with IR check each frame
   (`processing/newton_rings.zig`; `processing rings` runs it alone) and
   name frames with strong rings in the export message, the roll panel,
-  `roll` output, and the review page. The narrow-band IR shows interference
+  `roll` output, and the review page. The check runs right after IR
+  alignment, ahead of the frames, so while a roll scans its warning
+  reaches the roll panel (kept until dismissed or the roll closes) and
+  `roll scan` within seconds, while the strip may still be on the
+  scanner. The narrow-band IR shows interference
   fringes wherever the film nears the glass, which is normal with the film
   flat on the bed, so the IR only says where to look. Visible rings, around
   a dust speck or where the film bows onto the glass, are the same gap seen

@@ -280,6 +280,8 @@ pub const ExportProgressNotice = struct {
     kind: export_pipeline.ExportProgressKind,
     message: []const u8,
     file_name: ?[]const u8 = null,
+    /// With `.newton_rings`: the frames, numbered from 1.
+    ring_frames: []const usize = &.{},
 };
 
 pub const ExportProgressSink = struct {
@@ -987,6 +989,11 @@ pub fn processExportFromTiff(
         }
     }
 
+    // Ahead of the frames, so a warning reaches the user while the strip may
+    // still be on the scanner.
+    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, full.rgb, aligned_ir orelse full.ir, current_dpi);
+    errdefer allocator.free(ring_frames);
+
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input_path));
     const film_stock = if (need_invert) options.active_stock else null;
     const stock_coeffs = if (need_invert) options.stock_coeffs else null;
@@ -1131,9 +1138,6 @@ pub fn processExportFromTiff(
     }
     if (options.timings) |timings| timings.frame_processing_ns += monotonicNowNs() - frame_processing_started;
 
-    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, full.rgb, aligned_ir orelse full.ir, current_dpi);
-    errdefer allocator.free(ring_frames);
-
     const files = try written.toOwnedSlice();
     errdefer {
         for (files) |file| allocator.free(file);
@@ -1186,7 +1190,7 @@ pub fn processExportFromTiff(
 }
 
 /// Frames, numbered from 1, that show strong Newton's rings; none without IR
-/// or a DPI.
+/// or a DPI. Any found go to `sink` as a `.newton_rings` notice.
 pub fn newtonRingFrames(
     allocator: std.mem.Allocator,
     sink: ?ExportProgressSink,
@@ -1213,7 +1217,14 @@ pub fn newtonRingFrames(
         );
         if (newton_rings.warns(score)) try found.append(index + 1);
     }
-    return found.toOwnedSlice();
+    const ring_frames = try found.toOwnedSlice();
+    errdefer allocator.free(ring_frames);
+    if (sink != null and ring_frames.len != 0) {
+        const warning = try newton_rings.warningText(allocator, ring_frames);
+        defer allocator.free(warning);
+        emitExportProgress(sink, .{ .kind = .newton_rings, .message = warning, .ring_frames = ring_frames });
+    }
+    return ring_frames;
 }
 
 pub fn processExportFromCachedRgbPage(

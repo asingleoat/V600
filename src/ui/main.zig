@@ -997,6 +997,9 @@ pub fn main(init: std.process.Init) !void {
         try assertRollSmoke(&rolls, &model);
         // The Process view follows the roll: 645, which needs no rotation.
         if (!std.mem.eql(u8, process_formats[process_ui.format_index], "645") or process_ui.last_rotation != 0) return error.RollSmokeFailed;
+        // Closing the roll takes its ring warnings with it.
+        rolls.closeRoll(&model);
+        if (rolls.ring_warning_count != 0) return error.RollSmokeFailed;
     }
     if (roll_name_input_smoke) {
         const typed = rolls.new_name[0..@intCast(rolls.new_name_len)];
@@ -1144,6 +1147,10 @@ fn setupRollSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_ui.St
     roll.deinit();
     try rolls.openRoll(model, "smoke-roll");
     if (model.scan_controls.dpi != 1600 or model.scan_controls.mode != .rgb_ir) return error.RollSmokeFailed;
+    // A strip's export finding Newton's rings, as the processing thread
+    // reports it; the panel draws the warning from here on.
+    const processor = rolls.processor orelse return error.RollSmokeFailed;
+    processor.on_rings.?(processor.context, "scans/smoke-roll/strip_02_rgbir_1600dpi.tiff", &.{ 1, 3 });
     // Picking another resolution with the roll open applies to its next strips.
     model.scan_controls.setDpi(3200);
 }
@@ -1332,6 +1339,9 @@ fn assertRollSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_ui.S
     var saved = try cerealgrain.roll.Roll.open(std.heap.page_allocator, rolls.io, rolls.scans_root, rolls.frames_root, "smoke-roll");
     defer saved.deinit();
     if (saved.dpi != 3200) return error.RollSmokeFailed;
+    if (rolls.ring_warning_count != 1) return error.RollSmokeFailed;
+    const warning = rolls.ring_warnings[0][0..rolls.ring_warning_lens[0]];
+    if (!std.mem.eql(u8, warning, "Strip 2: frames 1 and 3")) return error.RollSmokeFailed;
 }
 
 fn assertRollStripSmoke(rolls: *roll_panel.RollPanel, io: std.Io) !void {

@@ -93,6 +93,9 @@ an 8-bit JPEG fitted to that print, such as `<roll>_sNN_FF_8x10_300dpi.jpg`.
 Exports of RGB+IR scans also check each frame for strong Newton's rings and
 name the frames worth rescanning, in the export message and on the review
 page; `cerealgrain processing rings` checks a scan without exporting it.
+While a roll scans, the roll panel names them seconds into the strip's
+export, before its frames are written, and keeps the warning until you
+dismiss it or close the roll.
 To fix a strip's framing, open it in the Process view with its roll open
 (the view takes the roll's format and rotation) and adjust the frames. Edits
 save to `strip_NN_….tiff.frames.json` once they settle, Undo Frames (Cmd+Z)

@@ -52,12 +52,18 @@ pub fn warns(score: f64) bool {
 /// "Newton's rings in frame 3: consider rescanning it", or "frames 2 and 4",
 /// "frames 1, 3, and 5"; frames are numbered from 1.
 pub fn writeWarning(writer: *std.Io.Writer, frames: []const usize) std.Io.Writer.Error!void {
-    try writer.writeAll(if (frames.len == 1) "Newton's rings in frame " else "Newton's rings in frames ");
+    try writer.writeAll("Newton's rings in ");
+    try writeFrames(writer, frames);
+    try writer.writeAll(if (frames.len == 1) ": consider rescanning it" else ": consider rescanning them");
+}
+
+/// "frame 3", "frames 2 and 4", "frames 1, 3, and 5".
+pub fn writeFrames(writer: *std.Io.Writer, frames: []const usize) std.Io.Writer.Error!void {
+    try writer.writeAll(if (frames.len == 1) "frame " else "frames ");
     for (frames, 0..) |frame, index| {
         if (index > 0) try writer.writeAll(if (index + 1 < frames.len) ", " else if (frames.len == 2) " and " else ", and ");
         try writer.print("{d}", .{frame});
     }
-    try writer.writeAll(if (frames.len == 1) ": consider rescanning it" else ": consider rescanning them");
 }
 
 pub fn warningText(allocator: std.mem.Allocator, frames: []const usize) ![]u8 {

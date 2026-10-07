@@ -754,6 +754,10 @@ pub const Processor = struct {
     roll_name: []u8,
     options: ProcessOptions,
     on_done: ?*const fn (context: ?*anyopaque, done: Done) void,
+    /// Called on the processing thread as soon as a strip's export finds
+    /// Newton's rings, before its frames export: the strip, and the frames
+    /// numbered from 1.
+    on_rings: ?*const fn (context: ?*anyopaque, strip: []const u8, ring_frames: []const usize) void,
     context: ?*anyopaque,
     mutex: std.Io.Mutex = .init,
     condition: std.Io.Condition = .init,
@@ -768,6 +772,8 @@ pub const Processor = struct {
     stage_buffer: [96]u8 = undefined,
     stage_len: usize = 0,
     written: usize = 0,
+    /// The strip in progress; the processing thread's own.
+    strip: []const u8 = "",
     thread: std.Thread = undefined,
 
     pub fn start(
@@ -777,6 +783,7 @@ pub const Processor = struct {
         roll_name: []const u8,
         options: ProcessOptions,
         on_done: ?*const fn (context: ?*anyopaque, done: Done) void,
+        on_rings: ?*const fn (context: ?*anyopaque, strip: []const u8, ring_frames: []const usize) void,
         context: ?*anyopaque,
     ) !*Processor {
         const self = try allocator.create(Processor);
@@ -788,6 +795,7 @@ pub const Processor = struct {
             .roll_name = try allocator.dupe(u8, roll_name),
             .options = options,
             .on_done = on_done,
+            .on_rings = on_rings,
             .context = context,
             .queue = std.array_list.Managed([]u8).init(allocator),
         };
@@ -845,6 +853,10 @@ pub const Processor = struct {
 
     fn onProgress(context: *anyopaque, notice: workflow.ExportProgressNotice) void {
         const self: *Processor = @ptrCast(@alignCast(context));
+        if (notice.kind == .newton_rings) {
+            if (self.on_rings) |callback| callback(self.context, self.strip, notice.ring_frames);
+            return;
+        }
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (notice.file_name != null) {
@@ -899,7 +911,9 @@ pub const Processor = struct {
             self.written = 0;
             self.mutex.unlock(self.io);
 
+            self.strip = strip;
             self.process(strip);
+            self.strip = "";
             allocator.free(strip);
 
             self.mutex.lockUncancelable(self.io);
@@ -1826,7 +1840,7 @@ test "the background processor reports every queued strip before it stops" {
         }
     };
     var counter = Counter{};
-    const processor = try Processor.start(io, root, root, "queue", .{}, Counter.done, &counter);
+    const processor = try Processor.start(io, root, root, "queue", .{}, Counter.done, null, &counter);
     // Neither strip exists, so both report an error.
     try processor.enqueue("missing/strip_01_rgbir_3200dpi.tiff");
     try processor.enqueue("missing/strip_02_rgbir_3200dpi.tiff");
@@ -1852,7 +1866,7 @@ test "a stop request lets the processor finish its queue without waiting" {
         }
     };
     var counter = Counter{};
-    const processor = try Processor.start(io, root, root, "queue", .{}, Counter.done, &counter);
+    const processor = try Processor.start(io, root, root, "queue", .{}, Counter.done, null, &counter);
     try processor.enqueue("missing/strip_01_rgbir_3200dpi.tiff");
     try processor.enqueue("missing/strip_02_rgbir_3200dpi.tiff");
     processor.requestStop();
@@ -1863,6 +1877,30 @@ test "a stop request lets the processor finish its queue without waiting" {
     }
     try std.testing.expectEqual(@as(usize, 2), counter.done_count.load(.monotonic));
     processor.finish();
+}
+
+test "the processor passes a strip's Newton's rings on as soon as the export finds them" {
+    const io = std.testing.io;
+    const Seen = struct {
+        strip: []const u8 = "",
+        frames: [4]usize = undefined,
+        count: usize = 0,
+        fn rings(context: ?*anyopaque, strip: []const u8, ring_frames: []const usize) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.strip = strip;
+            @memcpy(self.frames[0..ring_frames.len], ring_frames);
+            self.count = ring_frames.len;
+        }
+    };
+    var seen = Seen{};
+    const processor = try Processor.start(io, ".", ".", "queue", .{}, null, Seen.rings, &seen);
+    defer processor.finish();
+    // As the processing thread does while a strip exports.
+    processor.strip = "scans/r/strip_03_rgbir_6400dpi.tiff";
+    Processor.onProgress(processor, .{ .kind = .newton_rings, .message = "Newton's rings in frames 2 and 4: consider rescanning them", .ring_frames = &.{ 2, 4 } });
+    Processor.onProgress(processor, .{ .kind = .processing, .message = "Exporting frame 1..." });
+    try std.testing.expectEqualStrings("scans/r/strip_03_rgbir_6400dpi.tiff", seen.strip);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 4 }, seen.frames[0..seen.count]);
 }
 
 test "known frames pair with the detected frame overlapping them most" {

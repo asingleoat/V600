@@ -367,7 +367,7 @@ fn runScan(
     };
 
     const processor: ?*cerealgrain.roll.Processor = if (process)
-        try cerealgrain.roll.Processor.start(io, scans_root, frames_root, roll.name, .{}, printDone, null)
+        try cerealgrain.roll.Processor.start(io, scans_root, frames_root, roll.name, .{}, printDone, printRings, null)
     else
         null;
     defer if (processor) |worker| finishProcessing(worker, &roll, stdout);
@@ -575,10 +575,15 @@ fn printDone(_: ?*anyopaque, done: cerealgrain.roll.Processor.Done) void {
             outcome.dmin_source,
             done.seconds,
         });
-        if (outcome.ring_frames.len != 0) std.debug.print("[processing] {s}: {s}\n", .{ name, ringWarning(outcome.ring_frames) });
     } else {
         std.debug.print("\n[processing] {s}: failed ({s})\n", .{ name, @errorName(done.err orelse error.Unknown) });
     }
+}
+
+/// Prints a strip's Newton's rings warning as soon as its export finds them,
+/// ahead of its frames.
+fn printRings(_: ?*anyopaque, strip: []const u8, frames: []const usize) void {
+    std.debug.print("\n[processing] {s}: {s}\n", .{ std.fs.path.basename(strip), ringWarning(frames) });
 }
 
 fn finishProcessing(processor: *cerealgrain.roll.Processor, roll: *const Roll, stdout: anytype) void {

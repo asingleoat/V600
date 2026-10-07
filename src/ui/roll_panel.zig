@@ -18,6 +18,8 @@ const tooltip = chrome.tooltip;
 
 const allocator = std.heap.page_allocator;
 const formats = [_][]const u8{ "35mm", "645", "6x6", "6x7", "6x9" };
+/// Newton's rings warnings kept on screen; older ones give way.
+const max_ring_warnings = 6;
 pub const preview_output = "/tmp/cerealgrain-native-preview.tiff";
 pub const cancel_file = ".zig-cache/cerealgrain-native-scan.cancel";
 
@@ -66,6 +68,12 @@ pub const RollPanel = struct {
     result_mutex: std.Io.Mutex = .init,
     result_buffer: [256]u8 = undefined,
     result_len: usize = 0,
+    /// "Strip 3: frames 2 and 4", one per strip whose export found Newton's
+    /// rings, oldest first, until dismissed or the roll closes; under
+    /// `result_mutex`.
+    ring_warnings: [max_ring_warnings][160]u8 = undefined,
+    ring_warning_lens: [max_ring_warnings]usize = [_]usize{0} ** max_ring_warnings,
+    ring_warning_count: usize = 0,
     completed: std.atomic.Value(usize) = .init(0),
     seen_completed: usize = 0,
 
@@ -153,6 +161,7 @@ pub const RollPanel = struct {
             } else {
                 drawText(ctx, self.lastResult(&status_buffer));
             }
+            self.drawRingWarnings(ctx);
             if (self.notice.len != 0) {
                 layoutRow(ctx, 22.0, 1);
                 drawText(ctx, self.notice);
@@ -174,6 +183,8 @@ pub const RollPanel = struct {
                 drawText(ctx, std.fmt.bufPrint(&line_buffer, "{d} queued strip{s} will export when that roll is opened again.", .{ self.dropped_strips, if (self.dropped_strips == 1) "" else "s" }) catch "");
             }
         }
+        // A closed roll's last strip can still find rings.
+        self.drawRingWarnings(ctx);
         if (finishing) c.nk_widget_disable_begin(ctx);
         if (self.names.len != 0) {
             layoutRow(ctx, 22.0, 1);
@@ -252,7 +263,7 @@ pub const RollPanel = struct {
         var roll = try Roll.open(allocator, self.io, self.scans_root, self.frames_root, name);
         errdefer roll.deinit();
         std.Io.Dir.cwd().createDirPath(self.io, roll.frames_dir) catch {};
-        const processor = try cerealgrain.roll.Processor.start(self.io, self.scans_root, self.frames_root, roll.name, .{}, onProcessed, self);
+        const processor = try cerealgrain.roll.Processor.start(self.io, self.scans_root, self.frames_root, roll.name, .{}, onProcessed, onRings, self);
         self.active = roll;
         self.processor = processor;
         self.generation += 1;
@@ -313,6 +324,7 @@ pub const RollPanel = struct {
         self.scanning_strip = null;
         self.freeStripLutPath();
         self.strip_pending = false;
+        self.clearRingWarnings();
     }
 
     /// Mode and DPI chosen while a roll is open apply to its next strips.
@@ -510,6 +522,57 @@ pub const RollPanel = struct {
         }
         self.result_len = writer.buffered().len;
         _ = self.completed.fetchAdd(1, .release);
+    }
+
+    /// From the processing thread, as soon as a strip's export finds rings.
+    fn onRings(context: ?*anyopaque, strip: []const u8, frames: []const usize) void {
+        const self: *RollPanel = @ptrCast(@alignCast(context.?));
+        self.result_mutex.lockUncancelable(self.io);
+        defer self.result_mutex.unlock(self.io);
+        if (self.ring_warning_count == max_ring_warnings) {
+            for (1..max_ring_warnings) |i| {
+                self.ring_warnings[i - 1] = self.ring_warnings[i];
+                self.ring_warning_lens[i - 1] = self.ring_warning_lens[i];
+            }
+            self.ring_warning_count -= 1;
+        }
+        var writer = std.Io.Writer.fixed(&self.ring_warnings[self.ring_warning_count]);
+        if (cerealgrain.roll.stripNumber(strip)) |number| {
+            writer.print("Strip {d}: ", .{number}) catch {};
+        } else {
+            writer.print("{s}: ", .{std.fs.path.stem(std.fs.path.basename(strip))}) catch {};
+        }
+        cerealgrain.processing.newton_rings.writeFrames(&writer, frames) catch {};
+        self.ring_warning_lens[self.ring_warning_count] = writer.buffered().len;
+        self.ring_warning_count += 1;
+    }
+
+    fn clearRingWarnings(self: *RollPanel) void {
+        self.result_mutex.lockUncancelable(self.io);
+        defer self.result_mutex.unlock(self.io);
+        self.ring_warning_count = 0;
+    }
+
+    fn drawRingWarnings(self: *RollPanel, ctx: *c.struct_nk_context) void {
+        var lines: [max_ring_warnings][160]u8 = undefined;
+        var lens: [max_ring_warnings]usize = undefined;
+        const count = blk: {
+            self.result_mutex.lockUncancelable(self.io);
+            defer self.result_mutex.unlock(self.io);
+            lines = self.ring_warnings;
+            lens = self.ring_warning_lens;
+            break :blk self.ring_warning_count;
+        };
+        if (count == 0) return;
+        layoutRow(ctx, 22.0, 1);
+        drawText(ctx, "Newton's rings found; consider rescanning:");
+        for (lines[0..count], lens[0..count]) |*line, len| {
+            layoutRow(ctx, 22.0, 1);
+            drawText(ctx, line[0..len]);
+        }
+        layoutRow(ctx, 26.0, 1);
+        tooltip(ctx, "Hide these warnings; the roll's review page keeps them.");
+        if (c.nk_button_label(ctx, "Dismiss Ring Warnings") != 0) self.clearRingWarnings();
     }
 
     fn lastResult(self: *RollPanel, buffer: []u8) []const u8 {
