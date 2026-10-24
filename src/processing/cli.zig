@@ -68,6 +68,8 @@ pub const ExportOptions = struct {
     /// A print size name, or "off"; with `print_dpi`, overrides the config.
     print_size: ?[]const u8 = null,
     print_dpi: ?u32 = null,
+    /// Overrides the config's `reduce_newton_rings`.
+    reduce_rings: ?bool = null,
 };
 
 pub const ProcessingCommand = union(CommandTag) {
@@ -366,6 +368,10 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
             const dpi = try std.fmt.parseInt(u32, argv[index], 10);
             if (dpi < print.min_dpi or dpi > print.max_dpi) return error.InvalidPrintDpi;
             options.print_dpi = dpi;
+        } else if (std.mem.eql(u8, arg, "--reduce-rings")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingReduceRings;
+            options.reduce_rings = if (std.mem.eql(u8, argv[index], "on")) true else if (std.mem.eql(u8, argv[index], "off")) false else return error.InvalidReduceRings;
         } else {
             return error.UnknownProcessingOption;
         }
@@ -560,6 +566,12 @@ fn runExport(
             aligned_ir = .{ .width = ir.width, .height = ir.height, .channels = 1, .pixels = aligned };
         }
     }
+    // Before the frames, which take any rings it reduces.
+    const rects = try allocator.alloc(export_pipeline.FrameRect, options.frame_count);
+    defer allocator.free(rects);
+    @memcpy(rects, options.frames[0..options.frame_count]);
+    const ring_frames = try workflow.newtonRingFrames(allocator, null, rects, pages.rgb, aligned_ir orelse pages.ir, current_dpi, options.reduce_rings orelse newton_rings.reduceForConfig(overrides));
+    defer allocator.free(ring_frames);
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
     const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
@@ -662,11 +674,6 @@ fn runExport(
     }
     try stdout.print("],\"dmin\":", .{});
     try writeDminJson(stdout, dmin);
-    const rects = try allocator.alloc(export_pipeline.FrameRect, options.frame_count);
-    defer allocator.free(rects);
-    @memcpy(rects, options.frames[0..options.frame_count]);
-    const ring_frames = try workflow.newtonRingFrames(allocator, null, rects, pages.rgb, aligned_ir orelse pages.ir, current_dpi);
-    defer allocator.free(ring_frames);
     try stdout.print(",\"dmin_source\":\"{s}\",\"newton_rings\":[", .{dmin_source});
     for (ring_frames, 0..) |frame, index| try stdout.print("{s}{d}", .{ if (index == 0) "" else ",", frame });
     try stdout.print("]}}\n", .{});

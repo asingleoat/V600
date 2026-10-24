@@ -319,6 +319,7 @@ pub const comments = [_]ParamComment{
     .{ .name = "preview_inversion", .text = "Show inverted preview instead of CLAHE" },
     .{ .name = "aspect", .text = "Last used aspect ratio for frame selection" },
     .{ .name = "exact_aspect", .text = "Trim auto-detected frames to the format's exact aspect ratio, for prints" },
+    .{ .name = "reduce_newton_rings", .text = "Subtract the Newton's rings the IR finds in colour from exports (scans with IR); on unless false" },
     .{ .name = "print_size", .text = "Also export an 8-bit JPEG sized for this print (4x6 to 24x36, letter, a4, a3), or off" },
     .{ .name = "print_dpi", .text = "Print copy resolution: 300 for labs, 360 or 720 for Epson printers" },
 };
@@ -767,7 +768,7 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 29), comments.len);
+    try std.testing.expectEqual(@as(usize, 30), comments.len);
     try std.testing.expect(comment("exact_aspect") != null);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);

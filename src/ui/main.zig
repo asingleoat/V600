@@ -127,6 +127,7 @@ const ProcessUiState = struct {
     preview_size: c_int = 8192,
     format_index: usize = 0,
     exact_aspect: bool = false,
+    reduce_newton_rings: bool = true,
     aspect_index: usize = default_process_aspect_index,
     n_frames: c_int = 0,
     scale_percent: f32 = 0.0,
@@ -3534,6 +3535,14 @@ fn drawProcessView(
         const updates = [_]cerealgrain.processing.config.Override{.{ .name = "exact_aspect", .value = .{ .boolean = ui.exact_aspect } }};
         model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
     }
+    layoutRow(ctx, 24.0, 1);
+    tooltip(ctx, "Scans with IR: where the IR shows Newton's rings that also show in colour, exports subtract them. The rest of each frame is left alone, and frames with rings are still named for a rescan. Roll exports follow it too");
+    var reduce_rings = nkBool(ui.reduce_newton_rings);
+    if (c.nk_checkbox_label(ctx, "Reduce Newton's rings", &reduce_rings) != 0) {
+        ui.reduce_newton_rings = reduce_rings != 0;
+        const updates = [_]cerealgrain.processing.config.Override{.{ .name = "reduce_newton_rings", .value = .{ .boolean = ui.reduce_newton_rings } }};
+        model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
+    }
     const old_scale = ui.scale_percent;
     layoutRow(ctx, 28.0, 2);
     tooltip(ctx, "Number of frames to detect. 0 lets auto-detection decide");
@@ -4001,6 +4010,7 @@ fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const cerealgrain.native
     ui.export_ir_inv = processSettingBool(model, "export_ir_inv", ui.export_ir_inv);
     ui.export_inv_only = processSettingBool(model, "export_inv_only", ui.export_inv_only);
     ui.exact_aspect = processSettingBool(model, "exact_aspect", ui.exact_aspect);
+    ui.reduce_newton_rings = processSettingBool(model, "reduce_newton_rings", true);
     ui.print_size_index = 0;
     if (processSettingString(model, "print_size")) |name| {
         if (cerealgrain.processing.print.sizeIndex(name)) |index| ui.print_size_index = @intCast(index + 1);

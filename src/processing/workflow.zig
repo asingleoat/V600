@@ -991,7 +991,7 @@ pub fn processExportFromTiff(
 
     // Ahead of the frames, so a warning reaches the user while the strip may
     // still be on the scanner.
-    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, full.rgb, aligned_ir orelse full.ir, current_dpi);
+    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, full.rgb, aligned_ir orelse full.ir, current_dpi, newton_rings.reduceForConfig(options.config_overrides));
     errdefer allocator.free(ring_frames);
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input_path));
@@ -1190,7 +1190,9 @@ pub fn processExportFromTiff(
 }
 
 /// Frames, numbered from 1, that show strong Newton's rings; none without IR
-/// or a DPI. Any found go to `sink` as a `.newton_rings` notice.
+/// or a DPI. Any found go to `sink` as a `.newton_rings` notice. With
+/// `reduce`, the rings found are also subtracted from `rgb`, before any
+/// frame is exported from it.
 pub fn newtonRingFrames(
     allocator: std.mem.Allocator,
     sink: ?ExportProgressSink,
@@ -1198,23 +1200,20 @@ pub fn newtonRingFrames(
     rgb: export_pipeline.Image,
     ir: ?export_pipeline.Image,
     dpi: ?u32,
+    reduce: bool,
 ) ![]usize {
     const ir_image = ir orelse return allocator.alloc(usize, 0);
     const scan_dpi = dpi orelse return allocator.alloc(usize, 0);
-    emitExportProgress(sink, .{ .kind = .processing, .message = "Checking for Newton's rings..." });
+    emitExportProgress(sink, .{ .kind = .processing, .message = if (reduce) "Checking for and reducing Newton's rings..." else "Checking for Newton's rings..." });
     var found = std.array_list.Managed(usize).init(allocator);
     errdefer found.deinit();
+    const ir_view = newton_rings.View(f64){ .pixels = ir_image.pixels, .width = ir_image.width, .height = ir_image.height, .channels = ir_image.channels };
     for (rects, 0..) |rect, index| {
-        const score = try newton_rings.ringScore(
-            f64,
-            f64,
-            allocator,
-            .{ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels },
-            .{},
-            .{ .pixels = ir_image.pixels, .width = ir_image.width, .height = ir_image.height, .channels = ir_image.channels },
-            .{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h },
-            scan_dpi,
-        );
+        const frame = newton_rings.Frame{ .cx = rect.cx, .cy = rect.cy, .w = rect.w, .h = rect.h };
+        const score = if (reduce)
+            try newton_rings.reduceRings(allocator, .{ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels }, ir_view, frame, scan_dpi)
+        else
+            try newton_rings.ringScore(f64, f64, allocator, .{ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels }, .{}, ir_view, frame, scan_dpi);
         if (newton_rings.warns(score)) try found.append(index + 1);
     }
     const ring_frames = try found.toOwnedSlice();

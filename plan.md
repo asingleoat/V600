@@ -95,6 +95,14 @@ Open:
   KODAKGOLD_200_1 s01_06; KODAKGOLD_200_2 s01_06 (leader), s02_03, s03_03;
   KODAKGOLD_200_3 s03_04; KODAKPORTRA_400_0 s01_02; UNKNOWNSTOCK_0 s05_01
   (leader).
+- Newton's ring reduction leaves some rings: the dark centre and first
+  ring of small dust bullseyes (KODAKGOLD_200_2 s02_04, KODAKGOLD_200_3
+  s02_04), rings within 0.29 mm of strong picture edges, and rings whose
+  centres score under the warning level, often beside strong picture
+  content (the ring by the peony in KODAKGOLD_200_2 s05_04 scores 0.029).
+  Weighting the score away from picture edges inflates ring-free frames'
+  scores, so it is not the fix. The Process view's preview does
+  not show the reduction, and the webapp does not reduce rings.
 - IR dust removal leaves over-smooth patches in KODAKGOLD_200_2 s02_03
   (owner review): inpainted areas without enough synthetic grain.
 

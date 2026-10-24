@@ -292,8 +292,22 @@ deliberately, not by accident.
   centres by radial symmetry over the whole frame, fits red-minus-green
   along rays from each as a sinusoid of a multiple of the IR fringe phase,
   and scores the variance explained at 1.3-1.8 above that 0.3 either side.
-  Warns at 0.06. Tune and judge it only on real scans against the frames
-  the owner reviewed (listed in `plan.md`), never on synthetic rings.
+  Warns at 0.06. With the `reduce_newton_rings` setting (on unless set
+  off: the Process view's "Reduce Newton's rings", `processing export
+  --reduce-rings`; roll exports follow it) the same pass, before any frame
+  is written, subtracts the rings in density about every centre scoring at
+  the warning level: along 2048 rays, a local least-squares fit of each
+  channel's density to a level, a gradient, and a sinusoid of the
+  centre's ratio times the IR phase, kept where it beats chance (the
+  residual over the window's independent pixels), at least 0.29 mm from
+  picture edges, and within the IR phases where the rings show round the
+  whole system (plus four fringes). No high-pass first: its halos by edges
+  read as rings. The score gate matters: run on every centre, or on
+  centres just under the warning level, the fit takes picture (a cloud's
+  texture) for rings. Sizes are in millimetres of film. Tune and judge
+  both only on real scans, through real exports and their change maps,
+  against the frames the owner reviewed (listed in `plan.md`), never on
+  synthetic rings.
 - Parameters are defined at 800 dpi. Linear parameters scale by
   `dpi / 800`, area parameters by `(dpi / 800)^2`, at the dpi of the image
   they act on: the defect mask's sizes by the IR page's dpi (6400 dpi RGB

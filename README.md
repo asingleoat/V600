@@ -95,7 +95,11 @@ name the frames worth rescanning, in the export message and on the review
 page; `cerealgrain processing rings` checks a scan without exporting it.
 While a roll scans, the roll panel names them seconds into the strip's
 export, before its frames are written, and keeps the warning until you
-dismiss it or close the roll.
+dismiss it or close the roll. Exports also reduce the rings they find (the
+Process view's "Reduce Newton's rings", on by default): the IR shows where
+the film met the glass, and the rings' colour is subtracted there, leaving
+the rest of the frame alone. A rescan still removes them properly; the
+warning stands either way.
 To fix a strip's framing, open it in the Process view with its roll open
 (the view takes the roll's format and rotation) and adjust the frames. Edits
 save to `strip_NN_….tiff.frames.json` once they settle, Undo Frames (Cmd+Z)
