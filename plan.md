@@ -199,8 +199,6 @@ Recorded in the May-July log; correct anything that is wrong:
 - Linux scans are not written atomically (scanimage and tiffcp write the
   final path directly); the macOS backend writes `<name>.partial` and
   renames.
-- Passing test runs print about 130 JSON scanner timing events on stderr,
-  which makes `zig build test` print a misleading `failed command:` line.
 
 ### Native code cleanup
 

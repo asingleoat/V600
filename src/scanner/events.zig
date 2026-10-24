@@ -457,8 +457,8 @@ fn hexDigit(value: u8) u8 {
 }
 
 /// Whether scanner events are also echoed to stderr as JSON lines. Interactive
-/// commands that print their own progress turn this off.
-pub var echo_to_stderr = true;
+/// commands that print their own progress turn this off, and tests never echo.
+pub var echo_to_stderr = !@import("builtin").is_test;
 
 const DebugWriter = struct {
     pub fn print(_: *DebugWriter, comptime fmt: []const u8, args: anytype) !void {

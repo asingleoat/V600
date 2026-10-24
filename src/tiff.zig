@@ -123,7 +123,7 @@ pub fn readDpi(allocator: std.mem.Allocator, path: []const u8) !?u32 {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return null;
+    const tiff = openTiff(path_z.ptr, "r") orelse return null;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return null;
@@ -150,7 +150,7 @@ pub fn writeScannerPageMetadata(allocator: std.mem.Allocator, path: []const u8, 
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r+") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r+") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, page) == 0) return error.MissingTiffPage;
@@ -199,7 +199,7 @@ pub fn loadRgbIrPages(allocator: std.mem.Allocator, path: []const u8) !RgbIrPage
     defer allocator.free(path_z);
 
     ensureCustomTagsRegistered();
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
@@ -220,7 +220,7 @@ pub fn readRgbIrPageInfo(allocator: std.mem.Allocator, path: []const u8) !RgbIrP
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
@@ -238,7 +238,7 @@ pub fn readIrPageInfo(allocator: std.mem.Allocator, path: []const u8) !?PageInfo
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 2) == 0) return null;
@@ -250,7 +250,7 @@ pub fn loadIrPage(allocator: std.mem.Allocator, path: []const u8) !?Image {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 2) == 0) return null;
@@ -262,7 +262,7 @@ pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
     defer allocator.free(path_z);
 
     ensureCustomTagsRegistered();
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
@@ -279,7 +279,7 @@ pub fn loadRgbPageRows(allocator: std.mem.Allocator, path: []const u8, first_row
     defer allocator.free(path_z);
 
     ensureCustomTagsRegistered();
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
@@ -326,7 +326,7 @@ pub fn loadRgbPageWithMetadataTimed(
 
     const open_started = monotonicNowNs();
     ensureCustomTagsRegistered();
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return error.MissingRgbPage;
@@ -362,7 +362,7 @@ pub fn writeImage(
     defer allocator.free(path_z);
     const mode = if (options.big_tiff) "w8" else "w";
 
-    const tiff = c.TIFFOpen(path_z.ptr, mode) orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, mode) orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     try writeImageDirectory(allocator, tiff, image, options);
@@ -387,7 +387,7 @@ pub fn writeScanPages(allocator: std.mem.Allocator, path: []const u8, pages: []c
 
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
-    const tiff = c.TIFFOpen(path_z.ptr, if (total_bytes > classic_limit) "w8" else "w") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, if (total_bytes > classic_limit) "w8" else "w") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     for (pages) |page| {
@@ -409,7 +409,7 @@ pub fn readAsciiTag(allocator: std.mem.Allocator, path: []const u8, tag: u32, na
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return null;
+    const tiff = openTiff(path_z.ptr, "r") orelse return null;
     defer c.TIFFClose(tiff);
 
     if (c.TIFFSetDirectory(tiff, 0) == 0) return null;
@@ -425,7 +425,7 @@ pub fn readCompression(allocator: std.mem.Allocator, path: []const u8) !?Compres
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     var scheme: u16 = c.COMPRESSION_NONE;
@@ -839,6 +839,13 @@ fn byteArrayFieldInfo(tag: u32, name: [:0]const u8) c.TIFFFieldInfo {
     };
 }
 
+/// libtiff's TIFFOpen. Test builds silence its error printer: the tests
+/// open missing files on purpose, and the errors come back as Zig errors.
+fn openTiff(path: [*:0]const u8, mode: [*:0]const u8) ?*c.TIFF {
+    if (builtin.is_test) _ = c.TIFFSetErrorHandler(null);
+    return c.TIFFOpen(path, mode);
+}
+
 fn ensureCustomTagsRegistered() void {
     if (custom_tags_installed) return;
     previous_tag_extender = c.TIFFSetTagExtender(customTagExtender);
@@ -1144,7 +1151,7 @@ test "writes scanner metadata on the IR page of a combined RGB+IR file" {
 
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
-    const handle = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const handle = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(handle);
     try std.testing.expect(c.TIFFSetDirectory(handle, 2) != 0);
     var model: [*c]const u8 = null;
@@ -1198,7 +1205,7 @@ test "writes RGB, thumbnail, and IR scan pages with per-page metadata" {
 
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
-    const handle = c.TIFFOpen(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    const handle = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(handle);
     try std.testing.expect(c.TIFFNumberOfStrips(handle) > 1);
     try std.testing.expect(c.TIFFSetDirectory(handle, 2) != 0);
@@ -1572,7 +1579,7 @@ fn writePageFixture(allocator: std.mem.Allocator, path: []const u8, pages: []con
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
-    const tiff = c.TIFFOpen(path_z.ptr, "w") orelse return error.TiffOpenFailed;
+    const tiff = openTiff(path_z.ptr, "w") orelse return error.TiffOpenFailed;
     defer c.TIFFClose(tiff);
 
     for (pages) |page| {
