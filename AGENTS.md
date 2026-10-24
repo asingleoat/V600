@@ -342,13 +342,13 @@ deliberately, not by accident.
   Saves merge into the existing file; go through the config layer, not raw
   TOML reads.
 - Scans go to `scans/`, exports to `frames/`; both are gitignored. These and
-  both configs resolve from the working directory; the macOS app bundle works
-  in `~/Pictures/CerealGrain`, and `CEREALGRAIN_DATA_DIR` sets the folder.
-  Started there without a terminal, the UI writes its stderr (scanner
-  events, errors) to `logs/cerealgrain-<UTC time>.log`, keeping the last
-  20, for beta testers to send. A
-  roll uses `scans/<roll>/` (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`,
-  hand-placed framing in `strip_NN_*.tiff.frames.json`, `review/`) and
+  both configs resolve from the working directory; the macOS app bundle
+  works in `~/Pictures/CerealGrain`, and `CEREALGRAIN_DATA_DIR` sets the
+  folder. Started there without a terminal, the UI writes its stderr
+  (scanner events, errors) to `logs/cerealgrain-<UTC time>.log`, keeping the
+  last 20, for beta testers to send. A roll uses `scans/<roll>/`
+  (`roll.json`, `roll.lut.bin`, `strip_NN_*.tiff`, hand-placed framing in
+  `strip_NN_*.tiff.frames.json`, `review/`) and
   `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the `[roll]` key in
   the scanner config.
 - Print copies: with the `print_size` and `print_dpi` processing settings
