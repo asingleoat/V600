@@ -115,11 +115,6 @@ Recorded in the May-July log; correct anything that is wrong:
   blobs (all of KODAKGOLD_200_3): a thin negative's grain is stretched far
   by inversion, so grain matched on the negative may fall short there. If a
   fix falls short, suggest turning dust removal off for such frames.
-- macOS: with Epson's driver missing, connecting says "Epson's scanner
-  driver is not installed." without naming what to install or where to get
-  it (`ica_driver_url` in `src/scanner/macos.zig` is used only by tests).
-  The app downloads and installs nothing; the zip's readme is the only
-  guide.
 
 - Colour tuning has no repeatable check on real frames, the way framing has
   `roll check-frames`: a `roll check-colour` reporting casts per tone band,

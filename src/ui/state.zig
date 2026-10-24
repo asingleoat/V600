@@ -2563,7 +2563,7 @@ pub fn scannerErrorText(detail: []const u8) []const u8 {
         return "Another program has the scanner (on macOS, Epson Scanner Monitor or Event Manager). Quit it, then reconnect.";
     }
     if (std.mem.eql(u8, detail, "ScannerNotFound")) return "No scanner found. Check the USB cable and power.";
-    if (std.mem.eql(u8, detail, "InterpreterNotInstalled")) return "Epson's scanner driver is not installed.";
+    if (std.mem.eql(u8, detail, "InterpreterNotInstalled")) return "Epson's scanner driver is not installed: get Epson Scan 2 for your scanner from Epson's support site, then reconnect.";
     if (std.mem.eql(u8, detail, "NoFilmFound")) return "No film found on the preview.";
     if (std.mem.eql(u8, detail, "InfraredUnsupported")) return "This scanner has no infrared channel. Scan in RGB.";
     if (std.mem.eql(u8, detail, "InfraredEnableFailed")) return "The scanner refused an infrared scan. Scan in RGB, and please report it.";
