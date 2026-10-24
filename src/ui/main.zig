@@ -1374,6 +1374,56 @@ fn enterDataDir(io: std.Io, environ_map: *std.process.Environ.Map) !void {
     const dir = try std.Io.Dir.cwd().createDirPathOpen(io, path, .{});
     defer dir.close(io);
     try std.process.setCurrentDir(io, dir);
+    logToFileUnlessTerminal(io) catch {};
+}
+
+/// Logs kept in the data folder's `logs/`.
+const kept_logs = 20;
+
+/// Launched from Finder, the app's stderr goes nowhere; its log (scanner
+/// events, errors) goes to `logs/` in the data folder instead, a file per
+/// launch that beta testers can send. From a terminal it stays there.
+fn logToFileUnlessTerminal(io: std.Io) !void {
+    if (try std.Io.File.stderr().isTty(io)) return;
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, "logs");
+    try pruneLogs(io, kept_logs - 1);
+    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(std.Io.Timestamp.now(io, .real).toSeconds()) };
+    const year_day = epoch.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_seconds = epoch.getDaySeconds();
+    var name_buffer: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buffer, "logs/cerealgrain-{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}{d:0>2}{d:0>2}Z.log", .{
+        year_day.year,                  month_day.month.numeric(),         @as(u32, month_day.day_index) + 1,
+        day_seconds.getHoursIntoDay(), day_seconds.getMinutesIntoHour(), day_seconds.getSecondsIntoMinute(),
+    });
+    const file = try cwd.createFile(io, name, .{});
+    defer file.close(io);
+    if (std.c.dup2(file.handle, std.posix.STDERR_FILENO) < 0) return error.LogRedirectFailed;
+    std.debug.print("CerealGrain {s}\n", .{cerealgrain.version});
+}
+
+/// Deletes the oldest logs, keeping `keep`; their names sort by time.
+fn pruneLogs(io: std.Io, keep: usize) !void {
+    var dir = try std.Io.Dir.cwd().openDir(io, "logs", .{ .iterate = true });
+    defer dir.close(io);
+    var names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (names.items) |name| std.heap.page_allocator.free(name);
+        names.deinit(std.heap.page_allocator);
+    }
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.startsWith(u8, entry.name, "cerealgrain-") or !std.mem.endsWith(u8, entry.name, ".log")) continue;
+        try names.append(std.heap.page_allocator, try std.heap.page_allocator.dupe(u8, entry.name));
+    }
+    if (names.items.len <= keep) return;
+    std.mem.sort([]u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    for (names.items[0 .. names.items.len - keep]) |name| dir.deleteFile(io, name) catch {};
 }
 
 fn hardwareSmokeEnabled(environ_map: *std.process.Environ.Map) bool {
