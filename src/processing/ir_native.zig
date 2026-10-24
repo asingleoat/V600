@@ -1,14 +1,11 @@
-//! Native helper boundary for IR processing: the OpenCV extern
-//! declarations that only link on libc builds, the availability switch, and
-//! the pure-Zig fallback wiring used by freestanding/no-libc targets.
+//! Native helper boundary for IR processing: the OpenCV extern declarations,
+//! and ECC alignment over row bands around the pure-Zig estimator.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 const ir_pure = @import("ir_pure.zig");
 const parallelism = @import("parallelism.zig");
-
-pub const available = !builtin.cpu.arch.isWasm();
 
 pub extern fn cerealgrain_estimate_local_grain(
     roi_rgb: [*]const f64,

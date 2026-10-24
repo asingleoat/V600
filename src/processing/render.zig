@@ -173,7 +173,7 @@ fn renderPixels(
     try buildDisplayTransform(In, allocator, input, options, transform);
 
     const pixel_count = input.len / 3;
-    const worker_count = if (comptime parallelism.enabled) workerCountForPixels(pixel_count, render_pixels_per_worker) else 1;
+    const worker_count = workerCountForPixels(pixel_count, render_pixels_per_worker);
     if (worker_count <= 1) {
         renderRange(In, Out, input, output, transform, 0, pixel_count);
         return;

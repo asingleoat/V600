@@ -334,7 +334,7 @@ fn prepareDetectionGrayImage(
     errdefer image.deinit(allocator);
 
     const worker_count = workerCountForItems(pixel_count, conversion_parallel_min_items);
-    if (parallelism.enabled and worker_count > 1) {
+    if (worker_count > 1) {
         try prepareDetectionGrayImageParallel(allocator, data, image.gray, image.gray_u8, samples_per_pixel, bits_per_sample, options, worker_count);
     } else {
         fillDetectionGrayImageRange(data, image.gray, image.gray_u8, samples_per_pixel, bits_per_sample, options, 0, pixel_count);
@@ -2237,7 +2237,7 @@ fn computeAngleGradientSet(
     const half_band = angle_band_width / 2;
     const work_items = angle_strip_count * strip_len * angle_band_width;
     const worker_count = workerCountForItems(work_items, angle_gradient_parallel_min_work);
-    if (parallelism.enabled and worker_count > 1) {
+    if (worker_count > 1) {
         try computeAngleGradientSetParallel(
             allocator,
             gray,
@@ -3936,7 +3936,7 @@ fn grayImageToInvertedU8Bytes(allocator: std.mem.Allocator, image: []const f64) 
     const data = try allocator.alloc(u8, image.len);
     errdefer allocator.free(data);
     const worker_count = workerCountForItems(image.len, conversion_parallel_min_items);
-    if (parallelism.enabled and worker_count > 1) {
+    if (worker_count > 1) {
         try grayImageToInvertedU8BytesParallel(allocator, image, data, worker_count);
     } else {
         fillGrayToInvertedU8Range(image, data, 0, image.len);
@@ -3989,7 +3989,7 @@ fn fillGrayToInvertedU8Range(input: []const f64, output: []u8, start: usize, end
 
 fn fillInvertedU8(allocator: std.mem.Allocator, input: []const u8, output: []u8) !void {
     const worker_count = workerCountForItems(input.len, conversion_parallel_min_items);
-    if (parallelism.enabled and worker_count > 1) {
+    if (worker_count > 1) {
         try fillInvertedU8Parallel(allocator, input, output, worker_count);
     } else {
         fillInvertedU8Range(input, output, 0, input.len);
@@ -4052,7 +4052,7 @@ fn u8ImageToF64(allocator: std.mem.Allocator, image: []const u8) ![]f64 {
     const data = try allocator.alloc(f64, image.len);
     errdefer allocator.free(data);
     const worker_count = workerCountForItems(image.len, conversion_parallel_min_items);
-    if (parallelism.enabled and worker_count > 1) {
+    if (worker_count > 1) {
         try u8ImageToF64Parallel(allocator, image, data, worker_count);
     } else {
         fillU8ToF64Range(image, data, 0, image.len);

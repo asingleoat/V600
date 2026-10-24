@@ -236,11 +236,10 @@ Recorded in the May-July log; correct anything that is wrong:
   ..."`, so optimize flags and header dependencies apply.
 - Replace `opencv_ir.cpp` (grain estimation and synthesis) with the pure Zig
   ports in `ir_pure.zig`, which the webapp used and which replay the
-  fixtures exactly; it also indexes with 32-bit ints, which per-frame sizes stay under
+  fixtures exactly; they need a real FFT first (theirs is a direct DFT,
+  about a second per fill region); it also indexes with 32-bit ints, which per-frame sizes stay under
   for now (a 6x9 frame at 6400 dpi is about 0.9 billion samples). ECC
   alignment already moved to Zig.
-- Leftovers of the Wasm build: the `isWasm` switches (`parallelism.enabled`,
-  `ir_native.available`) and the pure-Zig fallbacks behind them.
 
 ### Repo, Nix, tests
 

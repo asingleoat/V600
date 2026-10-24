@@ -82,7 +82,7 @@ pub fn applyClahe8(
     defer allocator.free(luts);
     const clip_limit = claheClipLimit(options.clip_limit, tile_area);
     const lut_scale = 255.0 / @as(f64, @floatFromInt(tile_area));
-    if (parallelism.enabled and pixel_count >= clahe_parallel_min_pixels) {
+    if (pixel_count >= clahe_parallel_min_pixels) {
         const worker_count = @min(workerCountForItems(pixel_count, clahe_parallel_min_pixels), options.tiles_x * options.tiles_y);
         if (worker_count > 1) {
             try buildClahe8LutsParallel(allocator, input, luts, reflect_x, reflect_y, width, tile_width, tile_height, options.tiles_x, options.tiles_y, clip_limit, lut_scale, worker_count);
@@ -99,7 +99,7 @@ pub fn applyClahe8(
     defer x_map.deinit(allocator);
     var y_map = try buildClaheAxisMap(allocator, height, tile_height, options.tiles_y);
     defer y_map.deinit(allocator);
-    if (parallelism.enabled and pixel_count >= clahe_parallel_min_pixels) {
+    if (pixel_count >= clahe_parallel_min_pixels) {
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const worker_limit = if (cpu_count > 1) cpu_count - 1 else 1;
         const worker_count = @min(worker_limit, height);

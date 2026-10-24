@@ -8,7 +8,6 @@ const parallelism = @import("parallelism.zig");
 const ir_native = @import("ir_native.zig");
 const fill_solver = @import("fill_solver.zig");
 
-const use_native_ir_helpers = ir_native.available;
 
 pub const AlignOptions = struct {
     max_offset: i32 = 8,
@@ -890,9 +889,6 @@ pub fn estimateLocalGrain(
     if (width == 0 or height == 0 or roi_rgb.len != width * height * 3 or roi_mask.len != width * height) {
         return error.InvalidIrLocalGrainBuffer;
     }
-    if (!use_native_ir_helpers) {
-        return ir_pure.estimateLocalGrain(allocator, roi_rgb, roi_mask, width, height, grain_padding);
-    }
     if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
         height > @as(usize, @intCast(std.math.maxInt(c_int))) or
         grain_padding > @as(usize, @intCast(std.math.maxInt(c_int))))
@@ -943,7 +939,6 @@ pub fn estimateLocalGrain(
 }
 
 pub fn synthesizeGrainFromNoise(
-    allocator: std.mem.Allocator,
     noise: []const f64,
     width: usize,
     height: usize,
@@ -958,9 +953,6 @@ pub fn synthesizeGrainFromNoise(
         grain_std.len < channels)
     {
         return error.InvalidIrGrainSynthesisBuffer;
-    }
-    if (!use_native_ir_helpers) {
-        return ir_pure.synthesizeGrainFromNoise(allocator, noise, width, height, grain_std, grain_spectrum, channels, output);
     }
     if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
         height > @as(usize, @intCast(std.math.maxInt(c_int))) or
@@ -1356,7 +1348,7 @@ fn measureCoarseGrain(
         .origins = origins.items,
         .stats = stats,
     };
-    const worker_count = if (comptime parallelism.enabled) @max(1, @min(options.worker_count, origins.items.len)) else 1;
+    const worker_count = @max(1, @min(options.worker_count, origins.items.len));
     const threads = try allocator.alloc(std.Thread, worker_count - 1);
     defer allocator.free(threads);
     var started: usize = 0;
@@ -1710,7 +1702,7 @@ fn inpaintLevel(
     indices: []const usize,
     timings: ?*IrCleanTimings,
 ) !void {
-    const worker_count = if (comptime parallelism.enabled) @min(job.options.worker_count, indices.len) else 1;
+    const worker_count = @min(job.options.worker_count, indices.len);
     if (worker_count <= 1) {
         for (indices) |index| try inpaintComponent(allocator, job, plans[index], timings);
         return;
@@ -1809,7 +1801,6 @@ fn inpaintComponent(allocator: std.mem.Allocator, job: InpaintJob, plan: Inpaint
     const component_noise = captured_noise[plan.noise_offset..][0..roi_values];
     const synth_started = monotonicNowNs();
     try synthesizeGrainFromNoise(
-        allocator,
         component_noise,
         roi_width,
         roi_height,
@@ -2245,7 +2236,6 @@ fn castClippedStorageValue(value: f64, value_kind: InpaintValueKind) f64 {
 pub const roundF32 = ir_pure.roundF32;
 
 fn monotonicNowNs() u64 {
-    if (builtin.cpu.arch.isWasm() or !builtin.link_libc) return 0;
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
@@ -2334,7 +2324,7 @@ fn gaussianBlur(
     const pair_weights = kernel[radius_usize + 1 ..][0..radius_usize];
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (!parallelism.enabled or worker_count <= 1) {
+    if (worker_count <= 1) {
         gaussianHorizontalRows(input, temp, width, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianHorizontalRowsParallel(allocator, input, temp, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2343,7 +2333,7 @@ fn gaussianBlur(
     const output = try allocator.alloc(f64, input.len);
     errdefer allocator.free(output);
 
-    if (!parallelism.enabled or worker_count <= 1) {
+    if (worker_count <= 1) {
         gaussianVerticalRows(temp, output, width, height, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianVerticalRowsParallel(allocator, temp, output, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2632,7 +2622,7 @@ fn gaussianBlurF32(
     const pair_weights = kernel[radius_usize + 1 ..][0..radius_usize];
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (!parallelism.enabled or worker_count <= 1) {
+    if (worker_count <= 1) {
         gaussianHorizontalRowsF32(input, temp, width, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianHorizontalRowsParallelF32(allocator, input, temp, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2641,7 +2631,7 @@ fn gaussianBlurF32(
     const output = try allocator.alloc(f32, input.len);
     errdefer allocator.free(output);
 
-    if (!parallelism.enabled or worker_count <= 1) {
+    if (worker_count <= 1) {
         gaussianVerticalRowsF32(temp, output, width, height, radius_usize, center_weight, pair_weights, 0, height);
     } else {
         try gaussianVerticalRowsParallelF32(allocator, temp, output, width, height, radius_usize, center_weight, pair_weights, worker_count);
@@ -2872,7 +2862,7 @@ fn boxBlurF32Into(
     }
 
     const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (!parallelism.enabled or worker_count <= 1) {
+    if (worker_count <= 1) {
         boxHorizontalRowsF32(input, temp, width, radius, 0, height);
         boxVerticalColumnsF32(temp, output, width, height, radius, 0, width);
     } else {
@@ -4597,7 +4587,6 @@ fn expectGrainSynthesisFixture(path: []const u8) !void {
     const output = try allocator.alloc(f64, expected_len);
     defer allocator.free(output);
     try synthesizeGrainFromNoise(
-        allocator,
         fixture.noise,
         width,
         height,
@@ -5335,7 +5324,7 @@ test "IR local grain estimation validates dimensions" {
 
 test "IR grain synthesis validates dimensions" {
     var output = [_]f64{0};
-    try std.testing.expectError(error.InvalidIrGrainSynthesisBuffer, synthesizeGrainFromNoise(std.testing.allocator, &.{ 1.0, 2.0 }, 1, 1, &.{1.0}, null, 1, &output));
+    try std.testing.expectError(error.InvalidIrGrainSynthesisBuffer, synthesizeGrainFromNoise(&.{ 1.0, 2.0 }, 1, 1, &.{1.0}, null, 1, &output));
 }
 
 test "IR biharmonic inpaint validates dimensions and no-mask copy" {

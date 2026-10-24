@@ -1,14 +1,8 @@
-//! Comptime switch for the std.Thread-based parallel paths in the processing
-//! modules. Freestanding Wasm is single-threaded; referencing this constant in
-//! branch conditions keeps the thread-spawning code out of semantic analysis
-//! for Wasm targets, so it must stay comptime-known.
+//! Worker counts and row-band threads for the processing modules' parallel
+//! passes.
 const std = @import("std");
-const builtin = @import("builtin");
-
-pub const enabled = !builtin.cpu.arch.isWasm();
 
 pub fn workerCountForItems(item_count: usize, min_items: usize) usize {
-    if (!enabled) return 1;
     if (item_count < min_items) return 1;
     const cpu_count = std.Thread.getCpuCount() catch 1;
     if (cpu_count <= 1) return 1;
@@ -25,10 +19,6 @@ pub fn forRowBands(
     context: anytype,
     comptime work: fn (@TypeOf(context), usize, usize) void,
 ) !void {
-    if (comptime !enabled) {
-        work(context, 0, height);
-        return;
-    }
     const worker_count = rowBandWorkerCount(height);
     if (worker_count <= 1) {
         work(context, 0, height);

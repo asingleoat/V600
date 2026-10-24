@@ -99,7 +99,7 @@ pub fn rotateImageExpandedReplicate(
     const pixels = try allocator.alloc(f64, transform.rotated_width * transform.rotated_height);
     errdefer allocator.free(pixels);
     const pixel_count = transform.rotated_width * transform.rotated_height;
-    if (parallelism.enabled and pixel_count >= rotation_parallel_min_pixels) {
+    if (pixel_count >= rotation_parallel_min_pixels) {
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const worker_limit = if (cpu_count > 1) cpu_count - 1 else 1;
         const worker_count = @min(worker_limit, transform.rotated_height);
