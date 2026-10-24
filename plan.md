@@ -95,9 +95,17 @@ Open:
   KODAKGOLD_200_1 s01_06; KODAKGOLD_200_2 s01_06 (leader), s02_03, s03_03;
   KODAKGOLD_200_3 s03_04; KODAKPORTRA_400_0 s01_02; UNKNOWNSTOCK_0 s05_01
   (leader).
-- Newton's ring reduction leaves some rings: the dark centre and first
-  ring of small dust bullseyes (KODAKGOLD_200_2 s02_04, KODAKGOLD_200_3
-  s02_04), rings within 0.29 mm of strong picture edges, and rings whose
+- Newton's ring reduction leaves some rings: the centre and first rings of
+  small dust bullseyes (KODAKGOLD_200_2 s02_04, KODAKGOLD_200_3 s02_04;
+  within about 0.3 mm of the centre almost nothing comes off). They are
+  interference (red and green, not blue), but the speck at the centre
+  trips the edge protection, and the core's rings, about 4 grid pixels
+  apart, are finer than the fit's 0.29 mm window can follow: with the
+  speck masked (IR defects) and the edge test made blind to steps across
+  the radius near a centre, the fit runs there and still takes only a
+  fraction. A second, finer fit in each core (at the IR's 3200 dpi, a
+  smaller window) is the likely fix. Also left: rings within 0.29 mm of
+  strong picture edges, and rings whose
   centres score under the warning level, often beside strong picture
   content (the ring by the peony in KODAKGOLD_200_2 s05_04 scores 0.029).
   Weighting the score away from picture edges inflates ring-free frames'
