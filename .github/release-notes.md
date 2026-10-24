@@ -14,9 +14,21 @@ print-sized JPEGs if you ask for them.
 
 ## First launch on a Mac
 
-The app is not signed by a registered Apple developer, so macOS refuses
-it the first time. Open System Settings > Privacy & Security, click
-"Open Anyway" next to CerealGrain, and confirm.
+The app is not signed by a registered Apple developer, so macOS will not
+open it until you allow it once:
+
+1. Open the disk image and drag CerealGrain onto Applications.
+2. Open CerealGrain. macOS refuses, saying it could not verify the app.
+   Click **Done**, not Move to Trash.
+3. Open System Settings > Privacy & Security and scroll down to Security,
+   where it says CerealGrain was blocked. Click **Open Anyway** and enter
+   your password.
+4. Open CerealGrain again and click **Open Anyway** when asked. After that
+   it opens normally.
+
+Or, in Terminal, before the first launch:
+
+    xattr -dr com.apple.quarantine /Applications/CerealGrain.app
 
 Most scanners also need Epson's own Mac software for the scanner (Epson
 Scan 2), from Epson's support site. The V700 and V750 do not.

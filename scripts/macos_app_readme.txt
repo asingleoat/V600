@@ -12,13 +12,20 @@ What you need
   to them directly and needs no Epson software.
 
 First launch
+The app is not signed by a registered Apple developer, so macOS will not
+open it until you allow it once:
 1. Drag CerealGrain.app onto the Applications folder beside it in the disk
    image's window.
-2. Open it. The app is not signed by a registered developer, so macOS will
-   refuse the first time.
-3. Open System Settings > Privacy & Security, scroll down, click "Open
-   Anyway" next to CerealGrain, and confirm. (On macOS 14 you can instead
-   Control-click the app, choose Open, and confirm.)
+2. Open CerealGrain from Applications. macOS refuses, saying it could not
+   verify the app. Click Done, not Move to Trash.
+3. Open System Settings > Privacy & Security and scroll down to Security,
+   where it says CerealGrain was blocked. Click Open Anyway there and enter
+   your password. (The button stays for about an hour after the refusal.)
+4. Open CerealGrain again and click Open Anyway when asked. From then on it
+   opens like any other app.
+Or, if you are happy in Terminal, this one line does the same before the
+first launch:
+  xattr -dr com.apple.quarantine /Applications/CerealGrain.app
 
 Where your files go
 Everything lives in the Pictures folder under CerealGrain:
