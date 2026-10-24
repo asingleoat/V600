@@ -916,7 +916,7 @@ pub fn detectFramesAxisAlignedPrepared(
     defer evidence.deinit(allocator);
     if (options.cross_gray_raw) |raw| evidence.dropFilmEnds(filmAlongStrip(raw, width, height, strip_info.is_vertical), blur_kernel);
 
-    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null);
+    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null, options.frame_count_override == null);
     errdefer allocator.free(edges);
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
     const frames = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
@@ -959,7 +959,7 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     breakdown.gradients_ns = monotonicNowNs() - gradients_started;
 
     const fit_started = monotonicNowNs();
-    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null);
+    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null, options.frame_count_override == null);
     errdefer allocator.free(edges);
     breakdown.fit_ns = monotonicNowNs() - fit_started;
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
@@ -1012,14 +1012,32 @@ fn applyKnownScale(strip_info: *StripAnalysis, format: FilmFormat, px_per_mm: f6
 /// Start and end of every frame along the strip. When the strip's length
 /// suggested more frames than fit, places as many as do and sets
 /// `strip_info.n_frames` to that. The caller frees the slice.
+///
+/// The length counts frames at the format's pitch, but some cameras space
+/// them closer: a disposable's strips hold six 35mm frames 37.7 mm apart,
+/// cut end to cut end, which the 38 mm pitch counts as five. With
+/// `may_add_frame`, one frame more is taken when it fits and every one of
+/// its frames shows an edge: an extra frame forced onto blank film or
+/// across pictures has one end with next to none.
 fn frameEdgesAlongStrip(
     allocator: std.mem.Allocator,
     evidence: FrameEdgeEvidence,
     format: FilmFormat,
     strip_info: *StripAnalysis,
     scale_known: bool,
+    may_add_frame: bool,
 ) ![]usize {
     const px_per_mm = strip_info.pitch_px / format.pitch_mm;
+    if (may_add_frame) {
+        const more = strip_info.n_frames + 1;
+        if (try fitFramesAlongStrip(allocator, evidence, more, format, px_per_mm, scale_known)) |edges| {
+            if (try everyFrameShowsAnEdge(allocator, evidence, edges)) {
+                strip_info.n_frames = more;
+                return edges;
+            }
+            allocator.free(edges);
+        }
+    }
     var frame_count = strip_info.n_frames;
     while (frame_count > 0) : (frame_count -= 1) {
         if (try fitFramesAlongStrip(allocator, evidence, frame_count, format, px_per_mm, scale_known)) |edges| {
@@ -1028,6 +1046,22 @@ fn frameEdgesAlongStrip(
         }
     }
     return error.NoFrameFitsStrip;
+}
+
+/// Measured on real strips: the extra frames that belong had every frame's
+/// stronger edge at 0.52 or more of the strip's typical edge, the ones that
+/// did not had a frame at 0.09 or less.
+const added_frame_edge = 0.3;
+
+fn everyFrameShowsAnEdge(allocator: std.mem.Allocator, evidence: FrameEdgeEvidence, edges: []const usize) !bool {
+    const frame_count = edges.len / 2;
+    const typical = try typicalEdgeStrength(allocator, evidence, frame_count);
+    if (typical <= 0.0) return false;
+    for (0..frame_count) |frame| {
+        const stronger = @max(evidence.start[edges[2 * frame]], evidence.end[edges[2 * frame + 1]]);
+        if (stronger < added_frame_edge * typical) return false;
+    }
+    return true;
 }
 
 /// Where frames start and end along the strip. The film between frames is

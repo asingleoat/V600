@@ -172,7 +172,11 @@ Recorded in the May-July log; correct anything that is wrong:
   once strips in those formats are hand-framed.
 - A 35mm strip with blank film at one end gets an extra frame on the blank
   part: the frame count comes from the strip's length (KODAKGOLD_200_1 and
-  _2, strip 1). Needs a per-frame evidence test before dropping frames.
+  _2, strip 1). Needs a per-frame evidence test before dropping frames, and
+  edge strength is not it: those blank frames' edges are 0.01-0.02 of the
+  strip's typical edge, but real frames reach as low as 0.10-0.18
+  (KODAKGOLD_200_0 strip 4 frame 5, placed by hand; KODAKGOLD_200_3 strip
+  2 frame 1). Picture content inside the frame may tell them apart.
 
 - Linux custom film LUTs are not applied, but scans are marked as if they
   were. `src/scanner/linux.zig` sets `CEREALGRAIN_LUT_FILE` and writes

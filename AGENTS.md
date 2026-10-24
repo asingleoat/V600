@@ -215,7 +215,10 @@ deliberately, not by accident.
   may differ between every pair of frames (35mm 0.2-6 mm, 120 0.5-12 mm),
   then a soft pull toward the strip's usual gap for frames whose edges
   barely show; fewer frames when the strip's length promised more than
-  fit. Across the strip, the frame width is measured per strip within the
+  fit, and one more when it fits with every frame showing an edge (0.3 of
+  the strip's typical edge), since some cameras space frames closer than
+  the format's pitch (a disposable's six 35mm frames run cut end to cut
+  end, 37.7 mm apart). Across the strip, the frame width is measured per strip within the
   format's band (35mm 2%, 120 4%), so the aspect comes from the film. Each
   frame's angle comes from its edges, sought the way round they turn, then
   is pulled toward the strip's (the median of the frames): frames turn
