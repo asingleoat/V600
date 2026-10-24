@@ -9,7 +9,6 @@ const ir_native = @import("ir_native.zig");
 const fill_solver = @import("fill_solver.zig");
 const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
-
 pub const AlignOptions = struct {
     max_offset: i32 = 8,
 };
@@ -20,20 +19,13 @@ pub const AlignResult = struct {
     shifted: bool,
 };
 
+/// How the adaptive dust detector computes: f32 is the default, f64 the
+/// reference it was measured against, and f32_down4_coarse (its coarse blur
+/// pair on a 4x downsample) a faster option awaiting a decision.
 pub const AdaptiveDustPrecision = enum {
     f64,
     f32,
-    f32_box3,
-    f32_box4,
-    f32_box6,
-    f32_box8,
-    f32_down2,
-    f32_down3,
-    f32_down4,
-    f32_down6,
-    f32_down8,
     f32_down4_coarse,
-    f32_down4_final,
 };
 
 const gaussian_parallel_min_pixels_per_worker: usize = 1_000_000;
@@ -45,7 +37,6 @@ const GaussianVecF32 = @Vector(gaussian_simd_width_f32, f32);
 
 const AdaptiveF32BlurMode = union(enum) {
     gaussian,
-    box_cascade: usize,
     downsampled_gaussian: usize,
 };
 
@@ -355,30 +346,10 @@ fn adaptiveDustMaskAndSigma(
     return switch (options.precision) {
         .f64 => adaptiveDustMaskAndSigmaF64(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings),
         .f32 => adaptiveDustMaskAndSigmaF32(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings),
-        .f32_box3 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .box_cascade = 3 })),
-        .f32_box4 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .box_cascade = 4 })),
-        .f32_box6 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .box_cascade = 6 })),
-        .f32_box8 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .box_cascade = 8 })),
-        .f32_down2 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .downsampled_gaussian = 2 })),
-        .f32_down3 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .downsampled_gaussian = 3 })),
-        .f32_down4 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .downsampled_gaussian = 4 })),
-        .f32_down6 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .downsampled_gaussian = 6 })),
-        .f32_down8 => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.{ .downsampled_gaussian = 8 })),
         .f32_down4_coarse => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, .{
             .coarse = .{ .downsampled_gaussian = 4 },
             .final = .gaussian,
         }),
-        .f32_down4_final => adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, .{
-            .coarse = .gaussian,
-            .final = .{ .downsampled_gaussian = 4 },
-        }),
-    };
-}
-
-fn singleF32BlurPlan(mode: AdaptiveF32BlurMode) AdaptiveF32BlurPlan {
-    return .{
-        .coarse = mode,
-        .final = mode,
     };
 }
 
@@ -478,7 +449,7 @@ fn adaptiveDustMaskAndSigmaF32(
     options: ThresholdOptions,
     timings: ?*IrCleanTimings,
 ) !void {
-    try adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, singleF32BlurPlan(.gaussian));
+    try adaptiveDustMaskAndSigmaF32WithBlur(allocator, ir, width, height, dust_mask, n_sigma2_out, options, timings, .{ .coarse = .gaussian, .final = .gaussian });
 }
 
 fn adaptiveDustMaskAndSigmaF32WithBlur(
@@ -2236,7 +2207,6 @@ fn castClippedStorageValue(value: f64, value_kind: InpaintValueKind) f64 {
 
 pub const roundF32 = ir_pure.roundF32;
 
-
 fn validateAlignmentInputs(
     rgb: []const f64,
     rgb_width: usize,
@@ -2647,7 +2617,6 @@ fn adaptiveBlurF32(
 ) ![]f32 {
     return switch (mode) {
         .gaussian => gaussianBlurF32(allocator, input, width, height, kernel_size, requested_worker_count),
-        .box_cascade => |box_count| boxCascadeGaussianApproxBlurF32(allocator, input, width, height, kernel_size, box_count, requested_worker_count),
         .downsampled_gaussian => |scale| downsampledGaussianBlurF32(allocator, input, width, height, kernel_size, scale, requested_worker_count),
     };
 }
@@ -2770,270 +2739,6 @@ fn bilinearSamplePair(sample: f32, len: usize) BilinearSamplePair {
 
 fn lerpF32(a: f32, b: f32, t: f32) f32 {
     return a + (b - a) * t;
-}
-
-fn boxCascadeGaussianApproxBlurF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    width: usize,
-    height: usize,
-    kernel_size: usize,
-    box_count: usize,
-    requested_worker_count: usize,
-) ![]f32 {
-    if (input.len != width * height or box_count == 0 or box_count > max_gaussian_approx_boxes) {
-        return error.InvalidIrThresholdBuffer;
-    }
-
-    const widths = gaussianApproxBoxWidths(kernel_size, box_count);
-    const temp = try allocator.alloc(f32, input.len);
-    defer allocator.free(temp);
-
-    const ping = try allocator.alloc(f32, input.len);
-    errdefer allocator.free(ping);
-    const pong = try allocator.alloc(f32, input.len);
-    errdefer allocator.free(pong);
-
-    var current = input;
-    for (widths[0..box_count], 0..) |box_width, index| {
-        const destination = if (index % 2 == 0) ping else pong;
-        try boxBlurF32Into(allocator, current, destination, temp, width, height, box_width / 2, requested_worker_count);
-        current = destination;
-    }
-
-    if (box_count % 2 == 1) {
-        allocator.free(pong);
-        return ping;
-    }
-
-    allocator.free(ping);
-    return pong;
-}
-
-const max_gaussian_approx_boxes: usize = 8;
-
-fn gaussianApproxBoxWidths(kernel_size: usize, box_count: usize) [max_gaussian_approx_boxes]usize {
-    var widths = [_]usize{1} ** max_gaussian_approx_boxes;
-    const sigma = gaussianApproxSigmaF32(kernel_size);
-    const n: f32 = @floatFromInt(box_count);
-    const ideal = @sqrt((12.0 * sigma * sigma / n) + 1.0);
-    var lower: usize = @intFromFloat(@floor(ideal));
-    if (lower < 1) lower = 1;
-    if (lower % 2 == 0) lower -= 1;
-    const upper = lower + 2;
-    const lower_f: f32 = @floatFromInt(lower);
-    const lower_count_float = (12.0 * sigma * sigma - n * lower_f * lower_f - 4.0 * n * lower_f - 3.0 * n) / (-4.0 * lower_f - 4.0);
-    var lower_count: isize = @intFromFloat(@round(lower_count_float));
-    lower_count = @max(@as(isize, 0), @min(lower_count, @as(isize, @intCast(box_count))));
-    for (0..box_count) |index| {
-        widths[index] = if (index < @as(usize, @intCast(lower_count))) lower else upper;
-    }
-    return widths;
-}
-
-fn gaussianApproxSigmaF32(kernel_size: usize) f32 {
-    if (kernel_size == 3) return @sqrt(@as(f32, 0.5));
-    if (kernel_size == 5) return 1.0;
-    if (kernel_size == 7) return @sqrt(@as(f32, 7.0 / 4.0));
-    const half = (@as(f32, @floatFromInt(kernel_size)) - 1.0) * 0.5;
-    return 0.3 * (half - 1.0) + 0.8;
-}
-
-fn boxBlurF32Into(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    output: []f32,
-    temp: []f32,
-    width: usize,
-    height: usize,
-    radius: usize,
-    requested_worker_count: usize,
-) !void {
-    if (input.len != width * height or output.len != input.len or temp.len != input.len) {
-        return error.InvalidIrThresholdBuffer;
-    }
-    if (radius == 0) {
-        @memcpy(output, input);
-        return;
-    }
-
-    const worker_count = gaussianWorkerCount(input.len, height, requested_worker_count);
-    if (worker_count <= 1) {
-        boxHorizontalRowsF32(input, temp, width, radius, 0, height);
-        boxVerticalColumnsF32(temp, output, width, height, radius, 0, width);
-    } else {
-        try boxHorizontalRowsParallelF32(allocator, input, temp, width, height, radius, worker_count);
-        try boxVerticalColumnsParallelF32(allocator, temp, output, width, height, radius, @min(worker_count, width));
-    }
-}
-
-const BoxHorizontalRowsF32Context = struct {
-    input: []const f32,
-    output: []f32,
-    width: usize,
-    radius: usize,
-    row_start: usize,
-    row_end: usize,
-};
-
-const BoxVerticalColumnsF32Context = struct {
-    input: []const f32,
-    output: []f32,
-    width: usize,
-    height: usize,
-    radius: usize,
-    column_start: usize,
-    column_end: usize,
-};
-
-fn boxHorizontalRowsF32(
-    input: []const f32,
-    output: []f32,
-    width: usize,
-    radius: usize,
-    row_start: usize,
-    row_end: usize,
-) void {
-    const radius_i: i32 = @intCast(radius);
-    const inv_window = 1.0 / @as(f32, @floatFromInt(radius * 2 + 1));
-    for (row_start..row_end) |y| {
-        const row = y * width;
-        var sum: f32 = 0.0;
-        var offset: i32 = -radius_i;
-        while (offset <= radius_i) : (offset += 1) {
-            sum += input[row + reflect101Index(offset, width)];
-        }
-        for (0..width) |x| {
-            output[row + x] = sum * inv_window;
-            if (x + 1 < width) {
-                const x_i: i32 = @intCast(x);
-                const remove_x = reflect101Index(x_i - radius_i, width);
-                const add_x = reflect101Index(x_i + radius_i + 1, width);
-                sum += input[row + add_x] - input[row + remove_x];
-            }
-        }
-    }
-}
-
-fn boxVerticalColumnsF32(
-    input: []const f32,
-    output: []f32,
-    width: usize,
-    height: usize,
-    radius: usize,
-    column_start: usize,
-    column_end: usize,
-) void {
-    const radius_i: i32 = @intCast(radius);
-    const inv_window = 1.0 / @as(f32, @floatFromInt(radius * 2 + 1));
-    for (column_start..column_end) |x| {
-        var sum: f32 = 0.0;
-        var offset: i32 = -radius_i;
-        while (offset <= radius_i) : (offset += 1) {
-            sum += input[reflect101Index(offset, height) * width + x];
-        }
-        for (0..height) |y| {
-            output[y * width + x] = sum * inv_window;
-            if (y + 1 < height) {
-                const y_i: i32 = @intCast(y);
-                const remove_y = reflect101Index(y_i - radius_i, height);
-                const add_y = reflect101Index(y_i + radius_i + 1, height);
-                sum += input[add_y * width + x] - input[remove_y * width + x];
-            }
-        }
-    }
-}
-
-fn boxHorizontalRowsParallelF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    output: []f32,
-    width: usize,
-    height: usize,
-    radius: usize,
-    worker_count: usize,
-) !void {
-    var threads = try allocator.alloc(std.Thread, worker_count - 1);
-    defer allocator.free(threads);
-    var contexts = try allocator.alloc(BoxHorizontalRowsF32Context, worker_count);
-    defer allocator.free(contexts);
-    for (0..worker_count) |index| {
-        contexts[index] = .{
-            .input = input,
-            .output = output,
-            .width = width,
-            .radius = radius,
-            .row_start = height * index / worker_count,
-            .row_end = height * (index + 1) / worker_count,
-        };
-    }
-
-    var started: usize = 0;
-    errdefer for (threads[0..started]) |thread| thread.join();
-    for (1..worker_count) |index| {
-        threads[started] = try std.Thread.spawn(.{}, boxHorizontalRowsF32Worker, .{&contexts[index]});
-        started += 1;
-    }
-    boxHorizontalRowsF32Worker(&contexts[0]);
-    for (threads[0..started]) |thread| thread.join();
-}
-
-fn boxVerticalColumnsParallelF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    output: []f32,
-    width: usize,
-    height: usize,
-    radius: usize,
-    worker_count: usize,
-) !void {
-    var threads = try allocator.alloc(std.Thread, worker_count - 1);
-    defer allocator.free(threads);
-    var contexts = try allocator.alloc(BoxVerticalColumnsF32Context, worker_count);
-    defer allocator.free(contexts);
-    for (0..worker_count) |index| {
-        contexts[index] = .{
-            .input = input,
-            .output = output,
-            .width = width,
-            .height = height,
-            .radius = radius,
-            .column_start = width * index / worker_count,
-            .column_end = width * (index + 1) / worker_count,
-        };
-    }
-
-    var started: usize = 0;
-    errdefer for (threads[0..started]) |thread| thread.join();
-    for (1..worker_count) |index| {
-        threads[started] = try std.Thread.spawn(.{}, boxVerticalColumnsF32Worker, .{&contexts[index]});
-        started += 1;
-    }
-    boxVerticalColumnsF32Worker(&contexts[0]);
-    for (threads[0..started]) |thread| thread.join();
-}
-
-fn boxHorizontalRowsF32Worker(context: *const BoxHorizontalRowsF32Context) void {
-    boxHorizontalRowsF32(
-        context.input,
-        context.output,
-        context.width,
-        context.radius,
-        context.row_start,
-        context.row_end,
-    );
-}
-
-fn boxVerticalColumnsF32Worker(context: *const BoxVerticalColumnsF32Context) void {
-    boxVerticalColumnsF32(
-        context.input,
-        context.output,
-        context.width,
-        context.height,
-        context.radius,
-        context.column_start,
-        context.column_end,
-    );
 }
 
 const GaussianRowsF32Context = struct {
@@ -5139,44 +4844,6 @@ test "f32 gaussian blur parallel row ranges match single threaded output" {
     const single = try gaussianBlurF32(allocator, input, width, height, 7, 1);
     defer allocator.free(single);
     const parallel = try gaussianBlurF32(allocator, input, width, height, 7, 4);
-    defer allocator.free(parallel);
-
-    try std.testing.expectEqual(@as(usize, 2), gaussianWorkerCount(input.len, height, 4));
-    try std.testing.expectEqualSlices(f32, single, parallel);
-}
-
-test "f32 box cascade gaussian approximation preserves constant images" {
-    const width: usize = 17;
-    const height: usize = 11;
-    const allocator = std.testing.allocator;
-    const input = try allocator.alloc(f32, width * height);
-    defer allocator.free(input);
-    @memset(input, 0.375);
-
-    const output = try boxCascadeGaussianApproxBlurF32(allocator, input, width, height, 31, 3, 1);
-    defer allocator.free(output);
-
-    for (output) |value| {
-        try std.testing.expectApproxEqAbs(@as(f32, 0.375), value, 0.000001);
-    }
-}
-
-test "f32 box cascade gaussian approximation parallel ranges match single threaded output" {
-    const width: usize = 2048;
-    const height: usize = 1024;
-    const allocator = std.testing.allocator;
-    const input = try allocator.alloc(f32, width * height);
-    defer allocator.free(input);
-
-    for (0..height) |y| {
-        for (0..width) |x| {
-            input[y * width + x] = @as(f32, @floatFromInt((x * 11 + y * 37) % 65535)) / 65535.0;
-        }
-    }
-
-    const single = try boxCascadeGaussianApproxBlurF32(allocator, input, width, height, 301, 3, 1);
-    defer allocator.free(single);
-    const parallel = try boxCascadeGaussianApproxBlurF32(allocator, input, width, height, 301, 3, 4);
     defer allocator.free(parallel);
 
     try std.testing.expectEqual(@as(usize, 2), gaussianWorkerCount(input.len, height, 4));

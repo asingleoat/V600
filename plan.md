@@ -210,10 +210,9 @@ Recorded in the May-July log; correct anything that is wrong:
   `sigmoidTonemap`/`applySrgbGamma`, `makeRebateMask`, and the unused
   rebate-mask and dark/light inputs to `inversion.zig`. Check the WebGPU
   `apply_sigmoid` kernel, which depends on the sigmoid code.
-- Remove rejected experiments: the `AdaptiveDustPrecision` variants and
-  approximate blurs in `ir.zig`, benchmark-only `invertNegative*` variants,
-  and concluded tradeoff cases in `src/benchmarks/processing_commands.zig`
-  (verdicts in `docs/PERFORMANCE_STRATEGY.md`).
+- Remove the reference paths only the removed benchmark comparisons used:
+  benchmark-only `invertNegative*` variants in `inversion.zig`. The f64
+  adaptive dust detector stays as the reference for `f32_down4_coarse`.
 - Decide WebGPU's future: keep and trim (the adapter setup is copied five
   times), or move it to a branch (~3.7k lines).
 - Shared helpers: JSON string escaping (5 copies), spinlocks (3), small

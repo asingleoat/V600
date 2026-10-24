@@ -115,7 +115,11 @@ Major wins (scan_0004 unless noted):
 
 ## Concluded Experiments
 
-Verdicts as recorded in the log. "Exact" means identical final output.
+Verdicts as recorded in the log. "Exact" means identical final output. The
+benchmark cases that compared these, and the rejected variants, are gone
+from the code; git history keeps them. Some wins above were measured by
+such cases (`preview_render_quantile_tradeoff`,
+`invert_negative_preview_lut_tradeoff`).
 
 Render and inversion (the display-table verdicts concern the earlier
 percentile-stretch S-curve, since replaced by the current display transform):
