@@ -64,6 +64,13 @@ Confirmed by the owner, 2026-09-28:
   keeps the Kodak Gold profile and automatic white balance handles its
   balance (its blue range is about green's, against Gold's 1.2x). (2026-10-02)
 
+Confirmed by the owner, 2026-10-24:
+
+- With no film stock selected, exports invert as Kodak Gold. The stock
+  profiles are an eyeballed starting point, so Gold is as good a default as
+  any.
+- An Intel Mac build is low priority.
+
 Recorded in the May-July log; correct anything that is wrong:
 
 - 2026-05-18: use the ambient Nix shell; no Nix evaluations in ordinary
@@ -107,8 +114,22 @@ Open:
   Weighting the score away from picture edges inflates ring-free frames'
   scores, so it is not the fix. The Process view's preview does
   not show the reduction, and the webapp does not reduce rings.
-- IR dust removal leaves over-smooth patches in KODAKGOLD_200_2 s02_03
-  (owner review): inpainted areas without enough synthetic grain.
+- IR dust removal leaves over-smooth patches, inpainted areas with too
+  little synthetic grain (owner review): KODAKGOLD_200_2 s02_03, and the
+  middle of KODAKGOLD_200_0 s04_03. Deeply underexposed frames get smooth
+  blobs (all of KODAKGOLD_200_3): a thin negative's grain is stretched far
+  by inversion, so grain matched on the negative may fall short there. If a
+  fix falls short, suggest turning dust removal off for such frames.
+- Trash and Delete are equal-size buttons side by side in the Gallery and
+  the Process view, and both ask for confirmation. Trash should be the
+  one-click action and move files to the system Trash (on macOS, where
+  Finder's Put Back restores them), not a hidden `.trash` folder beside
+  them; Delete should be smaller and keep its confirmation.
+- macOS: with Epson's driver missing, connecting says "Epson's scanner
+  driver is not installed." without naming what to install or where to get
+  it (`ica_driver_url` in `src/scanner/macos.zig` is used only by tests).
+  The app downloads and installs nothing; the zip's readme is the only
+  guide.
 
 - Colour tuning has no repeatable check on real frames, the way framing has
   `roll check-frames`: a `roll check-colour` reporting casts per tone band,
@@ -210,9 +231,6 @@ Open:
     CLI's, and the aliases have drifted (`rgb_ir` vs `rgbir`; both accept
     `rgb+ir`).
 - Webapp: see the known issues in `docs/WEBAPP.md`.
-- With no film stock selected, exports still invert with `kodak_gold`
-  (`film_stock orelse "kodak_gold"` in `src/processing/export.zig`). Python
-  had no inversion without a stock. Decide which is intended.
 - The image list ignores symlinked TIFFs (`tiff.findImages` accepts only
   regular files), so a scan folder of symlinks shows "No scan TIFFs found".
 - Passing test runs print about 130 JSON scanner timing events on stderr,
@@ -291,13 +309,21 @@ Open:
   `scripts/` (the macOS app bundle script there stays),
   `lut_capturexhc1.pcapng` (cited by `docs/SCANNER_INTERNALS.md`),
   `test/test-combined-features.sh`.
-- macOS app bundle: no icon yet, and Intel Macs would need an
-  `x86_64-darwin` build.
+- macOS app bundle: no icon yet. Intel Macs would need an `x86_64-darwin`
+  build (low priority).
+- No CI: a GitHub Actions job on an Apple Silicon runner should build the
+  app bundle and keep its zip. It stays ad hoc signed; notarization needs a
+  paid Apple Developer account.
 - Other scanner models, from testers' reports: the resolutions each accepts
   (the 4800 dpi and interpreter-less ones are guesses), whether IR and the
   IR challenge work beyond the V600, whether their film scans need a TPU
   calibration sequence like the V600's (a USB capture of Epson Scan on the
-  model), and whether the interpreter-less ESC/I path runs at all.
+  model), and whether the interpreter-less ESC/I path runs at all. The
+  scan area comes from the scanner, but some defaults follow the V600:
+  auto-select takes the largest film region on the preview (one strip of a
+  holder with several side by side), a roll's default frame rotation
+  assumes strips loaded as in the V600's holder, and scan-time estimates
+  use the V600's line times.
 - Some UI worker tests (`src/ui/process_worker.zig`) load `processing.toml`
   from the working directory, so a test run reads the developer's own
   config at the repo root; they should use a temporary config.
