@@ -140,6 +140,9 @@ pub const AutoDetectOptions = struct {
     /// Trim each detected frame to the format's exact aspect (for prints)
     /// instead of the frame the camera exposed.
     exact_aspect: bool = false,
+    /// The frames' length along the strip, when known from the rest of the
+    /// roll (frames.DetectFramesOptions.frame_length_mm).
+    frame_length_mm: ?f64 = null,
 };
 
 pub const AutoDetectResult = struct {
@@ -148,6 +151,9 @@ pub const AutoDetectResult = struct {
     rebate: ?frames.RebateRect,
     /// Detection failed and the one frame is the whole image.
     full_image_fallback: bool = false,
+    /// The frames' length along the strip as the camera exposed them (the
+    /// median, before any exact-aspect trim), when the scan's DPI is known.
+    frame_length_mm: ?f64 = null,
 
     pub fn deinit(self: *AutoDetectResult, allocator: std.mem.Allocator) void {
         allocator.free(self.frames);
@@ -512,6 +518,7 @@ pub fn autoDetectPreview(
 
     const format_name = options.format orelse "35mm_strip_6";
     const format = frames.formatByName(format_name) orelse return error.InvalidFilmFormat;
+    const px_per_mm: ?f64 = if (preview.info.dpi) |dpi| @as(f64, @floatFromInt(dpi)) / 25.4 * preview.info.preview_scale else null;
     var detected = try frames.detectFramesFromImage(
         allocator,
         std.mem.sliceAsBytes(preview.preview_raw),
@@ -524,12 +531,22 @@ pub fn autoDetectPreview(
             .frame_count_override = options.n_frames,
             .detect_film_extent = options.detect_film_extent,
             .apply_clahe = options.apply_clahe,
-            .px_per_mm = if (preview.info.dpi) |dpi| @as(f64, @floatFromInt(dpi)) / 25.4 * preview.info.preview_scale else null,
+            .px_per_mm = px_per_mm,
+            .frame_length_mm = options.frame_length_mm,
         },
     );
     errdefer detected.deinit(allocator);
     const is_vertical = detected.strip_info.is_vertical;
-    const result = try autoDetectDetectedFrames(&detected, preview.preview_width, preview.preview_height);
+    var result = try autoDetectDetectedFrames(&detected, preview.preview_width, preview.preview_height);
+    if (px_per_mm) |scale| {
+        if (!result.full_image_fallback and result.frames.len != 0) {
+            var lengths: [64]f64 = undefined;
+            const count = @min(result.frames.len, lengths.len);
+            for (result.frames[0..count], lengths[0..count]) |frame, *length| length.* = (if (is_vertical) frame.h else frame.w) / scale;
+            std.mem.sort(f64, lengths[0..count], {}, std.sort.asc(f64));
+            result.frame_length_mm = lengths[count / 2];
+        }
+    }
     // After the rebate is placed, from the frames as exposed.
     if (options.exact_aspect and !result.full_image_fallback) {
         for (result.frames) |*frame| frame.* = frames.exactAspectFrame(frame.*, format, is_vertical);

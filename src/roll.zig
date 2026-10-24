@@ -350,10 +350,7 @@ pub const Roll = struct {
         try self.removePreviousExports(io, strip_path);
         // Hand-placed frames still use detection for the rebate, but not
         // when detection fails outright.
-        var detected: ?workflow.AutoDetectResult = workflow.autoDetectPreview(allocator, preview, .{
-            .format = self.format,
-            .exact_aspect = loaded_config.flag("exact_aspect"),
-        }) catch |err|
+        var detected: ?workflow.AutoDetectResult = self.detectStrip(io, strip_path, preview, loaded_config.flag("exact_aspect")) catch |err|
             if (framing == null) return err else null;
         defer if (detected) |*result| result.deinit(allocator);
         const to_full = 1.0 / preview.info.preview_scale;
@@ -382,6 +379,7 @@ pub const Roll = struct {
             .framing_hash = if (saved_framing) |owned| owned.hash else null,
             .dmin_source = if (rebate_rect != null) "rebate" else if (use_roll_dmin) "roll" else "image",
             .files = &.{},
+            .frame_length_mm = if (framing != null) handFrameLengthMm(rects, preview) else if (detected) |result| result.frame_length_mm else null,
         };
         errdefer outcome.deinit(allocator);
         if (rects.len != 0) {
@@ -455,14 +453,60 @@ pub const Roll = struct {
         };
     }
 
+    /// Detects the strip's frames. One camera exposed the whole roll, so
+    /// when the frames come out more than 2% longer or shorter than the
+    /// median the roll's other strips recorded, it detects again with that
+    /// length: on thin, underexposed film the frames' ends barely show and
+    /// the fit can settle on a length 5% off.
+    pub fn detectStrip(self: *const Roll, io: std.Io, strip_path: []const u8, preview: workflow.QuickPreview, exact_aspect: bool) !workflow.AutoDetectResult {
+        const allocator = self.allocator;
+        var detected = try workflow.autoDetectPreview(allocator, preview, .{ .format = self.format, .exact_aspect = exact_aspect });
+        const length = detected.frame_length_mm orelse return detected;
+        const roll_length = (try self.rollFrameLengthMm(io, strip_path)) orelse return detected;
+        if (@abs(length - roll_length) <= roll_length_tolerance * roll_length) return detected;
+        var again = workflow.autoDetectPreview(allocator, preview, .{
+            .format = self.format,
+            .exact_aspect = exact_aspect,
+            .frame_length_mm = roll_length,
+        }) catch return detected;
+        if (again.full_image_fallback) {
+            again.deinit(allocator);
+            return detected;
+        }
+        detected.deinit(allocator);
+        return again;
+    }
+
+    /// The median frame length the roll's other strips recorded, if any.
+    fn rollFrameLengthMm(self: *const Roll, io: std.Io, except_path: []const u8) !?f64 {
+        const allocator = self.allocator;
+        const strips = try self.listStrips(io);
+        defer strips.deinit(allocator);
+        var lengths: std.ArrayList(f64) = .empty;
+        defer lengths.deinit(allocator);
+        for (strips.paths) |strip_file| {
+            if (std.mem.eql(u8, std.fs.path.basename(strip_file), std.fs.path.basename(except_path))) continue;
+            const marker_path = try std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_file, processed_suffix });
+            defer allocator.free(marker_path);
+            const text = std.Io.Dir.cwd().readFileAlloc(io, marker_path, allocator, .limited(64 * 1024)) catch continue;
+            defer allocator.free(text);
+            const parsed = std.json.parseFromSlice(MarkerJson, allocator, text, .{ .ignore_unknown_fields = true }) catch continue;
+            defer parsed.deinit();
+            if (parsed.value.frame_length_mm) |length| try lengths.append(allocator, length);
+        }
+        if (lengths.items.len == 0) return null;
+        std.mem.sort(f64, lengths.items, {}, std.sort.asc(f64));
+        return lengths.items[lengths.items.len / 2];
+    }
+
     /// The frames and rebate auto-detection finds on the strip, as
     /// `processStrip` exports them without a framing file. The caller frees
     /// the frames.
-    pub fn detectStripFrames(self: *const Roll, strip_path: []const u8, options: ProcessOptions) !StripDetection {
+    pub fn detectStripFrames(self: *const Roll, io: std.Io, strip_path: []const u8, options: ProcessOptions) !StripDetection {
         const allocator = self.allocator;
         const preview = try workflow.loadQuickPreview(allocator, strip_path, options.preview_size);
         defer preview.deinit(allocator);
-        var detected = try workflow.autoDetectPreview(allocator, preview, .{ .format = self.format });
+        var detected = try self.detectStrip(io, strip_path, preview, false);
         defer detected.deinit(allocator);
         const to_full = 1.0 / preview.info.preview_scale;
         const rects = try allocator.alloc(FrameRect, detected.frames.len);
@@ -597,6 +641,7 @@ pub const Roll = struct {
         try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, framing, outcome.dmin_source });
         try appendTriple(&out, "dmin", outcome.dmin);
         if (outcome.framing_hash) |hash| try out.print(",\n  \"framing_hash\": \"{x:0>16}\"", .{hash});
+        if (outcome.frame_length_mm) |length| try out.print(",\n  \"frame_length_mm\": {d:.3}", .{length});
         if (outcome.ring_frames.len != 0) {
             try out.appendSlice(",\n  \"newton_rings\": [");
             for (outcome.ring_frames, 0..) |frame, index| try out.print("{s}{d}", .{ if (index == 0) "" else ", ", frame });
@@ -957,6 +1002,23 @@ pub const LutFit = struct {
     }
 };
 
+/// How far a strip's frame length may run from the rest of the roll's
+/// before detection tries the roll's length.
+const roll_length_tolerance = 0.02;
+
+/// Hand-placed frames' median length along the strip in millimetres
+/// (`rects` in full-resolution pixels), when the scan's DPI is known.
+fn handFrameLengthMm(rects: []const export_pipeline.FrameRect, preview: workflow.QuickPreview) ?f64 {
+    const dpi = preview.info.dpi orelse return null;
+    if (rects.len == 0) return null;
+    const vertical = preview.preview_height >= preview.preview_width;
+    var lengths: [64]f64 = undefined;
+    const count = @min(rects.len, lengths.len);
+    for (rects[0..count], lengths[0..count]) |rect, *length| length.* = (if (vertical) rect.h else rect.w) / (@as(f64, @floatFromInt(dpi)) / 25.4);
+    std.mem.sort(f64, lengths[0..count], {}, std.sort.asc(f64));
+    return lengths[count / 2];
+}
+
 pub const ProcessOptions = struct {
     processing_config_path: []const u8 = processing_config.config_file,
     /// Detection preview size, as `processing detect` uses.
@@ -1023,6 +1085,9 @@ pub const StripOutcome = struct {
     files: [][]u8,
     /// Frames, numbered from 1, showing strong Newton's rings.
     ring_frames: []usize = &.{},
+    /// The frames' length along the strip in millimetres (hand-placed
+    /// frames', else detection's), for the roll's other strips to agree on.
+    frame_length_mm: ?f64 = null,
 
     pub fn deinit(self: StripOutcome, allocator: std.mem.Allocator) void {
         for (self.files) |file| {
@@ -1123,6 +1188,7 @@ const MarkerJson = struct {
     framing: []const u8 = "auto",
     framing_hash: ?[]const u8 = null,
     newton_rings: []const usize = &.{},
+    frame_length_mm: ?f64 = null,
 };
 
 /// Names of the rolls under `scans_root` (directories with a `roll.json`),

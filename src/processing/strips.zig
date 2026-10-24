@@ -60,13 +60,7 @@ const min_width_of_strip = 0.6;
 /// `strip_width_px` is the format's strip width in image pixels, if known.
 pub fn find(allocator: std.mem.Allocator, gray: []const u8, width: usize, height: usize, strip_width_px: ?f64) !StripMap {
     if (width == 0 or height == 0 or gray.len != width * height) return error.InvalidStripInput;
-    // Picture, film base, and clear glass: the first split separates the
-    // picture from the rest, the second, among the brighter pixels, the
-    // film base from the glass.
-    var hist = [_]usize{0} ** 256;
-    for (gray) |value| hist[value] += 1;
-    const picture_split = otsu(&hist, 0, 255);
-    const clear_threshold = otsu(&hist, picture_split + 1, 255);
+    const clear_threshold = clearThreshold(gray);
 
     const labels = try allocator.alloc(u32, gray.len);
     errdefer allocator.free(labels);
@@ -228,6 +222,16 @@ fn fitLineWhere(ts: []const f64, ss: []const f64, previous: ?Line, reach: f64) ?
     if (denominator == 0.0) return null;
     const b = (n * sts - st * ss_sum) / denominator;
     return .{ .a = (ss_sum - b * st) / n, .b = b };
+}
+
+/// The darkest gray value counted as clear glass: picture, film base, and
+/// glass, the first split separating the picture from the rest, the second,
+/// among the brighter pixels, the film base from the glass.
+pub fn clearThreshold(gray: []const u8) u8 {
+    var hist = [_]usize{0} ** 256;
+    for (gray) |value| hist[value] += 1;
+    const picture_split = otsu(&hist, 0, 255);
+    return otsu(&hist, picture_split + 1, 255);
 }
 
 /// Otsu's threshold over the histogram's values from `lo` to `hi`: the

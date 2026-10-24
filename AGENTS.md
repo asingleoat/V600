@@ -250,6 +250,19 @@ deliberately, not by accident.
   strip width, at that line's angle. A scan with one strip goes through
   unchanged. Auto-select takes every film region at least a quarter the
   largest, so the strips scan in one pass.
+- A 35mm strip's two perforation rows (clear holes 2.79 mm across and
+  1.98 mm along, centres 28.16 mm apart, `processing/perforations.zig`)
+  bound its frames: a frame reaching within 0.05 mm of the holes' inner
+  edges moves back between them, or narrows. On thin film the holes'
+  edges are the strongest near a frame. Their angle is not the frames':
+  on the owner's scans the pictures, and the frames placed by hand, sit
+  about 0.2 degrees off the rows, so frames keep their own edges' angle.
+- In a roll, each strip's export records its frames' length
+  (`frame_length_mm` in the `.processed.json`). A strip whose frames come
+  out more than 2% off the median of the roll's other strips is detected
+  again at that length, within 1%: one camera exposed the roll, and on
+  underexposed film the frames' ends barely show (KODAKGOLD_200_3 strip 5
+  fitted 34.45 mm against the roll's 36.4).
 - If detection returns exactly one frame covering less than 30% of the
   image, treat it as a failure and fall back to a full-image frame.
 - The `exact_aspect` processing setting (the Process view's "Exact aspect",

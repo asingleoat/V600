@@ -228,7 +228,7 @@ fn runCheckFrames(allocator: std.mem.Allocator, io: std.Io, argv: []const []cons
         defer if (exported) |rects| allocator.free(rects);
         const known = if (framing) |owned| owned.frames else exported orelse continue;
 
-        const detection = roll.detectStripFrames(strip, .{}) catch |err| blk: {
+        const detection = roll.detectStripFrames(io, strip, .{}) catch |err| blk: {
             try stdout.print("{s}: detection failed ({s})\n", .{ std.fs.path.basename(strip), @errorName(err) });
             break :blk cerealgrain.roll.StripDetection{ .frames = try allocator.alloc(cerealgrain.roll.FrameRect, 0), .rebate = null };
         };

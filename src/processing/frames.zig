@@ -7,6 +7,7 @@ const clahe_ops = @import("clahe.zig");
 const film_formats = @import("film_formats.zig");
 const rotation = @import("rotation.zig");
 const strips = @import("strips.zig");
+const perforations = @import("perforations.zig");
 
 pub const FilmFormat = film_formats.FilmFormat;
 pub const format_35mm = film_formats.format_35mm;
@@ -99,6 +100,13 @@ pub const DetectFramesOptions = struct {
     /// the scale comes from the film's measured width, which runs a few
     /// percent off.
     px_per_mm: ?f64 = null,
+    /// The frames' length along the strip when it is known (the rest of
+    /// the roll's): the fit searches within 1% of it, not 6% of the
+    /// format's.
+    frame_length_mm: ?f64 = null,
+    /// A 35mm strip's perforation rows, in this image's coordinates: the
+    /// frames are kept between them.
+    perforations: ?perforations.Perforations = null,
 };
 
 pub const DetectFramesImageOptions = struct {
@@ -107,6 +115,7 @@ pub const DetectFramesImageOptions = struct {
     film_extent_override: ?FilmExtent = null,
     apply_clahe: bool = true,
     px_per_mm: ?f64 = null,
+    frame_length_mm: ?f64 = null,
 };
 
 pub const DetectFramesResult = struct {
@@ -696,6 +705,15 @@ fn detectFramesInStrip(
         try detectFilmExtentAxisAlignedU8(allocator, raw_gray.gray_u8, width, height)
     else
         null;
+    // A 35mm strip's perforation rows bound where its frames can lie (a
+    // strip cut at the scan's edge has lost one row, so it has none).
+    // Their angle is not the frames': on the owner's verified strips the
+    // pictures, and the frames placed by hand, sit about 0.2 degrees off
+    // the rows, so frames keep the angle of their own edges.
+    const holes = if (std.mem.eql(u8, format.name, "35mm") and options.film_extent_override == null and options.px_per_mm != null)
+        try perforations.find(allocator, raw_gray.gray_u8, width, height, options.px_per_mm.?)
+    else
+        null;
 
     const rotation_threshold_rad = 0.1 * std.math.pi / 180.0;
     if (film_extent) |extent| {
@@ -714,6 +732,8 @@ fn detectFramesInStrip(
                 .film_extent = extent,
                 .cross_gray_raw = rotated_raw.pixels,
                 .px_per_mm = options.px_per_mm,
+                .frame_length_mm = options.frame_length_mm,
+                .perforations = if (holes) |rows| rows.transformed(transform.forward.values, @floatFromInt(height)) else null,
             });
             errdefer detected.deinit(allocator);
             try transformFramesFromRotatedToOriginal(detected.frames, transform.inverse, extent.strip_angle);
@@ -732,6 +752,8 @@ fn detectFramesInStrip(
         .film_extent = film_extent,
         .cross_gray_raw = raw_gray.gray,
         .px_per_mm = options.px_per_mm,
+        .frame_length_mm = options.frame_length_mm,
+        .perforations = holes,
     });
 }
 
@@ -794,6 +816,7 @@ pub fn detectFramesFromImageBreakdown(
                 .film_extent = extent,
                 .cross_gray_raw = rotated_raw.pixels,
                 .px_per_mm = options.px_per_mm,
+                .frame_length_mm = options.frame_length_mm,
             });
             errdefer axis_breakdown.deinit(allocator);
             copyAxisBreakdown(&breakdown, axis_breakdown);
@@ -820,6 +843,7 @@ pub fn detectFramesFromImageBreakdown(
         .film_extent = film_extent,
         .cross_gray_raw = raw_gray.gray,
         .px_per_mm = options.px_per_mm,
+        .frame_length_mm = options.frame_length_mm,
     });
     copyAxisBreakdown(&breakdown, axis_breakdown);
     breakdown.result = axis_breakdown.result;
@@ -967,7 +991,7 @@ pub fn detectFramesAxisAlignedPrepared(
     defer evidence.deinit(allocator);
     if (options.cross_gray_raw) |raw| evidence.dropFilmEnds(filmAlongStrip(raw, width, height, strip_info.is_vertical), blur_kernel);
 
-    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null, options.frame_count_override == null);
+    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null, options.frame_count_override == null, options.frame_length_mm);
     errdefer allocator.free(edges);
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
     const frames = try framesFromStripEdges(allocator, edges, width, height, format, strip_info, options.strip_angle);
@@ -977,6 +1001,9 @@ pub fn detectFramesAxisAlignedPrepared(
     try estimateFrameAnglesAxisAligned(allocator, gray, width, height, strip_info, frame_strip_dim, edges, frames, blur_kernel, angle_uncertainties);
     pullAnglesTowardStrip(frames, angle_uncertainties);
     try refineCrossStripAxisAligned(allocator, options.cross_gray_raw orelse gray, width, height, format, strip_info, frames);
+    if (options.perforations) |rows| {
+        if (strip_info.is_vertical) keepFramesBetweenPerforations(frames, rows, perforation_clearance_mm * (options.px_per_mm orelse 0.0));
+    }
     allocator.free(edges);
     return .{ .frames = frames, .strip_info = strip_info, .aspect = detectFramesAspect(format, strip_info.is_vertical) };
 }
@@ -1010,7 +1037,7 @@ pub fn detectFramesAxisAlignedPreparedBreakdown(
     breakdown.gradients_ns = monotonicNowNs() - gradients_started;
 
     const fit_started = monotonicNowNs();
-    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null, options.frame_count_override == null);
+    const edges = try frameEdgesAlongStrip(allocator, evidence, format, &strip_info, options.px_per_mm != null, options.frame_count_override == null, options.frame_length_mm);
     errdefer allocator.free(edges);
     breakdown.fit_ns = monotonicNowNs() - fit_started;
     const frame_strip_dim = if (strip_info.is_vertical) strip_info.frame_h else strip_info.frame_w;
@@ -1077,11 +1104,12 @@ fn frameEdgesAlongStrip(
     strip_info: *StripAnalysis,
     scale_known: bool,
     may_add_frame: bool,
+    length_mm: ?f64,
 ) ![]usize {
     const px_per_mm = strip_info.pitch_px / format.pitch_mm;
     if (may_add_frame) {
         const more = strip_info.n_frames + 1;
-        if (try fitFramesAlongStrip(allocator, evidence, more, format, px_per_mm, scale_known)) |edges| {
+        if (try fitFramesAlongStrip(allocator, evidence, more, format, px_per_mm, scale_known, length_mm)) |edges| {
             if (try everyFrameShowsAnEdge(allocator, evidence, edges)) {
                 strip_info.n_frames = more;
                 return edges;
@@ -1091,7 +1119,7 @@ fn frameEdgesAlongStrip(
     }
     var frame_count = strip_info.n_frames;
     while (frame_count > 0) : (frame_count -= 1) {
-        if (try fitFramesAlongStrip(allocator, evidence, frame_count, format, px_per_mm, scale_known)) |edges| {
+        if (try fitFramesAlongStrip(allocator, evidence, frame_count, format, px_per_mm, scale_known, length_mm)) |edges| {
             strip_info.n_frames = frame_count;
             return edges;
         }
@@ -1236,10 +1264,11 @@ const frame_start_sign = 1.0;
 /// neighbours inside the format's gap range; the gap may differ between
 /// every pair. A camera's frames all have the same length, so it is
 /// searched once per strip, within 6% of the format's: cameras do not all
-/// project the same frame. The band widens by the error of a scale taken
-/// from the film's measured width when `scale_known` (the scan's DPI) is
-/// false. Returns start/end pairs, or null when the frames cannot fit in
-/// the strip. The caller frees the slice.
+/// project the same frame; within 1% of `length_mm` when the roll's other
+/// strips give it. The band widens by the error of a scale taken from the
+/// film's measured width when `scale_known` (the scan's DPI) is false.
+/// Returns start/end pairs, or null when the frames cannot fit in the
+/// strip. The caller frees the slice.
 fn fitFramesAlongStrip(
     allocator: std.mem.Allocator,
     evidence: FrameEdgeEvidence,
@@ -1247,16 +1276,18 @@ fn fitFramesAlongStrip(
     format: FilmFormat,
     px_per_mm: f64,
     scale_known: bool,
+    length_mm: ?f64,
 ) !?[]usize {
     const gap_range = format.gap_range_mm;
     const len = evidence.start.len;
     if (len < 2 or evidence.end.len != len or frame_count == 0 or !std.math.isFinite(px_per_mm) or px_per_mm <= 0.0) {
         return error.InvalidFrameFitInput;
     }
-    const along_px = format.alongMm() * px_per_mm;
+    const along_px = (length_mm orelse format.alongMm()) * px_per_mm;
+    const variation: f64 = if (length_mm != null) known_length_variation else frame_size_variation;
     const scale_error: [2]f64 = if (scale_known) .{ 1.0, 1.0 } else .{ 0.94, 1.08 };
-    const length_lo = @max(@as(usize, 2), roundToUsize(along_px * (1.0 - frame_size_variation) * scale_error[0]));
-    const length_hi = @max(length_lo, roundToUsize(along_px * (1.0 + frame_size_variation) * scale_error[1]));
+    const length_lo = @max(@as(usize, 2), roundToUsize(along_px * (1.0 - variation) * scale_error[0]));
+    const length_hi = @max(length_lo, roundToUsize(along_px * (1.0 + variation) * scale_error[1]));
     const length_step = @max(@as(usize, 1), roundToUsize(0.05 * px_per_mm));
     const gap_lo = @max(@as(usize, 1), roundToUsize(gap_range[0] * px_per_mm * scale_error[0]));
     const gap_hi = @max(gap_lo, roundToUsize(gap_range[1] * px_per_mm * scale_error[1]));
@@ -1358,6 +1389,8 @@ const GapPrior = struct {
 
 /// How far a camera's frame may run from the format's size.
 const frame_size_variation = 0.06;
+/// And from a length the roll's other strips measured.
+const known_length_variation = 0.01;
 
 const FrameFitScratch = struct {
     frame_score: []f64,
@@ -1538,6 +1571,31 @@ fn pullAnglesTowardStrip(frames: []FrameRect, uncertainties: []const f64) void {
             continue;
         }
         frame.angle = strip_angle + deviation * prior / (prior + uncertainty * uncertainty);
+    }
+}
+
+/// How close a frame's edge may come to the perforations. The holes' inner
+/// edges are 25.4 mm apart and a camera's frames 24-24.7 mm wide, so a
+/// frame has a third of a millimetre or less either side.
+const perforation_clearance_mm = 0.05;
+
+/// Moves each frame that reaches toward a row of holes back between the
+/// rows, or narrows it where it is wider than the film between them: on
+/// faint film the holes' edges are the strongest ones near a frame.
+fn keepFramesBetweenPerforations(frames: []FrameRect, rows: perforations.Perforations, clearance_px: f64) void {
+    for (frames) |*frame| {
+        const span = rows.innerSpan(frame.cy, clearance_px);
+        const cos_a = @abs(std.math.cos(frame.angle));
+        const sin_a = @abs(std.math.sin(frame.angle));
+        const half = frame.w / 2.0 * cos_a + frame.h / 2.0 * sin_a;
+        if (2.0 * half > span[1] - span[0]) {
+            frame.w = @max(1.0, (span[1] - span[0] - frame.h * sin_a) / cos_a);
+            frame.cx = (span[0] + span[1]) / 2.0;
+        } else if (frame.cx - half < span[0]) {
+            frame.cx = span[0] + half;
+        } else if (frame.cx + half > span[1]) {
+            frame.cx = span[1] - half;
+        }
     }
 }
 
@@ -4269,3 +4327,21 @@ test "rejects invalid strip analysis and initial placement inputs" {
     }, 0.0));
 }
 
+
+test "frames reaching toward the perforations move back between the rows" {
+    // Rows of 2.8 mm holes, centres at x 100 and 800, straight down.
+    const rows = perforations.Perforations{ .left = .{ .a = 100.0, .b = 0.0 }, .right = .{ .a = 800.0, .b = 0.0 }, .hole_across_px = 70.0 };
+    var frames = [_]FrameRect{
+        // Clear of the holes: stays.
+        .{ .cx = 450.0, .cy = 500.0, .w = 500.0, .h = 900.0, .angle = 0.0 },
+        // Its left edge at 140 is inside the left holes (inner edge 135 + 5).
+        .{ .cx = 400.0, .cy = 1500.0, .w = 520.0, .h = 900.0, .angle = 0.0 },
+        // Wider than the film between the rows: narrowed, centred.
+        .{ .cx = 450.0, .cy = 2500.0, .w = 700.0, .h = 900.0, .angle = 0.0 },
+    };
+    keepFramesBetweenPerforations(&frames, rows, 5.0);
+    try std.testing.expectEqual(@as(f64, 450.0), frames[0].cx);
+    try std.testing.expectApproxEqAbs(@as(f64, 140.0 + 260.0), frames[1].cx, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 620.0), frames[2].w, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 450.0), frames[2].cx, 1e-9);
+}
