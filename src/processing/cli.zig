@@ -575,13 +575,7 @@ fn runExport(
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
     const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
-    var print_spec = print.specForConfig(overrides);
-    if (options.print_size) |name| {
-        print_spec = if (print.sizeNamed(name)) |size| .{ .size = size, .dpi = if (print_spec) |spec| spec.dpi else print.default_dpi } else null;
-    }
-    if (options.print_dpi) |dpi| {
-        if (print_spec) |*spec| spec.dpi = dpi;
-    }
+    const print_spec = printSpecFor(print.specForConfig(overrides), options.print_size, options.print_dpi);
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0;
     // Frames go one at a time here, so each may use every core.
@@ -704,6 +698,20 @@ const OwnedOutputPaths = struct {
     }
 };
 
+/// The export's print copy: `--print` and `--print-dpi` over the config's.
+/// A size named without a resolution keeps the config's, else the default.
+fn printSpecFor(config_spec: ?print.Spec, size_name: ?[]const u8, dpi_override: ?u32) ?print.Spec {
+    var spec = config_spec;
+    if (size_name) |name| {
+        const size = print.sizeNamed(name) orelse return null;
+        spec = .{ .size = size, .dpi = if (config_spec) |from_config| from_config.dpi else print.default_dpi };
+    }
+    if (dpi_override) |dpi| {
+        if (spec) |*value| value.dpi = dpi;
+    }
+    return spec;
+}
+
 fn outputPathsForFrame(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -816,4 +824,18 @@ test "processing CLI parses command options" {
     const export_645 = try parseArgs(&.{ "export", "--input", "scan.tiff", "--frame", "16,16,8,6", "--format", "645" });
     try std.testing.expectEqualStrings("645", export_645.export_frames.format);
     try std.testing.expectError(error.InvalidFilmFormat, parseArgs(&.{ "export", "--input", "scan.tiff", "--frame", "16,16,8,6", "--format", "110" }));
+}
+
+test "a print size named without a resolution keeps the config's, else the default" {
+    const four_by_six = print.sizeNamed("4x6").?;
+    const eight_by_ten = print.sizeNamed("8x10").?;
+    const named = printSpecFor(null, "4x6", null).?;
+    try std.testing.expectEqual(four_by_six, named.size);
+    try std.testing.expectEqual(print.default_dpi, named.dpi);
+    const from_config = printSpecFor(.{ .size = eight_by_ten, .dpi = 720 }, "4x6", null).?;
+    try std.testing.expectEqual(four_by_six, from_config.size);
+    try std.testing.expectEqual(@as(u32, 720), from_config.dpi);
+    try std.testing.expectEqual(@as(u32, 300), printSpecFor(null, "4x6", 300).?.dpi);
+    try std.testing.expectEqual(@as(?print.Spec, null), printSpecFor(.{ .size = eight_by_ten, .dpi = 720 }, "off", null));
+    try std.testing.expectEqual(@as(?print.Spec, null), printSpecFor(null, null, 300));
 }
