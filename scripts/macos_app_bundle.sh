@@ -1,5 +1,6 @@
 #!/bin/sh
-# Assemble CerealGrain.app around a release cerealgrain-ui and zip it for sharing. Every
+# Assemble CerealGrain.app around a release cerealgrain-ui and put it in a disk
+# image for sharing. Every
 # library it loads from outside macOS goes into Contents/Frameworks with the
 # load commands pointed there, and everything is signed ad hoc: no identity,
 # so nothing in the signature names a person. Run by `zig build app-bundle`.
@@ -186,13 +187,26 @@ if grep -rlF "$HOME" "$app" > "$work/leaks"; then
   exit 1
 fi
 
+# The disk image opens on the app beside an Applications link to drag it
+# onto, with the read-me and licenses.
 mkdir "$work/CerealGrain"
 ditto "$app" "$work/CerealGrain/CerealGrain.app"
 cp "$here/macos_app_readme.txt" "$work/CerealGrain/Read Me.txt"
 ditto "$licenses" "$work/CerealGrain/Licenses"
-rm -f "$out"/CerealGrain-*-macos-arm64.zip
-zip=$out/CerealGrain-$version-macos-arm64.zip
-ditto -c -k --sequesterRsrc --keepParent "$work/CerealGrain" "$zip"
+ln -s /Applications "$work/CerealGrain/Applications"
+rm -f "$out"/CerealGrain-*-macos-arm64.zip "$out"/CerealGrain-*-macos-arm64.dmg
+dmg=$out/CerealGrain-$version-macos-arm64.dmg
+# hdiutil can fail while the disk arbitration daemon is busy (it does on CI
+# runners); try again before giving up.
+tries=1
+until hdiutil create -quiet -volname CerealGrain -srcfolder "$work/CerealGrain" -fs HFS+ -format UDZO -ov "$dmg"; do
+  if [ "$tries" -ge 3 ]; then
+    echo "app-bundle: hdiutil could not make $dmg" >&2
+    exit 1
+  fi
+  tries=$((tries + 1))
+  sleep 5
+done
 
 echo "app-bundle: $app ($(ls "$frameworks" | wc -l | tr -d ' ') libraries, $(du -sh "$app" | cut -f1))"
-echo "app-bundle: $zip ($(du -h "$zip" | cut -f1))"
+echo "app-bundle: $dmg ($(du -h "$dmg" | cut -f1))"

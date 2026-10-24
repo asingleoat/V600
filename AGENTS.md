@@ -47,11 +47,12 @@ diffs for this before committing.
     zig build -Dui=true run-ui                # run the native UI
     zig build run -- <args>                   # run the CLI
     zig build test --summary all              # Zig unit and fixture tests
-    zig build app-bundle                      # macOS: zig-out/CerealGrain.app and a zip to share
+    zig build app-bundle                      # macOS: zig-out/CerealGrain.app and a .dmg to share
     nix build .#cli-static                    # x86-64 Linux: a fully static CLI in result/bin
 
 GitHub Actions (`.github/workflows/build.yml`) runs the Zig tests on macOS
-and builds the app's zip and the static Linux CLI on every push.
+and builds the app's disk image and the static Linux CLI on every push; a
+pushed `v*` tag publishes them as a GitHub pre-release.
 
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,

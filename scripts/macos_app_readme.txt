@@ -12,7 +12,8 @@ What you need
   to them directly and needs no Epson software.
 
 First launch
-1. Move CerealGrain.app to Applications.
+1. Drag CerealGrain.app onto the Applications folder beside it in the disk
+   image's window.
 2. Open it. The app is not signed by a registered developer, so macOS will
    refuse the first time.
 3. Open System Settings > Privacy & Security, scroll down, click "Open

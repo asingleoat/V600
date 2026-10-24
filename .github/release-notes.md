@@ -5,9 +5,9 @@ print-sized JPEGs if you ask for them.
 
 ## Downloads
 
-- **CerealGrain-…-macos-arm64.zip**: the Mac app, for Apple silicon (M1 or
-  later) on macOS 14 or later. Unzip it and read `Read Me.txt` inside
-  first.
+- **CerealGrain-…-macos-arm64.dmg**: the Mac app, for Apple silicon (M1 or
+  later) on macOS 14 or later. Open it, drag CerealGrain onto Applications,
+  and read `Read Me.txt` beside it first.
 - **cerealgrain-linux-x86_64-static.tar.gz**: the command-line tool for any
   x86-64 Linux. Processing and export work anywhere; scanning needs SANE
   with the patched epkowa backend (`nixos/` in this repository).

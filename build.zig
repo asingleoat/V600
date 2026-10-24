@@ -149,7 +149,7 @@ pub fn build(b: *std.Build) void {
         bundle_cmd.addArg(b.getInstallPath(.prefix, ""));
         bundle_cmd.addArg(version);
         bundle_cmd.has_side_effects = true;
-        const bundle_step = b.step("app-bundle", "Build zig-out/CerealGrain.app and a zip of it to share (macOS, Apple Silicon)");
+        const bundle_step = b.step("app-bundle", "Build zig-out/CerealGrain.app and a disk image of it to share (macOS, Apple Silicon)");
         bundle_step.dependOn(&bundle_cmd.step);
     }
 

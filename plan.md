@@ -2,8 +2,8 @@
 
 Current state, decisions on record, and open work. This file replaces the
 11,000-line rewrite plan and verification log kept during the May-July 2026
-Zig port; that history is in git (`git show f3fb3e3:plan.md`, tags
-`zig-port-mvp` and `pre-wasm-checkpoint`).
+Zig port; that history is in git (`git show f3fb3e3:plan.md`; the port's
+MVP at 8ad63d6, the checkpoint before the Wasm work at aec863e).
 
 Agents: work on what the owner asks, not on the next backlog item. Add new
 findings to the backlog; do not add phases or progress logs here.
@@ -73,8 +73,8 @@ Confirmed by the owner, 2026-10-24:
   fill grain their fills blend in (KODAKGOLD_200_3), so no suggestion to
   turn it off for now.
 - The native app is the product. The browser webapp and the scanner
-  companion that let it scan are dropped; they are in git history (tag
-  `webapp-final`).
+  companion that let it scan are dropped; they are in git history (last at
+  0091678).
 
 Recorded in the May-July log; correct anything that is wrong:
 

@@ -112,19 +112,20 @@ second.
 `zig build app-bundle`, on a Mac in the dev shell and with no other options,
 builds the UI on its own (ReleaseFast, stripped, for the oldest Apple Silicon
 CPU and macOS 14), then `scripts/macos_app_bundle.sh` assembles
-`zig-out/CerealGrain.app` and `zig-out/CerealGrain-<commit>-macos-arm64.zip`:
-the app, `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers, and
+`zig-out/CerealGrain.app` and `zig-out/CerealGrain-<commit>-macos-arm64.dmg`,
+a disk image that opens on the app beside an Applications link to drag it
+onto, with `Read Me.txt` (`scripts/macos_app_readme.txt`) for testers and
 `Licenses`.
 
 - The version is the commit's short hash, which the build reads from git
   (`-dirty` when tracked files have uncommitted changes; the step warns).
   `CFBundleVersion` is the commit count, the number macOS compares.
 - `LICENSE` and `third_party/` go into `Contents/Resources/Licenses` and the
-  zip's `Licenses`. The step fails if a library in `Contents/Frameworks` has
+  disk image's `Licenses`. The step fails if a library in `Contents/Frameworks` has
   no license folder (`license_dir` in the script).
 
-- The libraries the UI loads from Nix (28, about 48 MB; the zip is about
-  19 MB) are copied into `Contents/Frameworks` and their load commands
+- The libraries the UI loads from Nix (11, about 6.5 MB; the disk image is
+  about 4 MB) are copied into `Contents/Frameworks` and their load commands
   pointed there. The step fails if a reference into `/nix/store` or the
   build machine's home directory remains.
 - Signing is ad hoc: no Apple account and no identity in the signature. A
