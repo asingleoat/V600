@@ -1,11 +1,14 @@
 # Builds the shareable artifacts from every push: the macOS app's zip
 # (Apple Silicon, ad hoc signed) and the static x86-64 Linux CLI, after the
-# Zig tests pass. Download them from the run's Artifacts.
+# Zig tests pass. Download them from the run's Artifacts. A pushed tag
+# starting with v also publishes them as a GitHub pre-release, with
+# .github/release-notes.md as its text.
 name: Build
 
 on:
   push:
     branches: [zig-rewrite, master]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -37,8 +40,31 @@ jobs:
         run: nix build .#cli-static
       - name: Check it runs
         run: result/bin/cerealgrain version
+      - name: Archive with its licenses
+        run: tar --owner=0 --group=0 -czf cerealgrain-linux-x86_64-static.tar.gz -C result bin share
       - uses: actions/upload-artifact@v4
         with:
           name: cerealgrain-linux-x86_64-static
-          path: result/bin/cerealgrain
+          path: cerealgrain-linux-x86_64-static.tar.gz
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos-app, linux-cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" assets/*
+          --prerelease
+          --title "CerealGrain $GITHUB_REF_NAME"
+          --notes-file .github/release-notes.md
