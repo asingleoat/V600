@@ -296,15 +296,25 @@ deliberately, not by accident.
   off: the Process view's "Reduce Newton's rings", `processing export
   --reduce-rings`; roll exports follow it) the same pass, before any frame
   is written, subtracts the rings in density about every centre scoring at
-  the warning level: along 2048 rays, a local least-squares fit of each
-  channel's density to a level, a gradient, and a sinusoid of the
-  centre's ratio times the IR phase, kept where it beats chance (the
-  residual over the window's independent pixels), at least 0.29 mm from
-  picture edges, and within the IR phases where the rings show round the
-  whole system (plus four fringes). No high-pass first: its halos by edges
-  read as rings. The score gate matters: run on every centre, or on
-  centres just under the warning level, the fit takes picture (a cloud's
-  texture) for rings. Sizes are in millimetres of film. Tune and judge
+  the warning level, in two passes. Each runs along 2048 rays: a local
+  least-squares fit of each channel's density to a level, a gradient, and
+  a sinusoid of the centre's ratio times the IR phase, kept where it beats
+  chance (the residual over the window's independent pixels), at least
+  0.29 mm from picture edges, clear of IR defects (dust and their
+  shoulders), and within the IR phases where the rings show round the
+  whole system (plus four fringes). Near a centre only steps across the
+  radius count as edges, and steps by IR defects not at all: the speck
+  holding the film off sits mid-rings. The coarse pass (the check's
+  1067 dpi grid, a 0.29 mm window) takes the rings out to 6 mm; a fine pass
+  at 3200 dpi (0.06 mm window, a stricter gate, fading out from 0.6 to
+  1 mm), about the point the IR rings centre on, takes the middle of the
+  system, whose rings are too fine for the coarse one. It runs only where
+  the IR phase climbs steadily out from that point (0.92 of steps; small
+  dust bullseyes reach 0.99): on irregular IR rings it adds rings. No
+  high-pass first:
+  its halos by edges read as rings. The score gate matters: run on every
+  centre, or on centres just under the warning level, the fit takes
+  picture (a cloud's texture) for rings. Sizes are in millimetres of film. Tune and judge
   both only on real scans, through real exports and their change maps,
   against the frames the owner reviewed (listed in `plan.md`), never on
   synthetic rings.

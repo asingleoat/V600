@@ -138,9 +138,21 @@ pub fn reduceRings(allocator: std.mem.Allocator, rgb: Image, ir: View(f64), fram
     defer analysis.deinit(allocator);
     const score = analysis.score();
     if (!warns(score)) return score;
-    var removed = try ringModels(allocator, &analysis);
-    defer for (&removed) |plane| allocator.free(plane);
-    try applyToPixels(allocator, rgb, removed, &analysis);
+    const order = try allocator.dupe(Found, analysis.found);
+    defer allocator.free(order);
+    std.mem.sort(Found, order, {}, struct {
+        fn stronger(_: void, a: Found, b: Found) bool {
+            return a.score > b.score;
+        }
+    }.stronger);
+    var reduced: usize = 0;
+    while (reduced < order.len and warns(order[reduced].score)) reduced += 1;
+    {
+        var removed = try ringModels(allocator, &analysis, order[0..reduced]);
+        defer for (&removed) |plane| allocator.free(plane);
+        try applyToPixels(allocator, rgb, removed, analysis.placement());
+    }
+    for (order[0..reduced]) |found| try finePass(allocator, rgb, ir, &analysis, found, dpi);
     return score;
 }
 
@@ -167,6 +179,20 @@ const Analysis = struct {
         for (self.found) |found| best = @max(best, found.score);
         return best;
     }
+
+    fn placement(self: *const Analysis) Placement {
+        return .{ .factor = self.factor, .x0 = self.x0, .y0 = self.y0, .width = self.grid.width, .height = self.grid.height };
+    }
+};
+
+/// Where a grid sits on the RGB page: cell (x, y) averages the `factor` x
+/// `factor` pixels from (x0 + factor x, y0 + factor y).
+const Placement = struct {
+    factor: usize,
+    x0: usize,
+    y0: usize,
+    width: usize,
+    height: usize,
 };
 
 const Found = struct {
@@ -246,12 +272,7 @@ const Params = struct {
     fit_sigma: f64,
     ring_ref: usize,
     taper: f64,
-    /// Picture edges steeper than `edge_tau` density per pixel, after a blur
-    /// of `edge_blur`, hold the removal off within `edge_grow` pixels; rings
-    /// change by a few thousandths over half a fringe.
-    edge_blur: f64,
-    edge_tau: f64,
-    edge_grow: usize,
+    px_per_mm: f64,
 
     fn init(px_per_mm: f64) Params {
         var radii: [7]usize = undefined;
@@ -269,9 +290,7 @@ const Params = struct {
             .fit_sigma = 0.286 * px_per_mm,
             .ring_ref = px(0.952, px_per_mm),
             .taper = 0.571 * px_per_mm,
-            .edge_blur = 0.0357 * px_per_mm,
-            .edge_tau = 0.672 / px_per_mm,
-            .edge_grow = px(0.286, px_per_mm),
+            .px_per_mm = px_per_mm,
         };
     }
 
@@ -1032,9 +1051,8 @@ const Fft = struct {
 // detector's ratio times the IR fringe phase. Tuned on real 6400 dpi frames
 // by exporting with and without it.
 
-/// A fit counts where it explains this many times what chance would, in
-/// its window and round the ring system.
-const local_k = 2.0;
+/// The rings count at an IR phase where, pooled round the ring system,
+/// they explain this many times what chance would.
 const presence_k = 2.0;
 /// The area, in grid pixels, over which grain is correlated: grain is finer
 /// than a grid pixel, and sampling the rays bilinearly spreads it over about
@@ -1047,12 +1065,212 @@ const bin_sigma = 8.0;
 /// The removal reaches this many IR fringes beyond where rings show.
 const zone_margin = 4.0;
 
-/// The rings to subtract, per channel on the grid: centre by centre, the
-/// strongest first, each fitted to the densities the ones before left.
-/// The fits take the densities as they are: a local level and gradient
-/// stand for the picture, where a high-pass would leave halos by edges that
-/// the fit takes for rings.
-fn ringModels(allocator: std.mem.Allocator, analysis: *const Analysis) ![3][]f32 {
+/// Sizes of one ring fit, in its grid's pixels.
+const FitSizes = struct {
+    ray_length: usize,
+    ray_start: usize,
+    flip_at: usize,
+    ring_ref: usize,
+    fit_sigma: f64,
+    /// The subtraction fades out over `taper` to nothing at `reach`.
+    reach: f64,
+    taper: f64,
+    /// A fit counts where it explains this many times what chance would in
+    /// its window.
+    local_k: f64,
+
+    fn coarse(params: Params) FitSizes {
+        return .{
+            .ray_length = params.ray_length,
+            .ray_start = params.ray_start,
+            .flip_at = @min(params.ray_length - 1, 3 * params.window / 2),
+            .ring_ref = params.ring_ref,
+            .fit_sigma = params.fit_sigma,
+            .reach = @floatFromInt(params.ray_length - 1),
+            .taper = params.taper,
+            .local_k = 2,
+        };
+    }
+
+    /// The fine pass: rays of 2 mm, a fit window a fifth of the coarse one,
+    /// so with fewer pixels a stricter gate; it works on the middle of the
+    /// ring system, fading out from 0.6 to 1 mm and leaving the rest to the
+    /// coarse pass. Run further out and looser, it took grain for rings and
+    /// left a seam along the IR fringe where its gates closed.
+    fn fine(px_per_mm: f64) FitSizes {
+        const length = std.math.ceilPowerOfTwoAssert(usize, @max(64, Params.px(2.03 / std.math.sqrt2, px_per_mm)));
+        return .{
+            .ray_length = length,
+            .ray_start = Params.px(0.095, px_per_mm),
+            .flip_at = @min(length - 1, Params.px(0.95, px_per_mm)),
+            .ring_ref = Params.px(0.30, px_per_mm),
+            .fit_sigma = 0.06 * px_per_mm,
+            .reach = 1.0 * px_per_mm,
+            .taper = 0.4 * px_per_mm,
+            .local_k = 6,
+        };
+    }
+};
+
+/// Picture edges and dust, in a grid's pixels. Edges steeper than `tau`
+/// density per pixel after a blur of `blur` hold the removal off within
+/// `grow`; within `core` of a ring centre (fading out over another `core`)
+/// only steps across the radius count, since the rings, and a round speck,
+/// step along it. IR defects (dust, denser in the IR than its blur of
+/// `defect_blur` around it by 0.04, grown by `defect_grow`) stay out of the
+/// fit, and steps within `defect_reach` of one do not count as edges: the
+/// speck that holds the film off the glass sits at the middle of its rings,
+/// and the export's dust removal paints it out.
+const EdgeSizes = struct {
+    blur: f64,
+    tau: f64,
+    grow: usize,
+    core: f64,
+    defect_blur: f64,
+    defect_grow: usize,
+    defect_reach: usize,
+
+    fn init(px_per_mm: f64) EdgeSizes {
+        return .{
+            .blur = 0.0357 * px_per_mm,
+            .tau = 0.672 / px_per_mm,
+            .grow = Params.px(0.286, px_per_mm),
+            .core = 1.0 * px_per_mm,
+            .defect_blur = 0.095 * px_per_mm,
+            .defect_grow = @max(1, Params.px(0.048, px_per_mm)),
+            .defect_reach = @max(1, Params.px(0.05, px_per_mm)),
+        };
+    }
+};
+
+/// IR defects as 1, else 0, and the same grown by `defect_reach`.
+const Defects = struct {
+    mask: []f32,
+    near: []f32,
+
+    fn init(allocator: std.mem.Allocator, grid: *const Grid, sizes: EdgeSizes) !Defects {
+        const n = grid.len();
+        const tmp = try allocator.alloc(f32, n);
+        defer allocator.free(tmp);
+        const raw = try allocator.alloc(f32, n);
+        defer allocator.free(raw);
+        try blur(allocator, grid.ir, grid.width, grid.height, sizes.defect_blur, tmp, raw);
+        for (raw, grid.ir) |*r, v| r.* = if (v - r.* > 0.04) 1 else 0;
+        var self = Defects{ .mask = try allocator.alloc(f32, n), .near = &.{} };
+        errdefer allocator.free(self.mask);
+        try maxFilter(allocator, raw, grid.width, grid.height, sizes.defect_grow, tmp, self.mask);
+        self.near = try allocator.alloc(f32, n);
+        try maxFilter(allocator, self.mask, grid.width, grid.height, sizes.defect_reach, tmp, self.near);
+        return self;
+    }
+
+    fn deinit(self: *Defects, allocator: std.mem.Allocator) void {
+        allocator.free(self.mask);
+        allocator.free(self.near);
+    }
+};
+
+/// Each channel's density gradient after the edge blur.
+const Gradients = struct {
+    dx: [3][]f32,
+    dy: [3][]f32,
+
+    fn init(allocator: std.mem.Allocator, grid: *const Grid, sizes: EdgeSizes) !Gradients {
+        const n = grid.len();
+        var self = Gradients{ .dx = .{ &.{}, &.{}, &.{} }, .dy = .{ &.{}, &.{}, &.{} } };
+        errdefer self.deinit(allocator);
+        const tmp = try allocator.alloc(f32, n);
+        defer allocator.free(tmp);
+        const blurred = try allocator.alloc(f32, n);
+        defer allocator.free(blurred);
+        for (grid.density, &self.dx, &self.dy) |plane, *dx, *dy| {
+            dx.* = try allocator.alloc(f32, n);
+            dy.* = try allocator.alloc(f32, n);
+            try blur(allocator, plane, grid.width, grid.height, sizes.blur, tmp, blurred);
+            for (0..grid.height) |y| {
+                for (0..grid.width) |x| {
+                    const g = sobel(blurred, grid.width, grid.height, x, y);
+                    dx.*[y * grid.width + x] = @floatCast(g.dx / 8);
+                    dy.*[y * grid.width + x] = @floatCast(g.dy / 8);
+                }
+            }
+        }
+        return self;
+    }
+
+    fn deinit(self: *Gradients, allocator: std.mem.Allocator) void {
+        for (self.dx) |plane| allocator.free(plane);
+        for (self.dy) |plane| allocator.free(plane);
+    }
+};
+
+/// The edge weight about one centre, out to `reach` (0 beyond): 1 on smooth
+/// picture, falling to 0 near picture edges.
+fn edgeWeight(
+    allocator: std.mem.Allocator,
+    gradients: *const Gradients,
+    defects: *const Defects,
+    width: usize,
+    height: usize,
+    centre: Centre,
+    reach: usize,
+    sizes: EdgeSizes,
+    out: []f32,
+) !void {
+    @memset(out, 0);
+    const span = reach + sizes.grow + 1;
+    const x0 = centre.x -| span;
+    const x1 = @min(width, centre.x + span + 1);
+    const y0 = centre.y -| span;
+    const y1 = @min(height, centre.y + span + 1);
+    const ww = x1 - x0;
+    const wh = y1 - y0;
+    const steep = try allocator.alloc(f32, ww * wh);
+    defer allocator.free(steep);
+    const grown = try allocator.alloc(f32, ww * wh);
+    defer allocator.free(grown);
+    const tmp = try allocator.alloc(f32, ww * wh);
+    defer allocator.free(tmp);
+    const cx: f64 = @floatFromInt(centre.x);
+    const cy: f64 = @floatFromInt(centre.y);
+    for (y0..y1) |y| {
+        for (x0..x1) |x| {
+            const i = y * width + x;
+            const local = (y - y0) * ww + (x - x0);
+            if (defects.near[i] != 0) {
+                steep[local] = 0;
+                continue;
+            }
+            const dx = @as(f64, @floatFromInt(x)) - cx;
+            const dy = @as(f64, @floatFromInt(y)) - cy;
+            const r = @sqrt(dx * dx + dy * dy) + 1e-9;
+            const near = std.math.clamp(2 - r / sizes.core, 0, 1);
+            var g: f64 = 0;
+            for (gradients.dx, gradients.dy) |gxs, gys| {
+                const gx: f64 = gxs[i];
+                const gy: f64 = gys[i];
+                const across = @abs(gx * dy / r - gy * dx / r);
+                g = @max(g, near * across + (1 - near) * @sqrt(gx * gx + gy * gy));
+            }
+            steep[local] = @floatCast(g);
+        }
+    }
+    try maxFilter(allocator, steep, ww, wh, sizes.grow, tmp, grown);
+    const tau: f32 = @floatCast(sizes.tau);
+    for (y0..y1) |y| {
+        for (x0..x1) |x| {
+            const g = grown[(y - y0) * ww + (x - x0)];
+            out[y * width + x] = @exp(-(g / tau) * (g / tau));
+        }
+    }
+}
+
+/// The rings to subtract, per channel on the grid: centre by centre (in
+/// `reduced`, the strongest first), each fitted to the densities the ones
+/// before left. The fits take the densities as they are: a local level and
+/// gradient stand for the picture, where a high-pass would leave halos by
+/// edges that the fit takes for rings.
+fn ringModels(allocator: std.mem.Allocator, analysis: *const Analysis, reduced: []const Found) ![3][]f32 {
     const grid = &analysis.grid;
     const params = analysis.params;
     const n = grid.len();
@@ -1065,63 +1283,182 @@ fn ringModels(allocator: std.mem.Allocator, analysis: *const Analysis) ![3][]f32
         @memset(r.*, 0);
         d.* = try allocator.dupe(f32, source);
     }
-    const edge = try edgeWeight(allocator, grid, params);
+    const sizes = FitSizes.coarse(params);
+    const edges = EdgeSizes.init(params.px_per_mm);
+    var defects = try Defects.init(allocator, grid, edges);
+    defer defects.deinit(allocator);
+    var gradients = try Gradients.init(allocator, grid, edges);
+    defer gradients.deinit(allocator);
+    const edge = try allocator.alloc(f32, n);
     defer allocator.free(edge);
 
-    const order = try allocator.dupe(Found, analysis.found);
-    defer allocator.free(order);
-    std.mem.sort(Found, order, {}, struct {
-        fn stronger(_: void, a: Found, b: Found) bool {
-            return a.score > b.score;
-        }
-    }.stronger);
-    var fit = try PolarFit.init(allocator, params);
+    var fit = try PolarFit.init(allocator, sizes.ray_length);
     defer fit.deinit(allocator);
-    for (order) |found| {
-        if (!warns(found.score)) break;
-        try fit.subtract(allocator, densities, analysis.bands.ir, edge, grid.width, grid.height, found, params, removed);
+    for (reduced) |found| {
+        try edgeWeight(allocator, &gradients, &defects, grid.width, grid.height, found.centre, sizes.ray_length, edges, edge);
+        try fit.subtract(allocator, densities, analysis.bands.ir, edge, defects.near, grid.width, grid.height, found.centre, found.ratio, sizes, removed);
     }
     return removed;
 }
 
-/// 1 on smooth picture, falling to 0 near picture edges.
-fn edgeWeight(allocator: std.mem.Allocator, grid: *const Grid, params: Params) ![]f32 {
+/// The grid the fine pass runs on: 6400 dpi scans average 2 x 2 pixels, to
+/// the IR's own resolution.
+const fine_dpi: f64 = 3200;
+/// The fine pass runs only where the IR phase climbs this steadily out from
+/// the centre (`refineCentre`): small dust bullseyes reach 0.99, and where
+/// the IR rings are irregular (0.7-0.9: contact fields, noisy frames) a
+/// fit this fine follows the wrong phase and adds rings instead.
+const fine_steadiness = 0.92;
+
+/// After the coarse pass, the rings left within 2 mm of one centre, fitted
+/// on a grid three times finer: the middle of a small ring system is finer
+/// than the coarse fit can follow. The fit runs on the pixels as the coarse
+/// pass left them, about the point the IR rings centre on.
+fn finePass(allocator: std.mem.Allocator, rgb: Image, ir: View(f64), analysis: *const Analysis, found: Found, dpi: u32) !void {
+    const factor: usize = @max(1, @as(usize, @intFromFloat(@round(@as(f64, @floatFromInt(dpi)) / fine_dpi))));
+    const px_per_mm = @as(f64, @floatFromInt(dpi)) / @as(f64, @floatFromInt(factor)) / 25.4;
+    const sizes = FitSizes.fine(px_per_mm);
+    const edges = EdgeSizes.init(px_per_mm);
+
+    // The centre on the RGB page, and a square about it within the frame.
+    const coarse = analysis.placement();
+    const cf: f64 = @floatFromInt(coarse.factor);
+    const px: f64 = @as(f64, @floatFromInt(coarse.x0)) + (@as(f64, @floatFromInt(found.centre.x)) + 0.5) * cf;
+    const py: f64 = @as(f64, @floatFromInt(coarse.y0)) + (@as(f64, @floatFromInt(found.centre.y)) + 0.5) * cf;
+    const half: f64 = @floatFromInt((sizes.ray_length + edges.grow + 2) * factor);
+    const fx0f: f64 = @floatFromInt(coarse.x0);
+    const fy0f: f64 = @floatFromInt(coarse.y0);
+    const fx1f: f64 = @floatFromInt(coarse.x0 + coarse.width * coarse.factor);
+    const fy1f: f64 = @floatFromInt(coarse.y0 + coarse.height * coarse.factor);
+    const x0: usize = @intFromFloat(@max(fx0f, @floor(px - half)));
+    const y0: usize = @intFromFloat(@max(fy0f, @floor(py - half)));
+    const x1: usize = @intFromFloat(@min(fx1f, @floor(px + half)));
+    const y1: usize = @intFromFloat(@min(fy1f, @floor(py + half)));
+    const width = (x1 -| x0) / factor;
+    const height = (y1 -| y0) / factor;
+    if (width < 4 * sizes.ray_start or height < 4 * sizes.ray_start) return;
+
+    const view = View(f64){ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels };
+    var grid = try Grid.init(allocator, width, height);
+    defer grid.deinit(allocator);
+    try sampleRgb(f64, allocator, view, x0, y0, factor, &grid);
+    sampleIr(f64, ir, rgb.width, rgb.height, x0, y0, factor, &grid);
+    try regressOutPicture(&grid);
+
     const n = grid.len();
-    const steep = try allocator.alloc(f32, n);
-    defer allocator.free(steep);
-    @memset(steep, 0);
-    const blurred = try allocator.alloc(f32, n);
-    defer allocator.free(blurred);
     const tmp = try allocator.alloc(f32, n);
     defer allocator.free(tmp);
-    for (grid.density) |plane| {
-        try gaussianBlur(allocator, plane, grid.width, grid.height, params.edge_blur, tmp, blurred);
-        for (0..grid.height) |y| {
-            for (0..grid.width) |x| {
-                const g: f32 = @floatCast(sobel(blurred, grid.width, grid.height, x, y).magnitude / 8);
-                steep[y * grid.width + x] = @max(steep[y * grid.width + x], g);
+    const broad = try allocator.alloc(f32, n);
+    defer allocator.free(broad);
+    const band = try allocator.alloc(f32, n);
+    defer allocator.free(band);
+    try blur(allocator, grid.ir, width, height, 0.5 * px_per_mm, tmp, broad);
+    try blur(allocator, grid.ir, width, height, 0.008 * px_per_mm, tmp, band);
+    for (band, broad) |*b, w| b.* -= w;
+
+    const ff: f64 = @floatFromInt(factor);
+    const start = Centre{
+        .x = @intFromFloat(std.math.clamp((px - @as(f64, @floatFromInt(x0))) / ff - 0.5, 0, @as(f64, @floatFromInt(width - 1)))),
+        .y = @intFromFloat(std.math.clamp((py - @as(f64, @floatFromInt(y0))) / ff - 0.5, 0, @as(f64, @floatFromInt(height - 1)))),
+        .strength = 0,
+    };
+    const refined = try refineCentre(allocator, band, width, height, start, Params.px(0.19, px_per_mm), sizes.ray_length / 2);
+    if (refined.steadiness < fine_steadiness) return;
+    const centre = refined.centre;
+
+    var defects = try Defects.init(allocator, &grid, edges);
+    defer defects.deinit(allocator);
+    var gradients = try Gradients.init(allocator, &grid, edges);
+    defer gradients.deinit(allocator);
+    const edge = try allocator.alloc(f32, n);
+    defer allocator.free(edge);
+    try edgeWeight(allocator, &gradients, &defects, width, height, centre, sizes.ray_length, edges, edge);
+
+    var removed = [3][]f32{ &.{}, &.{}, &.{} };
+    defer for (removed) |plane| allocator.free(plane);
+    for (&removed) |*r| {
+        r.* = try allocator.alloc(f32, n);
+        @memset(r.*, 0);
+    }
+    var fit = try PolarFit.init(allocator, sizes.ray_length);
+    defer fit.deinit(allocator);
+    try fit.subtract(allocator, grid.density, band, edge, defects.near, width, height, centre, found.ratio, sizes, removed);
+    try applyToPixels(allocator, rgb, removed, .{ .factor = factor, .x0 = x0, .y0 = y0, .width = width, .height = height });
+}
+
+const Refined = struct {
+    centre: Centre,
+    /// The share of steps along the rays where the IR phase moves the ray's
+    /// way.
+    steadiness: f64,
+};
+
+/// The point within `search` of `start` from which the IR phase grows most
+/// steadily outward along 64 rays of `length` samples: the middle of the
+/// ring system, which the coarse vote finds only roughly.
+fn refineCentre(allocator: std.mem.Allocator, band: []const f32, width: usize, height: usize, start: Centre, search: usize, length: usize) !Refined {
+    var fft = try Fft.init(allocator, length);
+    defer fft.deinit(allocator);
+    const buffers = try allocator.alloc(f64, 3 * length);
+    defer allocator.free(buffers);
+    const re = buffers[0..length];
+    const im = buffers[length .. 2 * length];
+    const phase = buffers[2 * length ..];
+    const Score = struct {
+        fn of(f: *const Fft, b: []const f32, w: usize, h: usize, x: f64, y: f64, re_: []f64, im_: []f64, ph: []f64) f64 {
+            var steady: usize = 0;
+            var total: usize = 0;
+            for (0..64) |k| {
+                const angle = 2 * std.math.pi * @as(f64, @floatFromInt(k)) / 64;
+                for (re_, 0..) |*v, r| {
+                    const rf: f64 = @floatFromInt(r);
+                    v.* = bilinear(b, w, h, x + rf * @cos(angle), y + rf * @sin(angle));
+                }
+                analyticPhase(f, re_, im_, ph);
+                var rising: usize = 0;
+                for (6..ph.len - 1) |i| rising += @intFromBool(ph[i + 1] > ph[i]);
+                const steps = ph.len - 7;
+                // Either way round: the phase grows outward or inward.
+                steady += @max(rising, steps - rising);
+                total += steps;
+            }
+            return @as(f64, @floatFromInt(steady)) / @as(f64, @floatFromInt(total));
+        }
+    };
+    var best = start;
+    var best_score = Score.of(&fft, band, width, height, @floatFromInt(start.x), @floatFromInt(start.y), re, im, phase);
+    const s: isize = @intCast(search);
+    for ([_]isize{ 8, 4, 2, 1 }) |step| {
+        const centre = best;
+        const reach: isize = if (step == 8) s else 2 * step;
+        var dy: isize = -reach;
+        while (dy <= reach) : (dy += step) {
+            var dx: isize = -reach;
+            while (dx <= reach) : (dx += step) {
+                const x = @as(isize, @intCast(centre.x)) + dx;
+                const y = @as(isize, @intCast(centre.y)) + dy;
+                if (x < 0 or y < 0 or x >= width or y >= height) continue;
+                const score = Score.of(&fft, band, width, height, @floatFromInt(x), @floatFromInt(y), re, im, phase);
+                if (score > best_score) {
+                    best_score = score;
+                    best = .{ .x = @intCast(x), .y = @intCast(y), .strength = 0 };
+                }
             }
         }
     }
-    const weight = try allocator.alloc(f32, n);
-    errdefer allocator.free(weight);
-    try maxFilter(allocator, steep, grid.width, grid.height, params.edge_grow, tmp, weight);
-    const tau: f32 = @floatCast(params.edge_tau);
-    for (weight) |*w| w.* = @exp(-(w.* / tau) * (w.* / tau));
-    return weight;
+    return .{ .centre = best, .steadiness = best_score };
 }
 
 /// Multiplies `rgb`'s linear values by 10^removed, the grid's planes
 /// interpolated onto its pixels.
-fn applyToPixels(allocator: std.mem.Allocator, rgb: Image, removed: [3][]f32, analysis: *const Analysis) !void {
-    const grid = &analysis.grid;
-    var gx0: usize = grid.width;
+fn applyToPixels(allocator: std.mem.Allocator, rgb: Image, removed: [3][]f32, at: Placement) !void {
+    var gx0: usize = at.width;
     var gx1: usize = 0;
-    var gy0: usize = grid.height;
+    var gy0: usize = at.height;
     var gy1: usize = 0;
-    for (0..grid.height) |y| {
-        for (0..grid.width) |x| {
-            const i = y * grid.width + x;
+    for (0..at.height) |y| {
+        for (0..at.width) |x| {
+            const i = y * at.width + x;
             if (removed[0][i] == 0 and removed[1][i] == 0 and removed[2][i] == 0) continue;
             gx0 = @min(gx0, x);
             gx1 = @max(gx1, x);
@@ -1130,48 +1467,40 @@ fn applyToPixels(allocator: std.mem.Allocator, rgb: Image, removed: [3][]f32, an
         }
     }
     if (gx1 < gx0) return;
-    const f = analysis.factor;
+    const f = at.factor;
     const Pass = struct {
         rgb: Image,
         removed: [3][]f32,
-        grid_width: usize,
-        grid_height: usize,
-        factor: usize,
-        x0: usize,
-        y0: usize,
+        at: Placement,
         px0: usize,
         px1: usize,
         py0: usize,
 
         fn rows(p: @This(), start: usize, end: usize) void {
-            const factor: f64 = @floatFromInt(p.factor);
-            const max_x: f64 = @floatFromInt(p.grid_width - 1);
-            const max_y: f64 = @floatFromInt(p.grid_height - 1);
+            const factor: f64 = @floatFromInt(p.at.factor);
+            const max_x: f64 = @floatFromInt(p.at.width - 1);
+            const max_y: f64 = @floatFromInt(p.at.height - 1);
             for (p.py0 + start..p.py0 + end) |y| {
-                const gy = std.math.clamp((@as(f64, @floatFromInt(y - p.y0)) + 0.5) / factor - 0.5, 0, max_y);
+                const gy = std.math.clamp((@as(f64, @floatFromInt(y - p.at.y0)) + 0.5) / factor - 0.5, 0, max_y);
                 for (p.px0..p.px1) |x| {
-                    const gx = std.math.clamp((@as(f64, @floatFromInt(x - p.x0)) + 0.5) / factor - 0.5, 0, max_x);
+                    const gx = std.math.clamp((@as(f64, @floatFromInt(x - p.at.x0)) + 0.5) / factor - 0.5, 0, max_x);
                     const base = (y * p.rgb.width + x) * p.rgb.channels;
                     for (p.removed, 0..) |plane, c| {
-                        const m = bilinear(plane, p.grid_width, p.grid_height, gx, gy);
+                        const m = bilinear(plane, p.at.width, p.at.height, gx, gy);
                         if (m != 0) p.rgb.pixels[base + c] *= @exp(m * std.math.ln10);
                     }
                 }
             }
         }
     };
-    const py0 = analysis.y0 + gy0 * f;
-    const py1 = @min(rgb.height, analysis.y0 + (gy1 + 1) * f);
+    const py0 = at.y0 + gy0 * f;
+    const py1 = @min(rgb.height, at.y0 + (gy1 + 1) * f);
     try parallelism.forRowBands(allocator, py1 - py0, Pass{
         .rgb = rgb,
         .removed = removed,
-        .grid_width = grid.width,
-        .grid_height = grid.height,
-        .factor = f,
-        .x0 = analysis.x0,
-        .y0 = analysis.y0,
-        .px0 = analysis.x0 + gx0 * f,
-        .px1 = @min(rgb.width, analysis.x0 + (gx1 + 1) * f),
+        .at = at,
+        .px0 = at.x0 + gx0 * f,
+        .px1 = @min(rgb.width, at.x0 + (gx1 + 1) * f),
         .py0 = py0,
     }, Pass.rows);
 }
@@ -1193,12 +1522,17 @@ const PolarFit = struct {
     /// Each ray's direction.
     ray_cos: []f64,
     ray_sin: []f64,
-    /// Ray-major samples: IR phase, cos and sin of ratio times phase, and the
-    /// weight (inside the frame, away from edges).
+    /// Ray-major samples: IR phase, cos and sin of ratio times phase, the
+    /// weight the subtraction takes (inside the frame, away from picture
+    /// edges), and the one the fit takes (that, clear of IR defects and their
+    /// shoulders too). The subtraction covers the defects from the fit about
+    /// them: left alone, the rings by a speck stand out once the rest are
+    /// gone.
     phase: []f64,
     cos: []f64,
     sin: []f64,
     weight: []f64,
+    fit_weight: []f64,
     inside: []bool,
     /// Smoothed w b_i b_j over the basis b = (1, x, y, cos, sin), i <= j.
     shared: [basis_pairs][]f64,
@@ -1216,8 +1550,7 @@ const PolarFit = struct {
     const basis_len = 5;
     const basis_pairs = basis_len * (basis_len + 1) / 2;
 
-    fn init(allocator: std.mem.Allocator, params: Params) !PolarFit {
-        const length = params.ray_length;
+    fn init(allocator: std.mem.Allocator, length: usize) !PolarFit {
         const rays = std.math.ceilPowerOfTwoAssert(usize, @intFromFloat(@ceil(2 * std.math.pi * @as(f64, @floatFromInt(length)))));
         var self: PolarFit = undefined;
         self.rays = rays;
@@ -1250,12 +1583,14 @@ const PolarFit = struct {
         return self;
     }
 
-    fn planes(self: *PolarFit) [13 + basis_pairs + basis_len + 1]*[]f64 {
-        var out: [13 + basis_pairs + basis_len + 1]*[]f64 = undefined;
-        const fixed = [_]*[]f64{ &self.re, &self.im, &self.ray_cos, &self.ray_sin, &self.phase, &self.cos, &self.sin, &self.weight, &self.value, &self.a, &self.b, &self.gain, &self.scratch };
-        @memcpy(out[0..13], &fixed);
-        for (&self.shared, 0..) |*plane, i| out[13 + i] = plane;
-        for (&self.sums, 0..) |*plane, i| out[13 + basis_pairs + i] = plane;
+    const fixed_planes = 14;
+
+    fn planes(self: *PolarFit) [fixed_planes + basis_pairs + basis_len + 1]*[]f64 {
+        var out: [fixed_planes + basis_pairs + basis_len + 1]*[]f64 = undefined;
+        const fixed = [fixed_planes]*[]f64{ &self.re, &self.im, &self.ray_cos, &self.ray_sin, &self.phase, &self.cos, &self.sin, &self.weight, &self.fit_weight, &self.value, &self.a, &self.b, &self.gain, &self.scratch };
+        @memcpy(out[0..fixed_planes], &fixed);
+        for (&self.shared, 0..) |*plane, i| out[fixed_planes + i] = plane;
+        for (&self.sums, 0..) |*plane, i| out[fixed_planes + basis_pairs + i] = plane;
         return out;
     }
 
@@ -1275,29 +1610,32 @@ const PolarFit = struct {
         return .{ 1, r * self.ray_cos[k] / sigma, r * self.ray_sin[k] / sigma, self.cos[i], self.sin[i] };
     }
 
-    /// Fits the rings about `found` in each of `densities`, subtracts them,
-    /// and adds them to `removed`.
+    /// Fits the rings about `centre` in each of `densities`, at `ratio`
+    /// colour cycles per IR fringe, subtracts them, and adds them to
+    /// `removed`. `defects` (1 near IR defects) stay out of the fit.
     fn subtract(
         self: *PolarFit,
         allocator: std.mem.Allocator,
         densities: [3][]f32,
         ir: []const f32,
         edge: []const f32,
+        defects: []const f32,
         width: usize,
         height: usize,
-        found: Found,
-        params: Params,
+        centre: Centre,
+        ratio: f64,
+        sizes: FitSizes,
         removed: [3][]f32,
     ) !void {
         const rays = self.rays;
         const length = self.length;
         const n = rays * length;
-        const cx: f64 = @floatFromInt(found.centre.x);
-        const cy: f64 = @floatFromInt(found.centre.y);
+        const cx: f64 = @floatFromInt(centre.x);
+        const cy: f64 = @floatFromInt(centre.y);
         const max_x: f64 = @floatFromInt(width - 1);
         const max_y: f64 = @floatFromInt(height - 1);
-        const flip_at = @min(length - 1, 3 * params.window / 2);
-        const sigma = params.fit_sigma;
+        const flip_at = sizes.flip_at;
+        const sigma = sizes.fit_sigma;
 
         // The IR fringe phase along each ray, growing outward.
         for (0..rays) |k| {
@@ -1310,19 +1648,20 @@ const PolarFit = struct {
                 self.re[r] = bilinear(ir, width, height, x, y);
                 self.inside[row + r] = in_frame;
                 self.weight[row + r] = if (in_frame) bilinear(edge, width, height, x, y) else 0;
+                self.fit_weight[row + r] = if (bilinear(defects, width, height, x, y) < 0.5) self.weight[row + r] else 0;
             }
             const phase = self.phase[row..][0..length];
             analyticPhase(&self.fft, self.re, self.im, phase);
-            if (phase[flip_at] - phase[params.ray_start] + 1e-12 < 0) {
+            if (phase[flip_at] - phase[sizes.ray_start] + 1e-12 < 0) {
                 for (phase) |*p| p.* = -p.*;
             }
         }
         // Each ray's fringe count matched to its neighbour's at ring_ref.
         {
-            var previous = self.phase[params.ring_ref];
+            var previous = self.phase[sizes.ring_ref];
             var correction: f64 = 0;
             for (1..rays) |k| {
-                const raw = self.phase[k * length + params.ring_ref];
+                const raw = self.phase[k * length + sizes.ring_ref];
                 const step = raw - previous;
                 if (@abs(step) >= std.math.pi) {
                     var wrapped = @mod(step + std.math.pi, 2 * std.math.pi) - std.math.pi;
@@ -1336,8 +1675,8 @@ const PolarFit = struct {
             }
         }
         for (self.phase, self.cos, self.sin) |p, *c, *s| {
-            c.* = @cos(found.ratio * p);
-            s.* = @sin(found.ratio * p);
+            c.* = @cos(ratio * p);
+            s.* = @sin(ratio * p);
         }
 
         // Smoothed products of the basis the channels share.
@@ -1347,7 +1686,7 @@ const PolarFit = struct {
                 for (bi..basis_len) |bj| {
                     for (self.scratch, 0..) |*out, i| {
                         const base = self.basis(i, sigma);
-                        out.* = self.weight[i] * base[bi] * base[bj];
+                        out.* = self.fit_weight[i] * base[bi] * base[bj];
                     }
                     self.smooth(self.scratch, self.shared[pair], sigma);
                     pair += 1;
@@ -1367,7 +1706,7 @@ const PolarFit = struct {
             for (0..basis_len + 1) |j| {
                 for (self.scratch, 0..) |*out, i| {
                     const v = self.value[i];
-                    out.* = self.weight[i] * v * (if (j < basis_len) self.basis(i, sigma)[j] else v);
+                    out.* = self.fit_weight[i] * v * (if (j < basis_len) self.basis(i, sigma)[j] else v);
                 }
                 self.smooth(self.scratch, self.sums[j], sigma);
             }
@@ -1398,7 +1737,7 @@ const PolarFit = struct {
                 const base = self.basis(i, sigma);
                 self.a[i] = x[3];
                 self.b[i] = x[4];
-                self.gain[i] = std.math.clamp(1 - local_k * (resid / n_eff) / (amp2 + 1e-30), 0, 1);
+                self.gain[i] = std.math.clamp(1 - sizes.local_k * (resid / n_eff) / (amp2 + 1e-30), 0, 1);
                 self.value[i] -= x[0] + x[1] * base[1] + x[2] * base[2];
             }
             const zone = try self.ringZone(allocator);
@@ -1407,7 +1746,7 @@ const PolarFit = struct {
                 const bin = zone.bin(self.phase[i]);
                 self.value[i] = (self.a[i] * self.cos[i] + self.b[i] * self.sin[i]) * self.gain[i] * zone.bins[bin] * self.weight[i];
             }
-            self.toGrid(self.value, found.centre, width, height, params, density_plane, rem);
+            self.toGrid(self.value, centre, width, height, sizes, density_plane, rem);
         }
     }
 
@@ -1446,7 +1785,7 @@ const PolarFit = struct {
         errdefer allocator.free(zone.bins);
         const per_ray = 2 * std.math.pi / @as(f64, @floatFromInt(self.rays));
         for (0..self.rays * self.length) |i| {
-            const w = self.weight[i];
+            const w = self.fit_weight[i];
             if (w == 0) continue;
             const r: f64 = @floatFromInt(i % self.length);
             const wa = w * @max(r, 0.5) * per_ray;
@@ -1511,10 +1850,10 @@ const PolarFit = struct {
 
     /// Subtracts the polar model from the grid plane `target` and adds it to
     /// `removed`, fading to nothing at the rays' ends.
-    fn toGrid(self: *PolarFit, model: []const f64, centre: Centre, width: usize, height: usize, params: Params, target: []f32, removed: []f32) void {
+    fn toGrid(self: *PolarFit, model: []const f64, centre: Centre, width: usize, height: usize, sizes: FitSizes, target: []f32, removed: []f32) void {
         const length = self.length;
         const rays = self.rays;
-        const reach: f64 = @floatFromInt(length - 1);
+        const reach = @min(@as(f64, @floatFromInt(length - 1)), sizes.reach);
         const cx: f64 = @floatFromInt(centre.x);
         const cy: f64 = @floatFromInt(centre.y);
         const y_start = centre.y -| length;
@@ -1539,7 +1878,7 @@ const PolarFit = struct {
                 const fr = r - @floor(r);
                 const near = (1 - fr) * model[k0 * length + r0] + fr * model[k0 * length + r1];
                 const far = (1 - fr) * model[k1 * length + r0] + fr * model[k1 * length + r1];
-                const fade = std.math.clamp((reach - r) / params.taper, 0, 1);
+                const fade = std.math.clamp((reach - r) / sizes.taper, 0, 1);
                 const m: f32 = @floatCast(((1 - ft) * near + ft * far) * fade);
                 target[y * width + x] -= m;
                 removed[y * width + x] += m;
@@ -1839,8 +2178,17 @@ test "sizes in millimetres land on the pixel sizes tuned at 6400 dpi" {
     try std.testing.expectEqual(@as(usize, 80), p.window);
     try std.testing.expectEqual(@as(usize, 12), p.ray_start);
     try std.testing.expectEqual(@as(usize, 40), p.ring_ref);
-    try std.testing.expectEqual(@as(usize, 12), p.edge_grow);
     try std.testing.expectApproxEqAbs(@as(f64, 60), p.broad, 0.1);
     try std.testing.expectApproxEqAbs(@as(f64, 12), p.fit_sigma, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.016), p.edge_tau, 1e-4);
+    const e = EdgeSizes.init(p.px_per_mm);
+    try std.testing.expectEqual(@as(usize, 12), e.grow);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.016), e.tau, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), e.blur, 0.01);
+    try std.testing.expectEqual(@as(usize, 2), e.defect_grow);
+    try std.testing.expectEqual(@as(usize, 2), e.defect_reach);
+    const f = FitSizes.fine(3200.0 / 25.4);
+    try std.testing.expectEqual(@as(usize, 256), f.ray_length);
+    try std.testing.expectEqual(@as(usize, 12), f.ray_start);
+    try std.testing.expectEqual(@as(usize, 120), f.flip_at);
+    try std.testing.expectEqual(@as(usize, 38), f.ring_ref);
 }
