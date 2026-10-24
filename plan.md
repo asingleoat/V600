@@ -150,8 +150,6 @@ Recorded in the May-July log; correct anything that is wrong:
     sky of KODAKGOLD_200_120_0 strip 1 frame 2 passed the ratio test but
     not that one. `ir_threshold` sets both tests and moves them opposite
     ways.
-- `cerealgrain-ui --process-interaction-smoke` (not a build step) fails with
-  ProcessInteractionSmokeFailed.
 - Loading an image, auto-detect, and export in the Process view copy the
   cached RGB page on the UI thread before starting their worker
   (`getCachedRgbPage`, `rgb_pages.getClone`). Pages over the 1 GiB cache
