@@ -254,9 +254,14 @@ deliberately, not by accident.
   1.98 mm along, centres 28.16 mm apart, `processing/perforations.zig`)
   bound its frames: a frame reaching within 0.05 mm of the holes' inner
   edges moves back between them, or narrows. On thin film the holes'
-  edges are the strongest near a frame. Their angle is not the frames':
-  on the owner's scans the pictures, and the frames placed by hand, sit
-  about 0.2 degrees off the rows, so frames keep their own edges' angle.
+  edges are the strongest near a frame. The rows do not place frames:
+  the frame is fixed to the camera body and the film wanders in the gate,
+  so on the owner's strips hand-placed frames sit up to 0.36 mm off the
+  rows' midline and about 0.2 degrees off their angle; frames keep their
+  own edges' position and angle. (Hiding the holes from the edge search
+  instead of bounding frames measured slightly worse against the owner's
+  frames, since a picture edge right by the holes fell inside the hidden
+  band.)
 - In a roll, each strip's export records its frames' length
   (`frame_length_mm` in the `.processed.json`). A strip whose frames come
   out more than 2% off the median of the roll's other strips is detected
