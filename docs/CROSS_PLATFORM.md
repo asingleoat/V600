@@ -14,8 +14,8 @@ Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`.
 
 ## Constraints for every platform
 
-- Zig 0.16.0. Native dependencies (libtiff, libjpeg, OpenCV, SuperLU, SDL3,
-  Nuklear, optional `wgpu-native`) come from Nix; no other package managers.
+- Zig 0.16.0. Native dependencies (libtiff, libjpeg, OpenCV, SDL3, Nuklear,
+  optional `wgpu-native`) come from Nix; no other package managers.
 - No default build or check path may require WebGPU or scanner hardware.
 - GPU acceleration targets WebGPU through nixpkgs `wgpu-native`, behind a
   backend boundary that could later use Google Dawn. CPU stays the default.
@@ -33,8 +33,7 @@ the dev-shell build's pixel for pixel; an export takes about 8% longer.
 
 - nixpkgs' static OpenCV pulls in OpenCL, OpenMP, and media libraries that
   have no static build, so the package builds OpenCV with only the modules
-  the helpers use (core, imgproc, imgcodecs with JPEG). SuperLU's Fortran
-  interface is left out the same way.
+  the helpers use (core, imgproc, imgcodecs with JPEG).
 - The package runs `zig build -Dstatic=true -Dtarget=x86_64-linux-musl
   -Dcpu=x86_64_v3`, which compiles the C and C++ helpers with the musl
   toolchain in `$CC` and `$CXX` and links what `$PKG_CONFIG --static` lists,

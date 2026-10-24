@@ -16,7 +16,6 @@ const root_native_objects = [_]NativeObjectSpec{
     .{ .cxx = true, .flags = opencv_flags, .packages = "opencv4", .label = "compile-opencv-ir", .source = "src/processing/opencv_ir.cpp", .output = "opencv_ir.o" },
     .{ .cxx = true, .flags = opencv_flags, .packages = "opencv4", .label = "compile-opencv-preview", .source = "src/processing/opencv_preview.cpp", .output = "opencv_preview.o" },
     .{ .flags = "-std=c99 -fPIC", .packages = "libjpeg", .label = "compile-jpeg-encode", .source = "src/processing/jpeg_encode.c", .output = "jpeg_encode.o" },
-    .{ .flags = "-std=c99 -fPIC", .label = "compile-superlu-sparse", .source = "src/processing/superlu_sparse.c", .output = "superlu_sparse.o" },
 };
 
 /// The compilers and pkg-config the native helpers build with: the dev
@@ -43,7 +42,7 @@ const static_toolchain = Toolchain{
 const static_runtime_archives = [_][]const u8{ "libstdc++.a", "libgcc.a" };
 
 /// The libraries the processing code links, by pkg-config name.
-const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib", "opencv4", "superlu" };
+const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib", "opencv4" };
 
 const UiSmokeSpec = struct {
     arg: []const u8,
@@ -343,7 +342,6 @@ fn addRootModule(
     for ([_][]const u8{ "opencv_core", "opencv_imgproc", "opencv_imgcodecs" }) |name| {
         root_module.linkSystemLibrary(name, .{ .use_pkg_config = .no });
     }
-    root_module.linkSystemLibrary("superlu", .{ .use_pkg_config = .no });
     if (!target.query.isNativeOs()) addNixLibraryPaths(b, root_module);
     if (target.result.os.tag.isDarwin()) {
         // The OpenCV objects need libc++ named directly under the two-level

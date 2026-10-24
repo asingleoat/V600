@@ -113,21 +113,13 @@ EOF
               mkdir -p $out/lib/opencv4/3rdparty
             '';
           };
-          # Its Fortran interface does not build static, and its pkg-config
-          # file names its prefix twice.
-          superlu = s.superlu.overrideAttrs (old: {
-            cmakeFlags = (old.cmakeFlags or [ ]) ++ [ "-Denable_fortran=OFF" ];
-            postInstall = (old.postInstall or "") + ''
-              sed -i "s|$out/$out|$out|g" $out/lib/pkgconfig/superlu.pc
-            '';
-          });
         in
         s.stdenv.mkDerivation {
           pname = "cerealgrain-cli";
           inherit version;
           src = cleanSource pkgs;
           nativeBuildInputs = [ pkgs.zig s.buildPackages.pkg-config pkgs.nukeReferences ];
-          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg opencv superlu ];
+          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg opencv ];
           # OpenCV's build information names the compilers and libraries it
           # was built with; nothing is loaded from the store at run time.
           allowedReferences = [ ];
@@ -173,7 +165,6 @@ EOF
                 pkgs.libdeflate
                 pkgs.libjpeg
                 pkgs.opencv
-                pkgs.superlu
               ] ++ pkgs.lib.optionals enableUi [
                 pkgs.sdl3
                 nuklear
@@ -212,7 +203,7 @@ EOF
         let nuklear = nuklearPackage pkgs; in {
         zig-tests = pkgs.runCommand "cerealgrain-tests" {
           nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc pkgs.imagemagick pkgs.exiftool ];
-          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.opencv pkgs.superlu pkgs.sdl3 nuklear ];
+          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.opencv pkgs.sdl3 nuklear ];
         } ''
           cp -R ${cleanSource pkgs} source
           chmod -R u+w source
@@ -271,7 +262,6 @@ EOF
             libdeflate
             libjpeg
             opencv
-            superlu
             sdl3
             nuklear
           ];

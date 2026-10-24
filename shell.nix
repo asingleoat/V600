@@ -94,7 +94,6 @@ in pkgs.mkShell {
     zlib
     libdeflate
     opencv
-    superlu
 
     # Dev tools
     basedpyright

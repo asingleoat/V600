@@ -152,9 +152,6 @@ license_dir() {
     *libzstd.*) echo zstd ;;
     *libdeflate.*) echo libdeflate ;;
     *libz.*) echo zlib ;;
-    *libsuperlu.*) echo superlu ;;
-    *libblas.*) echo openblas ;;
-    *libgfortran.* | *libquadmath.* | *libgcc_s.*) echo gcc-runtime ;;
     *libusb-1.0.*) echo libusb ;;
     *libintl.*) echo libintl ;;
     *libiconv.* | *libcharset.*) echo libiconv ;;

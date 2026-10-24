@@ -85,7 +85,7 @@ preview `1738x8192`. `scan_0006_rgbir_800dpi.tiff`: quick preview `1272x6031`.
 | `export_all` | scan_0006 | one 764x1145 frame, three files | 2364.064 ms | 2026-05-17 |
 | `export_detected_frames` | scan_0004 | 5 full-resolution frames, `inv_only`, 5 workers | 665669 us | 2026-05-19 |
 | `export_detected_frames_ir_all_breakdown` | scan_0004 | 5 frames, 15 files, IR align | 13366626 us | 2026-10-03 |
-| `export_detected_frames_ir_all_breakdown` | 6x7 strip, 6400 dpi (Mac) | 2 frames, 6 files, `--format 6x7 --frames 0` | 88883402 us | 2026-10-03 |
+| `export_detected_frames_ir_all_breakdown` | 6x7 strip, 6400 dpi (Mac) | 2 frames, 6 files, `--format 6x7 --frames 0` | 61612596 us | 2026-10-24 |
 | `export_detected_frames_ir_all_breakdown` | 35mm strip, 6400 dpi (Mac) | 5 frames, 15 files | 52392648 us | 2026-10-03 |
 
 Major wins (scan_0004 unless noted):
@@ -233,14 +233,17 @@ TIFFs decode identically, or equal tests against the one-pass code):
 - Meijering filters and eigenvalues over row bands: adopted, `9.7 s` to
   `1.8 s`.
 - ECC preparation (maxima, grey, u8 copy, resizes) over row bands on the
-  native side: adopted, IR
-  alignment `7.8 s` to `1.2 s`.
+  native side: adopted, IR alignment `7.8 s` to `1.2 s`.
 - Defect fills in parallel by levels (a fill waits only for fills whose
   padded regions it touches): adopted; one frame's fills `18.6 s` to `6.1 s`
-  on the Mac. macOS's OpenBLAS takes one lock per BLAS call, so SuperLU runs
-  at most four solves at once there (nine at once took `10.1 s`); Linux runs
-  every thread (`2.0 s` on 16). Per-thread arenas and one-thread OpenBLAS
-  changed nothing.
+  on the Mac, where OpenBLAS's one lock held SuperLU to four solves at once.
+- Our own fill solver (`fill_solver.zig`: nested dissection on the pixel
+  grid, multifrontal LDL^T, buffers sized once per fill) in place of SuperLU
+  and OpenBLAS: adopted. The 6x7 strip's two frames: fills `15.8 s` to
+  `5.2 s`, export `76.4 s` to `61.6 s` on the Mac; one frame's fills
+  `2.4-4.4 s` to `1.3-2.1 s` on Linux (16 cores). Single-threaded on 35
+  real fills, `2.5 s` to `0.64 s`. Exports differ in at most 3 of 723
+  million values, by at most 2.
 
 GPU, scanner:
 

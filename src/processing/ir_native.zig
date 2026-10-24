@@ -1,4 +1,4 @@
-//! Native helper boundary for IR processing: the OpenCV/SuperLU extern
+//! Native helper boundary for IR processing: the OpenCV extern
 //! declarations that only link on libc builds, the availability switch, and
 //! the pure-Zig fallback wiring used by freestanding/no-libc targets.
 
@@ -34,68 +34,6 @@ pub extern fn cerealgrain_synthesize_grain_from_noise(
     channels: c_int,
     output: [*]f64,
 ) c_int;
-
-extern fn cerealgrain_solve_sparse_lu(
-    n: usize,
-    row_offsets: [*]const usize,
-    columns: [*]const usize,
-    values: [*]const f64,
-    nnz: usize,
-    channels: usize,
-    rhs: [*]const f64,
-    output: [*]f64,
-) c_int;
-
-pub fn solveSparseLu(
-    n: usize,
-    row_offsets: [*]const usize,
-    columns: [*]const usize,
-    values: [*]const f64,
-    nnz: usize,
-    channels: usize,
-    rhs: [*]const f64,
-    output: [*]f64,
-) c_int {
-    if (available) {
-        sparse_lu_gate.enter();
-        defer sparse_lu_gate.leave();
-        return cerealgrain_solve_sparse_lu(n, row_offsets, columns, values, nnz, channels, rhs, output);
-    }
-    // There is no pure SuperLU port: report failure so the biharmonic solver
-    // falls back to its pure iterative path.
-    return 1;
-}
-
-/// macOS's OpenBLAS hands every BLAS call a buffer from one pool behind one
-/// lock, and SuperLU makes a BLAS call per panel, so solves on many threads
-/// at once mostly wait on that lock: one 6x7 frame's defect fills took 18.6 s
-/// on one thread, 5.8 s with four solving at once, and 10.1 s with nine.
-/// Linux's OpenBLAS has no such lock and runs every thread (2.0 s on 16).
-const sparse_lu_concurrency: usize = if (builtin.os.tag == .macos) 4 else 0;
-
-var sparse_lu_gate: SolveGate = .{};
-
-const SolveGate = struct {
-    mutex: std.c.pthread_mutex_t = .{},
-    cond: std.c.pthread_cond_t = .{},
-    active: usize = 0,
-
-    fn enter(self: *SolveGate) void {
-        if (sparse_lu_concurrency == 0) return;
-        _ = std.c.pthread_mutex_lock(&self.mutex);
-        while (self.active >= sparse_lu_concurrency) _ = std.c.pthread_cond_wait(&self.cond, &self.mutex);
-        self.active += 1;
-        _ = std.c.pthread_mutex_unlock(&self.mutex);
-    }
-
-    fn leave(self: *SolveGate) void {
-        if (sparse_lu_concurrency == 0) return;
-        _ = std.c.pthread_mutex_lock(&self.mutex);
-        self.active -= 1;
-        _ = std.c.pthread_cond_signal(&self.cond);
-        _ = std.c.pthread_mutex_unlock(&self.mutex);
-    }
-};
 
 // ECC runs at 1/8 scale with OpenCV findTransformECC's iteration limits,
 // which the earlier OpenCV helper used.

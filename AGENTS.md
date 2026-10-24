@@ -32,8 +32,8 @@ diffs for this before committing.
 ### Nix and the build environment
 
 - Assume you are inside the project's Nix dev shell and use plain `zig ...`
-  commands. OpenCV, libjpeg, SuperLU, libtiff, libdeflate, SDL3, and
-  Nuklear come from that shell; outside it the build fails at the C/C++
+  commands. OpenCV, libjpeg, libtiff, libdeflate, SDL3, and Nuklear come
+  from that shell; outside it the build fails at the C/C++
   objects.
 - Do not run `nix develop`, `nix-shell`, `nix build`, or `nix flake check` in
   ordinary build/test loops. If a dependency or the Zig version is missing,
@@ -94,7 +94,7 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
                             config, LUTs
       processing/           frame detection, inversion, IR cleaning, render,
                             export, workflow, config; C/C++ helpers for
-                            OpenCV, libjpeg, SuperLU; optional WebGPU
+                            OpenCV and libjpeg; optional WebGPU
       ui/                   headless UI state and workers; SDL3/Nuklear
                             front end in main.zig, render.zig, chrome.zig,
                             roll_panel.zig
@@ -260,7 +260,11 @@ deliberately, not by accident.
 - IR defects: threshold, dilate/close, coverage cap, inpaint. Inpainting
   fills each defect with a biharmonic fill of the picture (a low-pass of
   the clean pixels around it) plus synthetic grain matched to the
-  surround's level and spectrum.
+  surround's level and spectrum. The fills' linear systems are solved
+  directly by our own solver (`processing/fill_solver.zig`): nested
+  dissection on the pixel grid, then multifrontal LDL^T, or LU without
+  pivoting for fills by the image edge, whose reflected stencils are not
+  symmetric.
 - Newton's rings: exports of scans with IR check each frame
   (`processing/newton_rings.zig`; `processing rings` runs it alone) and
   name frames with strong rings in the export message, the roll panel,
