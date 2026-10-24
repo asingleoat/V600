@@ -449,3 +449,15 @@ pub fn nkBool(value: bool) c.nk_bool {
 pub fn drawText(ctx: *c.struct_nk_context, text: []const u8) void {
     c.nk_text(ctx, text.ptr, @intCast(text.len), c.NK_TEXT_LEFT);
 }
+
+/// A paragraph wrapped at word breaks to the panel's width, in a row as tall
+/// as its lines; a line or so spare, since words do not fill lines exactly.
+pub fn drawWrappedText(ctx: *c.struct_nk_context, text: []const u8) void {
+    const font = ctx.style.font;
+    const region = c.nk_window_get_content_region_size(ctx);
+    const line_width = @max(region.x - 2.0 * ctx.style.window.padding.x, 1.0) * 0.95;
+    const text_width = font.*.width.?(font.*.userdata, font.*.height, text.ptr, @intCast(text.len));
+    const lines = if (text_width <= line_width) 1.0 else @ceil(text_width / line_width) + 1.0;
+    c.nk_layout_row_dynamic(ctx, lines * (font.*.height + 3.0), 1);
+    c.nk_text_wrap(ctx, text.ptr, @intCast(text.len));
+}

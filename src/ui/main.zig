@@ -3614,8 +3614,7 @@ fn drawProcessView(
             std.fmt.bufPrint(&note_buffer, "Your frames for this strip are saved. Export Strip Frames re-exports them as {s}_NN.tif.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch ""
         else
             std.fmt.bufPrint(&note_buffer, "Edits save automatically. Export Strip Frames re-exports this strip as {s}_NN.tif.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch "";
-        layoutRow(ctx, 22.0, 1);
-        drawText(ctx, note);
+        chrome.drawWrappedText(ctx, note);
         layoutRow(ctx, 30.0, 1);
         if (export_active) {
             c.nk_label(ctx, "Exporting...", c.NK_TEXT_LEFT);
