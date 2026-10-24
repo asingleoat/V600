@@ -9,11 +9,8 @@ What runs where, and what each missing platform needs.
 | Linux | SANE via patched epkowa; exercised on a V600 | Yes | SDL3/Nuklear | `packages.cli`, `packages.ui`; `packages.cli-static` (x86-64, fully static) |
 | macOS | Epson Interpreter bundle over libusb; exercised on a V600 | Yes (arm64) | SDL3/Nuklear (arm64) | `zig build app-bundle` (CerealGrain.app, ad hoc signed) |
 | Windows | Not planned | Not wired | Not wired | Not wired |
-| Browser | Through the Linux companion (`cerealgrain serve`) only | Webapp (Wasm); checked in Chrome and Chromium | Browser UI in `web/` | `zig build wasm-webapp` |
 
-Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`. See
-`docs/WEBAPP.md` for the browser app and `docs/SCANNER_COMPANION.md` for the
-companion.
+Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`.
 
 ## Constraints for every platform
 
@@ -44,7 +41,6 @@ the dev-shell build's pixel for pixel; an export takes about 8% longer.
   then libstdc++ and libgcc.
 - Scanning still runs `scanimage` and its wrappers, ImageMagick, and
   `tiffcp` from the host; processing, rolls, and export need nothing else.
-  `serve` needs the staged webapp (`--webapp-dir`).
 - The native UI has no static build: SDL loads the display server's and the
   GPU's libraries at run time, which a static musl program cannot.
 
@@ -214,12 +210,3 @@ and processing over existing TIFFs, and needs:
 3. A review of path handling, temp files, delete/trash, and config paths for
    Windows semantics.
 4. A real Windows host or CI run before calling it supported.
-
-## Browser
-
-The webapp processes scan files in WebAssembly and scans only through the
-companion running on a Linux host. It has been checked by hand in headless
-Chrome 145 and Chromium 129 (wasm32 fallback); Firefox and Safari are
-untried.
-Details and known gaps: `docs/WEBAPP.md`. Direct browser scanner control
-(WebUSB) is a research idea only.

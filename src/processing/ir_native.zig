@@ -4,12 +4,11 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const build_options = @import("build_options");
 
 const ir_pure = @import("ir_pure.zig");
 const parallelism = @import("parallelism.zig");
 
-pub const available = !builtin.cpu.arch.isWasm() and build_options.native_libs;
+pub const available = !builtin.cpu.arch.isWasm();
 
 pub extern fn cerealgrain_estimate_local_grain(
     roi_rgb: [*]const f64,

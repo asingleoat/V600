@@ -2,9 +2,7 @@
 
 CerealGrain: scanning and film processing for the Epson V600 and related
 scanners with a transparency unit. The application is Zig 0.16: a CLI
-(`cerealgrain`), a native SDL3/Nuklear UI (`cerealgrain-ui`), a browser
-WebAssembly processing webapp built from the same processing code, and a local
-scanner companion server that lets the webapp drive a Linux scanner. The
+(`cerealgrain`) and a native SDL3/Nuklear UI (`cerealgrain-ui`). The
 original Python implementation, a work in progress that drove the port, stays
 in the tree for reference; the Zig app has replaced it.
 
@@ -16,8 +14,8 @@ Current state, decisions, and open work: `plan.md`.
   not invent new phases or plans. If you notice other work worth doing, add it
   to the `plan.md` backlog or mention it at the end.
 - Keep changes scoped to the task. No drive-by refactors or formatting churn.
-- Say exactly what you verified and how: unit tests, Node smokes, a real scan,
-  or nothing. Do not claim success from a build or type check alone.
+- Say exactly what you verified and how: unit tests, UI smokes, a real
+  scan, or nothing. Do not claim success from a build or type check alone.
 - Docs describe the current state. Do not append evidence logs, dated
   progress notes, or test-count snapshots to docs or `plan.md`; commit
   messages and git history hold that.
@@ -41,8 +39,7 @@ diffs for this before committing.
   ordinary build/test loops. If a dependency or the Zig version is missing,
   edit `flake.nix`/`shell.nix` if needed, then stop and ask the owner to
   reload the shell.
-- No pip, venv, npm, or other package managers. Node is used only to run the
-  test harnesses in `test/wasm/`.
+- No pip, venv, npm, or other package managers.
 
 ## Commands
 
@@ -51,23 +48,17 @@ diffs for this before committing.
     zig build -Dui=true run-ui                # run the native UI
     zig build run -- <args>                   # run the CLI
     zig build test --summary all              # Zig unit and fixture tests
-    zig build wasm-webapp                     # stage the webapp in zig-out/webapp
-    zig build run -- serve                    # companion: serves zig-out/webapp on 127.0.0.1:8433
     zig build app-bundle                      # macOS: zig-out/CerealGrain.app and a zip to share
     nix build .#cli-static                    # x86-64 Linux: a fully static CLI in result/bin
 
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
-`processing info|detect|rebate|export`, `roll start|use|status|scan|export|review|check-frames`,
-`serve`. Build with `-Doptimize=ReleaseFast` for real scanning sessions;
-Debug export is several times slower.
+`processing info|detect|rebate|export`,
+`roll start|use|status|scan|export|review|check-frames`. Build with
+`-Doptimize=ReleaseFast` for real scanning sessions; Debug export is several
+times slower.
 
-Browser and companion tests are separate Node-driven steps, not part of
-`zig build test`: `wasm-core-smoke`, `wasm32-core-smoke`,
-`wasm-worker-protocol-smoke`, `wasm-worker-runtime-smoke`,
-`wasm-webapp-shell-smoke`, `wasm-tiff-reader-smoke`,
-`wasm-webapp-static-smoke`, `companion-smoke`. Headless native UI smokes are
-`native-*-smoke` steps under `-Dui=true`. Hardware steps (`scanner-smoke`, the
+Headless native UI smokes are `native-*-smoke` steps under `-Dui=true`. Hardware steps (`scanner-smoke`, the
 preview/scan worker smokes) only run with `CEREALGRAIN_HARDWARE_SMOKE=1`;
 their `*-skip` variants check that they stay off otherwise.
 
@@ -80,7 +71,7 @@ Test data: four frame-detection tests run against real scans in the
 gitignored `scans/` directory (`scan_0001`, `0003`, `0004`, `0006`) and skip
 when they are absent, which they are in a fresh clone. The Linux scan path
 shells out to ImageMagick `magick` and `tiffcp`, and the fake `scanimage`
-scripts in the scanner tests and `companion-smoke` use `magick` too.
+scripts in the scanner tests use `magick` too.
 
 Environment variables: `CEREALGRAIN_HARDWARE_SMOKE`,
 `CEREALGRAIN_MACOS_HARDWARE_SMOKE`, `CEREALGRAIN_PROCESSING_GPU` (opt-in
@@ -90,11 +81,10 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
 
 ## Layout
 
-    build.zig               build, test, smoke, benchmark, and webapp steps
+    build.zig               build, test, smoke, and benchmark steps
     src/
       main.zig              CLI entry
       root.zig              the `v600` module: scanner, processing, tiff, UI state
-      companion.zig         scanner companion HTTP server (`serve`)
       roll.zig, roll_cli.zig rolls: strips of one film roll, roll LUT,
                             background export, review page; `roll` CLI
       tiff.zig              libtiff wrapper: page layout, metadata tags
@@ -108,22 +98,17 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
       ui/                   headless UI state and workers; SDL3/Nuklear
                             front end in main.zig, render.zig, chrome.zig,
                             roll_panel.zig
-      wasm/, wasm_core.zig  browser core: C-ABI exports over src/processing
       benchmarks/, tools/   benchmark and WebGPU tool executables
-    web/                    browser app: ES modules, no bundler
-      worker/               Wasm worker, message protocol, ABI layer
     test/
       fixtures/             committed regression fixtures, originally Python-generated
-      wasm/                 Node harnesses for the Wasm core, worker, webapp, companion
     nixos/                  NixOS module and overlay: udev, patched epkowa backend
     scanner.py, scan.py, v600/, scratchndent/, test_detect.py
                             original Python implementation (reference only)
 
 Dependency direction: `ui` imports `roll`, `processing`, `scanner`, and
 `tiff`; `roll` imports `processing`, `scanner`, and `tiff`; `processing` and
-`scanner` import only `tiff`; `companion` imports `scanner`. Keep it that
-way. `processing` and `scanner` must not import each other or UI
-code.
+`scanner` import only `tiff`. Keep it that way. `processing` and `scanner`
+must not import each other or UI code.
 
 ## Behavior changes and the Python code
 
@@ -363,10 +348,8 @@ deliberately, not by accident.
 - Zig 0.16 `std.Io` style. Tests live in `test` blocks next to the code;
   fixture-backed tests load JSON from `test/fixtures/`.
 - Comments only where intent is not obvious from the code.
-- Validate at system boundaries (CLI args, HTTP requests, files, scanner
-  output); no defensive checks on internal calls.
-- `web/` is plain ES modules loaded directly by the browser: `const`/`let`,
-  camelCase, `async`/`await`, no framework, no build step.
+- Validate at system boundaries (CLI args, files, scanner output); no
+  defensive checks on internal calls.
 - The version is the commit: build.zig reads git's short hash, with
   `-dirty` for uncommitted changes to tracked files, on every build
   (`cerealgrain version`, the window title, the probe output, and every
@@ -385,9 +368,6 @@ deliberately, not by accident.
   (historical).
 - `docs/PERFORMANCE_STRATEGY.md`: optimization policy and current numbers.
 - `docs/CROSS_PLATFORM.md`: platform support and the macOS/Windows plans.
-- `docs/WEBAPP.md`, `docs/WEBAPP_WORKER_PROTOCOL.md`: browser app and worker
-  protocol.
-- `docs/SCANNER_COMPANION.md`: companion server API.
 - `docs/SCANNER_INTERNALS.md`: ESC/I protocol, interpreter ABI, TPU
   calibration, IR, gamma LUTs, epkowa patches.
 - `docs/TIFF_STRATEGY.md`, `docs/FILM_STOCK_PROFILES.md`,

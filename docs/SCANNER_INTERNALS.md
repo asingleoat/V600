@@ -611,7 +611,7 @@ For film scanning, LUTs are computed from the 8-bit preview scan
 Clear areas clip to white, by design. Processing then needs two things:
 
 - **Linearization.** The applied LUT is stored in private BYTE tag 50001 on
-  the RGB page; `src/tiff.zig` and `web/tiff.mjs` invert it on load
+  the RGB page; `src/tiff.zig` inverts it on load
   (`linearizeRgb16`), scaling each channel so the white point is 65535. The
   result is the sensor signal times a per-channel constant, a density offset
   that Dmin subtraction removes when Dmin comes from the same scan.

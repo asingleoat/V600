@@ -50,4 +50,4 @@ tifffile.imwrite(path, rgb, photometric="rgb", resolution=(800, 800),
 `scanner-lut-linearize.json` holds the LUT, raw samples per channel, and the
 linearized values computed with `numpy.interp` over the LUT's rising knots
 (knot k at sensor value 256 k and output 257 lut[k], scaled so the white knot
-is 65535). Both `src/tiff.zig` and `web/tiff.mjs` must match it to within 1.
+is 65535). `src/tiff.zig` must match it to within 1.

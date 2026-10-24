@@ -209,7 +209,7 @@ compiled profile and the next save comments it out again.
 
 Custom `[stocks.*]` profiles in `processing.toml` are the way to add
 stocks. The native app parses, lists, and re-serializes them; there is no
-profile editor. The browser webapp supports only the built-in stocks.
+profile editor.
 
 ## Built-in Profiles
 

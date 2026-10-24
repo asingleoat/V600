@@ -2,8 +2,7 @@
 
 Native TIFF I/O goes through libtiff, wrapped by `src/tiff.zig`; there is no
 custom TIFF parser. Processing code works on plain Zig buffers and never sees
-libtiff handles. The browser has its own small reader/writer in
-`web/tiff.mjs`, because libtiff is not available in the Wasm build.
+libtiff handles.
 
 ## Semantics
 
@@ -22,8 +21,8 @@ the scanner `_tiff_metadata` helpers.
   `plan.md`).
 - Scanner gamma LUT: private BYTE tag 50001 on the RGB page holds the
   768-byte LUT (R, G, B) the scanner applied, written by the macOS backend.
-  The RGB page loaders invert it (`linearizeRgb16`, mirrored in
-  `web/tiff.mjs`), so processing always sees linear data. Without the tag
+  The RGB page loaders invert it (`linearizeRgb16`), so processing always
+  sees linear data. Without the tag
   the data is used as is.
 - Export metadata is JSON in private ASCII tag 65000
   (`readExportMetadataJson`).
@@ -31,8 +30,7 @@ the scanner `_tiff_metadata` helpers.
   strips; 8- and 16-bit strips are compressed on all cores with libdeflate
   and handed to libtiff raw), about 20-30% smaller than raw, and carry the
   scan's resolution and DateTime (`readDateTime`). Scans and other writes are
-  uncompressed; the webapp's `tiff.mjs` reads only uncompressed files, so it
-  opens scans but not native exports. `writeImage` can write BigTIFF, but no
+  uncompressed. `writeImage` can write BigTIFF, but no
   caller enables it, so exports over 4 GiB would fail. `writeScanPages`
   (macOS scans) switches to BigTIFF past about 3.75 GiB and writes 4 MiB
   strips.

@@ -82,23 +82,6 @@ const scanner_smoke_steps = [_]ScannerSmokeSpec{
     .{ .args = &.{ "scanner", "macos-smoke" }, .name = "macos-scanner-smoke-skip", .description = "Verify future macOS scanner hardware smoke skips without CEREALGRAIN_MACOS_HARDWARE_SMOKE=1", .clear_env = true },
 };
 
-const WasmNodeSpec = struct {
-    script: []const u8,
-    name: []const u8,
-    description: []const u8,
-    artifact: enum { none, wasm64, wasm32 } = .none,
-};
-
-const wasm_node_steps = [_]WasmNodeSpec{
-    .{ .script = "test/wasm/wasm_core_smoke.mjs", .name = "wasm32-core-smoke", .description = "Load and execute the optional wasm32 compatibility processing core with Node", .artifact = .wasm32 },
-    .{ .script = "test/wasm/wasm_core_smoke.mjs", .name = "wasm-core-smoke", .description = "Load and execute the browser WebAssembly processing core with Node", .artifact = .wasm64 },
-    .{ .script = "test/wasm/worker_protocol_smoke.mjs", .name = "wasm-worker-protocol-smoke", .description = "Verify the browser worker protocol and cache-key boundary" },
-    .{ .script = "test/wasm/worker_runtime_smoke.mjs", .name = "wasm-worker-runtime-smoke", .description = "Run the browser worker runtime against the Wasm preview core", .artifact = .wasm64 },
-    .{ .script = "test/wasm/webapp_shell_smoke.mjs", .name = "wasm-webapp-shell-smoke", .description = "Run the browser processing shell orchestration against the Wasm worker", .artifact = .wasm64 },
-    .{ .script = "test/wasm/webapp_crop_export_bench.mjs", .name = "bench-wasm-webapp-crop-export", .description = "Benchmark browser rotated crop/export on local scan data when available", .artifact = .wasm64 },
-    .{ .script = "test/wasm/tiff_reader_smoke.mjs", .name = "wasm-tiff-reader-smoke", .description = "Verify browser-side TIFF page import against committed fixtures" },
-};
-
 const WebgpuProgramSpec = struct {
     step_name: []const u8,
     description: []const u8,
@@ -138,7 +121,6 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "webgpu", enable_webgpu);
-    build_options.addOption(bool, "native_libs", true);
 
     const root_module = addRootModule(b, target, optimize, build_options, enable_webgpu, null, static);
 
@@ -188,7 +170,6 @@ pub fn build(b: *std.Build) void {
         const bundle_options = b.addOptions();
         bundle_options.addOption([]const u8, "version", version);
         bundle_options.addOption(bool, "webgpu", false);
-        bundle_options.addOption(bool, "native_libs", true);
         const bundle_root = addRootModule(b, bundle_target, .ReleaseFast, bundle_options, false, true, false);
         const bundle_ui = addUiExecutable(b, bundle_target, .ReleaseFast, bundle_root, true);
         // The CLI goes in too, so testers can send `scanner probe` output.
@@ -213,82 +194,6 @@ pub fn build(b: *std.Build) void {
         const bundle_step = b.step("app-bundle", "Build zig-out/CerealGrain.app and a zip of it to share (macOS, Apple Silicon)");
         bundle_step.dependOn(&bundle_cmd.step);
     }
-
-    const wasm_build_options = b.addOptions();
-    wasm_build_options.addOption([]const u8, "version", version);
-    wasm_build_options.addOption(bool, "webgpu", false);
-    wasm_build_options.addOption(bool, "native_libs", false);
-    const wasm_optimize: std.builtin.OptimizeMode = switch (optimize) {
-        .Debug => .ReleaseFast,
-        else => optimize,
-    };
-    const wasm_core = addWasmCore(b, .{
-        .name = "cerealgrain-wasm-core",
-        .cpu_arch = .wasm64,
-        .optimize = wasm_optimize,
-        .options = wasm_build_options,
-        .step_name = "wasm-core",
-        .step_description = "Build the dependency-free browser WebAssembly processing core",
-    });
-    const wasm32_core = addWasmCore(b, .{
-        .name = "cerealgrain-wasm-core32",
-        .cpu_arch = .wasm32,
-        .optimize = wasm_optimize,
-        .options = wasm_build_options,
-        .step_name = "wasm32-core",
-        .step_description = "Build the optional wasm32 compatibility processing core",
-    });
-
-    for (wasm_node_steps) |spec| {
-        const cmd = b.addSystemCommand(&.{"node"});
-        cmd.addFileArg(b.path(spec.script));
-        switch (spec.artifact) {
-            .none => {},
-            .wasm64 => cmd.addFileArg(wasm_core.getEmittedBin()),
-            .wasm32 => cmd.addFileArg(wasm32_core.getEmittedBin()),
-        }
-        const step = b.step(spec.name, spec.description);
-        step.dependOn(&cmd.step);
-    }
-
-    const install_webapp_assets = b.addInstallDirectory(.{
-        .source_dir = b.path("web"),
-        .install_dir = .prefix,
-        .install_subdir = "webapp",
-    });
-    const install_webapp_wasm = b.addInstallFileWithDir(
-        wasm_core.getEmittedBin(),
-        .prefix,
-        "webapp/cerealgrain-wasm-core.wasm",
-    );
-    const install_webapp_wasm32 = b.addInstallFileWithDir(
-        wasm32_core.getEmittedBin(),
-        .prefix,
-        "webapp/cerealgrain-wasm-core32.wasm",
-    );
-    const wasm_webapp_step = b.step("wasm-webapp", "Stage the static browser WebAssembly webapp");
-    wasm_webapp_step.dependOn(&install_webapp_assets.step);
-    wasm_webapp_step.dependOn(&install_webapp_wasm.step);
-    wasm_webapp_step.dependOn(&install_webapp_wasm32.step);
-
-    const companion_smoke_cmd = b.addSystemCommand(&.{"node"});
-    companion_smoke_cmd.addFileArg(b.path("test/wasm/companion_smoke.mjs"));
-    companion_smoke_cmd.addArtifactArg(exe);
-    companion_smoke_cmd.addArg(b.getInstallPath(.prefix, "webapp"));
-    companion_smoke_cmd.step.dependOn(&install_webapp_assets.step);
-    companion_smoke_cmd.step.dependOn(&install_webapp_wasm.step);
-    companion_smoke_cmd.step.dependOn(&install_webapp_wasm32.step);
-    const companion_smoke_step = b.step("companion-smoke", "Run the local scanner companion server against a fake scanimage");
-    companion_smoke_step.dependOn(&companion_smoke_cmd.step);
-
-    const wasm_webapp_static_smoke_cmd = b.addSystemCommand(&.{"node"});
-    wasm_webapp_static_smoke_cmd.addFileArg(b.path("test/wasm/webapp_static_smoke.mjs"));
-    wasm_webapp_static_smoke_cmd.addArg(b.getInstallPath(.prefix, "webapp"));
-    wasm_webapp_static_smoke_cmd.step.dependOn(&install_webapp_assets.step);
-    wasm_webapp_static_smoke_cmd.step.dependOn(&install_webapp_wasm.step);
-    wasm_webapp_static_smoke_cmd.step.dependOn(&install_webapp_wasm32.step);
-    const wasm_webapp_static_smoke_step = b.step("wasm-webapp-static-smoke", "Serve-check the staged static browser webapp");
-    wasm_webapp_static_smoke_step.dependOn(&wasm_webapp_static_smoke_cmd.step);
 
     var webgpu_steps: [webgpu_programs.len]*std.Build.Step = undefined;
     for (webgpu_programs, 0..) |spec, index| {
@@ -362,19 +267,8 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     const run_tests = b.addRunArtifact(tests);
-    const wasm_core_test_module = b.createModule(.{
-        .root_source_file = b.path("src/wasm_core.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    wasm_core_test_module.addOptions("build_options", wasm_build_options);
-    const wasm_core_tests = b.addTest(.{
-        .root_module = wasm_core_test_module,
-    });
-    const run_wasm_core_tests = b.addRunArtifact(wasm_core_tests);
     const test_step = b.step("test", "Run Zig unit tests");
     test_step.dependOn(&run_tests.step);
-    test_step.dependOn(&run_wasm_core_tests.step);
 }
 
 fn compileNativeObject(b: *std.Build, spec: NativeObjectSpec, toolchain: Toolchain) std.Build.LazyPath {
@@ -392,40 +286,6 @@ fn compileNativeObject(b: *std.Build, spec: NativeObjectSpec, toolchain: Toolcha
     });
     cmd.addFileArg(b.path(spec.source));
     return cmd.addOutputFileArg(spec.output);
-}
-
-const WasmCoreSpec = struct {
-    name: []const u8,
-    cpu_arch: std.Target.Cpu.Arch,
-    optimize: std.builtin.OptimizeMode,
-    options: *std.Build.Step.Options,
-    step_name: []const u8,
-    step_description: []const u8,
-};
-
-fn addWasmCore(b: *std.Build, spec: WasmCoreSpec) *std.Build.Step.Compile {
-    const wasm_target = b.resolveTargetQuery(.{
-        .cpu_arch = spec.cpu_arch,
-        .os_tag = .freestanding,
-    });
-    const module = b.createModule(.{
-        .root_source_file = b.path("src/wasm_core.zig"),
-        .target = wasm_target,
-        .optimize = spec.optimize,
-        .single_threaded = true,
-    });
-    module.addOptions("build_options", spec.options);
-    const core = b.addExecutable(.{
-        .name = spec.name,
-        .root_module = module,
-    });
-    core.entry = .disabled;
-    core.rdynamic = true;
-    core.export_memory = true;
-    const install = b.addInstallArtifact(core, .{});
-    const step = b.step(spec.step_name, spec.step_description);
-    step.dependOn(&install.step);
-    return core;
 }
 
 fn addProgram(

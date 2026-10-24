@@ -1,5 +1,5 @@
 //! Film format tables and format-derived helpers shared by frame
-//! detection, the CLI, the native UI, and the browser Wasm core.
+//! detection, the CLI, and the native UI.
 
 const std = @import("std");
 

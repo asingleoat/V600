@@ -41,9 +41,3 @@ comparison semantics used by that test. The conversion test does not load the
 large gitignored scan TIFFs; the real-scan detection tests do, when present,
 and require detection within 0.5 mm, 1% of the size, and 0.15 degrees of these
 rectangles.
-
-`test-detect-python-output.json` stores frozen Python `detect_frames` output for
-the four real scans referenced by `test_detect.py`: `scan_0001`, `scan_0003`,
-`scan_0004`, and `scan_0006`. The webapp crop-export benchmark crops these
-rectangles; the Zig detector no longer matches it exactly, since 35mm frames are
-placed by a fixed-length fit rather than Python's pitch alignment.

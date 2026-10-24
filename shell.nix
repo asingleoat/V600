@@ -74,7 +74,6 @@ in pkgs.mkShell {
     # Shared tools
     exiftool
     imagemagick
-    nodejs
 
     # Zig rewrite toolchain
     zigPkg

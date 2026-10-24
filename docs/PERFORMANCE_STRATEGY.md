@@ -233,7 +233,7 @@ TIFFs decode identically, or equal tests against the one-pass code):
 - Meijering filters and eigenvalues over row bands: adopted, `9.7 s` to
   `1.8 s`.
 - ECC preparation (maxima, grey, u8 copy, resizes) over row bands on the
-  native side; `ir_pure` stays single-threaded for Wasm: adopted, IR
+  native side: adopted, IR
   alignment `7.8 s` to `1.2 s`.
 - Defect fills in parallel by levels (a fill waits only for fills whose
   padded regions it touches): adopted; one frame's fills `18.6 s` to `6.1 s`
@@ -242,13 +242,11 @@ TIFFs decode identically, or equal tests against the one-pass code):
   every thread (`2.0 s` on 16). Per-thread arenas and one-thread OpenBLAS
   changed nothing.
 
-GPU, browser, scanner:
+GPU, scanner:
 
 - `apply_sigmoid` WGSL: works, not wired into UI or export. Parked.
 - `invert_negative` WGSL: works, opt-in, slower at workflow level. Parked.
 - `negadoctor` on GPU: rejected, non-goal.
-- Browser RGB16 crop in the Worker: adopted. Moving it into the Wasm core:
-  parked.
 - Native session capability reuse: adopted. CLI capability disk cache: left
   out, needs an invalidation key design.
 
@@ -344,28 +342,6 @@ removed the probe from native preview and scan-worker runs.
 
 Open: each `scanimage` call costs about 6 s, so discovery and probe stay slow,
 and the CLI has no capability cache.
-
-## Browser/Wasm Crop And Export
-
-Selected-frame crop must not run on the UI thread. The harness skips when no
-local scan is present.
-
-```sh
-CEREALGRAIN_WASM_BENCH_SCAN=scans/scan_0006_rgbir_800dpi.tiff \
-  zig build bench-wasm-webapp-crop-export --summary all
-node test/wasm/webapp_crop_export_bench.mjs zig-out/webapp/cerealgrain-wasm-core.wasm \
-  --scan scans/scan_0004_rgbir_3200dpi.tiff --max-frames 1 --variant inv-only --crop-repeats 1
-```
-
-2026-05-23: scan_0006, two 35mm frames: axis crop median `2839 us`, rotated
-crop median `39365 us`, export-all `224686 us`. scan_0004, one `3063x4600`
-frame: rotated crop `624732 us`, export total `1572892 us`, crop share
-`0.397`.
-
-RGB16 crop runs in the browser Worker for `process-preview` and
-`process-export`. Move it into the Wasm core only if a refreshed benchmark
-shows the Worker crop is still a bottleneck after the worker-side IR-clean
-split.
 
 ## Open Items
 

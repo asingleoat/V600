@@ -260,7 +260,6 @@ EOF
             git # build.zig embeds the commit
             exiftool
             imagemagick
-            nodejs
             pythonProcessing
             basedpyright
           ];

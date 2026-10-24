@@ -33,8 +33,6 @@ pub fn main(init: std.process.Init) !void {
             return err;
         };
         try stdout.flush();
-    } else if (std.mem.eql(u8, command, "serve")) {
-        try handleServe(init.gpa, io, init.environ_map, &args, stdout);
     } else if (std.mem.eql(u8, command, "roll")) {
         roll_cli.handle(init.gpa, io, init.environ_map, &args, stdout) catch |err| {
             try stdout.flush();
@@ -558,31 +556,6 @@ fn parseDepth(value: []const u8) !cerealgrain.scanner.contracts.BitDepth {
     return error.InvalidDepth;
 }
 
-fn handleServe(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *std.process.Environ.Map,
-    args: *std.process.Args.Iterator,
-    stdout: anytype,
-) !void {
-    var options = cerealgrain.companion.ServeOptions{};
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--port")) {
-            const value = args.next() orelse return error.MissingPort;
-            options.port = try std.fmt.parseInt(u16, value, 10);
-        } else if (std.mem.eql(u8, arg, "--webapp-dir")) {
-            options.webapp_dir = args.next() orelse return error.MissingWebappDir;
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
-            options.out_dir = args.next() orelse return error.MissingOutDir;
-        } else if (std.mem.eql(u8, arg, "--scanimage")) {
-            options.scanimage_command = args.next() orelse return error.MissingScanimagePath;
-        } else {
-            return error.UnknownServeOption;
-        }
-    }
-    try cerealgrain.companion.serve(allocator, io, environ_map, options, stdout);
-}
-
 fn printUsage() !void {
     std.debug.print(
         \\usage: cerealgrain <command>
@@ -593,7 +566,6 @@ fn printUsage() !void {
         \\  scanner <command> run scanner discovery, probe, or scan commands
         \\  processing <cmd>  run processing workflow commands
         \\  roll <command>    scan and process a film roll strip by strip
-        \\  serve             run the local browser companion server
         \\
     , .{});
 }

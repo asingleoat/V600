@@ -1,10 +1,7 @@
 //! Dependency-free pure-Zig ports of the native C/C++ IR helper behavior:
 //! the opencv_ir.cpp local grain estimation, grain spectrum, and grain
 //! synthesis path, and the translation-only ECC estimator (ported from the
-//! former opencv_ecc.cpp; now the only implementation, native and browser).
-//! Shared by the browser Wasm core and the native build, so
-//! everything here must stay freestanding-safe: single-threaded, no libc,
-//! no OS calls, std-only.
+//! former opencv_ecc.cpp; now the only implementation).
 
 const std = @import("std");
 
@@ -908,8 +905,8 @@ pub fn estimateTranslationEccF32(
 }
 
 /// Translation-only ECC of the IR channel against the RGB image's gray at
-/// IR resolution. `T` is the sample type (f32 in the browser, f64 natively,
-/// so a full-resolution strip is never copied). Sizes and indexes are usize,
+/// IR resolution. `T` is the sample type (f32 or f64, so a full-resolution
+/// f64 strip is never copied). Sizes and indexes are usize,
 /// so strips past 2^31 samples work.
 pub fn estimateTranslationEcc(
     comptime T: type,

@@ -7,8 +7,7 @@ IR-based dust/scratch removal, calibrated negative inversion with
 per-stock color profiles.
 
 The application is written in Zig: a scanner and processing CLI
-(`cerealgrain`), a native SDL3/Nuklear UI (`cerealgrain-ui`), and a browser
-WebAssembly processing webapp built from the same processing code. The
+(`cerealgrain`) and a native SDL3/Nuklear UI (`cerealgrain-ui`). The
 original Python implementation, a work in progress that drove the port,
 stays in-tree for reference.
 
@@ -20,17 +19,6 @@ Requires [Nix](https://nixos.org/download/).
     nix develop                        # or nix-shell
     zig build -Dui=true run-ui         # native scan/process/gallery UI
     zig build run -- scanner devices   # or drive the CLI directly
-
-Browser webapp, processing scan TIFFs you already have:
-
-    zig build wasm-webapp
-    python3 -m http.server 8433 --bind 127.0.0.1 --directory zig-out/webapp
-
-then open `http://127.0.0.1:8433/`. To scan from the browser as well, serve
-it with the scanner companion on the Linux machine the scanner is attached
-to (see `docs/SCANNER_COMPANION.md`):
-
-    zig build wasm-webapp && zig build run -- serve
 
 ## Platform support
 
@@ -44,9 +32,6 @@ to (see `docs/SCANNER_COMPANION.md`):
 - Other Epson film scanners (V550, V800/V850, V700/V750, V500, V370, V330,
   4990, 4870, 4490, GT-X970) are known but untested; see
   `docs/CROSS_PLATFORM.md`.
-- Browser: checked in Chrome and Chromium (older browsers without Wasm
-  memory64 get a wasm32 build). Scanning from it needs the companion on a
-  Linux host.
 
 See `docs/CROSS_PLATFORM.md`.
 
@@ -72,7 +57,6 @@ rules and the patched epkowa SANE backend. See `nixos/README.md`.
         --frame CX,CY,W,H[,ANGLE_DEG] \
         [--print 8x10 --print-dpi 300]                # inverted/IR-cleaned TIFFs,
                                                       # plus print-sized JPEGs
-    cerealgrain serve                                    # scanner companion for the webapp
 
 Scanning a roll strip by strip (each strip: preview, film area, one LUT
 for the whole roll, full scan; finished strips export in the background):
@@ -121,19 +105,15 @@ opt-in via `CEREALGRAIN_HARDWARE_SMOKE=1` and never run implicitly.
 
 ## Project layout
 
-    build.zig               build, test, smoke, benchmark, and webapp steps
+    build.zig               build, test, smoke, and benchmark steps
     src/
       main.zig              CLI entry point
-      companion.zig         scanner companion server for the webapp
       scanner/              Linux SANE backend; macOS interpreter backend
       processing/           frame detection, inversion, IR cleaning, render, export
       ui/                   SDL3/Nuklear native UI, workers, process cache
-      wasm/                 browser WebAssembly processing core
       benchmarks/, tools/   benchmarks and WebGPU tools
-    web/                    browser webapp, worker, protocol, TIFF I/O
     test/
       fixtures/             regression fixtures, originally Python-generated
-      wasm/                 Node harnesses for the Wasm core, webapp, and companion
     nixos/                  NixOS module and overlay for the scanner
     scanner.py, scan.py, v600/, scratchndent/
                             original Python implementation (reference only)
@@ -157,9 +137,6 @@ license does not cover it.
   function landed in Zig (historical)
 - [Performance](docs/PERFORMANCE_STRATEGY.md) — optimization rules,
   current numbers, GPU status
-- [Webapp](docs/WEBAPP.md) and [worker protocol](docs/WEBAPP_WORKER_PROTOCOL.md)
-- [Scanner companion](docs/SCANNER_COMPANION.md) — local server that
-  lets the webapp scan
 - [Scanner internals](docs/SCANNER_INTERNALS.md) — ESC/I protocol,
   interpreter ABI, USB packet format, TPU calibration, IR
   challenge-response, gamma LUT protocol, epkowa/epson2 patches
