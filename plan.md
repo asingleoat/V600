@@ -35,8 +35,10 @@ As of 2026-09-28, on branch `zig-rewrite`:
   covers every scanning, GUI, and processing workflow the Python app had;
   the smaller gaps it found have since been closed.
 - All Zig tests and UI smokes pass in the dev shell. The real-scan
-  detection tests need the local `scans/` directory. There is no CI; the
-  flake check runs the Zig tests, the UI build, and the hardware-skip smokes.
+  detection tests need the local `scans/` directory. GitHub Actions
+  (`.github/workflows/build.yml`) runs the Zig tests on macOS and builds the
+  app's zip and the static Linux CLI on every push; the flake check runs the
+  Zig tests, the UI build, and the hardware-skip smokes.
 
 ## Decisions
 
@@ -252,9 +254,9 @@ Recorded in the May-July log; correct anything that is wrong:
   `test/test-combined-features.sh`.
 - macOS app bundle: no icon yet. Intel Macs would need an `x86_64-darwin`
   build (low priority).
-- No CI: a GitHub Actions job on an Apple Silicon runner should build the
-  app bundle and keep its zip. It stays ad hoc signed; notarization needs a
-  paid Apple Developer account.
+- The macOS app is ad hoc signed, so testers must allow it in Privacy &
+  Security on first launch; notarization needs a paid Apple Developer
+  account.
 - Other scanner models, from testers' reports: the resolutions each accepts
   (the 4800 dpi and interpreter-less ones are guesses), whether IR and the
   IR challenge work beyond the V600, whether their film scans need a TPU

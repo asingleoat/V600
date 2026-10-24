@@ -51,6 +51,9 @@ diffs for this before committing.
     zig build app-bundle                      # macOS: zig-out/CerealGrain.app and a zip to share
     nix build .#cli-static                    # x86-64 Linux: a fully static CLI in result/bin
 
+GitHub Actions (`.github/workflows/build.yml`) runs the Zig tests on macOS
+and builds the app's zip and the static Linux CLI on every push.
+
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
 `processing info|detect|rebate|export`,

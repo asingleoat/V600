@@ -1,0 +1,44 @@
+# Builds the shareable artifacts from every push: the macOS app's zip
+# (Apple Silicon, ad hoc signed) and the static x86-64 Linux CLI, after the
+# Zig tests pass. Download them from the run's Artifacts.
+name: Build
+
+on:
+  push:
+    branches: [zig-rewrite, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The bundle's CFBundleVersion is the commit count.
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@v31
+      - name: Zig tests
+        run: nix develop --command zig build test --summary all
+      - name: App bundle
+        run: nix develop --command zig build app-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CerealGrain-macos-arm64
+          path: zig-out/CerealGrain-*-macos-arm64.zip
+          if-no-files-found: error
+
+  linux-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Static CLI
+        run: nix build .#cli-static
+      - name: Check it runs
+        run: result/bin/cerealgrain version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerealgrain-linux-x86_64-static
+          path: result/bin/cerealgrain
+          if-no-files-found: error
