@@ -460,8 +460,16 @@ pub fn findImages(allocator: std.mem.Allocator, io: std.Io, directory: []const u
 
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
-        if (entry.kind != .file) continue;
         if (!isTiffFileName(entry.name)) continue;
+        switch (entry.kind) {
+            .file => {},
+            // A link to a scan counts as the scan; a broken one does not.
+            .sym_link => {
+                const target = dir.statFile(io, entry.name, .{}) catch continue;
+                if (target.kind != .file) continue;
+            },
+            else => continue,
+        }
         const full_path = try joinPath(allocator, directory, entry.name);
         try paths.append(full_path);
     }
@@ -1475,15 +1483,20 @@ test "finds TIFF images sorted by case-insensitive file name" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "A.tif", .data = "" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "notes.txt", .data = "" });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan.png", .data = "" });
+    try tmp.dir.symLink(std.testing.io, "A.tif", "c.tif", .{});
+    try tmp.dir.symLink(std.testing.io, "missing.tif", "d.tif", .{});
+    try tmp.dir.createDirPath(std.testing.io, "folder");
+    try tmp.dir.symLink(std.testing.io, "folder", "e.tif", .{ .is_directory = true });
 
     const dir_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer allocator.free(dir_path);
     const images = try findImages(allocator, std.testing.io, dir_path);
     defer images.deinit(allocator);
 
-    try std.testing.expectEqual(@as(usize, 2), images.paths.len);
+    try std.testing.expectEqual(@as(usize, 3), images.paths.len);
     try std.testing.expect(std.mem.endsWith(u8, images.paths[0], "/A.tif"));
     try std.testing.expect(std.mem.endsWith(u8, images.paths[1], "/b.TIFF"));
+    try std.testing.expect(std.mem.endsWith(u8, images.paths[2], "/c.tif"));
 
     const missing = try findImages(allocator, std.testing.io, ".zig-cache/tmp/does-not-exist-v600");
     defer missing.deinit(allocator);

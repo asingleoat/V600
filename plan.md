@@ -199,8 +199,6 @@ Recorded in the May-July log; correct anything that is wrong:
 - Linux scans are not written atomically (scanimage and tiffcp write the
   final path directly); the macOS backend writes `<name>.partial` and
   renames.
-- The image list ignores symlinked TIFFs (`tiff.findImages` accepts only
-  regular files), so a scan folder of symlinks shows "No scan TIFFs found".
 - Passing test runs print about 130 JSON scanner timing events on stderr,
   which makes `zig build test` print a misleading `failed command:` line.
 
