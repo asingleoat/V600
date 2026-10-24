@@ -318,6 +318,19 @@ deliberately, not by accident.
   for grain. The synthetic grain is one field shared by the channels,
   scaled to the surround's channel-mean grain: it errs toward too little
   colour, since colour noise shows where luma grain passes as film.
+- At 2.5 px the fills' grain leaves out the coarser grain the eye sees at
+  high dpi (2.5 px is 80 microns at 800 dpi, 10 at 6400), which left smooth
+  patches. Above 800 dpi each fill also gets one octave of coarser grain
+  per doubling (2.5-5, 5-10, 10-20 px at 6400): each octave's share of the
+  fine grain is measured once per frame on the flattest of up to 256 tiles
+  (flatness judged an octave coarser still, so the measured bands are not
+  picked for being low), and synthesized from its own noise, weighted
+  through the Gaussian bands' overlap so that measured the same way each
+  comes out at its share. Near the surround's edges a plain standard
+  deviation overstates grain, so the fill's fine grain is then measured
+  from the median absolute deviation, and the grain follows the fill's own
+  level (grain grows as transmittance to a power fitted per frame).
+  Textured picture around a fill is not grain and is not reproduced.
 
 ### Config and files
 

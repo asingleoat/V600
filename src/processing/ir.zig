@@ -99,6 +99,10 @@ pub const InpaintOptions = struct {
     value_kind: InpaintValueKind = .uint16,
     /// Threads for filling independent defects at once (same result).
     worker_count: usize = 1,
+    /// Octaves of grain coarser than the fills' 2.5 px picture blur that each
+    /// fill also gets, as the frame shows them: none at 800 dpi, one more per
+    /// doubling, since the blur is fixed in pixels and the grain in microns.
+    coarse_grain_octaves: usize = 0,
 };
 
 pub const IrCleanOptions = struct {
@@ -1202,12 +1206,17 @@ pub fn inpaintBiharmonicWithGrainFromNoiseTimed(
     }
     if (noise_offset != captured_noise.len) return error.InvalidIrInpaintNoise;
 
+    const coarse = if (options.coarse_grain_octaves > 0)
+        try measureCoarseGrain(allocator, output, mask, width, height, options)
+    else
+        CoarseGrain{};
     const job: InpaintJob = .{
         .labels = labels,
         .output = output,
         .width = width,
         .captured_noise = captured_noise,
         .options = options,
+        .coarse = coarse,
     };
     const level_plans = try allocator.alloc(usize, plans.len);
     defer allocator.free(level_plans);
@@ -1222,6 +1231,449 @@ pub fn inpaintBiharmonicWithGrainFromNoiseTimed(
         try inpaintLevel(allocator, job, plans, level_plans[0..count], timings);
     }
     return components.items.len;
+}
+
+/// The fills' picture is a biharmonic fill of the surround blurred at
+/// `fine_grain_sigma`, and their synthetic grain matches the surround's grain
+/// finer than that blur, which at high dpi leaves out the grain the eye sees.
+/// The film's coarser grain, per octave above the blur, as a share of its
+/// fine grain: measured once per frame where the picture is flattest.
+const CoarseGrain = struct {
+    octaves: usize = 0,
+    shares: [max_coarse_octaves]f64 = @splat(0.0),
+    /// Grain grows with the negative's transmittance as level^power: one
+    /// fill can span a bright and a dark part of the picture, so its grain
+    /// follows its own level rather than the surround's average.
+    level_power: f64 = 0.0,
+};
+const max_coarse_octaves = 3;
+const fine_grain_sigma: f64 = 2.5;
+const coarse_grain_tiles: usize = 256;
+
+fn octaveSigma(octave: usize) f64 {
+    return fine_grain_sigma * std.math.pow(f64, 2.0, @floatFromInt(octave));
+}
+
+/// Tiles across the frame (none with a defect), each split into its fine
+/// grain and octave bands of the luma; the flattest fifth by the next octave
+/// up, coarser than any measured, gives each band's share of the fine grain.
+fn measureCoarseGrain(
+    allocator: std.mem.Allocator,
+    frame: []const f64,
+    mask: []const u8,
+    width: usize,
+    height: usize,
+    options: InpaintOptions,
+) !CoarseGrain {
+    const octaves: usize = @min(options.coarse_grain_octaves, max_coarse_octaves);
+    const tile: usize = 16 * (@as(usize, 1) << @intCast(octaves));
+    const margin: usize = @intFromFloat(@ceil(3.0 * octaveSigma(octaves + 1)));
+    const span = tile + 2 * margin;
+    if (width < span or height < span) return .{};
+    const across = (width - span) / tile + 1;
+    const down = (height - span) / tile + 1;
+    var stride: usize = 1;
+    while (((across + stride - 1) / stride) * ((down + stride - 1) / stride) > coarse_grain_tiles) stride += 1;
+
+    var origins: std.ArrayList([2]usize) = .empty;
+    defer origins.deinit(allocator);
+    var ty: usize = 0;
+    while (ty < down) : (ty += stride) {
+        var tx: usize = 0;
+        while (tx < across) : (tx += stride) {
+            const x0 = tx * tile;
+            const y0 = ty * tile;
+            const clear = for (0..tile) |dy| {
+                const row = (y0 + margin + dy) * width + x0 + margin;
+                if (std.mem.indexOfNone(u8, mask[row..][0..tile], &.{0}) != null) break false;
+            } else true;
+            if (clear) try origins.append(allocator, .{ x0, y0 });
+        }
+    }
+    if (origins.items.len < 8) return .{};
+
+    // Per tile: fine std, each octave band's std (the last the flatness
+    // test), and in the last slot the tile's level.
+    const stats = try allocator.alloc([max_coarse_octaves + 3]f64, origins.items.len);
+    defer allocator.free(stats);
+    const Tiles = struct {
+        frame: []const f64,
+        width: usize,
+        tile: usize,
+        margin: usize,
+        octaves: usize,
+        value_kind: InpaintValueKind,
+        origins: []const [2]usize,
+        stats: [][max_coarse_octaves + 3]f64,
+        next: std.atomic.Value(usize) = .init(0),
+        failed: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This(), worker_allocator: std.mem.Allocator) void {
+            const span_px = self.tile + 2 * self.margin;
+            const buffers = worker_allocator.alloc(f64, span_px * span_px * 4) catch {
+                self.failed.store(true, .monotonic);
+                return;
+            };
+            defer worker_allocator.free(buffers);
+            const luma = buffers[0 .. span_px * span_px];
+            const coarser = buffers[span_px * span_px ..][0 .. span_px * span_px];
+            const finer = buffers[2 * span_px * span_px ..][0 .. span_px * span_px];
+            const scratch = buffers[3 * span_px * span_px ..][0 .. span_px * span_px];
+            while (true) {
+                const index = self.next.fetchAdd(1, .monotonic);
+                if (index >= self.origins.len) return;
+                const origin = self.origins[index];
+                for (0..span_px) |y| {
+                    for (0..span_px) |x| {
+                        const pixel = (origin[1] + y) * self.width + origin[0] + x;
+                        var sum: f64 = 0.0;
+                        for (0..3) |c| sum += normalizedStorageValue(self.frame[pixel * 3 + c], self.value_kind);
+                        luma[y * span_px + x] = sum / 3.0;
+                    }
+                }
+                var level: f64 = 0.0;
+                for (self.margin..self.margin + self.tile) |y| {
+                    for (luma[y * span_px + self.margin ..][0..self.tile]) |value| level += value;
+                }
+                self.stats[index][max_coarse_octaves + 2] = level / @as(f64, @floatFromInt(self.tile * self.tile));
+                @memcpy(finer, luma);
+                for (0..self.octaves + 2) |band| {
+                    @memcpy(coarser, luma);
+                    gaussianApproxInPlace(coarser, scratch, span_px, span_px, octaveSigma(band));
+                    self.stats[index][band] = tileStd(finer, coarser, span_px, self.margin, self.tile);
+                    @memcpy(finer, coarser);
+                }
+            }
+        }
+    };
+    var tiles = Tiles{
+        .frame = frame,
+        .width = width,
+        .tile = tile,
+        .margin = margin,
+        .octaves = octaves,
+        .value_kind = options.value_kind,
+        .origins = origins.items,
+        .stats = stats,
+    };
+    const worker_count = if (comptime parallelism.enabled) @max(1, @min(options.worker_count, origins.items.len)) else 1;
+    const threads = try allocator.alloc(std.Thread, worker_count - 1);
+    defer allocator.free(threads);
+    var started: usize = 0;
+    defer for (threads[0..started]) |thread| thread.join();
+    for (threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Tiles.run, .{ &tiles, allocator });
+        started += 1;
+    }
+    tiles.run(allocator);
+    for (threads[0..started]) |thread| thread.join();
+    started = 0;
+    if (tiles.failed.load(.monotonic)) return error.OutOfMemory;
+
+    const flatness = try allocator.alloc(f64, stats.len);
+    defer allocator.free(flatness);
+    var usable: usize = 0;
+    for (stats) |row| {
+        if (row[0] <= 0.0) continue;
+        flatness[usable] = row[octaves + 1] / row[0];
+        usable += 1;
+    }
+    if (usable < 8) return .{};
+    const cut = quantileUnsorted(flatness[0..usable], 0.2);
+    const ratios = try allocator.alloc(f64, stats.len);
+    defer allocator.free(ratios);
+    var result = CoarseGrain{ .octaves = octaves };
+    for (0..octaves) |octave| {
+        var count: usize = 0;
+        for (stats) |row| {
+            if (row[0] <= 0.0 or row[octaves + 1] / row[0] > cut) continue;
+            ratios[count] = row[octave + 1] / row[0];
+            count += 1;
+        }
+        result.shares[octave] = quantileUnsorted(ratios[0..count], 0.5);
+    }
+    // Fine grain against level on the flatter half of the tiles, in logs.
+    const half = quantileUnsorted(flatness[0..usable], 0.5);
+    var n: f64 = 0.0;
+    var sx: f64 = 0.0;
+    var sy: f64 = 0.0;
+    var sxx: f64 = 0.0;
+    var sxy: f64 = 0.0;
+    for (stats) |row| {
+        const level = row[max_coarse_octaves + 2];
+        if (row[0] <= 0.0 or level <= 0.0 or row[octaves + 1] / row[0] > half) continue;
+        const x = @log(level);
+        const y = @log(row[0]);
+        n += 1.0;
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+    }
+    const spread = sxx - sx * sx / n;
+    // Too narrow a range of levels says nothing about the slope.
+    if (n >= 8.0 and spread / n > 0.01) {
+        result.level_power = std.math.clamp((sxy - sx * sy / n) / spread, 0.0, 1.5);
+    }
+    return result;
+}
+
+/// The standard deviation of `finer - coarser` over the tile inside the margin.
+fn tileStd(finer: []const f64, coarser: []const f64, span: usize, margin: usize, tile: usize) f64 {
+    var sum: f64 = 0.0;
+    var sum_sq: f64 = 0.0;
+    for (margin..margin + tile) |y| {
+        for (margin..margin + tile) |x| {
+            const value = finer[y * span + x] - coarser[y * span + x];
+            sum += value;
+            sum_sq += value * value;
+        }
+    }
+    const count: f64 = @floatFromInt(tile * tile);
+    const mean = sum / count;
+    return @sqrt(@max(sum_sq / count - mean * mean, 0.0));
+}
+
+fn quantileUnsorted(values: []f64, q: f64) f64 {
+    std.mem.sort(f64, values, {}, std.sort.asc(f64));
+    const position = q * @as(f64, @floatFromInt(values.len - 1));
+    const lower: usize = @intFromFloat(@floor(position));
+    const upper = @min(lower + 1, values.len - 1);
+    const t = position - @as(f64, @floatFromInt(lower));
+    return values[lower] * (1.0 - t) + values[upper] * t;
+}
+
+/// A fill's fine grain per channel as `estimateLocalGrain` measures it, but
+/// from the median absolute deviation: the coarse grain scales it up, so a
+/// picture edge in the surround must not inflate it.
+fn robustFineGrain(
+    allocator: std.mem.Allocator,
+    roi_rgb: []const f64,
+    signal: []const f64,
+    roi_mask: []const u8,
+    width: usize,
+    height: usize,
+    grain_padding: usize,
+) !RobustGrain {
+    const dilated = try allocator.alloc(u8, roi_mask.len);
+    defer allocator.free(dilated);
+    try ir_pure.dilateMaskOpenCvEllipse(allocator, roi_mask, width, height, grain_padding, dilated);
+    var count: usize = 0;
+    for (roi_mask, dilated) |masked, near| {
+        if (near != 0 and masked == 0) count += 1;
+    }
+    if (count <= 10) return .{};
+    const residuals = try allocator.alloc(f64, 4 * count);
+    defer allocator.free(residuals);
+    var index: usize = 0;
+    var level: f64 = 0.0;
+    for (roi_mask, dilated, 0..) |masked, near, pixel| {
+        if (near == 0 or masked != 0) continue;
+        level += (signal[pixel * 3] + signal[pixel * 3 + 1] + signal[pixel * 3 + 2]) / 3.0;
+        var luma: f64 = 0.0;
+        for (0..3) |channel| {
+            const value = roi_rgb[pixel * 3 + channel] - signal[pixel * 3 + channel];
+            residuals[channel * count + index] = value;
+            luma += value / 3.0;
+        }
+        residuals[3 * count + index] = luma;
+        index += 1;
+    }
+    var spread: [4]f64 = undefined;
+    for (&spread, 0..) |*out, plane| {
+        const values = residuals[plane * count ..][0..count];
+        const center = quantileUnsorted(values, 0.5);
+        for (values) |*value| value.* = @abs(value.* - center);
+        out.* = 1.4826 * quantileUnsorted(values, 0.5);
+    }
+    // One field for every channel, scaled to the channel-mean grain, as the
+    // fine grain is.
+    const channel_mean = (spread[0] + spread[1] + spread[2]) / 3.0;
+    const shared = if (channel_mean > 0.0) spread[3] / channel_mean else 0.0;
+    return .{
+        .std = .{ spread[0] * shared, spread[1] * shared, spread[2] * shared },
+        .level = level / @as(f64, @floatFromInt(count)),
+    };
+}
+
+const RobustGrain = struct {
+    std: [3]f64 = .{ 0.0, 0.0, 0.0 },
+    /// The surround's mean level, where `std` was measured.
+    level: f64 = 0.0,
+};
+
+/// Adds the frame's coarse grain to a fill's grain, one field for every
+/// channel like the fine grain: an octave band of its own noise per octave
+/// (seeded from a noise plane the fine grain does not use), weighted so
+/// that measured as the frame was, each band comes out at its share of the
+/// fill's fine grain.
+fn addCoarseGrain(
+    allocator: std.mem.Allocator,
+    coarse: CoarseGrain,
+    noise: []const f64,
+    width: usize,
+    height: usize,
+    grain_std: [3]f64,
+    grain: []f64,
+) !void {
+    const octaves = coarse.octaves;
+    // Band k of the sum of unit octave fields j, independent, has variance
+    // sum_j weight_j^2 * transfer(k, j): solve for the weights.
+    var system: [max_coarse_octaves][max_coarse_octaves]f64 = undefined;
+    var target: [max_coarse_octaves]f64 = undefined;
+    for (0..octaves) |k| {
+        for (0..octaves) |j| system[k][j] = octaveTransfer(k, j);
+        target[k] = coarse.shares[k] * coarse.shares[k];
+    }
+    const variances = solveNonNegative(octaves, system, target);
+
+    const pixels = width * height;
+    const buffers = try allocator.alloc(f64, 5 * pixels);
+    defer allocator.free(buffers);
+    const field = buffers[0..pixels];
+    const plane = buffers[pixels..][0..pixels];
+    const finer = buffers[2 * pixels ..][0..pixels];
+    const coarser = buffers[3 * pixels ..][0..pixels];
+    const scratch = buffers[4 * pixels ..][0..pixels];
+    @memset(field, 0.0);
+    var prng = std.Random.DefaultPrng.init(@bitCast(noise[0] + noise[pixels / 2]));
+    for (0..octaves) |octave| {
+        if (variances[octave] <= 0.0) continue;
+        for (plane) |*value| value.* = prng.random().floatNorm(f64);
+        @memcpy(finer, plane);
+        gaussianApproxInPlace(finer, scratch, width, height, octaveSigma(octave));
+        @memcpy(coarser, plane);
+        gaussianApproxInPlace(coarser, scratch, width, height, octaveSigma(octave + 1));
+        var sum: f64 = 0.0;
+        var sum_sq: f64 = 0.0;
+        for (finer, coarser) |a, b| {
+            sum += a - b;
+            sum_sq += (a - b) * (a - b);
+        }
+        const count: f64 = @floatFromInt(pixels);
+        const band_std = @sqrt(@max(sum_sq / count - (sum / count) * (sum / count), 0.0));
+        if (band_std <= 0.0) continue;
+        const scale = @sqrt(variances[octave]) / band_std;
+        for (field, finer, coarser) |*out, a, b| out.* += (a - b) * scale;
+    }
+    for (field, 0..) |value, pixel| {
+        for (0..3) |channel| grain[pixel * 3 + channel] += value * grain_std[channel];
+    }
+}
+
+/// The share of a unit-variance octave band `j` of white noise that the
+/// octave filter `k` passes, for Gaussians: in frequency each is
+/// exp(-2 pi^2 sigma^2 f^2), and a product of them integrates over the plane
+/// to 1 / (2 pi times the sum of their sigma^2).
+fn octaveTransfer(k: usize, j: usize) f64 {
+    const Term = struct { weight: f64, sigma_sq: f64 };
+    const terms = struct {
+        // (G_a - G_b)^2 = G_a G_a - 2 G_a G_b + G_b G_b
+        fn of(octave: usize) [3]Term {
+            const a = octaveSigma(octave);
+            const b = octaveSigma(octave + 1);
+            return .{ .{ .weight = 1.0, .sigma_sq = 2.0 * a * a }, .{ .weight = -2.0, .sigma_sq = a * a + b * b }, .{ .weight = 1.0, .sigma_sq = 2.0 * b * b } };
+        }
+    }.of;
+    var both: f64 = 0.0;
+    var alone: f64 = 0.0;
+    for (terms(k)) |x| {
+        for (terms(j)) |y| both += x.weight * y.weight / (2.0 * std.math.pi * (x.sigma_sq + y.sigma_sq));
+    }
+    for (terms(j)) |y| alone += y.weight / (2.0 * std.math.pi * y.sigma_sq);
+    return both / alone;
+}
+
+/// Solves the small square `system * x = target` and clamps `x` at zero: an
+/// octave whose neighbours already bring it more than its share gets none.
+fn solveNonNegative(n: usize, system: [max_coarse_octaves][max_coarse_octaves]f64, target: [max_coarse_octaves]f64) [max_coarse_octaves]f64 {
+    var a = system;
+    var x = target;
+    for (0..n) |column| {
+        var pivot_row = column;
+        for (column + 1..n) |row| {
+            if (@abs(a[row][column]) > @abs(a[pivot_row][column])) pivot_row = row;
+        }
+        std.mem.swap([max_coarse_octaves]f64, &a[column], &a[pivot_row]);
+        std.mem.swap(f64, &x[column], &x[pivot_row]);
+        for (column + 1..n) |row| {
+            const factor = a[row][column] / a[column][column];
+            for (column..n) |c| a[row][c] -= factor * a[column][c];
+            x[row] -= factor * x[column];
+        }
+    }
+    var row = n;
+    while (row > 0) {
+        row -= 1;
+        for (row + 1..n) |c| x[row] -= a[row][c] * x[c];
+        x[row] /= a[row][row];
+    }
+    for (x[0..n]) |*value| value.* = @max(value.*, 0.0);
+    return x;
+}
+
+/// A Gaussian blur of `sigma`, as three box passes each way (edges clamped).
+fn gaussianApproxInPlace(plane: []f64, scratch: []f64, width: usize, height: usize, sigma: f64) void {
+    for (boxRadiiForSigma(sigma)) |radius| {
+        boxRows(plane, scratch, width, height, radius);
+        boxColumns(scratch, plane, width, height, radius);
+    }
+}
+
+/// Three box widths whose passes add up to a Gaussian of `sigma` (Kovesi).
+fn boxRadiiForSigma(sigma: f64) [3]usize {
+    const ideal = @sqrt(4.0 * sigma * sigma + 1.0);
+    var lower: i64 = @intFromFloat(@floor(ideal));
+    if (@mod(lower, 2) == 0) lower -= 1;
+    const l: f64 = @floatFromInt(lower);
+    const wide_from: i64 = @intFromFloat(@round((12.0 * sigma * sigma - 3.0 * l * l - 12.0 * l - 9.0) / (-4.0 * l - 4.0)));
+    var radii: [3]usize = undefined;
+    for (&radii, 0..) |*radius, pass| {
+        const box_width = if (@as(i64, @intCast(pass)) < wide_from) lower else lower + 2;
+        radius.* = @intCast(@divTrunc(box_width - 1, 2));
+    }
+    return radii;
+}
+
+fn boxRows(input: []const f64, output: []f64, width: usize, height: usize, radius: usize) void {
+    const r: i64 = @intCast(radius);
+    const last: i64 = @intCast(width - 1);
+    const inverse = 1.0 / @as(f64, @floatFromInt(2 * radius + 1));
+    for (0..height) |y| {
+        const row = input[y * width ..][0..width];
+        var sum: f64 = 0.0;
+        var k: i64 = -r;
+        while (k <= r) : (k += 1) sum += row[@intCast(std.math.clamp(k, 0, last))];
+        for (0..width) |x| {
+            output[y * width + x] = sum * inverse;
+            const xi: i64 = @intCast(x);
+            sum += row[@intCast(@min(xi + r + 1, last))] - row[@intCast(@max(xi - r, 0))];
+        }
+    }
+}
+
+fn boxColumns(input: []const f64, output: []f64, width: usize, height: usize, radius: usize) void {
+    const r: i64 = @intCast(radius);
+    const last: i64 = @intCast(height - 1);
+    const inverse = 1.0 / @as(f64, @floatFromInt(2 * radius + 1));
+    // Each output row first holds its columns' window sums; the next row's
+    // follow from them before they are scaled.
+    @memset(output[0..width], 0.0);
+    var k: i64 = -r;
+    while (k <= r) : (k += 1) {
+        const row = input[@as(usize, @intCast(std.math.clamp(k, 0, last))) * width ..][0..width];
+        for (output[0..width], row) |*sum, value| sum.* += value;
+    }
+    for (0..height) |y| {
+        const out = output[y * width ..][0..width];
+        if (y + 1 < height) {
+            const yi: i64 = @intCast(y);
+            const add = input[@as(usize, @intCast(@min(yi + r + 1, last))) * width ..][0..width];
+            const remove = input[@as(usize, @intCast(@max(yi - r, 0))) * width ..][0..width];
+            for (output[(y + 1) * width ..][0..width], out, add, remove) |*next, sum, a, d| next.* = sum + a - d;
+        }
+        for (out) |*value| value.* *= inverse;
+    }
 }
 
 const InpaintPlan = struct {
@@ -1240,6 +1692,7 @@ const InpaintJob = struct {
     width: usize,
     captured_noise: []const f64,
     options: InpaintOptions,
+    coarse: CoarseGrain = .{},
 };
 
 fn inpaintPlansConflict(a: InpaintPlan, b: InpaintPlan) bool {
@@ -1365,6 +1818,23 @@ fn inpaintComponent(allocator: std.mem.Allocator, job: InpaintJob, plan: Inpaint
         channels,
         grain,
     );
+    if (job.coarse.octaves > 0) {
+        const fine = try robustFineGrain(allocator, roi_rgb, estimate.signal, roi_mask, roi_width, roi_height, options.grain_padding);
+        for (0..roi_pixels) |pixel| {
+            for (0..3) |channel| {
+                if (estimate.grain_std[channel] > 0.0) grain[pixel * 3 + channel] *= fine.std[channel] / estimate.grain_std[channel];
+            }
+        }
+        try addCoarseGrain(allocator, job.coarse, component_noise[roi_pixels..][0..roi_pixels], roi_width, roi_height, fine.std, grain);
+        if (job.coarse.level_power > 0.0 and fine.level > 0.0) {
+            for (0..roi_pixels) |pixel| {
+                if (roi_mask[pixel] == 0) continue;
+                const level = (repaired_signal[pixel * 3] + repaired_signal[pixel * 3 + 1] + repaired_signal[pixel * 3 + 2]) / 3.0;
+                const factor = std.math.clamp(std.math.pow(f64, @max(level, 1.0e-6) / fine.level, job.coarse.level_power), 0.5, 2.0);
+                for (grain[pixel * 3 ..][0..3]) |*value| value.* *= factor;
+            }
+        }
+    }
     if (timings) |out| out.grain_synthesis_ns += monotonicNowNs() - synth_started;
 
     const writeback_started = monotonicNowNs();
@@ -4944,4 +5414,108 @@ test "IR clean region validates dimensions and no-mask copy" {
     });
     try std.testing.expectEqual(@as(usize, 0), random_result.defect_pixels_ir);
     try std.testing.expectEqualSlices(f64, &.{ 7.0, 8.0, 9.0 }, &out);
+}
+
+test "box passes blur white noise like a Gaussian of the same sigma" {
+    const allocator = std.testing.allocator;
+    const size = 1024;
+    const plane = try allocator.alloc(f64, size * size);
+    defer allocator.free(plane);
+    const scratch = try allocator.alloc(f64, size * size);
+    defer allocator.free(scratch);
+    var prng = std.Random.DefaultPrng.init(3);
+    for ([_]f64{ 2.5, 5.0, 10.0, 20.0 }) |sigma| {
+        // White noise blurred by a 2D Gaussian keeps 1 / (4 pi sigma^2) of
+        // its variance; averaged over draws, away from the clamped edges.
+        const margin: usize = @intFromFloat(4.0 * sigma);
+        var variance: f64 = 0.0;
+        const draws = 4;
+        for (0..draws) |_| {
+            for (plane) |*value| value.* = prng.random().floatNorm(f64);
+            gaussianApproxInPlace(plane, scratch, size, size, sigma);
+            var sum: f64 = 0.0;
+            var sum_sq: f64 = 0.0;
+            var count: f64 = 0.0;
+            for (margin..size - margin) |y| {
+                for (margin..size - margin) |x| {
+                    sum += plane[y * size + x];
+                    sum_sq += plane[y * size + x] * plane[y * size + x];
+                    count += 1.0;
+                }
+            }
+            variance += (sum_sq / count - (sum / count) * (sum / count)) / draws;
+        }
+        const expected = 1.0 / (4.0 * std.math.pi * sigma * sigma);
+        try std.testing.expectApproxEqRel(expected, variance, 0.1);
+    }
+}
+
+test "fills get the frame's coarse grain where its picture is flat" {
+    // Plumbing only: correlated noise as the film's grain, one defect, and
+    // the fill's grain at 2.5-5 px against the surround's, with and without
+    // the coarse octave. The shares are tuned on real scans, not here.
+    const allocator = std.testing.allocator;
+    const size = 320;
+    const pixels = size * size;
+    const rgb = try allocator.alloc(f64, pixels * 3);
+    defer allocator.free(rgb);
+    const grain_plane = try allocator.alloc(f64, pixels);
+    defer allocator.free(grain_plane);
+    const scratch = try allocator.alloc(f64, pixels);
+    defer allocator.free(scratch);
+    var prng = std.Random.DefaultPrng.init(11);
+    for (grain_plane) |*value| value.* = prng.random().floatNorm(f64);
+    gaussianApproxInPlace(grain_plane, scratch, size, size, 2.0);
+    const mask = try allocator.alloc(u8, pixels);
+    defer allocator.free(mask);
+    for (0..pixels) |pixel| {
+        const x: f64 = @floatFromInt(pixel % size);
+        const y: f64 = @floatFromInt(pixel / size);
+        mask[pixel] = if ((x - 160.0) * (x - 160.0) + (y - 160.0) * (y - 160.0) < 30.0 * 30.0) 255 else 0;
+        for (0..3) |c| rgb[pixel * 3 + c] = 30000.0 + 3000.0 * grain_plane[pixel] + if (mask[pixel] != 0) @as(f64, 20000.0) else 0.0;
+    }
+    var ratios: [2]f64 = undefined;
+    for ([_]usize{ 0, 1 }, &ratios) |octaves, *ratio| {
+        const output = try allocator.alloc(f64, pixels * 3);
+        defer allocator.free(output);
+        var noise_prng = std.Random.DefaultPrng.init(5);
+        _ = try inpaintBiharmonicWithGrain(allocator, noise_prng.random(), rgb, mask, size, size, output, .{ .padding = 48, .grain_padding = 8, .coarse_grain_octaves = octaves });
+        const luma = try allocator.alloc(f64, pixels);
+        defer allocator.free(luma);
+        for (luma, 0..) |*value, pixel| value.* = (output[pixel * 3] + output[pixel * 3 + 1] + output[pixel * 3 + 2]) / 3.0;
+        const finer = try allocator.alloc(f64, pixels);
+        defer allocator.free(finer);
+        @memcpy(finer, luma);
+        gaussianApproxInPlace(finer, scratch, size, size, 2.5);
+        gaussianApproxInPlace(luma, scratch, size, size, 5.0);
+        var inside: [2]f64 = .{ 0.0, 0.0 };
+        var outside: [2]f64 = .{ 0.0, 0.0 };
+        for (0..pixels) |pixel| {
+            const x: f64 = @floatFromInt(pixel % size);
+            const y: f64 = @floatFromInt(pixel / size);
+            const r = @sqrt((x - 160.0) * (x - 160.0) + (y - 160.0) * (y - 160.0));
+            const band = finer[pixel] - luma[pixel];
+            if (r < 24.0) {
+                inside[0] += band * band;
+                inside[1] += 1.0;
+            } else if (r > 40.0 and r < 90.0) {
+                outside[0] += band * band;
+                outside[1] += 1.0;
+            }
+        }
+        ratio.* = @sqrt((inside[0] / inside[1]) / (outside[0] / outside[1]));
+    }
+    try std.testing.expect(ratios[0] < 0.6);
+    try std.testing.expect(ratios[1] > 0.75 and ratios[1] < 1.3);
+}
+
+test "octave transfer matches the Gaussian integrals" {
+    // Worked out separately: a unit octave band keeps 0.148 of its variance
+    // through its own filter, and 0.119 of the next band's comes through.
+    try std.testing.expectApproxEqAbs(@as(f64, 0.148), octaveTransfer(0, 0), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.119), octaveTransfer(0, 1), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.030), octaveTransfer(1, 0), 0.001);
+    const x = solveNonNegative(2, .{ .{ 2.0, 1.0, 0.0 }, .{ 1.0, 3.0, 0.0 }, .{ 0.0, 0.0, 0.0 } }, .{ 3.0, 4.0, 0.0 });
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), x[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), x[1], 1e-12);
 }

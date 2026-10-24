@@ -444,7 +444,7 @@ fn gaussianKernelSigmaF32(allocator: std.mem.Allocator, sigma: f64, kernel_size:
     return kernel;
 }
 
-fn dilateMaskOpenCvEllipse(
+pub fn dilateMaskOpenCvEllipse(
     allocator: std.mem.Allocator,
     input: []const u8,
     width: usize,

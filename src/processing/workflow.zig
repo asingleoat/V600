@@ -2739,8 +2739,17 @@ pub fn irCleanOptionsForConfig(rgb_dpi: ?u32, ir_dpi: ?u32, overrides: []const c
             .padding = @intFromFloat(config.getParam("inpaint_padding", rgb_dpi, overrides).?.asFloat()),
             .grain_padding = 8,
             .value_kind = .uint16,
+            .coarse_grain_octaves = coarseGrainOctaves(rgb_dpi),
         },
     };
+}
+
+/// One octave of coarse grain per doubling of the dpi past 800, up to three.
+fn coarseGrainOctaves(rgb_dpi: ?u32) usize {
+    const dpi = rgb_dpi orelse return 0;
+    if (dpi < 1200) return 0;
+    const octaves: usize = @intFromFloat(@round(std.math.log2(@as(f64, @floatFromInt(dpi)) / 800.0)));
+    return @min(octaves, 3);
 }
 
 /// The IR page's dpi: the RGB's, scaled by the IR's width over the RGB's.
@@ -2765,6 +2774,9 @@ test "IR clean options size the mask by the IR's dpi and the inpaint by the RGB'
     try std.testing.expectEqual(@as(usize, 48), options.defect_mask.min_area);
     try std.testing.expectEqual(@as(usize, 1205), options.defect_mask.blur_size);
     try std.testing.expectEqual(@as(usize, 128), options.inpaint.padding);
+    try std.testing.expectEqual(@as(usize, 3), options.inpaint.coarse_grain_octaves);
+    try std.testing.expectEqual(@as(usize, 0), irCleanOptionsForConfig(800, 800, &.{}).inpaint.coarse_grain_octaves);
+    try std.testing.expectEqual(@as(usize, 2), irCleanOptionsForConfig(3200, 1600, &.{}).inpaint.coarse_grain_octaves);
     try std.testing.expectEqual(@as(?u32, null), irDpi(null, 0.5));
 }
 

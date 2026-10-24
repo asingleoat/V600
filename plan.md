@@ -111,12 +111,15 @@ Recorded in the May-July log; correct anything that is wrong:
   Weighting the score away from picture edges inflates ring-free frames'
   scores, so it is not the fix. The Process view's preview does
   not show the reduction.
-- IR dust removal leaves over-smooth patches, inpainted areas with too
-  little synthetic grain (owner review): KODAKGOLD_200_2 s02_03, and the
-  middle of KODAKGOLD_200_0 s04_03. Deeply underexposed frames get smooth
-  blobs (all of KODAKGOLD_200_3): a thin negative's grain is stretched far
-  by inversion, so grain matched on the negative may fall short there. If a
-  fix falls short, suggest turning dust removal off for such frames.
+- IR dust fills in textured picture still read as smooth patches
+  (KODAKGOLD_200_0 s04_03, the patch in the green wall): the fills
+  reproduce grain, not picture texture, and that frame's flattest tiles
+  are sky, whose coarse grain is weaker than its midtones'. Copying texture
+  from a clean nearby patch (a healing brush: the source plus the
+  biharmonic fill of the difference at the edge) would carry both. Fills
+  that bridge a bright object and a dark background show some dark speckle
+  in the dark part (KODAKGOLD_200_2 s02_03). The fills' finest grain runs
+  10-20% strong at 6400 dpi, from the coarse octaves' overlap with it.
 
 - Colour tuning has no repeatable check on real frames, the way framing has
   `roll check-frames`: a `roll check-colour` reporting casts per tone band,
@@ -137,10 +140,6 @@ Recorded in the May-July log; correct anything that is wrong:
     can pass the threshold, so real detail gets filled (foliage on
     KODAKGOLD_200_0 strip 1). Removing the IR's correlation with the red
     channel before thresholding would stop it.
-  - Synthetic grain's size mix is off after inversion: its finest part is
-    about 1.25x the surround's and its 1-4 px part about half
-    (KODAKGOLD_200_0 strip 1 frame 4). Strength and spectrum are measured
-    on the negative, before inversion.
   - Above 3% coverage the cap drops all cleaning for the frame.
   - Faint surface dust is missed: a speck must lie 25 local standard
     deviations below its IR background, about 70 levels on the 8-bit
