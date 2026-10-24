@@ -263,10 +263,7 @@ Recorded in the May-July log; correct anything that is wrong:
 - With parity dropped, decide whether the Python tree stays in HEAD or only
   in history (commit 48a4c79). `docs/PYTHON_PORT_MAP.md` line references
   would then point at that commit.
-- One Nix entry point: `shell.nix` and the flake dev shell have drifted
-  (Nuklear defined twice, different Python sets); the Linux checkout's
-  direnv uses `shell.nix`, so making it load the flake's shell needs the
-  owner to reload there. Add `build.zig.zon` with `minimum_zig_version`.
+- Add `build.zig.zon` with `minimum_zig_version`.
 - Flake checks: make sure the gate builds from git-tracked sources.
 
 ### Needs the scanner

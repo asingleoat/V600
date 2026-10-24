@@ -262,7 +262,7 @@ GPU, scanner:
 Dependencies: nixpkgs `wgpu-native` (C library, `include/webgpu` headers).
 nixpkgs `pkgs.dawn` is an unrelated PostScript tool; keep the backend boundary
 small enough to add Google Dawn later. `wgpu-native` is only in
-`devShells.webgpu` and `shell.nix` with `withWebGPU=true`, which export
+`devShells.webgpu` (`shell.nix` with `--arg withWebGPU true`), which exports
 `WGPU_NATIVE_INCLUDE_DIR` and `WGPU_NATIVE_LIBRARY_DIR` (no pkg-config file).
 `-Dwebgpu=true` links `libwgpu_native` and defaults to false; default
 builds, tests, and `-Dui=true` need no WebGPU library or GPU.

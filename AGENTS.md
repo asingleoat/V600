@@ -37,8 +37,8 @@ diffs for this before committing.
   objects.
 - Do not run `nix develop`, `nix-shell`, `nix build`, or `nix flake check` in
   ordinary build/test loops. If a dependency or the Zig version is missing,
-  edit `flake.nix`/`shell.nix` if needed, then stop and ask the owner to
-  reload the shell.
+  edit `flake.nix` (the one dev shell; `shell.nix` only loads it), then stop
+  and ask the owner to reload the shell.
 - No pip, venv, npm, or other package managers.
 
 ## Commands
