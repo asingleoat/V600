@@ -14,7 +14,6 @@ Every component is built by nixpkgs at the revision pinned in `flake.lock`;
 | --- | --- | --- | --- | --- |
 | SDL | 3.4.2 | Zlib | `sdl3` | macOS app |
 | Nuklear, with stb_truetype, stb_rect_pack, and the ProggyClean font | 4.12.7 | MIT or public domain; ProggyClean MIT | `nuklear` | macOS app |
-| OpenCV (core, imgproc; the Linux CLI also imgcodecs) | 4.13.0 | Apache-2.0 | `opencv` | macOS app, Linux CLI |
 | libtiff | 4.7.1 | libtiff | `libtiff` | macOS app, Linux CLI |
 | libjpeg-turbo | 3.1.4 | IJG, BSD-3-Clause, Zlib | `libjpeg-turbo` | macOS app, Linux CLI |
 | libwebp, libsharpyuv | 1.6.0 | BSD-3-Clause, with Google's patent grant | `libwebp` | macOS app, Linux CLI |
@@ -24,30 +23,19 @@ Every component is built by nixpkgs at the revision pinned in `flake.lock`;
 | libdeflate | 1.25 | MIT | `libdeflate` | macOS app, Linux CLI |
 | zlib | 1.3.2 | Zlib | `zlib` | macOS app, Linux CLI |
 | libusb | 1.0.29 | LGPL-2.1-or-later | `libusb` | macOS app |
-| libintl (GNU gettext) | 1.0 | LGPL-2.1-or-later | `libintl` | macOS app |
-| libiconv, libcharset (Apple) | 109.100.2 | BSD-2-Clause, BSD-3-Clause; libcharset APSL-1.0 | `libiconv` | macOS app |
-| GCC runtime: libstdc++, libgcc | 15.2.0 | GPL-3.0-or-later with the GCC Runtime Library Exception 3.1 | `gcc-runtime` | Linux CLI |
 | Zig standard library and runtime | 0.16.0 | MIT | `zig` | macOS app, Linux CLI |
 | musl libc | 1.2.5 (as bundled with Zig) | MIT | `musl` | Linux CLI |
 
 Notes:
 
-- OpenCV has been Apache-2.0 since 4.5; nixpkgs' metadata still says
-  BSD-3-Clause. `opencv/3rdparty` holds the licenses the macOS OpenCV build
-  installs for code compiled into it. ittnotify is dual-licensed with
-  GPL-2.0 and used under BSD-3-Clause. The Linux CLI's OpenCV is built
-  without any of that third-party code.
 - liblzma is 0BSD; `xz/COPYING` says which other parts of XZ Utils, none of
   them in liblzma, use other licenses.
-- The GCC Runtime Library Exception lets programs of any license link the
-  GCC runtime libraries.
 
-## Source for the LGPL libraries
+## Source for the LGPL library
 
-libusb and libintl ship in the macOS app as separate dynamic libraries in
-`Contents/Frameworks`, which can be replaced. Their source, as built:
+libusb ships in the macOS app as a separate dynamic library in
+`Contents/Frameworks`, which can be replaced. Its source, as built:
 
 - libusb 1.0.29: https://github.com/libusb/libusb/archive/v1.0.29.tar.gz
-- GNU gettext 1.0 (libintl): https://ftp.gnu.org/gnu/gettext/gettext-1.0.tar.gz
 
 with the nixpkgs build recipes and patches at the `flake.lock` revision.

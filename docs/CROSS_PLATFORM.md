@@ -14,8 +14,8 @@ Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`.
 
 ## Constraints for every platform
 
-- Zig 0.16.0. Native dependencies (libtiff, libjpeg, OpenCV, SDL3, Nuklear,
-  optional `wgpu-native`) come from Nix; no other package managers.
+- Zig 0.16.0. Native dependencies (libtiff, libdeflate, libjpeg, SDL3,
+  Nuklear, optional `wgpu-native`) come from Nix; no other package managers.
 - No default build or check path may require WebGPU or scanner hardware.
 - GPU acceleration targets WebGPU through nixpkgs `wgpu-native`, behind a
   backend boundary that could later use Google Dawn. CPU stays the default.
@@ -25,19 +25,14 @@ Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`.
 ### A static CLI
 
 `nix build .#cli-static`, on x86-64 Linux, builds a CLI with nothing to
-install: musl and every C and C++ library linked in
+install: musl and every C library linked in
 (`result/bin/cerealgrain`, about 13 MB, no references into the Nix store;
 its libraries' licenses in `result/share/licenses/cerealgrain`),
 for x86-64-v3 CPUs (Haswell, Zen, and later). Its frames and exports match
 the dev-shell build's pixel for pixel; an export takes about 8% longer.
 
-- nixpkgs' static OpenCV pulls in OpenCL, OpenMP, and media libraries that
-  have no static build, so the package builds OpenCV with only the modules
-  the helpers use (core, imgproc, imgcodecs with JPEG).
 - The package runs `zig build -Dstatic=true -Dtarget=x86_64-linux-musl
-  -Dcpu=x86_64_v3`, which compiles the C and C++ helpers with the musl
-  toolchain in `$CC` and `$CXX` and links what `$PKG_CONFIG --static` lists,
-  then libstdc++ and libgcc.
+  -Dcpu=x86_64_v3`, which links what `$PKG_CONFIG --static` lists.
 - Scanning still runs `scanimage` and its wrappers, ImageMagick, and
   `tiffcp` from the host; processing, rolls, and export need nothing else.
 - The native UI has no static build: SDL loads the display server's and the

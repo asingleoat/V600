@@ -217,8 +217,8 @@ Recorded in the May-July log; correct anything that is wrong:
 - Move the smoke harness out of `src/ui/main.zig`; wire or delete the smoke
   modes that are not build steps.
 - Finish the file splits the July pass left partial: `frames.zig` (drop the
-  alias facade, move stranded helpers), `ir.zig` (move the native/pure
-  dispatch into `ir_native.zig`), `ui/main.zig`, `ui/state.zig`,
+  alias facade, move stranded helpers), `ir.zig` with `ir_native.zig` (now
+  just ECC over row bands) and `ir_pure.zig`, `ui/main.zig`, `ui/state.zig`,
   `processing/workflow.zig`.
 - Collapse `*Timed`/`*Breakdown` function pairs into optional timing
   outputs.
@@ -226,12 +226,6 @@ Recorded in the May-July log; correct anything that is wrong:
   layer, gallery operations out of
   `processing/export.zig`, one TOML lexer for both configs,
   `selection_geometry.zig` into the root module so it can be unit-tested.
-- Replace `opencv_ir.cpp` (grain estimation and synthesis) with the pure Zig
-  ports in `ir_pure.zig`, which the webapp used and which replay the
-  fixtures exactly; they need a real FFT first (theirs is a direct DFT,
-  about a second per fill region); it also indexes with 32-bit ints, which per-frame sizes stay under
-  for now (a 6x9 frame at 6400 dpi is about 0.9 billion samples). ECC
-  alignment already moved to Zig.
 
 ### Repo, Nix, tests
 

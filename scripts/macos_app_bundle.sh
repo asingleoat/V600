@@ -140,7 +140,6 @@ done
 license_dir() {
   case $1 in
     *libSDL3.*) echo sdl3 ;;
-    *libopencv_*) echo opencv ;;
     *libtiff.*) echo libtiff ;;
     *libjpeg.*) echo libjpeg-turbo ;;
     *libwebp.* | *libsharpyuv.*) echo libwebp ;;
@@ -150,8 +149,6 @@ license_dir() {
     *libdeflate.*) echo libdeflate ;;
     *libz.*) echo zlib ;;
     *libusb-1.0.*) echo libusb ;;
-    *libintl.*) echo libintl ;;
-    *libiconv.* | *libcharset.*) echo libiconv ;;
     *) return 1 ;;
   esac
 }

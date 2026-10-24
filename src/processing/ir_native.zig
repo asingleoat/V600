@@ -1,35 +1,9 @@
-//! Native helper boundary for IR processing: the OpenCV extern declarations,
-//! and ECC alignment over row bands around the pure-Zig estimator.
+//! ECC alignment over row bands around the pure-Zig estimator.
 
 const std = @import("std");
 
 const ir_pure = @import("ir_pure.zig");
 const parallelism = @import("parallelism.zig");
-
-pub extern fn cerealgrain_estimate_local_grain(
-    roi_rgb: [*]const f64,
-    roi_mask: [*]const u8,
-    width: c_int,
-    height: c_int,
-    grain_padding: c_int,
-    grain_std: [*]f64,
-    signal_out: [*]f64,
-    spectrum_out: [*]f64,
-    spectrum_capacity: c_int,
-    spectrum_len: *c_int,
-    has_spectrum: *c_int,
-) c_int;
-
-pub extern fn cerealgrain_synthesize_grain_from_noise(
-    noise: [*]const f64,
-    width: c_int,
-    height: c_int,
-    grain_std: [*]const f64,
-    grain_spectrum: ?[*]const f64,
-    spectrum_len: c_int,
-    channels: c_int,
-    output: [*]f64,
-) c_int;
 
 // ECC runs at 1/8 scale with OpenCV findTransformECC's iteration limits,
 // which the earlier OpenCV helper used.

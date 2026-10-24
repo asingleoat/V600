@@ -32,9 +32,8 @@ diffs for this before committing.
 ### Nix and the build environment
 
 - Assume you are inside the project's Nix dev shell and use plain `zig ...`
-  commands. OpenCV, libjpeg, libtiff, libdeflate, SDL3, and Nuklear come
-  from that shell; outside it the build fails at the C/C++
-  objects.
+  commands. libjpeg, libtiff, libdeflate, SDL3, and Nuklear come from that
+  shell; outside it the build fails at the C libraries.
 - Do not run `nix develop`, `nix-shell`, `nix build`, or `nix flake check` in
   ordinary build/test loops. If a dependency or the Zig version is missing,
   edit `flake.nix` (the one dev shell; `shell.nix` only loads it), then stop
@@ -96,8 +95,8 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
                             usb.zig, macos.zig, interpreter.zig), events,
                             config, LUTs
       processing/           frame detection, inversion, IR cleaning, render,
-                            export, workflow, config; C/C++ helpers for
-                            OpenCV and libjpeg; optional WebGPU
+                            export, workflow, config; a C helper for
+                            libjpeg; optional WebGPU
       ui/                   headless UI state and workers; SDL3/Nuklear
                             front end in main.zig, render.zig, chrome.zig,
                             roll_panel.zig

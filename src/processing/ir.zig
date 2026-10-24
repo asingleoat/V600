@@ -824,103 +824,10 @@ pub fn applyMaxCoverageGuard(input: []const u8, output: []u8, max_coverage: f64)
     return false;
 }
 
-pub fn estimateLocalGrain(
-    allocator: std.mem.Allocator,
-    roi_rgb: []const f64,
-    roi_mask: []const u8,
-    width: usize,
-    height: usize,
-    grain_padding: usize,
-) !LocalGrainEstimate {
-    if (width == 0 or height == 0 or roi_rgb.len != width * height * 3 or roi_mask.len != width * height) {
-        return error.InvalidIrLocalGrainBuffer;
-    }
-    if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        height > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        grain_padding > @as(usize, @intCast(std.math.maxInt(c_int))))
-    {
-        return error.InvalidIrLocalGrainBuffer;
-    }
-
-    const signal = try allocator.alloc(f64, roi_rgb.len);
-    errdefer allocator.free(signal);
-
-    const spectrum_capacity = @min(width, height) / 2;
-    var spectrum_buffer = try allocator.alloc(f64, spectrum_capacity);
-    errdefer allocator.free(spectrum_buffer);
-
-    var grain_std = [_]f64{ 0.0, 0.0, 0.0 };
-    var spectrum_len: c_int = 0;
-    var has_spectrum: c_int = 0;
-    const status = ir_native.cerealgrain_estimate_local_grain(
-        roi_rgb.ptr,
-        roi_mask.ptr,
-        @intCast(width),
-        @intCast(height),
-        @intCast(grain_padding),
-        grain_std[0..].ptr,
-        signal.ptr,
-        if (spectrum_buffer.len > 0) spectrum_buffer.ptr else signal.ptr,
-        @intCast(spectrum_capacity),
-        &spectrum_len,
-        &has_spectrum,
-    );
-    if (status != 0) return error.InvalidIrLocalGrainBuffer;
-
-    var spectrum: ?[]f64 = null;
-    if (has_spectrum != 0) {
-        const len: usize = @intCast(spectrum_len);
-        if (len > spectrum_buffer.len) return error.InvalidIrLocalGrainBuffer;
-        spectrum_buffer = try allocator.realloc(spectrum_buffer, len);
-        spectrum = spectrum_buffer;
-    } else {
-        allocator.free(spectrum_buffer);
-    }
-
-    return .{
-        .grain_std = grain_std,
-        .signal = signal,
-        .spectrum = spectrum,
-    };
-}
-
-pub fn synthesizeGrainFromNoise(
-    noise: []const f64,
-    width: usize,
-    height: usize,
-    grain_std: []const f64,
-    grain_spectrum: ?[]const f64,
-    channels: usize,
-    output: []f64,
-) !void {
-    if (width == 0 or height == 0 or channels == 0 or
-        noise.len != width * height * channels or
-        output.len != noise.len or
-        grain_std.len < channels)
-    {
-        return error.InvalidIrGrainSynthesisBuffer;
-    }
-    if (width > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        height > @as(usize, @intCast(std.math.maxInt(c_int))) or
-        channels > @as(usize, @intCast(std.math.maxInt(c_int))))
-    {
-        return error.InvalidIrGrainSynthesisBuffer;
-    }
-    const spectrum_len = if (grain_spectrum) |spectrum| spectrum.len else 0;
-    if (spectrum_len > @as(usize, @intCast(std.math.maxInt(c_int)))) return error.InvalidIrGrainSynthesisBuffer;
-
-    const status = ir_native.cerealgrain_synthesize_grain_from_noise(
-        noise.ptr,
-        @intCast(width),
-        @intCast(height),
-        grain_std.ptr,
-        if (grain_spectrum) |spectrum| spectrum.ptr else null,
-        @intCast(spectrum_len),
-        @intCast(channels),
-        output.ptr,
-    );
-    if (status != 0) return error.InvalidIrGrainSynthesisBuffer;
-}
+/// The surround's grain: its level, low-pass signal, and radial spectrum.
+pub const estimateLocalGrain = ir_pure.estimateLocalGrain;
+/// Noise shaped to a grain spectrum, scaled per channel.
+pub const synthesizeGrainFromNoise = ir_pure.synthesizeGrainFromNoise;
 
 pub fn biharmonicInpaint(
     allocator: std.mem.Allocator,
@@ -1747,6 +1654,7 @@ fn inpaintComponent(allocator: std.mem.Allocator, job: InpaintJob, plan: Inpaint
     const component_noise = captured_noise[plan.noise_offset..][0..roi_values];
     const synth_started = monotonicNowNs();
     try synthesizeGrainFromNoise(
+        allocator,
         component_noise,
         roi_width,
         roi_height,
@@ -4258,6 +4166,7 @@ fn expectGrainSynthesisFixture(path: []const u8) !void {
     const output = try allocator.alloc(f64, expected_len);
     defer allocator.free(output);
     try synthesizeGrainFromNoise(
+        allocator,
         fixture.noise,
         width,
         height,
@@ -4957,7 +4866,7 @@ test "IR local grain estimation validates dimensions" {
 
 test "IR grain synthesis validates dimensions" {
     var output = [_]f64{0};
-    try std.testing.expectError(error.InvalidIrGrainSynthesisBuffer, synthesizeGrainFromNoise(&.{ 1.0, 2.0 }, 1, 1, &.{1.0}, null, 1, &output));
+    try std.testing.expectError(error.InvalidIrGrainSynthesisBuffer, synthesizeGrainFromNoise(std.testing.allocator, &.{ 1.0, 2.0 }, 1, 1, &.{1.0}, null, 1, &output));
 }
 
 test "IR biharmonic inpaint validates dimensions and no-mask copy" {

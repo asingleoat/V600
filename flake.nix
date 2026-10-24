@@ -77,47 +77,18 @@ EOF
             in
             !(generatedDir || generatedFile);
         };
-      # A fully static CLI for any x86-64 Linux: musl, every C and C++ library
-      # linked in, for x86-64-v3 CPUs (Haswell and later). nixpkgs' static
-      # OpenCV pulls in OpenCL, OpenMP, and media libraries with no static
-      # build, so OpenCV is built with only the modules the helpers use.
+      # A fully static CLI for any x86-64 Linux: musl, every C library
+      # linked in, for x86-64-v3 CPUs (Haswell and later).
       staticCliPackage = pkgs:
         let
           s = pkgs.pkgsStatic;
-          opencv = s.stdenv.mkDerivation {
-            pname = "opencv-minimal";
-            version = pkgs.opencv.version;
-            src = pkgs.opencv.src;
-            nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
-            buildInputs = [ s.libjpeg s.zlib ];
-            cmakeFlags = [
-              "-DBUILD_LIST=core,imgproc,imgcodecs"
-              "-DOPENCV_GENERATE_PKGCONFIG=ON"
-              "-DBUILD_TESTS=OFF" "-DBUILD_PERF_TESTS=OFF" "-DBUILD_EXAMPLES=OFF" "-DBUILD_opencv_apps=OFF"
-              "-DBUILD_ZLIB=OFF" "-DBUILD_JPEG=OFF" "-DWITH_JPEG=ON"
-              "-DWITH_PNG=OFF" "-DWITH_TIFF=OFF" "-DWITH_WEBP=OFF" "-DWITH_OPENJPEG=OFF" "-DWITH_JASPER=OFF"
-              "-DWITH_OPENEXR=OFF" "-DWITH_AVIF=OFF" "-DWITH_IMGCODEC_GIF=OFF"
-              "-DWITH_OPENCL=OFF" "-DWITH_OPENMP=OFF" "-DWITH_TBB=OFF" "-DWITH_IPP=OFF" "-DWITH_ITT=OFF"
-              "-DWITH_EIGEN=OFF" "-DWITH_LAPACK=OFF" "-DWITH_PROTOBUF=OFF" "-DWITH_FFMPEG=OFF"
-              "-DWITH_GSTREAMER=OFF" "-DWITH_GTK=OFF" "-DWITH_QT=OFF" "-DWITH_V4L=OFF" "-DWITH_VA=OFF"
-              "-DWITH_1394=OFF" "-DWITH_ADE=OFF" "-DWITH_QUIRC=OFF" "-DWITH_OBSENSOR=OFF" "-DWITH_KLEIDICV=OFF"
-              "-DENABLE_PRECOMPILED_HEADERS=OFF" "-DCV_TRACE=OFF"
-            ];
-            # OpenCV joins its prefix to the absolute install dirs Nix passes.
-            postInstall = ''
-              sed -i 's|''${exec_prefix}//nix|/nix|g; s|''${prefix}//nix|/nix|g' $out/lib/pkgconfig/opencv4.pc
-              mkdir -p $out/lib/opencv4/3rdparty
-            '';
-          };
         in
         s.stdenv.mkDerivation {
           pname = "cerealgrain-cli";
           inherit version;
           src = cleanSource pkgs;
           nativeBuildInputs = [ pkgs.zig s.buildPackages.pkg-config pkgs.nukeReferences ];
-          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg opencv ];
-          # OpenCV's build information names the compilers and libraries it
-          # was built with; nothing is loaded from the store at run time.
+          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg ];
           allowedReferences = [ ];
           buildPhase = ''
             runHook preBuild
@@ -165,7 +136,6 @@ EOF
                 pkgs.zlib
                 pkgs.libdeflate
                 pkgs.libjpeg
-                pkgs.opencv
               ] ++ pkgs.lib.optionals enableUi [
                 pkgs.sdl3
                 nuklear
@@ -204,7 +174,7 @@ EOF
         let nuklear = nuklearPackage pkgs; in {
         zig-tests = pkgs.runCommand "cerealgrain-tests" {
           nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc pkgs.imagemagick pkgs.exiftool ];
-          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.opencv pkgs.sdl3 nuklear ];
+          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.sdl3 nuklear ];
         } ''
           cp -R ${cleanSource pkgs} source
           chmod -R u+w source
@@ -262,7 +232,6 @@ EOF
             zlib
             libdeflate
             libjpeg
-            opencv
             sdl3
             nuklear
           ];

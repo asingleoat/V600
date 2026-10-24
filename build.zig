@@ -1,33 +1,7 @@
 const std = @import("std");
 
-/// The OpenCV helpers, which build with the toolchain's C++ compiler: they
-/// must use the C++ library OpenCV was built against (libstdc++ on Linux),
-/// which Zig's own libc++ cannot stand in for. The C sources build with Zig.
-const opencv_sources = [_][]const u8{"src/processing/opencv_ir.cpp"};
-
-/// The C++ compiler and pkg-config the OpenCV helpers build with: the dev
-/// shell's, or for the static Linux build the musl toolchain's, which the
-/// Nix build names in `$CXX` and `$PKG_CONFIG`.
-const Toolchain = struct {
-    cxx: []const u8 = "c++",
-    pkg_config: []const u8 = "pkg-config",
-    /// Extra C++ flags, each with a leading space.
-    cxx_flags: []const u8 = "",
-};
-
-const static_toolchain = Toolchain{
-    .cxx = "\"$CXX\"",
-    .pkg_config = "\"$PKG_CONFIG\"",
-    .cxx_flags = " -DCEREALGRAIN_LIBSTDCXX",
-};
-
-/// The musl GCC toolchain's runtime archives the C++ helpers and OpenCV
-/// need: the C++ library, then GCC's, which holds the unwinder and the CPU
-/// detection OpenCV dispatches its kernels by.
-const static_runtime_archives = [_][]const u8{ "libstdc++.a", "libgcc.a" };
-
 /// The libraries the processing code links, by pkg-config name.
-const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib", "opencv4" };
+const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib" };
 
 const UiSmokeSpec = struct {
     arg: []const u8,
@@ -255,25 +229,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
 }
 
-/// Compiles one OpenCV helper, with a depfile so a changed header (a new
-/// OpenCV in the shell) rebuilds it. Always at -O2, as the Nix compiler
-/// wrappers' hardening flags had it: unoptimized, the helpers call
-/// libstdc++'s out-of-line throw functions, which the Linux link lacks.
-fn compileOpenCvObject(b: *std.Build, source: []const u8, toolchain: Toolchain) std.Build.LazyPath {
-    const command = b.fmt("{s} -std=c++17 -fPIC -fno-exceptions -O2{s} $({s} --cflags opencv4) -c \"$1\" -o \"$2\" -MD -MF \"$3\"", .{ toolchain.cxx, toolchain.cxx_flags, toolchain.pkg_config });
-    const cmd = b.addSystemCommand(&.{ "sh", "-c", command, "compile-opencv" });
-    cmd.setName(b.fmt("compile {s}", .{std.fs.path.basename(source)}));
-    cmd.addFileArg(b.path(source));
-    const object = cmd.addOutputFileArg(b.fmt("{s}.o", .{std.fs.path.stem(source)}));
-    _ = cmd.addDepFileOutputArg(b.fmt("{s}.d", .{std.fs.path.stem(source)}));
-    return object;
-}
-
-fn addNativeSources(b: *std.Build, module: *std.Build.Module, toolchain: Toolchain) void {
-    for (opencv_sources) |source| module.addObjectFile(compileOpenCvObject(b, source, toolchain));
-    module.addCSourceFile(.{ .file = b.path("src/processing/jpeg.c"), .flags = &.{"-std=c99"} });
-}
-
 fn addProgram(
     b: *std.Build,
     root_module: *std.Build.Module,
@@ -314,24 +269,14 @@ fn addRootModule(
     root_module.linkSystemLibrary("c", .{});
     if (static) {
         linkStaticLibraries(b, root_module);
-        addNativeSources(b, root_module, static_toolchain);
+        root_module.addCSourceFile(.{ .file = b.path("src/processing/jpeg.c"), .flags = &.{"-std=c99"} });
         return root_module;
     }
     root_module.linkSystemLibrary("libtiff-4", .{});
     root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
-    // The C++ helpers use these two modules only; all of opencv4 would also
-    // load its video, codec, and network dependencies.
-    for ([_][]const u8{ "opencv_core", "opencv_imgproc" }) |name| {
-        root_module.linkSystemLibrary(name, .{ .use_pkg_config = .no });
-    }
     if (!target.query.isNativeOs()) addNixLibraryPaths(b, root_module);
-    if (target.result.os.tag.isDarwin()) {
-        // The OpenCV objects need libc++ named directly under the two-level
-        // namespace; OpenCV itself links the system /usr/lib/libc++.
-        root_module.linkSystemLibrary("c++", .{ .use_pkg_config = .no });
-    }
     if (target.result.os.tag == .macos) {
         // USB transport for the Epson interpreter scanner backend.
         root_module.linkSystemLibrary("libusb-1.0", .{ .use_pkg_config = .force });
@@ -346,13 +291,13 @@ fn addRootModule(
         root_module.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
     }
 
-    addNativeSources(b, root_module, .{});
+    root_module.addCSourceFile(.{ .file = b.path("src/processing/jpeg.c"), .flags = &.{"-std=c99"} });
     return root_module;
 }
 
 /// Links the static libraries the Nix static build provides, with the flags
 /// `pkg-config --static` gives (Zig's own pkg-config use leaves out the
-/// private dependencies a static link needs), then the toolchain runtimes.
+/// private dependencies a static link needs).
 fn linkStaticLibraries(b: *std.Build, module: *std.Build.Module) void {
     const pkg_config = b.graph.environ_map.get("PKG_CONFIG") orelse "pkg-config";
     var argv: std.ArrayList([]const u8) = .empty;
@@ -369,12 +314,6 @@ fn linkStaticLibraries(b: *std.Build, module: *std.Build.Module) void {
         } else if (std.mem.endsWith(u8, word, ".a")) {
             module.addObjectFile(.{ .cwd_relative = word });
         }
-    }
-    const cxx = b.graph.environ_map.get("CXX") orelse std.process.fatal("-Dstatic=true needs $CXX, the musl C++ compiler", .{});
-    for (static_runtime_archives) |name| {
-        const path = std.mem.trim(u8, b.run(&.{ cxx, b.fmt("-print-file-name={s}", .{name}) }), " \t\r\n");
-        if (!std.fs.path.isAbsolute(path)) std.process.fatal("{s} has no {s}", .{ cxx, name });
-        module.addObjectFile(.{ .cwd_relative = path });
     }
 }
 

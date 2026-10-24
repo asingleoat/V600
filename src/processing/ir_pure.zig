@@ -1,9 +1,10 @@
-//! Dependency-free pure-Zig ports of the native C/C++ IR helper behavior:
-//! the opencv_ir.cpp local grain estimation, grain spectrum, and grain
-//! synthesis path, and the translation-only ECC estimator (ported from the
-//! former opencv_ecc.cpp; now the only implementation).
+//! Ports of the IR helpers the app used to call through OpenCV: the dust
+//! fills' local grain estimate, grain spectrum, and grain synthesis (OpenCV's
+//! Gaussian blur, elliptical dilation, and DFT), and the translation-only ECC
+//! estimator.
 
 const std = @import("std");
+const fft = @import("fft.zig");
 
 pub fn roundF32(value: f64) f64 {
     const rounded: f32 = @floatCast(value);
@@ -350,7 +351,7 @@ pub fn synthesizeGrainFromNoise(
     defer allocator.free(dft);
     shapeSpectrumInPlace(dft, width, height, grain_spectrum);
 
-    try inverseDft2ComplexToReal(allocator, dft, width, height, plane);
+    try fft.inverseToReal2d(allocator, dft, width, height, plane);
     var sum: f64 = 0.0;
     var sum_sq: f64 = 0.0;
     for (plane) |value| {
@@ -385,38 +386,45 @@ fn gaussianBlurRgbSigmaF32(
 ) !void {
     if (input.len != width * height * 3 or output.len != input.len) return error.InvalidIrLocalGrainBuffer;
     const kernel_size = openCvGaussianKernelSizeForF32(sigma);
-    const kernel = try gaussianKernelSigmaF32(allocator, sigma, kernel_size);
+    const kernel = try allocator.alloc(f32, kernel_size);
     defer allocator.free(kernel);
+    gaussianKernelSigmaF32(sigma, kernel);
+    const radius = kernel_size / 2;
+
+    // Reflect-101 source index for each position from -radius to len + radius.
+    const x_index = try reflectedIndices(allocator, width, radius);
+    defer allocator.free(x_index);
+    const y_index = try reflectedIndices(allocator, height, radius);
+    defer allocator.free(y_index);
 
     const temp = try allocator.alloc(f32, input.len);
     defer allocator.free(temp);
-    const radius: i32 = @intCast(kernel_size / 2);
     for (0..height) |y| {
+        const row = input[y * width * 3 ..][0 .. width * 3];
         for (0..width) |x| {
             for (0..3) |channel| {
                 var sum: f32 = 0.0;
-                for (kernel, 0..) |weight, k| {
-                    const offset = @as(i32, @intCast(k)) - radius;
-                    const sx = reflect101Index(@as(i32, @intCast(x)) + offset, width);
-                    sum += input[(y * width + sx) * 3 + channel] * weight;
-                }
+                for (kernel, x_index[x..][0..kernel_size]) |weight, sx| sum += row[sx * 3 + channel] * weight;
                 temp[(y * width + x) * 3 + channel] = sum;
             }
         }
     }
     for (0..height) |y| {
-        for (0..width) |x| {
-            for (0..3) |channel| {
-                var sum: f32 = 0.0;
-                for (kernel, 0..) |weight, k| {
-                    const offset = @as(i32, @intCast(k)) - radius;
-                    const sy = reflect101Index(@as(i32, @intCast(y)) + offset, height);
-                    sum += temp[(sy * width + x) * 3 + channel] * weight;
-                }
-                output[(y * width + x) * 3 + channel] = sum;
-            }
+        const rows = y_index[y..][0..kernel_size];
+        for (0..width * 3) |sample| {
+            var sum: f32 = 0.0;
+            for (kernel, rows) |weight, sy| sum += temp[sy * width * 3 + sample] * weight;
+            output[y * width * 3 + sample] = sum;
         }
     }
+}
+
+fn reflectedIndices(allocator: std.mem.Allocator, len: usize, radius: usize) ![]usize {
+    const indices = try allocator.alloc(usize, len + 2 * radius);
+    for (indices, 0..) |*index, position| {
+        index.* = reflect101Index(@as(i32, @intCast(position)) - @as(i32, @intCast(radius)), len);
+    }
+    return indices;
 }
 
 fn openCvGaussianKernelSizeForF32(sigma: f64) usize {
@@ -426,10 +434,8 @@ fn openCvGaussianKernelSizeForF32(sigma: f64) usize {
     return @max(size, 3);
 }
 
-fn gaussianKernelSigmaF32(allocator: std.mem.Allocator, sigma: f64, kernel_size: usize) ![]f32 {
-    const kernel = try allocator.alloc(f32, kernel_size);
-    errdefer allocator.free(kernel);
-    const half = (@as(f64, @floatFromInt(kernel_size)) - 1.0) * 0.5;
+fn gaussianKernelSigmaF32(sigma: f64, kernel: []f32) void {
+    const half = (@as(f64, @floatFromInt(kernel.len)) - 1.0) * 0.5;
     var sum: f64 = 0.0;
     for (kernel, 0..) |*weight, index| {
         const x = @as(f64, @floatFromInt(index)) - half;
@@ -441,7 +447,6 @@ fn gaussianKernelSigmaF32(allocator: std.mem.Allocator, sigma: f64, kernel_size:
     for (kernel) |*weight| {
         weight.* *= inv_sum;
     }
-    return kernel;
 }
 
 pub fn dilateMaskOpenCvEllipse(
@@ -455,9 +460,17 @@ pub fn dilateMaskOpenCvEllipse(
     if (input.len != width * height or output.len != input.len) return error.InvalidIrLocalGrainBuffer;
     const spans = try openCvEllipseSpans(allocator, radius);
     defer allocator.free(spans);
+    // Set pixels before each column of each row, so a span's test is two
+    // lookups.
+    const counts = try allocator.alloc(u32, (width + 1) * height);
+    defer allocator.free(counts);
+    for (0..height) |y| {
+        const row_counts = counts[y * (width + 1) ..][0 .. width + 1];
+        row_counts[0] = 0;
+        for (input[y * width ..][0..width], 0..) |value, x| row_counts[x + 1] = row_counts[x] + @intFromBool(value != 0);
+    }
     const height_i: i32 = @intCast(height);
     const width_i: i32 = @intCast(width);
-    @memset(output, 0);
     for (0..height) |y| {
         const y_i: i32 = @intCast(y);
         for (0..width) |x| {
@@ -466,19 +479,14 @@ pub fn dilateMaskOpenCvEllipse(
             for (spans) |span| {
                 const sy = y_i + span.y_offset;
                 if (sy < 0 or sy >= height_i) continue;
-                const start_i = @max(x_i + span.x_min, 0);
-                const end_i = @min(x_i + span.x_max, width_i - 1);
-                if (start_i > end_i) continue;
-                const row = @as(usize, @intCast(sy)) * width;
-                var sx: usize = @intCast(start_i);
-                const end: usize = @intCast(end_i);
-                while (sx <= end) : (sx += 1) {
-                    if (input[row + sx] != 0) {
-                        set = true;
-                        break;
-                    }
+                const start = @max(x_i + span.x_min, 0);
+                const end = @min(x_i + span.x_max, width_i - 1);
+                if (start > end) continue;
+                const row_counts = counts[@as(usize, @intCast(sy)) * (width + 1) ..];
+                if (row_counts[@intCast(end + 1)] != row_counts[@intCast(start)]) {
+                    set = true;
+                    break;
                 }
-                if (set) break;
             }
             output[y * width + x] = if (set) 255 else 0;
         }
@@ -519,10 +527,7 @@ fn openCvEllipseSpans(allocator: std.mem.Allocator, radius: usize) ![]EllipseSpa
     return spans;
 }
 
-const Complex = struct {
-    re: f64,
-    im: f64,
-};
+const Complex = fft.Complex;
 
 fn dft2RealToComplex(
     allocator: std.mem.Allocator,
@@ -530,82 +535,10 @@ fn dft2RealToComplex(
     width: usize,
     height: usize,
 ) ![]Complex {
-    if (input.len != width * height) return error.InvalidBuffer;
-    const temp = try allocator.alloc(Complex, input.len);
-    defer allocator.free(temp);
     const output = try allocator.alloc(Complex, input.len);
     errdefer allocator.free(output);
-
-    const tau = 2.0 * std.math.pi;
-    for (0..height) |y| {
-        for (0..width) |u| {
-            var sum = Complex{ .re = 0.0, .im = 0.0 };
-            for (0..width) |x| {
-                const angle = -tau * @as(f64, @floatFromInt(u * x)) / @as(f64, @floatFromInt(width));
-                const value = input[y * width + x];
-                sum.re += value * @cos(angle);
-                sum.im += value * @sin(angle);
-            }
-            temp[y * width + u] = sum;
-        }
-    }
-
-    for (0..height) |v| {
-        for (0..width) |u| {
-            var sum = Complex{ .re = 0.0, .im = 0.0 };
-            for (0..height) |y| {
-                const angle = -tau * @as(f64, @floatFromInt(v * y)) / @as(f64, @floatFromInt(height));
-                const twiddle = Complex{ .re = @cos(angle), .im = @sin(angle) };
-                const value = temp[y * width + u];
-                sum.re += value.re * twiddle.re - value.im * twiddle.im;
-                sum.im += value.re * twiddle.im + value.im * twiddle.re;
-            }
-            output[v * width + u] = sum;
-        }
-    }
+    try fft.forwardReal2d(allocator, input, width, height, output);
     return output;
-}
-
-fn inverseDft2ComplexToReal(
-    allocator: std.mem.Allocator,
-    input: []const Complex,
-    width: usize,
-    height: usize,
-    output: []f64,
-) !void {
-    if (input.len != width * height or output.len != input.len) return error.InvalidBuffer;
-    const temp = try allocator.alloc(Complex, input.len);
-    defer allocator.free(temp);
-    const tau = 2.0 * std.math.pi;
-
-    for (0..height) |v| {
-        for (0..width) |x| {
-            var sum = Complex{ .re = 0.0, .im = 0.0 };
-            for (0..width) |u| {
-                const angle = tau * @as(f64, @floatFromInt(u * x)) / @as(f64, @floatFromInt(width));
-                const twiddle = Complex{ .re = @cos(angle), .im = @sin(angle) };
-                const value = input[v * width + u];
-                sum.re += value.re * twiddle.re - value.im * twiddle.im;
-                sum.im += value.re * twiddle.im + value.im * twiddle.re;
-            }
-            temp[v * width + x] = sum;
-        }
-    }
-
-    const scale = 1.0 / @as(f64, @floatFromInt(width * height));
-    for (0..height) |y| {
-        for (0..width) |x| {
-            var sum = Complex{ .re = 0.0, .im = 0.0 };
-            for (0..height) |v| {
-                const angle = tau * @as(f64, @floatFromInt(v * y)) / @as(f64, @floatFromInt(height));
-                const twiddle = Complex{ .re = @cos(angle), .im = @sin(angle) };
-                const value = temp[v * width + x];
-                sum.re += value.re * twiddle.re - value.im * twiddle.im;
-                sum.im += value.re * twiddle.im + value.im * twiddle.re;
-            }
-            output[y * width + x] = sum.re * scale;
-        }
-    }
 }
 
 fn shapeSpectrumInPlace(values: []Complex, width: usize, height: usize, grain_spectrum: ?[]const f64) void {
