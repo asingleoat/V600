@@ -500,23 +500,27 @@ pub const Runtime = struct {
         const thumbnail_start = monotonicNowNs();
         try self.createThumbnail(rgb_path, thumb_path);
         self.emitTimingSince("linux.scan_rgb_ir.thumbnail", thumbnail_start, "ok");
+        const partial = try partialPath(self.allocator, options.output_path);
+        defer self.allocator.free(partial);
+        defer deleteIfExists(self.io, partial);
         const combine_start = monotonicNowNs();
-        try self.combineTiffPages(rgb_path, thumb_path, ir_path, options.output_path);
+        try self.combineTiffPages(rgb_path, thumb_path, ir_path, partial);
         self.emitTimingSince("linux.scan_rgb_ir.combine_tiff_pages", combine_start, "ok");
         const pass_dpis = combinedPassDpis(options.request);
         const metadata_tags_start = monotonicNowNs();
         const model_name = if (options.capabilities) |caps| caps.model else (contracts.ScannerCapabilities{}).model;
-        try self.applyTiffMetadataTags(options.output_path, .{
+        try self.applyTiffMetadataTags(partial, .{
             .model = model_name,
             .software = tiff_software,
             .dpi = pass_dpis.rgb,
             .custom_luts_applied = customLutsApplied(options.request),
         });
-        try tiff.writeScannerPageMetadata(self.allocator, options.output_path, contracts.TiffPageLayout.ir, .{
+        try tiff.writeScannerPageMetadata(self.allocator, partial, contracts.TiffPageLayout.ir, .{
             .model = model_name,
             .software = tiff_software,
             .dpi = pass_dpis.ir,
         });
+        try replaceFile(self.io, partial, options.output_path);
         self.emitTimingSince("linux.scan_rgb_ir.metadata_tags", metadata_tags_start, "ok");
         const sidecar_start = monotonicNowNs();
         const metadata_path = try writeCombinedMetadataSidecar(self.allocator, self.io, options, device_name, model_name, pass_dpis);
@@ -595,9 +599,16 @@ pub const Runtime = struct {
         if (caps.device_name.len == 0) caps.device_name = device_name;
         self.emitTimingSince("linux.scan_once.capability_lookup", caps_start, caps_detail);
 
+        // scanimage writes beside the scan's name and the finished file is
+        // renamed into place, so a failed or cancelled scan never leaves a
+        // truncated TIFF under it. (`.tiff` last: ImageMagick picks its
+        // output format from the extension.)
+        const partial = try partialPath(self.allocator, options.output_path);
+        defer self.allocator.free(partial);
+        defer deleteIfExists(self.io, partial);
         const normalize_start = monotonicNowNs();
         var request = options.request;
-        request.output_path = options.output_path;
+        request.output_path = partial;
         self.emitTimingSince("linux.scan_once.request_normalize", normalize_start, "ok");
         const plan_start = monotonicNowNs();
         var plan = sane.planCommand(self.allocator, request, caps, self.wrappersFor(caps.known_model)) catch |err| switch (err) {
@@ -639,15 +650,16 @@ pub const Runtime = struct {
             return try self.makeFailure(classifyFailure(result.stderr), result.stderr);
         }
         const mirror_start = monotonicNowNs();
-        try self.mirrorTiffForSource(options.output_path, plan.source);
+        try self.mirrorTiffForSource(partial, plan.source);
         self.emitTimingSince("linux.scan_once.mirror", mirror_start, if (shouldMirrorTiff(plan.source)) "applied" else "skipped");
         const metadata_tags_start = monotonicNowNs();
-        try self.applyTiffMetadataTags(options.output_path, .{
+        try self.applyTiffMetadataTags(partial, .{
             .model = if (caps.model.len == 0) "Epson Scanner" else caps.model,
             .software = tiff_software,
             .dpi = plan.effective_dpi,
             .custom_luts_applied = customLutsApplied(options.request),
         });
+        try replaceFile(self.io, partial, options.output_path);
         self.emitTimingSince("linux.scan_once.metadata_tags", metadata_tags_start, "ok");
         const sidecar_start = monotonicNowNs();
         const metadata_path = try writeMetadataSidecar(self.allocator, self.io, options, caps, &plan);
@@ -1484,6 +1496,10 @@ fn customLutsApplied(request: contracts.ScanRequest) bool {
     };
 }
 
+fn partialPath(allocator: std.mem.Allocator, output_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ output_path, tiff.partial_suffix });
+}
+
 fn replaceFile(io: std.Io, old_path: []const u8, new_path: []const u8) !void {
     if (std.fs.path.isAbsolute(old_path) or std.fs.path.isAbsolute(new_path)) {
         try std.Io.Dir.renameAbsolute(old_path, new_path, io);
@@ -2206,6 +2222,9 @@ test "single-pass scan emits timing diagnostics with fake scanimage" {
     try std.testing.expect(failure == null);
     try std.testing.expect(cancelFileExists(std.testing.io, output_path));
     try std.testing.expect(cancelFileExists(std.testing.io, metadata_path));
+    const partial = try partialPath(allocator, output_path);
+    defer allocator.free(partial);
+    try std.testing.expect(!cancelFileExists(std.testing.io, partial));
 
     try std.testing.expect(recorder.indexOfName(.scan_start) != null);
     try std.testing.expect(recorder.indexOfName(.progress) != null);
@@ -2295,6 +2314,9 @@ test "RGB plus IR scan orchestration emits timing diagnostics with fake scanimag
     try std.testing.expect(!cancelFileExists(std.testing.io, rgb_tmp_path));
     try std.testing.expect(!cancelFileExists(std.testing.io, ir_tmp_path));
     try std.testing.expect(!cancelFileExists(std.testing.io, thumb_tmp_path));
+    const partial = try partialPath(allocator, output_path);
+    defer allocator.free(partial);
+    try std.testing.expect(!cancelFileExists(std.testing.io, partial));
 
     try expectTimingBefore(recorder, "linux.scan_rgb_ir.rgb_plan", "linux.scan_rgb_ir.rgb_pass");
     try expectTimingBefore(recorder, "linux.scan_rgb_ir.rgb_pass", "linux.scan_rgb_ir.ir_plan");

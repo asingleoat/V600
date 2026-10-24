@@ -196,9 +196,6 @@ Recorded in the May-July log; correct anything that is wrong:
   Within a roll every strip shares one LUT, so the roll's Dmin fallback
   holds; a Dmin saved from another roll or plain scan is off by the
   difference in LUT gains.
-- Linux scans are not written atomically (scanimage and tiffcp write the
-  final path directly); the macOS backend writes `<name>.partial` and
-  renames.
 
 ### Native code cleanup
 

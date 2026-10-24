@@ -460,7 +460,7 @@ pub fn findImages(allocator: std.mem.Allocator, io: std.Io, directory: []const u
 
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
-        if (!isTiffFileName(entry.name)) continue;
+        if (!isTiffFileName(entry.name) or isScanInProgress(entry.name)) continue;
         switch (entry.kind) {
             .file => {},
             // A link to a scan counts as the scan; a broken one does not.
@@ -515,6 +515,15 @@ pub fn nextScanNumber(io: std.Io, directory: []const u8, prefix: []const u8) !us
         highest = @max(highest, number);
     }
     return highest + 1;
+}
+
+/// Linux scans are written as `<name>` + this and renamed when finished.
+pub const partial_suffix = ".partial.tiff";
+
+/// A scan still being written: the Linux scan's partial file, or its RGB+IR
+/// passes' intermediates (`<name>.rgb.tmp.tiff` and the like).
+fn isScanInProgress(name: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(name, partial_suffix) or std.ascii.endsWithIgnoreCase(name, ".tmp.tiff");
 }
 
 pub fn isTiffFileName(name: []const u8) bool {
@@ -1494,6 +1503,8 @@ test "finds TIFF images sorted by case-insensitive file name" {
     try tmp.dir.symLink(std.testing.io, "missing.tif", "d.tif", .{});
     try tmp.dir.createDirPath(std.testing.io, "folder");
     try tmp.dir.symLink(std.testing.io, "folder", "e.tif", .{ .is_directory = true });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.tiff.partial.tiff", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.tiff.rgb.tmp.tiff", .data = "" });
 
     const dir_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer allocator.free(dir_path);
