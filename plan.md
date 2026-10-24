@@ -279,8 +279,6 @@ Recorded in the May-July log; correct anything that is wrong:
 - Fixtures: compact the one-number-per-line IR JSON arrays, delete or use the
   14 unreferenced scanner fixtures, and update the fixture READMEs, which
   still describe the fixtures as Python oracles.
-- `.gitignore`: anchor the image rules to output directories, drop dead
-  entries, add `result*` and `.direnv/`.
 
 ### Needs the scanner
 

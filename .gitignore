@@ -2,51 +2,41 @@
 __pycache__/
 *.py[cod]
 
-# Scan outputs
-*.tiff
-*.tif
-*.png
-*.jpg
-*.pnm
-scans/
-test_scans/
+# Scans, exports, and archived exports
+/scans/
+/frames/
+/frames-archive/
+# Images and scans dropped at the top level
+/*.tif
+/*.tiff
+/*.png
+/*.jpg
+/*.pnm
 
-# Committed test fixtures override the scan-output rules
-!test/fixtures/**/*.tiff
-!test/fixtures/**/*.tif
-
-# Build directories
-sane-local/
-firmware/
+# Build output
 .zig-cache/
 zig-out/
+result
+result-*
 
-# Config
+# Epson interpreter bundles put beside the app (proprietary)
+/firmware/
+
+# Local config and environment
 scanner.toml
 processing.toml
+.envrc
+.direnv/
+.DS_Store
 
-# Processing outputs
-/frames/
-
-# Test binaries
-test_direct_usb
-test_epson2
-usb_reset
-
-# Temporary/debug
+# Logs, temporary files, USB captures
 *.log
 *.tmp
 *.pcapng
-
-# Environment
-.envrc
 
 # Compiled LUT dispatchers
 libesintA1_lut.so
 libesintA1_unified.so
 
 # Workspace for experimental/untracked files
-workspace/
-
-# Archived exports
-/frames-archive/
+/workspace/

@@ -54,18 +54,14 @@ EOF
                 ".zig-cache"
                 "frames"
                 "firmware"
-                "sane-local"
+                "frames-archive"
                 "scans"
-                "test_scans"
                 "workspace"
                 "zig-out"
               ];
               generatedFile =
                 base == "scanner.toml" ||
                 base == "processing.toml" ||
-                base == "test_direct_usb" ||
-                base == "test_epson2" ||
-                base == "usb_reset" ||
                 base == "libesintA1_lut.so" ||
                 base == "libesintA1_unified.so" ||
                 (!inFixtureTree && (
