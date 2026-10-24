@@ -5,6 +5,7 @@ const scanner_events = @import("../scanner/events.zig");
 const scanner_host = @import("../scanner.zig").host;
 const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
 const test_worker_poll_attempts = 100_000;
@@ -572,11 +573,6 @@ fn roundU8(value: f64) u8 {
     return @intFromFloat(@floor(clamped + 0.5));
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn previewBufferFromBytes(
     allocator: std.mem.Allocator,

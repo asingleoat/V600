@@ -1,5 +1,6 @@
 const std = @import("std");
 const cerealgrain = @import("cerealgrain");
+const monotonicNowNs = @import("cerealgrain").clock.monotonicNowNs;
 
 const color = cerealgrain.processing.color;
 const film_stocks = cerealgrain.processing.film_stocks;
@@ -347,11 +348,6 @@ fn checksumU8(output: []const u8) u64 {
     return sum;
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 const BenchmarkCoverage = struct {
     srgb_to_linear: bool = false,

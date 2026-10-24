@@ -1,5 +1,6 @@
 const std = @import("std");
 const cerealgrain = @import("cerealgrain");
+const monotonicNanos = @import("cerealgrain").clock.monotonicNowNs;
 
 const ir = cerealgrain.processing.ir;
 
@@ -77,8 +78,3 @@ pub fn main(init: std.process.Init) !void {
     );
 }
 
-fn monotonicNanos() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}

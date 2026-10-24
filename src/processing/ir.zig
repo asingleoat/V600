@@ -7,6 +7,7 @@ const parallelism = @import("parallelism.zig");
 
 const ir_native = @import("ir_native.zig");
 const fill_solver = @import("fill_solver.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 
 pub const AlignOptions = struct {
@@ -2235,11 +2236,6 @@ fn castClippedStorageValue(value: f64, value_kind: InpaintValueKind) f64 {
 
 pub const roundF32 = ir_pure.roundF32;
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn validateAlignmentInputs(
     rgb: []const f64,

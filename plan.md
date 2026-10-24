@@ -216,8 +216,8 @@ Recorded in the May-July log; correct anything that is wrong:
   (verdicts in `docs/PERFORMANCE_STRATEGY.md`).
 - Decide WebGPU's future: keep and trim (the adapter setup is copied five
   times), or move it to a branch (~3.7k lines).
-- Shared helpers: `monotonicNowNs` (14 copies), JSON string escaping (5),
-  spinlocks (3), small numeric helpers.
+- Shared helpers: JSON string escaping (5 copies), spinlocks (3), small
+  numeric helpers.
 - A generic job type for the six UI workers and a generic LRU for the four
   caches in `src/ui/process_cache.zig`.
 - Move the smoke harness out of `src/ui/main.zig`; wire or delete the smoke

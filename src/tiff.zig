@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const monotonicNowNs = @import("clock.zig").monotonicNowNs;
 
 const c = @cImport({
     @cInclude("tiffio.h");
@@ -950,11 +951,6 @@ fn expectedScanlineSize(width: u32, samples_per_pixel: u16, bits_per_sample: u16
     return std.math.mul(usize, width, try std.math.mul(usize, samples_per_pixel, bytes_per_sample));
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn pathExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;

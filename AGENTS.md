@@ -111,7 +111,8 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
 Dependency direction: `ui` imports `roll`, `processing`, `scanner`, and
 `tiff`; `roll` imports `processing`, `scanner`, and `tiff`; `processing` and
 `scanner` import only `tiff`. Keep it that way. `processing` and `scanner`
-must not import each other or UI code.
+must not import each other or UI code. `clock.zig` (the monotonic clock) is a
+leaf any of them may import.
 
 ## Behavior changes and the Python code
 

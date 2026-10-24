@@ -19,6 +19,7 @@ const macos = @import("macos.zig");
 const models = @import("models.zig");
 const tiff = @import("../tiff.zig");
 const usb = @import("usb.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 pub const Device = linux.Device;
 pub const ScanOptions = linux.ScanOptions;
@@ -766,11 +767,6 @@ pub fn makeThumbnail(allocator: std.mem.Allocator, rgb: tiff.ImageView) !tiff.Im
     };
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 test "mirrors each row while keeping pixel byte order" {
     var data = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };

@@ -36,6 +36,7 @@ const writeRoundedSample = rotation.writeRoundedSample;
 const reflect101Index = clahe_ops.reflect101Index;
 const tiff_available = builtin.is_test;
 const tiff = if (tiff_available) @import("../tiff.zig") else struct {};
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 const angle_gradient_parallel_min_work: usize = 1_000_000;
 const component_runs_min_pixels: usize = 1_000_000;
@@ -2644,11 +2645,6 @@ fn gaussianKernel(allocator: std.mem.Allocator, kernel_size: usize) ![]f64 {
     return kernel;
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn grayToU8(value: f64) u8 {
     if (!std.math.isFinite(value) or value <= 0.0) return 0;

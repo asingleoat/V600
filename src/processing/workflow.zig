@@ -11,6 +11,7 @@ const print = @import("print.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 const export_parallel_min_system_reserve_bytes: usize = 512 * 1024 * 1024;
 const export_parallel_memory_budget_numerator: usize = 3;
@@ -2758,11 +2759,6 @@ pub fn irDpi(rgb_dpi: ?u32, ir_scale: f64) ?u32 {
     return @intFromFloat(@round(@as(f64, @floatFromInt(dpi)) * ir_scale));
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 test "IR clean options size the mask by the IR's dpi and the inpaint by the RGB's" {
     // 6400 dpi RGB with its 3200 dpi IR pass (5031 of 10063 columns).

@@ -1,5 +1,6 @@
 const std = @import("std");
 const cerealgrain = @import("cerealgrain");
+const monotonicNowNs = @import("cerealgrain").clock.monotonicNowNs;
 
 const film_stocks = cerealgrain.processing.film_stocks;
 const inversion = cerealgrain.processing.inversion;
@@ -137,8 +138,3 @@ fn checksumF64(output: []const f64) i64 {
     return @intFromFloat(@round(sum * 1_000.0));
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}

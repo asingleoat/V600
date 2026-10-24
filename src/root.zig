@@ -18,6 +18,7 @@ pub const native_ui_theme = @import("ui/theme.zig");
 pub const native_ui_trash = @import("ui/trash.zig");
 pub const native_ui_scan_sweep = @import("ui/scan_sweep.zig");
 pub const tiff = @import("tiff.zig");
+pub const clock = @import("clock.zig");
 pub const roll = @import("roll.zig");
 
 test {

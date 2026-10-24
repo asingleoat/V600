@@ -7,6 +7,7 @@ const lut = @import("lut.zig");
 const models = @import("models.zig");
 const sane = @import("sane.zig");
 const tiff = @import("../tiff.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 pub const usbdevfs_reset: u32 = 0x5514;
 pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
@@ -1107,11 +1108,6 @@ fn runCapture(
     };
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 pub fn parseDeviceList(allocator: std.mem.Allocator, output: []const u8) ![]Device {
     var devices = std.array_list.Managed(Device).init(allocator);

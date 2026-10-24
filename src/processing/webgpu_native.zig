@@ -1,6 +1,7 @@
 const std = @import("std");
 const gpu_boundary = @import("gpu_boundary.zig");
 const webgpu = @import("webgpu.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 const c = @cImport({
     @cInclude("webgpu/wgpu.h");
@@ -1661,11 +1662,6 @@ fn submitInvertNegativeCommand(
     c.wgpuQueueSubmit(queue, commands.len, &commands);
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn dispatchGeometry(count: u32) !DispatchGeometry {
     const max_workgroups_per_dimension: u32 = 65_535;

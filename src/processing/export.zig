@@ -9,6 +9,7 @@ const print = @import("print.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 pub const ExportVariant = enum {
     ir_neg,
@@ -1046,11 +1047,6 @@ pub fn processInvertedSceneF32Frame(
     };
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn writeU16Tiff(
     allocator: std.mem.Allocator,

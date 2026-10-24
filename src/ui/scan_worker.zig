@@ -7,6 +7,7 @@ const scanner_host = @import("../scanner.zig").host;
 const scanner_lut = @import("../scanner/lut.zig");
 const preview_worker = @import("preview_worker.zig");
 const ui_state = @import("state.zig");
+const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 pub const ExecuteFn = *const fn (*Context) anyerror!void;
 
@@ -452,11 +453,6 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
-fn monotonicNowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) unreachable;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
 
 fn fakeScanSuccess(context: *Context) !void {
     context.event_queue.pushTiming(.{
