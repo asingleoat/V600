@@ -69,6 +69,9 @@ Confirmed by the owner, 2026-10-24:
 - An Intel Mac build is low priority.
 - Trash is the one-click way to remove a scan or export, into the system
   Trash; Delete, smaller beside it, asks first.
+- Dust removal stays on for deeply underexposed frames: with the coarse
+  fill grain their fills blend in (KODAKGOLD_200_3), so no suggestion to
+  turn it off for now.
 - The native app is the product. The browser webapp and the scanner
   companion that let it scan are dropped; they are in git history (tag
   `webapp-final`).

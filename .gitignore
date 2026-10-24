@@ -47,3 +47,6 @@ libesintA1_unified.so
 
 # Workspace for experimental/untracked files
 workspace/
+
+# Archived exports
+/frames-archive/
