@@ -3,7 +3,7 @@ const std = @import("std");
 /// The OpenCV helpers, which build with the toolchain's C++ compiler: they
 /// must use the C++ library OpenCV was built against (libstdc++ on Linux),
 /// which Zig's own libc++ cannot stand in for. The C sources build with Zig.
-const opencv_sources = [_][]const u8{ "src/processing/opencv_ir.cpp", "src/processing/opencv_preview.cpp" };
+const opencv_sources = [_][]const u8{"src/processing/opencv_ir.cpp"};
 
 /// The C++ compiler and pkg-config the OpenCV helpers build with: the dev
 /// shell's, or for the static Linux build the musl toolchain's, which the
@@ -271,7 +271,7 @@ fn compileOpenCvObject(b: *std.Build, source: []const u8, toolchain: Toolchain) 
 
 fn addNativeSources(b: *std.Build, module: *std.Build.Module, toolchain: Toolchain) void {
     for (opencv_sources) |source| module.addObjectFile(compileOpenCvObject(b, source, toolchain));
-    module.addCSourceFile(.{ .file = b.path("src/processing/jpeg_encode.c"), .flags = &.{"-std=c99"} });
+    module.addCSourceFile(.{ .file = b.path("src/processing/jpeg.c"), .flags = &.{"-std=c99"} });
 }
 
 fn addProgram(
@@ -321,10 +321,9 @@ fn addRootModule(
     root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
-    // The C++ helpers use these three modules only; all of opencv4 would
-    // also load its video, codec, and network dependencies (225 dylibs on
-    // macOS against 28).
-    for ([_][]const u8{ "opencv_core", "opencv_imgproc", "opencv_imgcodecs" }) |name| {
+    // The C++ helpers use these two modules only; all of opencv4 would also
+    // load its video, codec, and network dependencies.
+    for ([_][]const u8{ "opencv_core", "opencv_imgproc" }) |name| {
         root_module.linkSystemLibrary(name, .{ .use_pkg_config = .no });
     }
     if (!target.query.isNativeOs()) addNixLibraryPaths(b, root_module);

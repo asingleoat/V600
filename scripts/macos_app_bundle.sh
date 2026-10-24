@@ -95,9 +95,8 @@ bundled_deps() {
 
 # Breadth first from the executables: copy each library once, by the name of
 # the file behind any symlinks, and point every reference at the copy. Two
-# different builds of one library (Nix can carry both, e.g. libwebp for
-# OpenCV and for libtiff) each keep their own copy, the second prefixed with
-# its store hash.
+# different builds of one library (Nix can carry both) each keep their own
+# copy, the second prefixed with its store hash.
 : > "$work/copied"
 printf '%s\n' "$app/Contents/MacOS/cerealgrain-ui $exe" "$app/Contents/MacOS/cerealgrain $cli" > "$work/queue"
 while [ -s "$work/queue" ]; do
@@ -144,10 +143,8 @@ license_dir() {
     *libopencv_*) echo opencv ;;
     *libtiff.*) echo libtiff ;;
     *libjpeg.*) echo libjpeg-turbo ;;
-    *libpng16.*) echo libpng ;;
-    *libwebp.* | *libwebpdemux.* | *libwebpmux.* | *libsharpyuv.*) echo libwebp ;;
+    *libwebp.* | *libsharpyuv.*) echo libwebp ;;
     *libLerc.*) echo lerc ;;
-    *libopenjp2.*) echo openjpeg ;;
     *liblzma.*) echo xz ;;
     *libzstd.*) echo zstd ;;
     *libdeflate.*) echo libdeflate ;;

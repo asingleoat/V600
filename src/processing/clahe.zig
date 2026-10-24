@@ -409,3 +409,183 @@ pub fn saturateRoundU8(value: f64) u8 {
     if (value >= 255.0) return 255;
     return @intFromFloat(@floor(value + 0.5));
 }
+
+/// OpenCV's CLAHE (`createCLAHE(clip_limit, tiles).apply`) on each channel
+/// of interleaved 8-bit pixels, in place, as OpenCV computes it: when either
+/// side does not divide into the tiles it pads both (reflect-101) to the
+/// next multiple, which changes the tile size even on a side that divided
+/// evenly, and it builds the lookup tables and interpolates in f32, rounding
+/// half to even. The quick preview's display uses this; the frame detector
+/// keeps `applyClahe8`, which it was tuned on.
+pub fn claheOpenCvInPlace(
+    allocator: std.mem.Allocator,
+    pixels: []u8,
+    width: usize,
+    height: usize,
+    channels: usize,
+    clip_limit: f64,
+    tiles_x: usize,
+    tiles_y: usize,
+) !void {
+    if (width == 0 or height == 0 or channels == 0 or channels > max_opencv_channels or pixels.len != width * height * channels) return error.InvalidClaheInput;
+    if (tiles_x == 0 or tiles_y == 0 or tiles_x > max_opencv_tiles_x) return error.InvalidClaheInput;
+    const padded = width % tiles_x != 0 or height % tiles_y != 0;
+    const ext_width = if (padded) width + tiles_x - width % tiles_x else width;
+    const ext_height = if (padded) height + tiles_y - height % tiles_y else height;
+    const tile_width = ext_width / tiles_x;
+    const tile_height = ext_height / tiles_y;
+    const tile_area = tile_width * tile_height;
+
+    const reflect_x = try buildReflectIndexMap(allocator, ext_width, width);
+    defer allocator.free(reflect_x);
+    const reflect_y = try buildReflectIndexMap(allocator, ext_height, height);
+    defer allocator.free(reflect_y);
+    const columns = try allocator.alloc(TilePosition, width);
+    defer allocator.free(columns);
+    const inv_tile_width = 1.0 / @as(f32, @floatFromInt(tile_width));
+    for (columns, 0..) |*column, x| column.* = tilePosition(x, inv_tile_width, tiles_x);
+
+    // Tables by tile, then value, then channel.
+    const luts = try allocator.alloc(u8, tiles_x * tiles_y * 256 * channels);
+    defer allocator.free(luts);
+    const context = OpenCvClahe{
+        .pixels = pixels,
+        .width = width,
+        .channels = channels,
+        .reflect_x = reflect_x,
+        .reflect_y = reflect_y,
+        .tile_width = tile_width,
+        .tile_height = tile_height,
+        .tiles_x = tiles_x,
+        .tiles_y = tiles_y,
+        .clip = claheClipLimit(clip_limit, tile_area),
+        .lut_scale = 255.0 / @as(f32, @floatFromInt(tile_area)),
+        .luts = luts,
+        .columns = columns,
+        .inv_tile_height = 1.0 / @as(f32, @floatFromInt(tile_height)),
+    };
+    // Every table first: each output sample then depends only on its own
+    // input value, so the pixels can be rewritten in place.
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const lut_workers = @max(1, @min(cpu_count -| 1, tiles_y));
+    if (lut_workers == 1 or width * height < clahe_parallel_min_pixels) {
+        context.tileRows(0, tiles_y);
+    } else {
+        const threads = try allocator.alloc(std.Thread, lut_workers);
+        defer allocator.free(threads);
+        var started: usize = 0;
+        defer for (threads[0..started]) |thread| thread.join();
+        for (0..lut_workers) |worker| {
+            threads[worker] = try std.Thread.spawn(.{}, OpenCvClahe.tileRows, .{ &context, tiles_y * worker / lut_workers, tiles_y * (worker + 1) / lut_workers });
+            started += 1;
+        }
+    }
+    try parallelism.forRowBands(allocator, height, &context, OpenCvClahe.rows);
+}
+
+const max_opencv_tiles_x = 64;
+const max_opencv_channels = 4;
+
+const OpenCvClahe = struct {
+    pixels: []u8,
+    width: usize,
+    channels: usize,
+    reflect_x: []const usize,
+    reflect_y: []const usize,
+    tile_width: usize,
+    tile_height: usize,
+    tiles_x: usize,
+    tiles_y: usize,
+    clip: usize,
+    lut_scale: f32,
+    luts: []u8,
+    columns: []const TilePosition,
+    inv_tile_height: f32,
+
+    fn tileRows(self: *const OpenCvClahe, tile_y_start: usize, tile_y_end: usize) void {
+        const channels = self.channels;
+        for (tile_y_start..tile_y_end) |tile_y| {
+            var hists = [_][256]u32{[_]u32{0} ** 256} ** (max_opencv_tiles_x * max_opencv_channels);
+            for (self.reflect_y[tile_y * self.tile_height ..][0..self.tile_height]) |source_y| {
+                const row = self.pixels[source_y * self.width * channels ..][0 .. self.width * channels];
+                for (0..self.tiles_x) |tile_x| {
+                    const tile_hists = hists[tile_x * channels ..][0..channels];
+                    const start = tile_x * self.tile_width;
+                    const end = start + self.tile_width;
+                    for (@min(start, self.width)..@min(end, self.width)) |x| {
+                        for (tile_hists, row[x * channels ..][0..channels]) |*hist, value| hist[value] += 1;
+                    }
+                    // Columns past the image's edge come from the reflection.
+                    if (end > self.width) {
+                        for (self.reflect_x[@max(start, self.width)..end]) |x| {
+                            for (tile_hists, row[x * channels ..][0..channels]) |*hist, value| hist[value] += 1;
+                        }
+                    }
+                }
+            }
+            for (0..self.tiles_x) |tile_x| {
+                const lut = self.luts[(tile_y * self.tiles_x + tile_x) * 256 * channels ..][0 .. 256 * channels];
+                for (hists[tile_x * channels ..][0..channels], 0..) |*hist, channel| {
+                    if (self.clip > 0) clipHistogram32(hist, self.clip);
+                    var sum: u32 = 0;
+                    for (hist, 0..) |count, value| {
+                        sum += count;
+                        lut[value * channels + channel] = roundHalfEvenU8(@as(f32, @floatFromInt(sum)) * self.lut_scale);
+                    }
+                }
+            }
+        }
+    }
+
+    fn rows(self: *const OpenCvClahe, row_start: usize, row_end: usize) void {
+        const channels = self.channels;
+        const plane_len = 256 * channels;
+        for (row_start..row_end) |y| {
+            const ty = tilePosition(y, self.inv_tile_height, self.tiles_y);
+            const plane1 = self.luts[ty.first * self.tiles_x * plane_len ..];
+            const plane2 = self.luts[ty.second * self.tiles_x * plane_len ..];
+            const row = self.pixels[y * self.width * channels ..][0 .. self.width * channels];
+            for (self.columns, 0..) |tx, x| {
+                const first = tx.first * plane_len;
+                const second = tx.second * plane_len;
+                for (row[x * channels ..][0..channels], 0..) |*out, channel| {
+                    const entry = @as(usize, out.*) * channels + channel;
+                    const top = @as(f32, @floatFromInt(plane1[first + entry])) * tx.weight_first + @as(f32, @floatFromInt(plane1[second + entry])) * tx.weight_second;
+                    const bottom = @as(f32, @floatFromInt(plane2[first + entry])) * tx.weight_first + @as(f32, @floatFromInt(plane2[second + entry])) * tx.weight_second;
+                    out.* = roundHalfEvenU8(top * ty.weight_first + bottom * ty.weight_second);
+                }
+            }
+        }
+    }
+};
+
+fn clipHistogram32(hist: *[256]u32, clip_limit: usize) void {
+    var wide: [256]usize = undefined;
+    for (hist, &wide) |count, *value| value.* = count;
+    clipHistogram(&wide, clip_limit);
+    for (wide, hist) |value, *count| count.* = @intCast(value);
+}
+
+const TilePosition = struct { first: usize, second: usize, weight_first: f32, weight_second: f32 };
+
+fn tilePosition(index: usize, inv_tile_size: f32, tile_count: usize) TilePosition {
+    const position = @as(f32, @floatFromInt(index)) * inv_tile_size - 0.5;
+    const first: isize = @intFromFloat(@floor(position));
+    const fraction = position - @as(f32, @floatFromInt(first));
+    return .{
+        .first = clampTileIndex(first, tile_count),
+        .second = clampTileIndex(first + 1, tile_count),
+        .weight_first = 1.0 - fraction,
+        .weight_second = fraction,
+    };
+}
+
+fn roundHalfEvenU8(value: f32) u8 {
+    if (value <= 0.0) return 0;
+    if (value >= 255.0) return 255;
+    const floor = @floor(value);
+    const fraction = value - floor;
+    const whole: u8 = @intFromFloat(floor);
+    if (fraction > 0.5 or (fraction == 0.5 and whole & 1 == 1)) return whole + 1;
+    return whole;
+}

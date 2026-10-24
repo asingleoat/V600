@@ -14,13 +14,11 @@ Every component is built by nixpkgs at the revision pinned in `flake.lock`;
 | --- | --- | --- | --- | --- |
 | SDL | 3.4.2 | Zlib | `sdl3` | macOS app |
 | Nuklear, with stb_truetype, stb_rect_pack, and the ProggyClean font | 4.12.7 | MIT or public domain; ProggyClean MIT | `nuklear` | macOS app |
-| OpenCV (core, imgproc, imgcodecs) | 4.13.0 | Apache-2.0 | `opencv` | macOS app, Linux CLI |
+| OpenCV (core, imgproc; the Linux CLI also imgcodecs) | 4.13.0 | Apache-2.0 | `opencv` | macOS app, Linux CLI |
 | libtiff | 4.7.1 | libtiff | `libtiff` | macOS app, Linux CLI |
 | libjpeg-turbo | 3.1.4 | IJG, BSD-3-Clause, Zlib | `libjpeg-turbo` | macOS app, Linux CLI |
-| libpng (with APNG) | 1.6.56 | libpng-2.0 | `libpng` | macOS app |
 | libwebp, libsharpyuv | 1.6.0 | BSD-3-Clause, with Google's patent grant | `libwebp` | macOS app, Linux CLI |
 | LERC | 4.1.0 | Apache-2.0 | `lerc` | macOS app |
-| OpenJPEG | 2.5.4 | BSD-2-Clause | `openjpeg` | macOS app |
 | liblzma (XZ Utils) | 5.8.3 | 0BSD | `xz` | macOS app, Linux CLI |
 | zstd | 1.5.7 | BSD-3-Clause (dual-licensed with GPL-2.0; used under BSD) | `zstd` | macOS app, Linux CLI |
 | libdeflate | 1.25 | MIT | `libdeflate` | macOS app, Linux CLI |

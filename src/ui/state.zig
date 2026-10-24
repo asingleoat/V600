@@ -2614,7 +2614,6 @@ test "native UI processing and gallery transitions are headless state changes" {
         .preview_height = 10,
         .preview_raw = try allocator.alloc(u16, 0),
         .preview_rgb8 = try allocator.alloc(u8, 0),
-        .jpeg = try allocator.alloc(u8, 0),
     };
     try std.testing.expect(state.processPreviewInteractionReady());
 
@@ -2721,7 +2720,7 @@ test "native UI switches process image through process_handlers metadata state" 
     try std.testing.expectEqual(@as(usize, 2), state.processing_preview.?.preview_width);
     try std.testing.expectEqual(@as(usize, 2), state.processing_preview.?.preview_height);
     try std.testing.expectEqual(@as(usize, 12), state.processing_preview.?.preview_raw.len);
-    try std.testing.expect(state.processing_preview.?.jpeg.len > 0);
+    try std.testing.expectEqual(@as(usize, 12), state.processing_preview.?.preview_rgb8.len);
     try std.testing.expectEqualStrings("rgb-thumb-ir", state.currentProcessingImageStem());
     try std.testing.expectEqualStrings("Image loaded", state.status);
     try std.testing.expect(state.takeProcessAutoDetectPending());

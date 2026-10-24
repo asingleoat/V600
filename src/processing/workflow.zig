@@ -10,6 +10,7 @@ const newton_rings = @import("newton_rings.zig");
 const print = @import("print.zig");
 const render = @import("render.zig");
 const tiff = @import("../tiff.zig");
+const quick_preview = @import("quick_preview.zig");
 const webgpu = @import("webgpu.zig");
 const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
@@ -47,54 +48,6 @@ pub const ExportParallelismDecision = struct {
     adjusted_worker_peak_bytes: usize,
     memory_limited: bool,
 };
-
-extern fn cerealgrain_process_quick_preview(
-    input: [*]const u8,
-    width: c_int,
-    height: c_int,
-    channels: c_int,
-    bits_per_sample: c_int,
-    preview_size: c_int,
-    out_width: *c_int,
-    out_height: *c_int,
-    out_preview_scale: *f64,
-    preview_raw: ?[*]u16,
-    preview_raw_len: c_int,
-    preview_rgb8: ?[*]u8,
-    preview_rgb8_len: c_int,
-    jpeg_buffer: ?[*]u8,
-    jpeg_capacity: c_int,
-    jpeg_len: *c_int,
-) c_int;
-
-extern fn cerealgrain_process_quick_preview_breakdown(
-    input: [*]const u8,
-    width: c_int,
-    height: c_int,
-    channels: c_int,
-    bits_per_sample: c_int,
-    preview_size: c_int,
-    out_width: *c_int,
-    out_height: *c_int,
-    out_preview_scale: *f64,
-    preview_raw: ?[*]u16,
-    preview_raw_len: c_int,
-    preview_rgb8: ?[*]u8,
-    preview_rgb8_len: c_int,
-    jpeg_buffer: ?[*]u8,
-    jpeg_capacity: c_int,
-    jpeg_len: *c_int,
-    geometry_ns: *u64,
-    resize_ns: *u64,
-    convert_ns: *u64,
-    content_mask_ns: *u64,
-    invert_stretch_ns: *u64,
-    clahe_ns: *u64,
-    raw_copy_ns: *u64,
-    rgb_copy_ns: *u64,
-    jpeg_encode_ns: *u64,
-    jpeg_copy_ns: *u64,
-) c_int;
 
 extern fn cerealgrain_decode_jpeg_rgb(
     jpeg: [*]const u8,
@@ -134,28 +87,14 @@ pub const QuickPreview = struct {
     preview_height: usize,
     preview_raw: []u16,
     preview_rgb8: []u8,
-    jpeg: []u8,
 
     pub fn deinit(self: QuickPreview, allocator: std.mem.Allocator) void {
         allocator.free(self.preview_raw);
         allocator.free(self.preview_rgb8);
-        allocator.free(self.jpeg);
     }
 };
 
-pub const QuickPreviewProcessingTimings = struct {
-    total_ns: u64 = 0,
-    geometry_ns: u64 = 0,
-    resize_ns: u64 = 0,
-    convert_ns: u64 = 0,
-    content_mask_ns: u64 = 0,
-    invert_stretch_ns: u64 = 0,
-    clahe_ns: u64 = 0,
-    raw_copy_ns: u64 = 0,
-    rgb_copy_ns: u64 = 0,
-    jpeg_encode_ns: u64 = 0,
-    jpeg_copy_ns: u64 = 0,
-};
+pub const QuickPreviewProcessingTimings = quick_preview.Timings;
 
 pub const QuickPreviewLoadBreakdown = struct {
     preview: QuickPreview,
@@ -424,87 +363,20 @@ fn generateQuickPreviewInternal(
     collect_timings: bool,
 ) !GeneratedQuickPreviewBreakdown {
     const total_started = monotonicNowNs();
-    const width = try toCInt(image.width);
-    const height = try toCInt(image.height);
-    const channels = try toCInt(image.samples_per_pixel);
-    const bits = try toCInt(image.bits_per_sample);
-    const preview_size_c = if (preview_size <= 0) 0 else try toCInt(preview_size);
-    const expected = quickPreviewGeometry(image.width, image.height, preview_size);
-
-    const preview_width = expected.width;
-    const preview_height = expected.height;
-    const sample_count = try std.math.mul(usize, try std.math.mul(usize, preview_width, preview_height), 3);
+    const geometry = quickPreviewGeometry(image.width, image.height, preview_size);
+    const sample_count = try std.math.mul(usize, try std.math.mul(usize, geometry.width, geometry.height), 3);
     const preview_raw = try allocator.alloc(u16, sample_count);
     errdefer allocator.free(preview_raw);
     const preview_rgb8 = try allocator.alloc(u8, sample_count);
     errdefer allocator.free(preview_rgb8);
-    var jpeg = try allocator.alloc(u8, sample_count);
-    errdefer allocator.free(jpeg);
-
-    var out_width: c_int = 0;
-    var out_height: c_int = 0;
-    var out_scale: f64 = 1.0;
-    var jpeg_len: c_int = 0;
     var timings = QuickPreviewProcessingTimings{};
-    var status = quickPreviewCall(
-        image,
-        width,
-        height,
-        channels,
-        bits,
-        preview_size_c,
-        &out_width,
-        &out_height,
-        &out_scale,
-        preview_raw.ptr,
-        try toCInt(sample_count),
-        preview_rgb8.ptr,
-        try toCInt(preview_rgb8.len),
-        jpeg.ptr,
-        try toCInt(jpeg.len),
-        &jpeg_len,
-        collect_timings,
-        &timings,
-    );
-
-    if (status == 1 and jpeg_len > 0 and @as(usize, @intCast(jpeg_len)) > jpeg.len) {
-        jpeg = try allocator.realloc(jpeg, @intCast(jpeg_len));
-        jpeg_len = 0;
-        status = quickPreviewCall(
-            image,
-            width,
-            height,
-            channels,
-            bits,
-            preview_size_c,
-            &out_width,
-            &out_height,
-            &out_scale,
-            preview_raw.ptr,
-            try toCInt(sample_count),
-            preview_rgb8.ptr,
-            try toCInt(preview_rgb8.len),
-            jpeg.ptr,
-            try toCInt(jpeg.len),
-            &jpeg_len,
-            collect_timings,
-            &timings,
-        );
-    }
-
-    if (status != 0 or jpeg_len <= 0 or @as(usize, @intCast(jpeg_len)) > jpeg.len or
-        out_width <= 0 or out_height <= 0)
-    {
-        return error.QuickPreviewFailed;
-    }
-
-    if (out_width != try toCInt(preview_width) or out_height != try toCInt(preview_height)) {
-        return error.QuickPreviewFailed;
-    }
-    if (@as(usize, @intCast(jpeg_len)) != jpeg.len) {
-        jpeg = try allocator.realloc(jpeg, @intCast(jpeg_len));
-    }
-
+    try quick_preview.build(allocator, .{
+        .data = image.data,
+        .width = image.width,
+        .height = image.height,
+        .channels = image.samples_per_pixel,
+        .bits_per_sample = image.bits_per_sample,
+    }, geometry.width, geometry.height, preview_raw, preview_rgb8, if (collect_timings) &timings else null);
     timings.total_ns = monotonicNowNs() - total_started;
     return .{ .preview = .{
         .info = .{
@@ -513,86 +385,15 @@ fn generateQuickPreviewInternal(
             .has_ir = false,
             .is_grayscale = image.samples_per_pixel == 1,
             .dpi = null,
-            .preview_scale = out_scale,
+            .preview_scale = geometry.scale,
             .rgb_samples_per_pixel = image.samples_per_pixel,
             .rgb_bits_per_sample = image.bits_per_sample,
         },
-        .preview_width = preview_width,
-        .preview_height = preview_height,
+        .preview_width = geometry.width,
+        .preview_height = geometry.height,
         .preview_raw = preview_raw,
         .preview_rgb8 = preview_rgb8,
-        .jpeg = jpeg,
     }, .timings = timings };
-}
-
-fn quickPreviewCall(
-    image: tiff.Image,
-    width: c_int,
-    height: c_int,
-    channels: c_int,
-    bits: c_int,
-    preview_size_c: c_int,
-    out_width: *c_int,
-    out_height: *c_int,
-    out_scale: *f64,
-    preview_raw: [*]u16,
-    preview_raw_len: c_int,
-    preview_rgb8: [*]u8,
-    preview_rgb8_len: c_int,
-    jpeg: [*]u8,
-    jpeg_len_capacity: c_int,
-    jpeg_len: *c_int,
-    collect_timings: bool,
-    timings: *QuickPreviewProcessingTimings,
-) c_int {
-    if (!collect_timings) {
-        return cerealgrain_process_quick_preview(
-            image.data.ptr,
-            width,
-            height,
-            channels,
-            bits,
-            preview_size_c,
-            out_width,
-            out_height,
-            out_scale,
-            preview_raw,
-            preview_raw_len,
-            preview_rgb8,
-            preview_rgb8_len,
-            jpeg,
-            jpeg_len_capacity,
-            jpeg_len,
-        );
-    }
-    return cerealgrain_process_quick_preview_breakdown(
-        image.data.ptr,
-        width,
-        height,
-        channels,
-        bits,
-        preview_size_c,
-        out_width,
-        out_height,
-        out_scale,
-        preview_raw,
-        preview_raw_len,
-        preview_rgb8,
-        preview_rgb8_len,
-        jpeg,
-        jpeg_len_capacity,
-        jpeg_len,
-        &timings.geometry_ns,
-        &timings.resize_ns,
-        &timings.convert_ns,
-        &timings.content_mask_ns,
-        &timings.invert_stretch_ns,
-        &timings.clahe_ns,
-        &timings.raw_copy_ns,
-        &timings.rgb_copy_ns,
-        &timings.jpeg_encode_ns,
-        &timings.jpeg_copy_ns,
-    );
 }
 
 pub fn decodeJpegRgb(
@@ -3174,11 +2975,8 @@ const QuickPreviewExpectedFixture = struct {
     preview_height: usize,
     preview_scale: f64,
     content_pixels: usize,
-    jpeg_len: usize,
     preview_raw: []u16,
     preview_rgb8: []u8,
-    jpeg_decoded_rgb: []u8,
-    jpeg_decoded_abs_tolerance: u8,
 };
 
 const InvertedPreviewFixture = struct {
@@ -3218,20 +3016,6 @@ fn expectQuickPreviewFixture(path: []const u8) !void {
     try std.testing.expectApproxEqAbs(fixture.expected.preview_scale, preview.info.preview_scale, 1e-12);
     try std.testing.expectEqualSlices(u16, fixture.expected.preview_raw, preview.preview_raw);
     try std.testing.expectEqualSlices(u8, fixture.expected.preview_rgb8, preview.preview_rgb8);
-    try std.testing.expectEqual(fixture.expected.jpeg_len, preview.jpeg.len);
-    try std.testing.expectEqual(@as(u8, 0xff), preview.jpeg[0]);
-    try std.testing.expectEqual(@as(u8, 0xd8), preview.jpeg[1]);
-    try std.testing.expectEqual(@as(u8, 0xff), preview.jpeg[preview.jpeg.len - 2]);
-    try std.testing.expectEqual(@as(u8, 0xd9), preview.jpeg[preview.jpeg.len - 1]);
-
-    const decoded = try decodeJpegRgb(
-        allocator,
-        preview.jpeg,
-        fixture.expected.preview_width,
-        fixture.expected.preview_height,
-    );
-    defer allocator.free(decoded);
-    try expectMaxAbsDiff(decoded, fixture.expected.jpeg_decoded_rgb, fixture.expected.jpeg_decoded_abs_tolerance);
 }
 
 fn expectInvertedPreviewFixture(path: []const u8) !void {
@@ -3368,8 +3152,6 @@ fn uniformPreview(allocator: std.mem.Allocator) !QuickPreview {
     errdefer allocator.free(raw);
     const preview_rgb8 = try allocator.alloc(u8, 0);
     errdefer allocator.free(preview_rgb8);
-    const jpeg = try allocator.alloc(u8, 0);
-    errdefer allocator.free(jpeg);
 
     @memset(raw, 40000);
 
@@ -3388,7 +3170,6 @@ fn uniformPreview(allocator: std.mem.Allocator) !QuickPreview {
         .preview_height = height,
         .preview_raw = raw,
         .preview_rgb8 = preview_rgb8,
-        .jpeg = jpeg,
     };
 }
 

@@ -672,14 +672,12 @@ pub fn cloneQuickPreview(
     errdefer allocator.free(raw);
     const rgb8 = try allocator.dupe(u8, preview.preview_rgb8);
     errdefer allocator.free(rgb8);
-    const jpeg = try allocator.dupe(u8, preview.jpeg);
     return .{
         .info = preview.info,
         .preview_width = preview.preview_width,
         .preview_height = preview.preview_height,
         .preview_raw = raw,
         .preview_rgb8 = rgb8,
-        .jpeg = jpeg,
     };
 }
 
@@ -1661,7 +1659,6 @@ fn fakeQuickPreview(
     const rgb8 = try allocator.alloc(u8, samples);
     errdefer allocator.free(rgb8);
     for (rgb8, 0..) |*sample, index| sample.* = @intCast(index % 256);
-    const jpeg = try allocator.alloc(u8, 0);
     return .{
         .info = .{
             .width = width * 2,
@@ -1677,7 +1674,6 @@ fn fakeQuickPreview(
         .preview_height = height,
         .preview_raw = raw,
         .preview_rgb8 = rgb8,
-        .jpeg = jpeg,
     };
 }
 

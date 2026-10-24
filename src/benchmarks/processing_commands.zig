@@ -359,8 +359,7 @@ fn benchLoadPreviewBreakdown(
 
     const raw_diff = try compareU16(reference.preview_raw, measured.preview_raw);
     const rgb_diff = try compareU8(reference.preview_rgb8, measured.preview_rgb8);
-    const jpeg_diff = try compareU8(reference.jpeg, measured.jpeg);
-    if (raw_diff.mismatches != 0 or rgb_diff.mismatches != 0 or jpeg_diff.mismatches != 0) {
+    if (raw_diff.mismatches != 0 or rgb_diff.mismatches != 0) {
         return error.LoadPreviewBreakdownMismatch;
     }
 
@@ -388,22 +387,17 @@ fn benchLoadPreviewBreakdown(
         },
     );
     try stdout.print(
-        ";geometry_us={d};resize_us={d};convert_us={d};content_mask_us={d};invert_stretch_us={d};clahe_us={d};raw_copy_us={d};rgb_copy_us={d};jpeg_encode_us={d};jpeg_copy_us={d}",
+        ";resize_us={d};convert_us={d};content_mask_us={d};invert_stretch_us={d};clahe_us={d}",
         .{
-            quick.geometry_ns / std.time.ns_per_us,
             quick.resize_ns / std.time.ns_per_us,
             quick.convert_ns / std.time.ns_per_us,
             quick.content_mask_ns / std.time.ns_per_us,
             quick.invert_stretch_ns / std.time.ns_per_us,
             quick.clahe_ns / std.time.ns_per_us,
-            quick.raw_copy_ns / std.time.ns_per_us,
-            quick.rgb_copy_ns / std.time.ns_per_us,
-            quick.jpeg_encode_ns / std.time.ns_per_us,
-            quick.jpeg_copy_ns / std.time.ns_per_us,
         },
     );
     try stdout.print(
-        ";has_ir={};dpi_present={};dpi={d};preview_scale={d:.9};raw_checksum={d};rgb_checksum={d};jpeg_checksum={d};raw_max_abs={d};rgb_max_abs={d};jpeg_max_abs={d};mismatches={d}\n",
+        ";has_ir={};dpi_present={};dpi={d};preview_scale={d:.9};raw_checksum={d};rgb_checksum={d};raw_max_abs={d};rgb_max_abs={d};mismatches={d}\n",
         .{
             measured.info.has_ir,
             measured.info.dpi != null,
@@ -411,11 +405,9 @@ fn benchLoadPreviewBreakdown(
             measured.info.preview_scale,
             checksumU16(measured.preview_raw),
             checksumU8(measured.preview_rgb8),
-            checksumU8(measured.jpeg),
             raw_diff.max_abs,
             rgb_diff.max_abs,
-            jpeg_diff.max_abs,
-            raw_diff.mismatches + rgb_diff.mismatches + jpeg_diff.mismatches,
+            raw_diff.mismatches + rgb_diff.mismatches,
         },
     );
 }
@@ -494,8 +486,7 @@ fn benchProcessRgbPageCacheSequence(
 
     const preview_raw_diff = try compareU16(baseline_preview.preview_raw, cached_preview.preview_raw);
     const preview_rgb_diff = try compareU8(baseline_preview.preview_rgb8, cached_preview.preview_rgb8);
-    const preview_jpeg_diff = try compareU8(baseline_preview.jpeg, cached_preview.jpeg);
-    if (preview_raw_diff.mismatches != 0 or preview_rgb_diff.mismatches != 0 or preview_jpeg_diff.mismatches != 0) return error.CachedRgbPreviewMismatch;
+    if (preview_raw_diff.mismatches != 0 or preview_rgb_diff.mismatches != 0) return error.CachedRgbPreviewMismatch;
     const dmin_max_abs = maxDminAbsDiff(baseline_dmin, cached_dmin);
     if (dmin_max_abs != 0.0) return error.CachedRgbDminMismatch;
     const comparison = try compareExportResults(allocator, baseline_export.output_dir, baseline_export.result, cached_export.output_dir, cached_export.result);
@@ -531,7 +522,7 @@ fn benchProcessRgbPageCacheSequence(
             cached_export_timings.load_full_image_ns / std.time.ns_per_us,
             baseline_detect_ns / std.time.ns_per_us,
             cached_detect_ns / std.time.ns_per_us,
-            preview_raw_diff.mismatches + preview_rgb_diff.mismatches + preview_jpeg_diff.mismatches,
+            preview_raw_diff.mismatches + preview_rgb_diff.mismatches,
             dmin_max_abs,
             comparison.diff.max_abs,
             comparison.diff.mismatches,

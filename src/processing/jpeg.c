@@ -142,3 +142,48 @@ int cerealgrain_write_rgb_jpeg_file(
     }
     return 0;
 }
+
+/* Decodes an RGB JPEG into `rgb` (`rgb_capacity` bytes), giving its size;
+ * tests read back what the encoders wrote with it. */
+int cerealgrain_decode_jpeg_rgb(
+    const unsigned char* jpeg,
+    int jpeg_len,
+    unsigned char* rgb,
+    int rgb_capacity,
+    int* out_width,
+    int* out_height
+) {
+    if (jpeg == NULL || jpeg_len <= 0 || rgb == NULL || rgb_capacity < 0 ||
+        out_width == NULL || out_height == NULL) {
+        return -1;
+    }
+
+    struct jpeg_decompress_struct cinfo;
+    struct cerealgrain_jpeg_error jerr;
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = cerealgrain_jpeg_error_exit;
+    if (setjmp(jerr.setjmp_buffer)) {
+        jpeg_destroy_decompress(&cinfo);
+        return -2;
+    }
+
+    jpeg_create_decompress(&cinfo);
+    jpeg_mem_src(&cinfo, jpeg, (unsigned long)jpeg_len);
+    jpeg_read_header(&cinfo, TRUE);
+    cinfo.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&cinfo);
+    *out_width = (int)cinfo.output_width;
+    *out_height = (int)cinfo.output_height;
+    if (cinfo.output_components != 3 ||
+        (size_t)cinfo.output_width * cinfo.output_height * 3u > (size_t)rgb_capacity) {
+        jpeg_destroy_decompress(&cinfo);
+        return -3;
+    }
+    while (cinfo.output_scanline < cinfo.output_height) {
+        JSAMPROW row = &rgb[(size_t)cinfo.output_scanline * cinfo.output_width * 3u];
+        jpeg_read_scanlines(&cinfo, &row, 1);
+    }
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    return 0;
+}
