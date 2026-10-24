@@ -235,6 +235,21 @@ deliberately, not by accident.
   verified: `roll check-frames` (frames placed by hand, plus exports the
   owner verified via `--verified`) before and after every change, and the
   real-scan tests. Do not test or tune framing on synthetic strips.
+- Several strips side by side in one scan (two 35mm strips on the V600's
+  glass): the detector first separates the strips (`processing/strips.zig`).
+  Film is darker than the light through clear glass (a second Otsu split,
+  among the brighter pixels, between film base and glass), so each strip is
+  its own region however close they lie; a strip's region is at least a
+  quarter of the largest, 2.5 times longer than wide, and with the scan's
+  scale 0.6 of the format's strip width. Each strip is cut out with 2 mm
+  round it, the other strips painted over as clear glass, and detected on
+  its own; frames list strip by strip, left to right, and the rebate goes
+  in the first strip's gaps. A strip whose outer side the scan's border
+  cuts off (two 35mm strips are 70 mm, the V600's transparency unit
+  68.6 mm) is centred from a line fitted to its inner edge and the format's
+  strip width, at that line's angle. A scan with one strip goes through
+  unchanged. Auto-select takes every film region at least a quarter the
+  largest, so the strips scan in one pass.
 - If detection returns exactly one frame covering less than 30% of the
   image, treat it as a failure and fall back to a full-image frame.
 - The `exact_aspect` processing setting (the Process view's "Exact aspect",

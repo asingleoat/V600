@@ -42,11 +42,14 @@ finds the strip on the preview, and scans it as the roll's next strip;
 finished strips export in the background to frames/<roll>/. Open Review
 shows them.
 
-Holders with several strips (V700, V750, V800, V850)
-Scan Strip finds one strip per preview, the largest. To scan a holder full
-of strips: Start Roll, click Preview once, draw a rectangle around one strip
-on the preview, and click Scan Selection; then draw around the next strip
-and click Scan Selection again, without a new preview.
+Several strips at once
+Strips laid side by side on the glass scan together: Scan Strip finds them
+all, scans them in one pass, and finds each strip's frames, numbered from
+the left strip. Film holders, whose dark frames surround the strips, have
+not been tried that way yet. In a holder, to be safe: Start Roll, click
+Preview once, draw a rectangle around one strip on the preview, and click
+Scan Selection; then draw around the next strip and click Scan Selection
+again, without a new preview.
 
 Exported frames are turned for strips loaded as in the V600's holder. If
 yours come out turned the wrong way, open the strip in the Process view,

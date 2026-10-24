@@ -239,6 +239,12 @@ Recorded in the May-July log; correct anything that is wrong:
 - The macOS app is ad hoc signed, so testers must allow it in Privacy &
   Security on first launch; notarization needs a paid Apple Developer
   account.
+- Film holders (the V600's and the V700-V850's): untried with the strip
+  split and auto-select. The holder is darker than film, so the split
+  against clear glass would see a holder and its strips as one region; the
+  holder's frame needs telling from film first. Strips scanned together
+  number left to right as one roll strip, while film order may run the
+  other way (the edge numbers say which).
 - Other scanner models, from testers' reports: the resolutions each accepts
   (the 4800 dpi and interpreter-less ones are guesses), whether IR and the
   IR challenge work beyond the V600, whether their film scans need a TPU

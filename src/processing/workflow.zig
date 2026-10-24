@@ -578,7 +578,7 @@ pub fn autoDetectDetectedFrames(
     return .{
         .frames = owned_frames,
         .aspect = detected.aspect,
-        .rebate = frames.computeInterFrameRebate(owned_frames),
+        .rebate = frames.computeInterFrameRebate(owned_frames[0 .. detected.first_strip_frames orelse owned_frames.len]),
     };
 }
 

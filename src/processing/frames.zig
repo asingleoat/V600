@@ -6,6 +6,7 @@ const parallelism = @import("parallelism.zig");
 const clahe_ops = @import("clahe.zig");
 const film_formats = @import("film_formats.zig");
 const rotation = @import("rotation.zig");
+const strips = @import("strips.zig");
 
 pub const FilmFormat = film_formats.FilmFormat;
 pub const format_35mm = film_formats.format_35mm;
@@ -112,6 +113,9 @@ pub const DetectFramesResult = struct {
     frames: []FrameRect,
     strip_info: StripAnalysis,
     aspect: []const u8,
+    /// With several strips in the scan, how many of the frames (first in
+    /// the list) are the first strip's: the rebate goes between those.
+    first_strip_frames: ?usize = null,
 
     pub fn deinit(self: *DetectFramesResult, allocator: std.mem.Allocator) void {
         allocator.free(self.frames);
@@ -600,6 +604,92 @@ pub fn detectFramesFromImage(
     );
     defer raw_gray.deinit(allocator);
 
+    if (options.film_extent_override == null and options.detect_film_extent) {
+        const strip_width_px = if (options.px_per_mm) |scale| format.strip_width_mm * scale else null;
+        var map = try strips.find(allocator, raw_gray.gray_u8, width, height, strip_width_px);
+        defer map.deinit(allocator);
+        if (map.strips.len > 1) {
+            return detectFramesInStrips(allocator, map, raw_gray.gray_u8, data, width, height, samples_per_pixel, bits_per_sample, format, options);
+        }
+    }
+    return detectFramesInStrip(allocator, raw_gray, width, height, format, options);
+}
+
+/// Several strips side by side: each cut out with the others painted over
+/// as clear glass and detected on its own, its frames in order along it,
+/// the strips in order across.
+fn detectFramesInStrips(
+    allocator: std.mem.Allocator,
+    map: strips.StripMap,
+    gray: []const u8,
+    data: []const u8,
+    width: usize,
+    height: usize,
+    samples_per_pixel: u16,
+    bits_per_sample: u16,
+    format: FilmFormat,
+    options: DetectFramesImageOptions,
+) !DetectFramesResult {
+    // As much clear margin round each strip as a scan's auto-selection
+    // leaves: 2 mm.
+    const margin: usize = if (options.px_per_mm) |scale| @intFromFloat(@ceil(2.0 * scale)) else @max(8, @min(width, height) / 100);
+    // A strip the border cuts is centered by the format's strip width, or
+    // without the scan's scale by the widest strip showing both edges.
+    var strip_width_px: ?f64 = if (options.px_per_mm) |scale| format.strip_width_mm * scale else null;
+    if (strip_width_px == null) {
+        for (map.strips) |strip| {
+            const left = strip.left_edge orelse continue;
+            const right = strip.right_edge orelse continue;
+            const middle = @as(f64, @floatFromInt(strip.y)) + @as(f64, @floatFromInt(strip.height)) / 2.0;
+            const measured = right.at(middle) - left.at(middle) + 1.0;
+            strip_width_px = @max(strip_width_px orelse 0.0, measured);
+        }
+    }
+    var all: std.ArrayList(FrameRect) = .empty;
+    errdefer all.deinit(allocator);
+    var strip_info: StripAnalysis = undefined;
+    var aspect: []const u8 = undefined;
+    var first_strip_frames: usize = 0;
+    for (0..map.strips.len) |index| {
+        const crop = try strips.isolate(allocator, map, index, gray, data, width, height, samples_per_pixel, bits_per_sample, margin, strip_width_px);
+        defer allocator.free(crop.data);
+        var crop_gray = try prepareDetectionGrayImage(allocator, crop.data, crop.width, crop.height, samples_per_pixel, bits_per_sample, .{ .invert = false });
+        defer crop_gray.deinit(allocator);
+        var strip_options = options;
+        if (crop.extent) |extent| {
+            strip_options.film_extent_override = .{ .strip_narrow_px = extent.across, .strip_long_px = extent.along, .strip_angle = extent.angle };
+        }
+        var detected = try detectFramesInStrip(allocator, crop_gray, crop.width, crop.height, format, strip_options);
+        defer detected.deinit(allocator);
+        for (detected.frames) |frame| {
+            var placed = frame;
+            placed.cx += @floatFromInt(crop.x);
+            placed.cy += @floatFromInt(crop.y);
+            try all.append(allocator, placed);
+        }
+        if (index == 0) {
+            strip_info = detected.strip_info;
+            aspect = detected.aspect;
+            first_strip_frames = detected.frames.len;
+        }
+    }
+    return .{
+        .frames = try all.toOwnedSlice(allocator),
+        .strip_info = strip_info,
+        .aspect = aspect,
+        .first_strip_frames = first_strip_frames,
+    };
+}
+
+/// One strip (or none found): the film's extent, then the frames along it.
+fn detectFramesInStrip(
+    allocator: std.mem.Allocator,
+    raw_gray: DetectionGrayImage,
+    width: usize,
+    height: usize,
+    format: FilmFormat,
+    options: DetectFramesImageOptions,
+) !DetectFramesResult {
     const film_extent = if (options.film_extent_override) |extent|
         extent
     else if (options.detect_film_extent)

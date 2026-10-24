@@ -260,12 +260,12 @@ pub fn detectFilmAreaSelection(
     const queue = try allocator.alloc(usize, pixel_count);
     defer allocator.free(queue);
 
+    // Every region of film, so that strips side by side all go in.
+    const Region = struct { size: usize, min_x: usize, max_x: usize, min_y: usize, max_y: usize };
+    var regions: std.ArrayList(Region) = .empty;
+    defer regions.deinit(allocator);
     var next_label: u32 = 0;
     var largest_size: usize = 0;
-    var largest_min_x: usize = 0;
-    var largest_max_x: usize = 0;
-    var largest_min_y: usize = 0;
-    var largest_max_y: usize = 0;
 
     for (0..pixel_count) |start| {
         if (labels[start] != 0 or gray[start] >= threshold) continue;
@@ -305,23 +305,33 @@ pub fn detectFilmAreaSelection(
             }
         }
 
-        if (size > largest_size) {
-            largest_size = size;
-            largest_min_x = min_x;
-            largest_max_x = max_x;
-            largest_min_y = min_y;
-            largest_max_y = max_y;
-        }
+        largest_size = @max(largest_size, size);
+        try regions.append(allocator, .{ .size = size, .min_x = min_x, .max_x = max_x, .min_y = min_y, .max_y = max_y });
     }
 
     if (largest_size == 0) return null;
     if (@as(f64, @floatFromInt(largest_size)) < @as(f64, @floatFromInt(pixel_count)) * 0.05) return null;
 
+    // The largest region and every other at least a quarter its size: the
+    // strips side by side in the holder or on the glass, without dust or
+    // the lid's edge.
+    var film_min_x: usize = width;
+    var film_max_x: usize = 0;
+    var film_min_y: usize = height;
+    var film_max_y: usize = 0;
+    for (regions.items) |region| {
+        if (4 * region.size < largest_size) continue;
+        film_min_x = @min(film_min_x, region.min_x);
+        film_max_x = @max(film_max_x, region.max_x);
+        film_min_y = @min(film_min_y, region.min_y);
+        film_max_y = @max(film_max_y, region.max_y);
+    }
+
     const preview_dpi_f: f64 = @floatFromInt(preview_dpi);
-    var x_in = @as(f64, @floatFromInt(largest_min_x)) / preview_dpi_f;
-    var y_in = @as(f64, @floatFromInt(largest_min_y)) / preview_dpi_f;
-    var w_in = @as(f64, @floatFromInt(largest_max_x - largest_min_x)) / preview_dpi_f;
-    var h_in = @as(f64, @floatFromInt(largest_max_y - largest_min_y)) / preview_dpi_f;
+    var x_in = @as(f64, @floatFromInt(film_min_x)) / preview_dpi_f;
+    var y_in = @as(f64, @floatFromInt(film_min_y)) / preview_dpi_f;
+    var w_in = @as(f64, @floatFromInt(film_max_x - film_min_x)) / preview_dpi_f;
+    var h_in = @as(f64, @floatFromInt(film_max_y - film_min_y)) / preview_dpi_f;
 
     const right_in = @min(tpu_width_in, x_in + w_in + options.margin_in);
     const bottom_in = @min(tpu_height_in, y_in + h_in + options.margin_in);
