@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
