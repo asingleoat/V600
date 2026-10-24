@@ -130,14 +130,22 @@ pub const RollPanel = struct {
             }) catch roll.name;
             layoutRow(ctx, 22.0, 1);
             drawText(ctx, summary);
+            var path_buffer: [std.fs.max_path_bytes + 32]u8 = undefined;
+            var where_buffer: [std.fs.max_path_bytes + 192]u8 = undefined;
+            const shown = cerealgrain.native_ui_folders.displayPath(&path_buffer, roll.frames_dir);
+            chrome.drawWrappedText(ctx, std.fmt.bufPrint(&where_buffer, "Each strip's frames export to {s} as full-resolution 16-bit TIFFs, with print-sized JPEG copies when a print size is set in the Process view.", .{shown}) catch shown);
 
             const busy = model.scannerWorkActive() or self.strip_pending or self.scanning_strip != null;
-            layoutRow(ctx, 30.0, 3);
+            layoutRow(ctx, 30.0, 4);
             if (busy) c.nk_widget_disable_begin(ctx);
             tooltip(ctx, "Preview, find the film, and scan it as the roll's next strip. It is exported in the background.");
             if (c.nk_button_label(ctx, "Scan Strip") != 0 and !busy) self.startStrip(model);
             if (busy) c.nk_widget_disable_end(ctx);
             if (c.nk_button_label(ctx, "Open Review") != 0) self.openReview();
+            tooltip(ctx, "Show the roll's exports folder in Finder (or your file manager)");
+            if (c.nk_button_label(ctx, "Open Folder") != 0) {
+                cerealgrain.native_ui_folders.open(allocator, self.io, roll.frames_dir) catch |err| self.setNotice("Could not open the exports folder: {s}", .{@errorName(err)});
+            }
             if (busy) c.nk_widget_disable_begin(ctx);
             if (c.nk_button_label(ctx, "Close Roll") != 0 and !busy) self.closeRoll(model);
             if (busy) c.nk_widget_disable_end(ctx);
@@ -149,22 +157,18 @@ pub const RollPanel = struct {
 
             const pending = if (self.processor) |processor| processor.pending() else 0;
             var status_buffer: [320]u8 = undefined;
-            layoutRow(ctx, 22.0, 1);
             if (pending != 0) {
                 var progress_buffer: [256]u8 = undefined;
                 const progress = self.processor.?.status(&progress_buffer) orelse "starting";
                 const queued = pending -| 1;
                 var queued_buffer: [48]u8 = undefined;
                 const queued_text = if (queued == 0) "" else std.fmt.bufPrint(&queued_buffer, "; {d} more queued", .{queued}) catch "";
-                drawText(ctx, std.fmt.bufPrint(&status_buffer, "Exporting {s}{s}", .{ progress, queued_text }) catch "Exporting...");
+                chrome.drawWrappedText(ctx, std.fmt.bufPrint(&status_buffer, "Exporting {s}{s}", .{ progress, queued_text }) catch "Exporting...");
             } else {
-                drawText(ctx, self.lastResult(&status_buffer));
+                chrome.drawWrappedText(ctx, self.lastResult(&status_buffer));
             }
             self.drawRingWarnings(ctx);
-            if (self.notice.len != 0) {
-                layoutRow(ctx, 22.0, 1);
-                drawText(ctx, self.notice);
-            }
+            if (self.notice.len != 0) chrome.drawWrappedText(ctx, self.notice);
             return;
         }
 
@@ -577,7 +581,7 @@ pub const RollPanel = struct {
     fn lastResult(self: *RollPanel, buffer: []u8) []const u8 {
         self.result_mutex.lockUncancelable(self.io);
         defer self.result_mutex.unlock(self.io);
-        if (self.result_len == 0) return "Exports: frames of each strip go to the roll's frames folder.";
+        if (self.result_len == 0) return "No strip exported yet.";
         const len = @min(self.result_len, buffer.len);
         @memcpy(buffer[0..len], self.result_buffer[0..len]);
         return buffer[0..len];
@@ -602,6 +606,12 @@ pub const RollPanel = struct {
         const text = std.fmt.bufPrint(&self.status_buffer, "Quitting when this export finishes: {s}{s}", .{ progress, dropped }) catch "Quitting when the roll export finishes";
         model.setStatus(text);
         return false;
+    }
+
+    /// The open roll's exports folder, under the data folder.
+    pub fn framesDir(self: *const RollPanel) ?[]const u8 {
+        const roll = &(self.active orelse return null);
+        return roll.frames_dir;
     }
 
     /// The strip number when `path` is one of the open roll's strip scans.

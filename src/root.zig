@@ -16,6 +16,7 @@ pub const native_ui_inverted_preview_worker = @import("ui/inverted_preview_worke
 pub const native_ui_process_cache = @import("ui/process_cache.zig");
 pub const native_ui_theme = @import("ui/theme.zig");
 pub const native_ui_trash = @import("ui/trash.zig");
+pub const native_ui_folders = @import("ui/folders.zig");
 pub const native_ui_scan_sweep = @import("ui/scan_sweep.zig");
 pub const tiff = @import("tiff.zig");
 pub const clock = @import("clock.zig");

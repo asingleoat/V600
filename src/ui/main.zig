@@ -3609,11 +3609,13 @@ fn drawProcessView(
     const image_path = model.currentProcessingImagePathForWorker();
     if (if (image_path) |path| rolls.stripNumberOf(path) else null) |strip_number| {
         var name_buffer: [96]u8 = undefined;
-        var note_buffer: [192]u8 = undefined;
+        var what_buffer: [320]u8 = undefined;
+        chrome.drawWrappedText(ctx, std.fmt.bufPrint(&what_buffer, "Each frame is written at full resolution as a 16-bit TIFF, {s}_NN.tif. With a print size chosen above, each also gets an 8-bit JPEG copy sized for that print, beside it.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch "");
+        drawExportFolder(ctx, model, io, rolls.framesDir() orelse model.processing.output_dir);
         const note = if (model.process_saved_framing != null)
-            std.fmt.bufPrint(&note_buffer, "Your frames for this strip are saved. Export Strip Frames re-exports them as {s}_NN.tif.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch ""
+            "Your frames for this strip are saved. Export Strip Frames re-exports them, replacing the strip's earlier files."
         else
-            std.fmt.bufPrint(&note_buffer, "Edits save automatically. Export Strip Frames re-exports this strip as {s}_NN.tif.", .{rolls.stripExportName(&name_buffer, strip_number)}) catch "";
+            "Edits save automatically. Export Strip Frames re-exports this strip, replacing its earlier files.";
         chrome.drawWrappedText(ctx, note);
         layoutRow(ctx, 30.0, 1);
         if (export_active) {
@@ -3623,6 +3625,10 @@ fn drawProcessView(
         }
         return;
     }
+    chrome.drawWrappedText(ctx, "Each frame is written at full resolution as a 16-bit TIFF, one for each kind ticked below. With a print size chosen above, each positive also gets an 8-bit JPEG copy sized for that print, beside it.");
+    drawExportFolder(ctx, model, io, model.processing.output_dir);
+    layoutRow(ctx, 22.0, 1);
+    c.nk_label(ctx, "File name (frames add _01, _02, ...):", c.NK_TEXT_LEFT);
     layoutRow(ctx, 28.0, 1);
     _ = c.nk_edit_string(
         ctx,
@@ -3633,9 +3639,9 @@ fn drawProcessView(
         c.nk_filter_default,
     );
     layoutRow(ctx, 28.0, 3);
-    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR neg", "export_ir_neg", &ui.export_ir_neg, "Export the IR-cleaned negative (dust and scratch removal only)");
-    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR inv", "export_ir_inv", &ui.export_ir_inv, "Export the inverted positive, with IR cleaning and color inversion");
-    drawProcessExportVariant(ctx, model, allocator, io, config_path, "Inv only", "export_inv_only", &ui.export_inv_only, "Export the inverted positive without IR cleaning");
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR neg", "export_ir_neg", &ui.export_ir_neg, "The negative with dust and scratches removed (IR cleaning), not inverted: <name>_NN_ir.tif");
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "IR inv", "export_ir_inv", &ui.export_ir_inv, "The positive, with IR cleaning and color inversion: <name>_NN.tif");
+    drawProcessExportVariant(ctx, model, allocator, io, config_path, "Inv only", "export_inv_only", &ui.export_inv_only, "The positive without IR cleaning: <name>_NN_inv.tif");
     layoutRow(ctx, 30.0, 1);
     if (export_active) {
         c.nk_label(ctx, "Exporting...", c.NK_TEXT_LEFT);
@@ -4078,6 +4084,23 @@ fn selectProcessStock(
         .{ .name = "export_ir_inv", .value = .{ .boolean = true } },
     };
     try model.saveProcessingSettings(allocator, io, config_path, &updates);
+}
+
+/// Where the exports go, in full, and a button that opens it.
+fn drawExportFolder(ctx: *c.struct_nk_context, model: *cerealgrain.native_ui.State, io: std.Io, relative: []const u8) void {
+    var path_buffer: [std.fs.max_path_bytes + 32]u8 = undefined;
+    var line_buffer: [std.fs.max_path_bytes + 64]u8 = undefined;
+    const shown = cerealgrain.native_ui_folders.displayPath(&path_buffer, relative);
+    chrome.drawWrappedText(ctx, std.fmt.bufPrint(&line_buffer, "Saved to {s}", .{shown}) catch shown);
+    layoutRow(ctx, 28.0, 2);
+    tooltip(ctx, "Show the exports folder in Finder (or your file manager)");
+    if (c.nk_button_label(ctx, "Open Folder") != 0) {
+        cerealgrain.native_ui_folders.open(std.heap.page_allocator, io, relative) catch |err| {
+            var status_buffer: [96]u8 = undefined;
+            model.setStatus(std.fmt.bufPrint(&status_buffer, "Could not open the exports folder: {s}", .{@errorName(err)}) catch "Could not open the exports folder");
+        };
+    }
+    c.nk_label(ctx, "", c.NK_TEXT_LEFT);
 }
 
 /// The print copy: an 8-bit JPEG sized for a print, written next to each
