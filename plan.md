@@ -231,8 +231,6 @@ Recorded in the May-July log; correct anything that is wrong:
   layer, gallery operations out of
   `processing/export.zig`, one TOML lexer for both configs,
   `selection_geometry.zig` into the root module so it can be unit-tested.
-- Build C/C++ with `addCSourceFiles`/`linkLibCpp` instead of `sh -c "c++
-  ..."`, so optimize flags and header dependencies apply.
 - Replace `opencv_ir.cpp` (grain estimation and synthesis) with the pure Zig
   ports in `ir_pure.zig`, which the webapp used and which replay the
   fixtures exactly; they need a real FFT first (theirs is a direct DFT,

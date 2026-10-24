@@ -1,28 +1,14 @@
 const std = @import("std");
 
-const NativeObjectSpec = struct {
-    cxx: bool = false,
-    flags: []const u8,
-    /// pkg-config packages whose cflags the source needs.
-    packages: []const u8 = "",
-    label: []const u8,
-    source: []const u8,
-    output: []const u8,
-};
+/// The OpenCV helpers, which build with the toolchain's C++ compiler: they
+/// must use the C++ library OpenCV was built against (libstdc++ on Linux),
+/// which Zig's own libc++ cannot stand in for. The C sources build with Zig.
+const opencv_sources = [_][]const u8{ "src/processing/opencv_ir.cpp", "src/processing/opencv_preview.cpp" };
 
-const opencv_flags = "-std=c++17 -fPIC -fno-exceptions";
-
-const root_native_objects = [_]NativeObjectSpec{
-    .{ .cxx = true, .flags = opencv_flags, .packages = "opencv4", .label = "compile-opencv-ir", .source = "src/processing/opencv_ir.cpp", .output = "opencv_ir.o" },
-    .{ .cxx = true, .flags = opencv_flags, .packages = "opencv4", .label = "compile-opencv-preview", .source = "src/processing/opencv_preview.cpp", .output = "opencv_preview.o" },
-    .{ .flags = "-std=c99 -fPIC", .packages = "libjpeg", .label = "compile-jpeg-encode", .source = "src/processing/jpeg_encode.c", .output = "jpeg_encode.o" },
-};
-
-/// The compilers and pkg-config the native helpers build with: the dev
+/// The C++ compiler and pkg-config the OpenCV helpers build with: the dev
 /// shell's, or for the static Linux build the musl toolchain's, which the
-/// Nix build names in `$CC`, `$CXX`, and `$PKG_CONFIG`.
+/// Nix build names in `$CXX` and `$PKG_CONFIG`.
 const Toolchain = struct {
-    cc: []const u8 = "cc",
     cxx: []const u8 = "c++",
     pkg_config: []const u8 = "pkg-config",
     /// Extra C++ flags, each with a leading space.
@@ -30,7 +16,6 @@ const Toolchain = struct {
 };
 
 const static_toolchain = Toolchain{
-    .cc = "\"$CC\"",
     .cxx = "\"$CXX\"",
     .pkg_config = "\"$PKG_CONFIG\"",
     .cxx_flags = " -DCEREALGRAIN_LIBSTDCXX",
@@ -270,21 +255,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
 }
 
-fn compileNativeObject(b: *std.Build, spec: NativeObjectSpec, toolchain: Toolchain) std.Build.LazyPath {
-    const compiler = if (spec.cxx) toolchain.cxx else toolchain.cc;
-    const flags = if (spec.cxx) b.fmt("{s}{s}", .{ spec.flags, toolchain.cxx_flags }) else spec.flags;
-    const command = if (spec.packages.len == 0)
-        b.fmt("{s} {s} -c \"$1\" -o \"$2\"", .{ compiler, flags })
-    else
-        b.fmt("{s} {s} $({s} --cflags {s}) -c \"$1\" -o \"$2\"", .{ compiler, flags, toolchain.pkg_config, spec.packages });
-    const cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        command,
-        spec.label,
-    });
-    cmd.addFileArg(b.path(spec.source));
-    return cmd.addOutputFileArg(spec.output);
+/// Compiles one OpenCV helper, with a depfile so a changed header (a new
+/// OpenCV in the shell) rebuilds it. Always at -O2, as the Nix compiler
+/// wrappers' hardening flags had it: unoptimized, the helpers call
+/// libstdc++'s out-of-line throw functions, which the Linux link lacks.
+fn compileOpenCvObject(b: *std.Build, source: []const u8, toolchain: Toolchain) std.Build.LazyPath {
+    const command = b.fmt("{s} -std=c++17 -fPIC -fno-exceptions -O2{s} $({s} --cflags opencv4) -c \"$1\" -o \"$2\" -MD -MF \"$3\"", .{ toolchain.cxx, toolchain.cxx_flags, toolchain.pkg_config });
+    const cmd = b.addSystemCommand(&.{ "sh", "-c", command, "compile-opencv" });
+    cmd.setName(b.fmt("compile {s}", .{std.fs.path.basename(source)}));
+    cmd.addFileArg(b.path(source));
+    const object = cmd.addOutputFileArg(b.fmt("{s}.o", .{std.fs.path.stem(source)}));
+    _ = cmd.addDepFileOutputArg(b.fmt("{s}.d", .{std.fs.path.stem(source)}));
+    return object;
+}
+
+fn addNativeSources(b: *std.Build, module: *std.Build.Module, toolchain: Toolchain) void {
+    for (opencv_sources) |source| module.addObjectFile(compileOpenCvObject(b, source, toolchain));
+    module.addCSourceFile(.{ .file = b.path("src/processing/jpeg_encode.c"), .flags = &.{"-std=c99"} });
 }
 
 fn addProgram(
@@ -327,9 +314,7 @@ fn addRootModule(
     root_module.linkSystemLibrary("c", .{});
     if (static) {
         linkStaticLibraries(b, root_module);
-        for (root_native_objects) |spec| {
-            root_module.addObjectFile(compileNativeObject(b, spec, static_toolchain));
-        }
+        addNativeSources(b, root_module, static_toolchain);
         return root_module;
     }
     root_module.linkSystemLibrary("libtiff-4", .{});
@@ -362,9 +347,7 @@ fn addRootModule(
         root_module.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
     }
 
-    for (root_native_objects) |spec| {
-        root_module.addObjectFile(compileNativeObject(b, spec, .{}));
-    }
+    addNativeSources(b, root_module, .{});
     return root_module;
 }
 
@@ -403,14 +386,6 @@ fn addUiExecutable(
     root_module: *std.Build.Module,
     strip: ?bool,
 ) *std.Build.Step.Compile {
-    const nuklear_obj = compileNativeObject(b, .{
-        .flags = "-std=c99 -fPIC",
-        .packages = "nuklear",
-        .label = "compile-nuklear",
-        .source = "src/ui/nuklear_impl.c",
-        .output = "nuklear_impl.o",
-    }, .{});
-
     const ui_module = b.createModule(.{
         .root_source_file = b.path("src/ui/main.zig"),
         .target = target,
@@ -424,7 +399,7 @@ fn addUiExecutable(
     ui_module.linkSystemLibrary("m", .{});
     ui_module.linkSystemLibrary("sdl3", .{ .use_pkg_config = .force });
     ui_module.linkSystemLibrary("nuklear", .{ .use_pkg_config = .force });
-    ui_module.addObjectFile(nuklear_obj);
+    ui_module.addCSourceFile(.{ .file = b.path("src/ui/nuklear_impl.c"), .flags = &.{"-std=c99"} });
 
     return b.addExecutable(.{
         .name = "cerealgrain-ui",
