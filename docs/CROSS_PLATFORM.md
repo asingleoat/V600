@@ -26,7 +26,7 @@ Linux hardware steps run only with `CEREALGRAIN_HARDWARE_SMOKE=1`.
 
 `nix build .#cli-static`, on x86-64 Linux, builds a CLI with nothing to
 install: musl and every C and C++ library linked in
-(`result/bin/cerealgrain`, about 33 MB, no references into the Nix store;
+(`result/bin/cerealgrain`, about 13 MB, no references into the Nix store;
 its libraries' licenses in `result/share/licenses/cerealgrain`),
 for x86-64-v3 CPUs (Haswell, Zen, and later). Its frames and exports match
 the dev-shell build's pixel for pixel; an export takes about 8% longer.

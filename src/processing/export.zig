@@ -1275,43 +1275,22 @@ pub fn listGalleryFiles(
     return .{ .files = try files.toOwnedSlice() };
 }
 
+/// Moves an exported frame out of the gallery with `move` (the UI's trash).
 pub fn trashGalleryFile(
     allocator: std.mem.Allocator,
     io: std.Io,
     output_dir: []const u8,
     name: []const u8,
+    move: *const fn (std.mem.Allocator, std.Io, []const u8) anyerror!void,
 ) !GalleryMutation {
     const path = try galleryPath(allocator, output_dir, name);
     defer allocator.free(path);
     try requireGalleryFile(io, path);
-
-    const trash_dir = try std.fs.path.join(allocator, &.{ output_dir, ".trash" });
-    defer allocator.free(trash_dir);
-    try std.Io.Dir.cwd().createDirPath(io, trash_dir);
-
-    const original_name = std.fs.path.basename(path);
-    const stem = std.fs.path.stem(original_name);
-    const suffix = std.fs.path.extension(original_name);
-
-    var dest_name = try allocator.dupe(u8, original_name);
-    errdefer allocator.free(dest_name);
-    var counter: usize = 1;
-    while (true) : (counter += 1) {
-        const dest_path = try std.fs.path.join(allocator, &.{ trash_dir, dest_name });
-        if (!galleryPathExists(io, dest_path)) {
-            const cwd = std.Io.Dir.cwd();
-            try cwd.rename(path, cwd, dest_path, io);
-            allocator.free(dest_path);
-            const message = try std.fmt.allocPrint(allocator, "Moved {s} to trash", .{original_name});
-            return .{
-                .file_name = dest_name,
-                .message = message,
-            };
-        }
-        allocator.free(dest_path);
-        allocator.free(dest_name);
-        dest_name = try std.fmt.allocPrint(allocator, "{s}_{d}{s}", .{ stem, counter, suffix });
-    }
+    try move(allocator, io, path);
+    const file_name = try allocator.dupe(u8, std.fs.path.basename(path));
+    errdefer allocator.free(file_name);
+    const message = try std.fmt.allocPrint(allocator, "Moved {s} to the Trash", .{file_name});
+    return .{ .file_name = file_name, .message = message };
 }
 
 pub fn deleteGalleryFile(
@@ -1347,11 +1326,6 @@ fn galleryPath(allocator: std.mem.Allocator, output_dir: []const u8, name: []con
 fn requireGalleryFile(io: std.Io, path: []const u8) !void {
     const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
     if (stat.kind != .file) return error.FileNotFound;
-}
-
-fn galleryPathExists(io: std.Io, path: []const u8) bool {
-    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
-    return true;
 }
 
 fn lessThanString(_: void, lhs: []const u8, rhs: []const u8) bool {
@@ -1974,24 +1948,29 @@ test "gallery file listing returns sorted TIFF basenames only" {
     try std.testing.expectEqualStrings("b.tif", files.files[1]);
 }
 
-test "gallery trash preserves Python collision suffix semantics" {
+test "gallery trash checks the name, then hands the file to the trash" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "scan.tif", .data = "scan" });
-    try tmp.dir.createDir(std.testing.io, ".trash", .default_dir);
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".trash/scan.tif", .data = "" });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".trash/scan_1.tif", .data = "" });
 
     const dir_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
     defer allocator.free(dir_path);
-    const result = try trashGalleryFile(allocator, std.testing.io, dir_path, "scan.tif");
+    const Recorder = struct {
+        var moved: usize = 0;
+        fn move(_: std.mem.Allocator, _: std.Io, path: []const u8) anyerror!void {
+            if (!std.mem.endsWith(u8, path, "/scan.tif")) return error.WrongPath;
+            moved += 1;
+        }
+    };
+    const result = try trashGalleryFile(allocator, std.testing.io, dir_path, "scan.tif", Recorder.move);
     defer result.deinit(allocator);
-    try std.testing.expectEqualStrings("scan_2.tif", result.file_name);
-    try std.testing.expectEqualStrings("Moved scan.tif to trash", result.message);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "scan.tif", .{}));
-    try tmp.dir.access(std.testing.io, ".trash/scan_2.tif", .{});
-    try std.testing.expectError(error.AccessDenied, trashGalleryFile(allocator, std.testing.io, dir_path, "../scan.tif"));
+    try std.testing.expectEqualStrings("scan.tif", result.file_name);
+    try std.testing.expectEqualStrings("Moved scan.tif to the Trash", result.message);
+    try std.testing.expectEqual(@as(usize, 1), Recorder.moved);
+    try std.testing.expectError(error.AccessDenied, trashGalleryFile(allocator, std.testing.io, dir_path, "../scan.tif", Recorder.move));
+    try std.testing.expectError(error.FileNotFound, trashGalleryFile(allocator, std.testing.io, dir_path, "missing.tif", Recorder.move));
+    try std.testing.expectEqual(@as(usize, 1), Recorder.moved);
 }
 
 test "gallery delete removes file and reports Python message" {

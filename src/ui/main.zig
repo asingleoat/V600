@@ -23,7 +23,12 @@ const roll_panel = @import("roll_panel.zig");
 
 const layoutRow = chrome.layoutRow;
 const layoutRowStatic = chrome.layoutRowStatic;
+const layoutRowRatios = chrome.layoutRowRatios;
 const tooltip = chrome.tooltip;
+
+/// Refresh, Prev, Next, Trash, Delete: Trash is the way to remove a file
+/// (it can be restored), Delete the smaller one beside it.
+const navigation_ratios = [_]f32{ 0.2, 0.2, 0.2, 0.24, 0.16 };
 const applyNuklearStyle = chrome.applyNuklearStyle;
 const nkColor = chrome.nkColor;
 const setRendererColor = chrome.setRendererColor;
@@ -236,7 +241,6 @@ pub fn main(init: std.process.Init) !void {
     var gallery_interaction_smoke = false;
     var gallery_shortcut_smoke = false;
     var gallery_confirm_smoke = false;
-    var gallery_trash_prompt_smoke = false;
     var gallery_delete_prompt_smoke = false;
     var scanner_connect_smoke = false;
     var preview_worker_output: []const u8 = "/tmp/cerealgrain-native-preview-worker-smoke.tiff";
@@ -334,10 +338,6 @@ pub fn main(init: std.process.Init) !void {
             gallery_render_smoke = true;
             gallery_confirm_smoke = true;
             smoke = true;
-        } else if (std.mem.eql(u8, arg, "--gallery-trash-prompt-smoke")) {
-            gallery_render_smoke = true;
-            gallery_trash_prompt_smoke = true;
-            smoke = true;
         } else if (std.mem.eql(u8, arg, "--gallery-delete-prompt-smoke")) {
             gallery_render_smoke = true;
             gallery_delete_prompt_smoke = true;
@@ -385,6 +385,7 @@ pub fn main(init: std.process.Init) !void {
     }
     var model = cerealgrain.native_ui.State.init(scan_dir, output_dir, 0);
     defer model.deinit(std.heap.page_allocator);
+    if (any_smoke) model.trash = cerealgrain.native_ui_trash.moveBeside;
     std.Io.Dir.cwd().createDirPath(init.io, model.scanner.output_dir) catch {};
     model.syncScanCounter(init.io);
     var scanner_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -605,11 +606,8 @@ pub fn main(init: std.process.Init) !void {
     defer gallery_transform.deinit(std.heap.page_allocator);
     var gallery_confirmation = GalleryConfirmation{};
     defer gallery_confirmation.deinit(std.heap.page_allocator);
-    if (gallery_trash_prompt_smoke) {
-        try requestGalleryConfirmation(&model, &gallery_confirmation, std.heap.page_allocator, .trash);
-    }
     if (gallery_delete_prompt_smoke) {
-        try requestGalleryConfirmation(&model, &gallery_confirmation, std.heap.page_allocator, .delete);
+        try requestGalleryConfirmation(&model, &gallery_confirmation, std.heap.page_allocator);
     }
 
     var nuklear_renderer = NuklearRenderer.init(renderer);
@@ -1855,7 +1853,7 @@ fn handleGalleryShortcutEvent(
                     transform.requestFit();
                 },
                 c.SDLK_DELETE, c.SDLK_BACKSPACE => {
-                    try requestGalleryConfirmation(model, confirmation, allocator, .trash);
+                    try trashGalleryFile(model, transform, confirmation, allocator, io);
                     last_refresh_ms.* = c.SDL_GetTicks();
                 },
                 else => {},
@@ -2802,8 +2800,6 @@ fn runGalleryShortcutRefreshSmoke(
     event.type = c.SDL_EVENT_KEY_DOWN;
     event.key.key = c.SDLK_BACKSPACE;
     try handleGalleryShortcutEvent(model, transform, confirmation, allocator, io, event, last_refresh_ms);
-    if (!confirmation.pending() or model.galleryInfo().image_count != 2) return error.GalleryShortcutSmokeFailed;
-    try executeGalleryConfirmation(model, transform, confirmation, allocator, io);
     if (model.galleryInfo().image_count != 1) return error.GalleryShortcutSmokeFailed;
 
     const fixture = try std.Io.Dir.cwd().readFileAlloc(
@@ -2835,19 +2831,19 @@ fn runGalleryConfirmationSmoke(
     const initial_count = model.galleryInfo().image_count;
     if (initial_count < 2) return error.GalleryConfirmationSmokeFailed;
 
-    try requestGalleryConfirmation(model, confirmation, allocator, .delete);
+    try requestGalleryConfirmation(model, confirmation, allocator);
     if (!confirmation.pending() or model.galleryInfo().image_count != initial_count) {
         return error.GalleryConfirmationSmokeFailed;
     }
     confirmation.deinit(allocator);
     if (model.galleryInfo().image_count != initial_count) return error.GalleryConfirmationSmokeFailed;
 
-    try requestGalleryConfirmation(model, confirmation, allocator, .trash);
-    if (!confirmation.pending() or model.galleryInfo().image_count != initial_count) {
-        return error.GalleryConfirmationSmokeFailed;
-    }
+    try trashGalleryFile(model, transform, confirmation, allocator, io);
+    if (model.galleryInfo().image_count != initial_count - 1) return error.GalleryConfirmationSmokeFailed;
+
+    try requestGalleryConfirmation(model, confirmation, allocator);
     try executeGalleryConfirmation(model, transform, confirmation, allocator, io);
-    if (confirmation.pending() or model.galleryInfo().image_count != initial_count - 1) {
+    if (confirmation.pending() or model.galleryInfo().image_count != initial_count - 2) {
         return error.GalleryConfirmationSmokeFailed;
     }
 }
@@ -2864,21 +2860,17 @@ fn runProcessConfirmationSmoke(
     const captured_name = try allocator.dupe(u8, initial.filename);
     defer allocator.free(captured_name);
 
-    try requestProcessConfirmation(model, confirmation, allocator, .delete);
-    if (!confirmation.pending() or confirmation.action != .delete) return error.ProcessConfirmationSmokeFailed;
+    try requestProcessConfirmation(model, confirmation, allocator);
+    if (!confirmation.pending()) return error.ProcessConfirmationSmokeFailed;
     if (!std.mem.eql(u8, confirmation.name.?, captured_name)) return error.ProcessConfirmationSmokeFailed;
     if (model.processingNavigationInfo().image_count != initial.image_count) return error.ProcessConfirmationSmokeFailed;
     confirmation.deinit(allocator);
     model.setStatus("Cancelled");
     if (model.processingNavigationInfo().image_count != initial.image_count) return error.ProcessConfirmationSmokeFailed;
 
-    try requestProcessConfirmation(model, confirmation, allocator, .trash);
-    if (!confirmation.pending() or confirmation.action != .trash) return error.ProcessConfirmationSmokeFailed;
-    try executeProcessConfirmation(model, confirmation, allocator, io, preview_size);
+    _ = try model.trashCurrentProcessingImage(allocator, io, preview_size);
     const after = model.processingNavigationInfo();
-    if (after.image_count != initial.image_count - 1 or confirmation.pending()) {
-        return error.ProcessConfirmationSmokeFailed;
-    }
+    if (after.image_count != initial.image_count - 1) return error.ProcessConfirmationSmokeFailed;
     if (std.mem.eql(u8, after.filename, captured_name)) return error.ProcessConfirmationSmokeFailed;
 }
 
@@ -3245,7 +3237,7 @@ fn drawGalleryView(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) void {
-    layoutRow(ctx, 28.0, 5);
+    layoutRowRatios(ctx, 28.0, &navigation_ratios);
     if (c.nk_button_label(ctx, "Refresh") != 0) {
         _ = model.refreshGalleryFiles(allocator, io) catch |err| setGalleryUiError(model, err);
     }
@@ -3255,11 +3247,13 @@ fn drawGalleryView(
     if (c.nk_button_label(ctx, "Next") != 0) {
         _ = model.switchNextGalleryImage() catch |err| setGalleryUiError(model, err);
     }
+    tooltip(ctx, "Move this frame to the Trash, where it can be restored");
     if (c.nk_button_label(ctx, "Trash") != 0) {
-        requestGalleryConfirmation(model, confirmation, allocator, .trash) catch |err| setGalleryUiError(model, err);
+        trashGalleryFile(model, transform, confirmation, allocator, io) catch |err| setGalleryUiError(model, err);
     }
+    tooltip(ctx, "Delete this frame for good (asks first)");
     if (c.nk_button_label(ctx, "Delete") != 0) {
-        requestGalleryConfirmation(model, confirmation, allocator, .delete) catch |err| setGalleryUiError(model, err);
+        requestGalleryConfirmation(model, confirmation, allocator) catch |err| setGalleryUiError(model, err);
     }
 
     const info = model.galleryInfo();
@@ -3294,13 +3288,25 @@ fn requestGalleryConfirmation(
     model: *cerealgrain.native_ui.State,
     confirmation: *GalleryConfirmation,
     allocator: std.mem.Allocator,
-    action: GalleryConfirmAction,
 ) !void {
     const name = model.currentGalleryFileName() orelse {
         model.setStatus("No exports found");
         return error.NoGalleryFileSelected;
     };
-    try confirmation.request(allocator, action, name);
+    try confirmation.request(allocator, name);
+}
+
+fn trashGalleryFile(
+    model: *cerealgrain.native_ui.State,
+    transform: *GalleryViewTransform,
+    confirmation: *GalleryConfirmation,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+) !void {
+    confirmation.deinit(allocator);
+    var mutation = try model.trashCurrentGalleryFile(allocator, io);
+    mutation.deinit(allocator);
+    transform.requestFit();
 }
 
 fn drawGalleryConfirmation(
@@ -3311,19 +3317,13 @@ fn drawGalleryConfirmation(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) void {
-    if (!confirmation.pending()) return;
-    const action = confirmation.action.?;
-    const name = confirmation.name.?;
+    const name = confirmation.name orelse return;
     var message_buffer: [320]u8 = undefined;
-    const message = std.fmt.bufPrint(
-        &message_buffer,
-        "Confirm {s}: {s}",
-        .{ action.verb(), name },
-    ) catch "Confirm action";
+    const message = std.fmt.bufPrint(&message_buffer, "Delete {s} for good?", .{name}) catch "Delete for good?";
     layoutRow(ctx, 24.0, 1);
     drawText(ctx, message);
     layoutRow(ctx, 28.0, 2);
-    if (c.nk_button_label(ctx, "Confirm") != 0) {
+    if (c.nk_button_label(ctx, "Delete") != 0) {
         executeGalleryConfirmation(model, transform, confirmation, allocator, io) catch |err| {
             setGalleryUiError(model, err);
             confirmation.deinit(allocator);
@@ -3342,12 +3342,8 @@ fn executeGalleryConfirmation(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) !void {
-    const action = confirmation.action orelse return error.NoGalleryConfirmation;
     const name = confirmation.name orelse return error.NoGalleryConfirmation;
-    var mutation = switch (action) {
-        .trash => try model.trashGalleryFileByName(allocator, io, name),
-        .delete => try model.deleteGalleryFileByName(allocator, io, name),
-    };
+    var mutation = try model.deleteGalleryFileByName(allocator, io, name);
     mutation.deinit(allocator);
     confirmation.deinit(allocator);
     transform.requestFit();
@@ -3357,15 +3353,14 @@ fn requestProcessConfirmation(
     model: *cerealgrain.native_ui.State,
     confirmation: *ProcessConfirmation,
     allocator: std.mem.Allocator,
-    action: ProcessConfirmAction,
 ) !void {
     const nav = model.processingNavigationInfo();
     if (nav.image_count == 0 or nav.filename.len == 0) {
         model.setStatus("No image loaded");
         return error.NoProcessImageLoaded;
     }
-    try confirmation.request(allocator, action, nav.filename);
-    model.setStatus("Confirm scan action");
+    try confirmation.request(allocator, nav.filename);
+    model.setStatus("Confirm the delete");
 }
 
 fn drawProcessConfirmation(
@@ -3377,17 +3372,12 @@ fn drawProcessConfirmation(
     preview_size: i64,
 ) void {
     const name = confirmation.name orelse return;
-    const action = confirmation.action orelse return;
     var text_buffer: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(
-        &text_buffer,
-        "Confirm {s}: {s}",
-        .{ action.verb(), name },
-    ) catch "Confirm scan action";
+    const text = std.fmt.bufPrint(&text_buffer, "Delete {s} for good?", .{name}) catch "Delete the scan for good?";
     layoutRow(ctx, 22.0, 1);
     drawText(ctx, text);
     layoutRow(ctx, 28.0, 2);
-    if (c.nk_button_label(ctx, "Confirm") != 0) {
+    if (c.nk_button_label(ctx, "Delete") != 0) {
         executeProcessConfirmation(model, confirmation, allocator, io, preview_size) catch |err| {
             setProcessUiError(model, err);
         };
@@ -3405,7 +3395,6 @@ fn executeProcessConfirmation(
     io: std.Io,
     preview_size: i64,
 ) !void {
-    const action = confirmation.action orelse return error.NoProcessConfirmation;
     const name = confirmation.name orelse return error.NoProcessConfirmation;
     const current = model.processingNavigationInfo().filename;
     if (!std.mem.eql(u8, current, name)) {
@@ -3413,10 +3402,7 @@ fn executeProcessConfirmation(
         model.setStatus("Scan selection changed");
         return;
     }
-    _ = switch (action) {
-        .trash => try model.trashCurrentProcessingImage(allocator, io, preview_size),
-        .delete => try model.deleteCurrentProcessingImage(allocator, io, preview_size),
-    };
+    _ = try model.deleteCurrentProcessingImage(allocator, io, preview_size);
     confirmation.deinit(allocator);
 }
 
@@ -3440,7 +3426,7 @@ fn drawProcessView(
     const controls_enabled = !export_active and !worker_active and !load_active;
     layoutRow(ctx, 28.0, 1);
     c.nk_label(ctx, "Images", c.NK_TEXT_LEFT);
-    layoutRow(ctx, 28.0, 5);
+    layoutRowRatios(ctx, 28.0, &navigation_ratios);
     if (!controls_enabled) {
         c.nk_label(ctx, "Refresh", c.NK_TEXT_CENTERED);
         c.nk_label(ctx, "Prev", c.NK_TEXT_CENTERED);
@@ -3460,13 +3446,14 @@ fn drawProcessView(
         if (c.nk_button_label(ctx, "Next") != 0) {
             startNextProcessingImage(model, process_worker, allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
-        tooltip(ctx, "Move the current scan to the trash");
+        tooltip(ctx, "Move the current scan to the Trash, where it can be restored");
         if (c.nk_button_label(ctx, "Trash") != 0) {
-            requestProcessConfirmation(model, confirmation, allocator, .trash) catch |err| setProcessUiError(model, err);
+            confirmation.deinit(allocator);
+            _ = model.trashCurrentProcessingImage(allocator, io, processingPreviewSize(ui)) catch |err| setProcessUiError(model, err);
         }
-        tooltip(ctx, "Permanently delete the current scan");
+        tooltip(ctx, "Delete the current scan for good (asks first)");
         if (c.nk_button_label(ctx, "Delete") != 0) {
-            requestProcessConfirmation(model, confirmation, allocator, .delete) catch |err| setProcessUiError(model, err);
+            requestProcessConfirmation(model, confirmation, allocator) catch |err| setProcessUiError(model, err);
         }
     }
     drawProcessConfirmation(ctx, model, confirmation, allocator, io, processingPreviewSize(ui));
@@ -4287,20 +4274,8 @@ fn selectionsEqual(a: ?cerealgrain.native_ui.PreviewSelection, b: ?cerealgrain.n
         a.?.h == b.?.h;
 }
 
-const ProcessConfirmAction = enum {
-    trash,
-    delete,
-
-    fn verb(self: ProcessConfirmAction) []const u8 {
-        return switch (self) {
-            .trash => "trash",
-            .delete => "delete",
-        };
-    }
-};
-
+/// A Delete waiting for Confirm: unlike Trash, it cannot be undone.
 const ProcessConfirmation = struct {
-    action: ?ProcessConfirmAction = null,
     name: ?[]u8 = null,
 
     fn deinit(self: *ProcessConfirmation, allocator: std.mem.Allocator) void {
@@ -4308,39 +4283,20 @@ const ProcessConfirmation = struct {
             allocator.free(name);
             self.name = null;
         }
-        self.action = null;
     }
 
-    fn request(
-        self: *ProcessConfirmation,
-        allocator: std.mem.Allocator,
-        action: ProcessConfirmAction,
-        name: []const u8,
-    ) !void {
+    fn request(self: *ProcessConfirmation, allocator: std.mem.Allocator, name: []const u8) !void {
         self.deinit(allocator);
-        self.action = action;
         self.name = try allocator.dupe(u8, name);
     }
 
     fn pending(self: ProcessConfirmation) bool {
-        return self.action != null and self.name != null;
+        return self.name != null;
     }
 };
 
-const GalleryConfirmAction = enum {
-    trash,
-    delete,
-
-    fn verb(self: GalleryConfirmAction) []const u8 {
-        return switch (self) {
-            .trash => "trash",
-            .delete => "delete",
-        };
-    }
-};
-
+/// A Delete waiting for Confirm: unlike Trash, it cannot be undone.
 const GalleryConfirmation = struct {
-    action: ?GalleryConfirmAction = null,
     name: ?[]u8 = null,
 
     fn deinit(self: *GalleryConfirmation, allocator: std.mem.Allocator) void {
@@ -4348,22 +4304,15 @@ const GalleryConfirmation = struct {
             allocator.free(name);
             self.name = null;
         }
-        self.action = null;
     }
 
-    fn request(
-        self: *GalleryConfirmation,
-        allocator: std.mem.Allocator,
-        action: GalleryConfirmAction,
-        name: []const u8,
-    ) !void {
+    fn request(self: *GalleryConfirmation, allocator: std.mem.Allocator, name: []const u8) !void {
         self.deinit(allocator);
-        self.action = action;
         self.name = try allocator.dupe(u8, name);
     }
 
     fn pending(self: GalleryConfirmation) bool {
-        return self.action != null and self.name != null;
+        return self.name != null;
     }
 };
 

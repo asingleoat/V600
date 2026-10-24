@@ -65,6 +65,8 @@ Confirmed by the owner, 2026-10-24:
   profiles are an eyeballed starting point, so Gold is as good a default as
   any.
 - An Intel Mac build is low priority.
+- Trash is the one-click way to remove a scan or export, into the system
+  Trash; Delete, smaller beside it, asks first.
 - The native app is the product. The browser webapp and the scanner
   companion that let it scan are dropped; they are in git history (tag
   `webapp-final`).
@@ -113,11 +115,6 @@ Recorded in the May-July log; correct anything that is wrong:
   blobs (all of KODAKGOLD_200_3): a thin negative's grain is stretched far
   by inversion, so grain matched on the negative may fall short there. If a
   fix falls short, suggest turning dust removal off for such frames.
-- Trash and Delete are equal-size buttons side by side in the Gallery and
-  the Process view, and both ask for confirmation. Trash should be the
-  one-click action and move files to the system Trash (on macOS, where
-  Finder's Put Back restores them), not a hidden `.trash` folder beside
-  them; Delete should be smaller and keep its confirmation.
 - macOS: with Epson's driver missing, connecting says "Epson's scanner
   driver is not installed." without naming what to install or where to get
   it (`ica_driver_url` in `src/scanner/macos.zig` is used only by tests).

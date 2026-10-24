@@ -37,7 +37,8 @@ Other flags: `--preview-render-smoke`, `--scan-interaction-smoke`,
 `--process-confirm-smoke`, `--process-worker-screenshot-smoke`,
 `--gallery-render-smoke`, `--gallery-interaction-smoke`,
 `--gallery-shortcut-smoke`, `--gallery-confirm-smoke`,
-`--gallery-trash-prompt-smoke`, `--gallery-delete-prompt-smoke`.
+`--gallery-delete-prompt-smoke`. Smokes trash into a `.trash` folder beside
+the file, never the system Trash.
 
 Add `--screenshot PATH` to any smoke to save the last rendered frame as a
 BMP, for looking at a change without a display.
@@ -69,8 +70,8 @@ Look at:
 
 - Scan, Process, and Gallery at the default size, at scale `1.0` and `1.45`,
   and after resizing narrower, wider, and shorter.
-- Gallery with at least two exports in `frames/`, including the Trash and
-  Delete confirmations and wheel zoom plus middle-button pan.
+- Gallery with at least two exports in `frames/`, including Trash, the
+  Delete confirmation, and wheel zoom plus middle-button pan.
 - The footer status bar in each view, including Process while a worker or
   export is running.
 
@@ -85,10 +86,11 @@ Check that:
 - Wheel over the image zooms or pans only the image; wheel over the footer
   does nothing; wheel over the panel scrolls it only when needed.
 - Gallery thumbnails show real content and the active one stands out.
-- Trash and Delete change nothing before Confirm; Cancel leaves the list
-  unchanged.
-- ArrowLeft/ArrowRight wrap the gallery selection; Delete and Backspace ask
-  to trash.
+- Trash moves the file to the system Trash at once (Finder's Put Back
+  restores it on macOS); Delete changes nothing until its confirmation, and
+  Cancel leaves the list unchanged.
+- ArrowLeft/ArrowRight wrap the gallery selection; Delete and Backspace
+  trash the selected frame.
 - Wheel zooms around the cursor, middle-drag pans, double-click and resizing
   refit.
 

@@ -12,6 +12,7 @@ const scanner_contracts = @import("../scanner/contracts.zig");
 const scanner_events = @import("../scanner/events.zig");
 const process_cache = @import("process_cache.zig");
 const scan_workflow = @import("scan_workflow.zig");
+const trash_files = @import("trash.zig");
 const tiff = @import("../tiff.zig");
 
 pub const ScanControls = scan_workflow.ScanControls;
@@ -489,6 +490,10 @@ pub const State = struct {
     process_exporting: bool = false,
     process_export_files_written: usize = 0,
     process_status_buffer: [128]u8 = undefined,
+    gallery_status_buffer: [128]u8 = undefined,
+    /// Where Trash sends files: the system Trash, or a `.trash` folder beside
+    /// them in tests and smokes.
+    trash: trash_files.Mover = trash_files.moveToTrash,
     process_dmin_buffer: [64]u8 = undefined,
     processing_gpu_request: processing_webgpu.Request = .{},
     processing_generation: usize = 0,
@@ -1983,35 +1988,13 @@ pub const State = struct {
             return error.NoProcessImageLoaded;
         };
         const original_name = std.fs.path.basename(path);
-        const parent = std.fs.path.dirname(path) orelse ".";
-        const trash_dir = try std.fs.path.join(allocator, &.{ parent, ".trash" });
-        defer allocator.free(trash_dir);
-        try std.Io.Dir.cwd().createDirPath(io, trash_dir);
-
-        const stem = std.fs.path.stem(original_name);
-        const suffix = std.fs.path.extension(original_name);
-        var dest_name = try allocator.dupe(u8, original_name);
-        defer allocator.free(dest_name);
-        var counter: usize = 1;
-        while (true) : (counter += 1) {
-            const dest_path = try std.fs.path.join(allocator, &.{ trash_dir, dest_name });
-            defer allocator.free(dest_path);
-            std.Io.Dir.cwd().access(io, dest_path, .{}) catch |err| switch (err) {
-                error.FileNotFound => {
-                    const cwd = std.Io.Dir.cwd();
-                    try cwd.rename(path, cwd, dest_path, io);
-                    const message = std.fmt.bufPrint(
-                        &self.process_status_buffer,
-                        "Moved {s} to trash",
-                        .{original_name},
-                    ) catch "Moved scan to trash";
-                    return try self.afterProcessingImageMutation(allocator, io, old_index, preview_size, message);
-                },
-                else => return err,
-            };
-            allocator.free(dest_name);
-            dest_name = try std.fmt.allocPrint(allocator, "{s}_{d}{s}", .{ stem, counter, suffix });
-        }
+        try self.trash(allocator, io, path);
+        const message = std.fmt.bufPrint(
+            &self.process_status_buffer,
+            "Moved {s} to the Trash",
+            .{original_name},
+        ) catch "Moved the scan to the Trash";
+        return try self.afterProcessingImageMutation(allocator, io, old_index, preview_size, message);
     }
 
     pub fn deleteCurrentProcessingImage(
@@ -2180,9 +2163,10 @@ pub const State = struct {
         io: std.Io,
         name: []const u8,
     ) !processing_export.GalleryMutation {
-        var mutation = try processing_export.trashGalleryFile(allocator, io, self.processing.output_dir, name);
+        var mutation = try processing_export.trashGalleryFile(allocator, io, self.processing.output_dir, name, self.trash);
         errdefer mutation.deinit(allocator);
         _ = try self.refreshGalleryFiles(allocator, io);
+        self.status = std.fmt.bufPrint(&self.gallery_status_buffer, "{s}", .{mutation.message}) catch "Moved the frame to the Trash";
         return mutation;
     }
 
@@ -3788,11 +3772,12 @@ test "native UI scan trash and delete mirror extract_ui image recovery" {
     defer allocator.free(dir_path);
     var state = State.init(dir_path, "frames", 0);
     defer state.deinit(allocator);
+    state.trash = trash_files.moveBeside;
     try state.rescanProcessingImages(allocator, std.testing.io);
     try std.testing.expectEqual(@as(usize, 2), state.processing.image_count);
 
     const trashed = try state.trashCurrentProcessingImage(allocator, std.testing.io, 8192);
-    try std.testing.expectEqualStrings("Moved a.tif to trash", trashed.message);
+    try std.testing.expectEqualStrings("Moved a.tif to the Trash", trashed.message);
     try std.testing.expectEqual(@as(usize, 0), trashed.image_idx);
     try std.testing.expectEqual(@as(usize, 1), trashed.image_count);
     try std.testing.expect(trashed.switched);
@@ -3834,6 +3819,7 @@ test "native UI gallery handoff mirrors browser list navigation and mutations" {
     defer allocator.free(dir_path);
     var state = State.init("scans", dir_path, 0);
     defer state.deinit(allocator);
+    state.trash = trash_files.moveBeside;
 
     info = try state.refreshGalleryFiles(allocator, std.testing.io);
     try std.testing.expectEqual(@as(usize, 2), info.image_count);
@@ -3857,14 +3843,14 @@ test "native UI gallery handoff mirrors browser list navigation and mutations" {
 
     var trashed = try state.trashCurrentGalleryFile(allocator, std.testing.io);
     defer trashed.deinit(allocator);
-    try std.testing.expectEqualStrings("Moved b.TIFF to trash", trashed.message);
+    try std.testing.expectEqualStrings("Moved b.TIFF to the Trash", trashed.message);
     try tmp.dir.access(std.testing.io, ".trash/b_1.TIFF", .{});
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "b.TIFF", .{}));
     info = state.galleryInfo();
     try std.testing.expectEqual(@as(?usize, 0), info.active_index);
     try std.testing.expectEqual(@as(usize, 1), info.image_count);
     try std.testing.expectEqualStrings("a.tif", info.filename);
-    try std.testing.expectEqualStrings("1 exported frame", info.status);
+    try std.testing.expectEqualStrings("Moved b.TIFF to the Trash", info.status);
 
     var deleted = try state.deleteCurrentGalleryFile(allocator, std.testing.io);
     defer deleted.deinit(allocator);

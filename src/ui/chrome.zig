@@ -148,6 +148,12 @@ pub fn layoutRow(ctx: *c.struct_nk_context, base_height: f32, columns: c_int) vo
     c.nk_layout_row_dynamic(ctx, runtime_ui_config.metrics().row(base_height), columns);
 }
 
+/// A row whose columns take these shares of its width. Nuklear keeps the
+/// pointer until the row ends, so `ratios` must outlive it.
+pub fn layoutRowRatios(ctx: *c.struct_nk_context, base_height: f32, ratios: []const f32) void {
+    c.nk_layout_row(ctx, c.NK_DYNAMIC, runtime_ui_config.metrics().row(base_height), @intCast(ratios.len), ratios.ptr);
+}
+
 pub fn layoutRowStatic(ctx: *c.struct_nk_context, base_height: f32, base_width: c_int, columns: c_int) void {
     const metrics = runtime_ui_config.metrics();
     c.nk_layout_row_static(
