@@ -1039,6 +1039,10 @@ test "process worker does not store stale RGB page load results" {
     try std.testing.expect((try model.processing_result_cache.rgb_pages.getClone(std.testing.allocator, key)) == null);
 }
 
+/// A config that never exists, so tests run on the defaults rather than
+/// the developer's own processing.toml in the working directory.
+const test_config_path = ".zig-cache/tmp/cerealgrain-process-worker-tests/processing.toml";
+
 test "rebate edits leave a resident RGB page in the cache" {
     var model = ui_state.State.init("scans", "frames", 0);
     defer model.deinit(std.testing.allocator);
@@ -1057,7 +1061,7 @@ test "rebate edits leave a resident RGB page in the cache" {
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateWithoutRgbPage);
     defer worker.deinit();
-    try std.testing.expect(try worker.startRebateFromState(&model, "processing.toml"));
+    try std.testing.expect(try worker.startRebateFromState(&model, test_config_path));
     try waitForPoll(&worker, &model);
     try std.testing.expectApproxEqAbs(0.8, model.processing.dmin.?[1], 0.0);
 }
@@ -1156,7 +1160,7 @@ test "process worker rejects duplicate incompatible starts while running" {
     defer worker.deinit();
     try std.testing.expect(try worker.startLoadIndex(&model, 0, 8192));
     try std.testing.expect(!(try worker.startLoadIndex(&model, 0, 8192)));
-    try std.testing.expect(!(try worker.startAutoDetectFromState(&model, "processing.toml", .{}, 0.0, ui_state.default_process_output_rotation)));
+    try std.testing.expect(!(try worker.startAutoDetectFromState(&model, test_config_path, .{}, 0.0, ui_state.default_process_output_rotation)));
     try std.testing.expectEqualStrings("Processing busy, please wait...", model.processing.progress);
     try waitForPoll(&worker, &model);
 }
@@ -1176,7 +1180,7 @@ test "process worker exposes active operation diagnostics" {
     defer worker.deinit();
     try std.testing.expect(try worker.startAutoDetectFromState(
         &model,
-        "processing.toml",
+        test_config_path,
         .{ .format = "35mm", .n_frames = 6 },
         0.5,
         ui_state.default_process_output_rotation,
@@ -1205,7 +1209,7 @@ test "process worker runs pending auto-detect once and applies Dmin" {
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeAutoDetectSuccess);
     defer worker.deinit();
-    try std.testing.expect(try worker.startAutoDetectFromState(&model, "processing.toml", .{}, 0.0, ui_state.default_process_output_rotation));
+    try std.testing.expect(try worker.startAutoDetectFromState(&model, test_config_path, .{}, 0.0, ui_state.default_process_output_rotation));
     try waitForPoll(&worker, &model);
     try std.testing.expectEqual(@as(usize, 1), model.process_selection_count);
     try std.testing.expect(model.process_rebate_rect != null);
@@ -1285,7 +1289,7 @@ test "process worker applies explicit rebate Dmin result to matching image" {
 
     var worker = Worker.initWithExecutor(std.testing.allocator, std.testing.io, fakeRebateSuccess);
     defer worker.deinit();
-    try std.testing.expect(try worker.startRebateFromState(&model, "processing.toml"));
+    try std.testing.expect(try worker.startRebateFromState(&model, test_config_path));
     try waitForPoll(&worker, &model);
     try std.testing.expectApproxEqAbs(0.4, model.processing.dmin.?[0], 0.0);
     try std.testing.expectEqualStrings("Dmin computed", model.processing.progress);

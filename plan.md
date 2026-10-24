@@ -264,9 +264,6 @@ Recorded in the May-July log; correct anything that is wrong:
   holder with several side by side), a roll's default frame rotation
   assumes strips loaded as in the V600's holder, and scan-time estimates
   use the V600's line times.
-- Some UI worker tests (`src/ui/process_worker.zig`) load `processing.toml`
-  from the working directory, so a test run reads the developer's own
-  config at the repo root; they should use a temporary config.
 - With parity dropped, decide whether the Python tree stays in HEAD or only
   in history (commit 48a4c79). `docs/PYTHON_PORT_MAP.md` line references
   would then point at that commit.
