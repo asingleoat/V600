@@ -2,7 +2,6 @@ const std = @import("std");
 
 const app_state = @import("../app_state.zig");
 const processing_config = @import("../processing/config.zig");
-const processing_export = @import("../processing/export.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_render = @import("../processing/render.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
@@ -101,61 +100,6 @@ pub const Key = struct {
 
     pub fn hash(self: Key) u128 {
         return self.fingerprint;
-    }
-};
-
-pub const ByteEntry = struct {
-    key: Key,
-    payload: []u8,
-
-    fn deinit(self: *ByteEntry, allocator: std.mem.Allocator) void {
-        self.key.deinit(allocator);
-        allocator.free(self.payload);
-        self.payload = &.{};
-    }
-};
-
-pub const ByteResultCache = struct {
-    entries: std.array_list.Managed(ByteEntry),
-
-    pub fn init(allocator: std.mem.Allocator) ByteResultCache {
-        return .{ .entries = std.array_list.Managed(ByteEntry).init(allocator) };
-    }
-
-    pub fn deinit(self: *ByteResultCache) void {
-        const allocator = self.entries.allocator;
-        for (self.entries.items) |*entry| entry.deinit(allocator);
-        self.entries.deinit();
-    }
-
-    pub fn clear(self: *ByteResultCache) void {
-        const allocator = self.entries.allocator;
-        for (self.entries.items) |*entry| entry.deinit(allocator);
-        self.entries.clearRetainingCapacity();
-    }
-
-    pub fn get(self: *const ByteResultCache, key: Key) ?[]const u8 {
-        for (self.entries.items) |entry| {
-            if (entry.key.eql(key)) return entry.payload;
-        }
-        return null;
-    }
-
-    pub fn put(self: *ByteResultCache, key: Key, payload: []const u8) !void {
-        const allocator = self.entries.allocator;
-        for (self.entries.items) |*entry| {
-            if (!entry.key.eql(key)) continue;
-            const owned_payload = try allocator.dupe(u8, payload);
-            allocator.free(entry.payload);
-            entry.payload = owned_payload;
-            return;
-        }
-
-        var owned_key = try key.clone(allocator);
-        errdefer owned_key.deinit(allocator);
-        const owned_payload = try allocator.dupe(u8, payload);
-        errdefer allocator.free(owned_payload);
-        try self.entries.append(.{ .key = owned_key, .payload = owned_payload });
     }
 };
 
@@ -267,13 +211,6 @@ pub const RgbPageCache = struct {
         }
         self.resident_bytes = 0;
         self.access_counter = 0;
-    }
-
-    pub fn setMemoryBudget(self: *RgbPageCache, allocator: std.mem.Allocator, bytes: usize) void {
-        self.memory_budget_bytes = bytes;
-        while (self.resident_bytes > self.memory_budget_bytes) {
-            if (!self.evictLeastRecent(allocator)) break;
-        }
     }
 
     pub fn getClone(
@@ -994,39 +931,6 @@ pub fn invertedPreviewKey(
     });
 }
 
-pub const ExportState = struct {
-    output_dir: []const u8,
-    basename: []const u8,
-    rects: []const processing_export.FrameRect,
-    outputs: processing_export.OutputSelection = .{},
-    active_stock: ?[]const u8 = null,
-    dmin: ?[3]f64 = null,
-    rebate_rect: ?processing_frames.RebateOriginRect = null,
-    current_dpi: ?u32 = null,
-    invert_request: processing_webgpu.Request = .{},
-};
-
-pub fn exportStateBytes(
-    allocator: std.mem.Allocator,
-    state: ExportState,
-) ![]u8 {
-    var builder = StateBuilder.init(allocator);
-    errdefer builder.deinit();
-    try builder.tag("export_outputs");
-    try builder.appendString(state.output_dir);
-    try builder.appendString(state.basename);
-    try appendOutputSelection(&builder, state.outputs);
-    try builder.appendOptionalString(state.active_stock);
-    try builder.appendOptionalDmin(state.dmin);
-    try builder.appendOptionalU32(state.current_dpi);
-    try appendGpuRequest(&builder, state.invert_request);
-    try builder.appendBool(state.rebate_rect != null);
-    if (state.rebate_rect) |rect| try appendRebateOriginRect(&builder, rect);
-    try builder.appendUsize(state.rects.len);
-    for (state.rects) |rect| try appendFrameRect(&builder, rect);
-    return builder.finish();
-}
-
 const StateBuilder = struct {
     out: std.array_list.Managed(u8),
 
@@ -1058,11 +962,6 @@ const StateBuilder = struct {
         var buffer: [4]u8 = undefined;
         std.mem.writeInt(u32, &buffer, value, .little);
         try self.out.appendSlice(&buffer);
-    }
-
-    fn appendOptionalU32(self: *StateBuilder, value: ?u32) !void {
-        try self.appendBool(value != null);
-        if (value) |present| try self.appendU32(present);
     }
 
     fn appendU64(self: *StateBuilder, value: u64) !void {
@@ -1160,30 +1059,7 @@ fn appendGpuRequest(builder: *StateBuilder, request: processing_webgpu.Request) 
     try builder.appendU8(@intFromEnum(request.fallback));
 }
 
-fn appendOutputSelection(builder: *StateBuilder, outputs: processing_export.OutputSelection) !void {
-    try builder.appendBool(outputs.ir_neg);
-    try builder.appendBool(outputs.ir_inv);
-    try builder.appendBool(outputs.inv_only);
-}
-
-fn appendFrameRect(builder: *StateBuilder, rect: processing_export.FrameRect) !void {
-    try builder.appendF64(rect.cx);
-    try builder.appendF64(rect.cy);
-    try builder.appendF64(rect.w);
-    try builder.appendF64(rect.h);
-    try builder.appendF64(rect.angle);
-    try builder.appendI32(rect.rotation);
-}
-
 fn appendRebateRect(builder: *StateBuilder, rect: app_state.RebateRect) !void {
-    try builder.appendF64(rect.x);
-    try builder.appendF64(rect.y);
-    try builder.appendF64(rect.w);
-    try builder.appendF64(rect.h);
-    try builder.appendF64(rect.angle);
-}
-
-fn appendRebateOriginRect(builder: *StateBuilder, rect: processing_frames.RebateOriginRect) !void {
     try builder.appendF64(rect.x);
     try builder.appendF64(rect.y);
     try builder.appendF64(rect.w);
@@ -1466,7 +1342,7 @@ test "inverted preview state changes when render dmin or gpu request changes" {
     try std.testing.expect(!std.mem.eql(u8, base, changed_gpu));
 }
 
-test "auto detect and export state encode operation-specific controls" {
+test "auto detect state encodes operation-specific controls" {
     const allocator = std.testing.allocator;
     const auto_a = try autoDetectStateBytes(allocator, .{
         .options = .{ .format = "35mm", .n_frames = 6 },
@@ -1487,61 +1363,6 @@ test "auto detect and export state encode operation-specific controls" {
     });
     defer allocator.free(auto_b);
     try std.testing.expect(!std.mem.eql(u8, auto_a, auto_b));
-
-    const rects = [_]processing_export.FrameRect{
-        .{ .cx = 10.0, .cy = 20.0, .w = 30.0, .h = 40.0, .angle = 1.0, .rotation = 270 },
-    };
-    const export_a = try exportStateBytes(allocator, .{
-        .output_dir = "frames",
-        .basename = "frame",
-        .rects = &rects,
-        .outputs = .{ .ir_inv = true, .inv_only = false },
-    });
-    defer allocator.free(export_a);
-    const export_b = try exportStateBytes(allocator, .{
-        .output_dir = "frames",
-        .basename = "frame",
-        .rects = &rects,
-        .outputs = .{ .ir_inv = true, .inv_only = true },
-    });
-    defer allocator.free(export_b);
-    try std.testing.expect(!std.mem.eql(u8, export_a, export_b));
-}
-
-test "byte result cache returns hits only for exact semantic keys" {
-    const allocator = std.testing.allocator;
-    var cache = ByteResultCache.init(allocator);
-    defer cache.deinit();
-
-    var config = try sampleConfig();
-    const config_bytes = try configStateBytes(allocator, &config);
-    defer allocator.free(config_bytes);
-    const state_bytes = try quickPreviewStateBytes(allocator, 8192);
-    defer allocator.free(state_bytes);
-
-    var key = try Key.init(allocator, .{
-        .operation = .quick_preview,
-        .image = .{ .path = "scan.tiff", .size_bytes = 100, .mtime_ns = 10 },
-        .config_state = config_bytes,
-        .operation_state = state_bytes,
-    });
-    defer key.deinit(allocator);
-    try cache.put(key, "cached-preview");
-    try std.testing.expectEqualStrings("cached-preview", cache.get(key).?);
-
-    const miss_state = try quickPreviewStateBytes(allocator, 4096);
-    defer allocator.free(miss_state);
-    var miss_key = try Key.init(allocator, .{
-        .operation = .quick_preview,
-        .image = .{ .path = "scan.tiff", .size_bytes = 100, .mtime_ns = 10 },
-        .config_state = config_bytes,
-        .operation_state = miss_state,
-    });
-    defer miss_key.deinit(allocator);
-    try std.testing.expect(cache.get(miss_key) == null);
-
-    try cache.put(key, "updated-preview");
-    try std.testing.expectEqualStrings("updated-preview", cache.get(key).?);
 }
 
 test "quick preview cache clones hits and misses on semantic key changes" {

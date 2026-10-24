@@ -20,8 +20,7 @@ in git history; its dated entries run from 2026-05-15 to 2026-05-23.
   (scalar fallback kept, same fixtures), then GPU for parallel image
   transforms whose CPU version is accepted.
 - No GPU work on control paths: scanner startup, command planning, config
-  I/O, TIFF metadata, XMP, gallery filesystem work, Nuklear layout.
-  `negadoctor` is not a GPU target.
+  I/O, TIFF metadata, gallery filesystem work, Nuklear layout.
 - UI rendering stays separate from processing acceleration. WebGPU is an
   optional processing backend, not a required runtime dependency; the CPU
   path stays for tests and fallback.
@@ -253,7 +252,6 @@ GPU, scanner:
 
 - `apply_sigmoid` WGSL: works, not wired into UI or export. Parked.
 - `invert_negative` WGSL: works, opt-in, slower at workflow level. Parked.
-- `negadoctor` on GPU: rejected, non-goal.
 - Native session capability reuse: adopted. CLI capability disk cache: left
   out, needs an invalidation key design.
 

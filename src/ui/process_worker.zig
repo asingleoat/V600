@@ -213,7 +213,6 @@ pub const Worker = struct {
                 try processing_workflow.saveRebateDmin(self.allocator, self.io, config_path, dmin);
             }
             const applied = try model.applyProcessAutoDetectWorkerResult(
-                self.allocator,
                 model.processingGeneration(),
                 path,
                 &cached.result,
@@ -268,7 +267,6 @@ pub const Worker = struct {
         if (model.processing_result_cache.dmins.get(dmin_key)) |dmin| {
             try processing_workflow.saveRebateDmin(self.allocator, self.io, config_path, dmin);
             return try model.applyProcessRebateWorkerResult(
-                self.allocator,
                 model.processingGeneration(),
                 path,
                 rect,
@@ -345,7 +343,6 @@ pub const Worker = struct {
             .auto_detect => {
                 const result = if (context.auto_result) |*auto_result| auto_result else return error.MissingAutoDetectResult;
                 const applied = try model.applyProcessAutoDetectWorkerResult(
-                    self.allocator,
                     context.generation,
                     context.path,
                     result,
@@ -383,7 +380,6 @@ pub const Worker = struct {
                 const rect = context.full_rebate orelse return error.MissingRebateResult;
                 const dmin = context.dmin orelse return error.MissingRebateResult;
                 const applied = try model.applyProcessRebateWorkerResult(
-                    self.allocator,
                     context.generation,
                     context.path,
                     rect,
@@ -1083,13 +1079,13 @@ test "a Dmin result for a rebate moved since it was requested is dropped" {
     try std.testing.expect(try model.setProcessRebatePreviewRect(.{ .x = 1.5, .y = 1.0, .w = 6.0, .h = 6.0 }));
     model.process_rebate_dmin_pending = true;
     const moved = model.processing.rebate_rect;
-    try std.testing.expect(!(try model.applyProcessRebateWorkerResult(std.testing.allocator, model.processingGeneration(), model.processing_images.paths[0], requested, .{ 0.1, 0.2, 0.3 })));
+    try std.testing.expect(!(try model.applyProcessRebateWorkerResult(model.processingGeneration(), model.processing_images.paths[0], requested, .{ 0.1, 0.2, 0.3 })));
     try std.testing.expectEqual(dmin_before, model.processing.dmin);
     try std.testing.expectEqual(moved, model.processing.rebate_rect);
 
     _ = model.takeProcessRebateDminPending();
     const latest = (try model.processRebateRequest()).?;
-    try std.testing.expect(try model.applyProcessRebateWorkerResult(std.testing.allocator, model.processingGeneration(), model.processing_images.paths[0], latest, .{ 0.4, 0.5, 0.6 }));
+    try std.testing.expect(try model.applyProcessRebateWorkerResult(model.processingGeneration(), model.processing_images.paths[0], latest, .{ 0.4, 0.5, 0.6 }));
     try std.testing.expectEqual(@as(?[3]f64, .{ 0.4, 0.5, 0.6 }), model.processing.dmin);
 }
 

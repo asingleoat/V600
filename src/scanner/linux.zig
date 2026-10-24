@@ -10,7 +10,6 @@ const tiff = @import("../tiff.zig");
 const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
 
 pub const usbdevfs_reset: u32 = 0x5514;
-pub const sane_default_model_name = "Perfection V600 / GT-X820 (SANE)";
 
 /// Film (TPU) resolutions offered for Linux RGB scans. The V600 scans RGB at
 /// 6400 dpi (the macOS interpreter path offers it), and the `scanimage-v600`
@@ -40,10 +39,6 @@ pub const Device = struct {
         if (std.mem.indexOf(u8, self.name, "epkowa:interpreter") != null) return .epkowa_interpreter;
         if (std.mem.indexOf(u8, self.name, "epkowa") != null) return .epkowa;
         return .other;
-    }
-
-    pub fn backendRank(self: Device) u8 {
-        return self.backendRankForKind(.rgb);
     }
 
     pub fn backendRankForKind(self: Device, kind: contracts.ScanKind) u8 {
@@ -99,33 +94,6 @@ pub const WrapperAvailability = sane.WrapperAvailability;
 
 pub const cache_header = "v600-scanner-device-cache-v1";
 pub const tiff_software = tiff.software ++ " (SANE)";
-const custom_lut_marker = tiff.scanner_custom_lut_marker;
-
-pub const TiffMetadataTag = enum(u16) {
-    make = 271,
-    model = 272,
-    software = 305,
-};
-
-pub const TiffMetadataTagValue = struct {
-    tag: TiffMetadataTag,
-    value: []const u8,
-};
-
-pub const SaveImageFormat = enum {
-    tiff,
-    png,
-};
-
-pub const SaveImagePlan = struct {
-    path: []u8,
-    format: SaveImageFormat,
-    converted_png_16_to_tiff: bool = false,
-
-    pub fn deinit(self: SaveImagePlan, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-    }
-};
 
 pub const DeviceChoiceSource = events.SelectionSource;
 
@@ -137,44 +105,6 @@ pub const DeviceChoice = struct {
         allocator.free(self.name);
     }
 };
-
-pub const SaneBackendState = struct {
-    device_name: ?[]const u8 = null,
-    model_name: ?[]const u8 = null,
-    product_id: ?u16 = null,
-    cached_capabilities: ?contracts.ScannerCapabilities = null,
-
-    pub fn init(product_id: ?u16) SaneBackendState {
-        return .{ .product_id = product_id };
-    }
-};
-
-pub fn saneIdentity(allocator: std.mem.Allocator, model_name: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "SANE {s}", .{model_name});
-}
-
-pub fn saneStatus() [1]u8 {
-    return .{0};
-}
-
-pub fn saneExtendedIdentity() [80]u8 {
-    return .{0} ** 80;
-}
-
-pub fn planSaveImage(allocator: std.mem.Allocator, path: []const u8, depth: contracts.BitDepth) !SaveImagePlan {
-    const ext = std.fs.path.extension(path);
-    if (std.ascii.eqlIgnoreCase(ext, ".png")) {
-        if (depth == .sixteen) {
-            return .{
-                .path = try std.mem.replaceOwned(u8, allocator, path, ".png", ".tiff"),
-                .format = .tiff,
-                .converted_png_16_to_tiff = true,
-            };
-        }
-        return .{ .path = try allocator.dupe(u8, path), .format = .png };
-    }
-    return .{ .path = try allocator.dupe(u8, path), .format = .tiff };
-}
 
 pub const UsbDeviceId = struct {
     vendor_id: u16,
@@ -229,22 +159,6 @@ pub const Runtime = struct {
     fn wrappersFor(self: Runtime, model: ?*const models.Model) WrapperAvailability {
         if (!usesV600Wrappers(model)) return .{};
         return self.wrappers();
-    }
-
-    pub fn close(self: Runtime) void {
-        _ = self;
-    }
-
-    pub fn getIdentity(self: Runtime, model_name: []const u8) ![]u8 {
-        return saneIdentity(self.allocator, model_name);
-    }
-
-    pub fn getStatus(_: Runtime) [1]u8 {
-        return saneStatus();
-    }
-
-    pub fn getExtendedIdentity(_: Runtime) [80]u8 {
-        return saneExtendedIdentity();
     }
 
     fn emitStartup(self: Runtime, event: events.StartupEvent) void {
@@ -1157,10 +1071,6 @@ fn freeDevice(allocator: std.mem.Allocator, device: Device) void {
     if (device.raw_line.len != 0) allocator.free(device.raw_line);
 }
 
-pub fn selectDevice(devices: []const Device) ?Device {
-    return selectDeviceForKind(devices, .rgb);
-}
-
 pub fn selectDeviceForKind(devices: []const Device, kind: contracts.ScanKind) ?Device {
     var selected: ?Device = null;
     for (devices) |device| {
@@ -1171,36 +1081,6 @@ pub fn selectDeviceForKind(devices: []const Device, kind: contracts.ScanKind) ?D
         }
     }
     return selected;
-}
-
-pub fn chooseDeviceName(
-    allocator: std.mem.Allocator,
-    devices: []const Device,
-    cached_name: ?[]const u8,
-    explicit_name: ?[]const u8,
-) !?DeviceChoice {
-    return chooseDeviceNameForKind(allocator, devices, cached_name, explicit_name, .rgb);
-}
-
-pub fn chooseDeviceNameForKind(
-    allocator: std.mem.Allocator,
-    devices: []const Device,
-    cached_name: ?[]const u8,
-    explicit_name: ?[]const u8,
-    kind: contracts.ScanKind,
-) !?DeviceChoice {
-    if (explicit_name) |name| {
-        return .{ .name = try allocator.dupe(u8, name), .source = .explicit };
-    }
-    if (cached_name) |name| {
-        if (cachedDeviceUsableForKind(name, kind) and deviceListContains(devices, name)) {
-            return .{ .name = try allocator.dupe(u8, name), .source = .cache_hit };
-        }
-    }
-    if (selectDeviceForKind(devices, kind)) |selected| {
-        return .{ .name = try allocator.dupe(u8, selected.name), .source = .discovered };
-    }
-    return null;
 }
 
 pub fn serializeDeviceCache(allocator: std.mem.Allocator, device_name: []const u8) ![]u8 {
@@ -1215,21 +1095,6 @@ pub fn parseCachedDeviceName(allocator: std.mem.Allocator, data: []const u8) !?[
     const name = std.mem.trim(u8, raw_name, " \t\r");
     if (name.len == 0) return null;
     return try allocator.dupe(u8, name);
-}
-
-fn deviceListContains(devices: []const Device, device_name: []const u8) bool {
-    for (devices) |device| {
-        if (std.mem.eql(u8, device.name, device_name)) return true;
-    }
-    return false;
-}
-
-pub fn tiffMetadataTags(caps: contracts.ScannerCapabilities) [3]TiffMetadataTagValue {
-    return .{
-        .{ .tag = .make, .value = "EPSON" },
-        .{ .tag = .model, .value = if (caps.model.len == 0) "Epson Scanner" else caps.model },
-        .{ .tag = .software, .value = tiff_software },
-    };
 }
 
 pub fn parseUsbDeviceDescriptor(descriptor: []const u8) ?UsbDeviceId {
@@ -1248,15 +1113,6 @@ pub fn usbDevicePath(allocator: std.mem.Allocator, bus: usize, dev: usize) ![]u8
     return std.fmt.allocPrint(allocator, "/dev/bus/usb/{d:0>3}/{d:0>3}", .{ bus, dev });
 }
 
-pub fn usbResetStatusName(status: UsbResetStatus) []const u8 {
-    return switch (status) {
-        .reset_performed => "reset-performed",
-        .device_not_found => "device-not-found",
-        .permission_denied => "permission-denied",
-        .reset_failed => "reset-failed",
-    };
-}
-
 fn sleepAfterUsbReset() void {
     var remaining = std.posix.timespec{ .sec = 2, .nsec = 0 };
     while (true) {
@@ -1270,32 +1126,6 @@ fn sleepAfterUsbReset() void {
 
 pub fn shouldMirrorTiff(source: contracts.Source) bool {
     return source == .tpu;
-}
-
-fn tiffTagNumber(tag: TiffMetadataTag) []const u8 {
-    return switch (tag) {
-        .make => "271",
-        .model => "272",
-        .software => "305",
-    };
-}
-
-pub fn parseProgress(line_or_chunk: []const u8) ?ProgressEvent {
-    var cursor: usize = 0;
-    while (cursor < line_or_chunk.len) {
-        while (cursor < line_or_chunk.len and !std.ascii.isDigit(line_or_chunk[cursor])) cursor += 1;
-        const start = cursor;
-        while (cursor < line_or_chunk.len and std.ascii.isDigit(line_or_chunk[cursor])) cursor += 1;
-        const integer_end = cursor;
-        if (cursor > start and cursor < line_or_chunk.len and line_or_chunk[cursor] == '.') {
-            while (cursor < line_or_chunk.len and (std.ascii.isDigit(line_or_chunk[cursor]) or line_or_chunk[cursor] == '.')) cursor += 1;
-        }
-        if (cursor > start and cursor < line_or_chunk.len and line_or_chunk[cursor] == '%') {
-            const value = std.fmt.parseInt(u8, line_or_chunk[start..integer_end], 10) catch return null;
-            return .{ .percent = @min(value, 100) };
-        }
-    }
-    return null;
 }
 
 pub fn classifyFailure(stderr: []const u8) FailureKind {
@@ -1553,7 +1383,7 @@ test "parses scanimage device list and selects preferred V600 backend" {
     const devices = try parseDeviceList(allocator, output);
     defer freeDevices(allocator, devices);
     try std.testing.expectEqual(@as(usize, 2), devices.len);
-    try expectDeviceName(selectDevice(devices), "epson2:libusb:001:018");
+    try expectDeviceName(selectDeviceForKind(devices, .rgb), "epson2:libusb:001:018");
 
     // A V600's listing as captured on Linux.
     const captured = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "test/fixtures/scanner/scanimage-list/epkowa-v600-linux.txt", allocator, .limited(4096));
@@ -1585,7 +1415,7 @@ test "accepts live epkowa interpreter listing when model text is unknown" {
     ;
     const devices = try parseDeviceList(allocator, output);
     defer freeDevices(allocator, devices);
-    try expectDeviceName(selectDevice(devices), "epkowa:interpreter:001:017");
+    try expectDeviceName(selectDeviceForKind(devices, .rgb), "epkowa:interpreter:001:017");
 }
 
 test "serializes and parses persistent scanner device cache" {
@@ -1600,41 +1430,17 @@ test "serializes and parses persistent scanner device cache" {
 
 test "chooses explicit device over cache and discovery" {
     const allocator = std.testing.allocator;
-    const devices = try parseDeviceList(allocator,
-        \\device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner
-        \\
-    );
-    defer freeDevices(allocator, devices);
-    const choice = (try chooseDeviceName(allocator, devices, "epkowa:interpreter:001:017", "manual:device")).?;
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
+    defer environ_map.deinit();
+    const runtime = Runtime{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+    };
+    const choice = try runtime.resolveDeviceName("manual:device", .rgb);
     defer choice.deinit(allocator);
     try std.testing.expectEqual(DeviceChoiceSource.explicit, choice.source);
     try std.testing.expectEqualStrings("manual:device", choice.name);
-}
-
-test "uses cache hit when cached device is still present" {
-    const allocator = std.testing.allocator;
-    const devices = try parseDeviceList(allocator,
-        \\device `epkowa:interpreter:001:017' is a Epson Perfection V600 Photo flatbed scanner
-        \\
-    );
-    defer freeDevices(allocator, devices);
-    const choice = (try chooseDeviceName(allocator, devices, "epkowa:interpreter:001:017", null)).?;
-    defer choice.deinit(allocator);
-    try std.testing.expectEqual(DeviceChoiceSource.cache_hit, choice.source);
-    try std.testing.expectEqualStrings("epkowa:interpreter:001:017", choice.name);
-}
-
-test "ignores stale cache and falls back to discovered V600 device" {
-    const allocator = std.testing.allocator;
-    const devices = try parseDeviceList(allocator,
-        \\device `epkowa:interpreter:001:018' is a Epson Perfection V600 Photo flatbed scanner
-        \\
-    );
-    defer freeDevices(allocator, devices);
-    const choice = (try chooseDeviceName(allocator, devices, "epkowa:interpreter:001:017", null)).?;
-    defer choice.deinit(allocator);
-    try std.testing.expectEqual(DeviceChoiceSource.discovered, choice.source);
-    try std.testing.expectEqualStrings("epkowa:interpreter:001:018", choice.name);
 }
 
 test "ignores epson2 cache for IR scans and discovers epkowa" {
@@ -1645,10 +1451,11 @@ test "ignores epson2 cache for IR scans and discovers epkowa" {
         \\
     );
     defer freeDevices(allocator, devices);
-    const choice = (try chooseDeviceNameForKind(allocator, devices, "epson2:libusb:001:018", null, .rgb_ir)).?;
-    defer choice.deinit(allocator);
-    try std.testing.expectEqual(DeviceChoiceSource.discovered, choice.source);
-    try std.testing.expectEqualStrings("epkowa:interpreter:001:017", choice.name);
+    try std.testing.expect(!cachedDeviceUsableForKind("epson2:libusb:001:018", .rgb_ir));
+    try std.testing.expect(!cachedDeviceUsableForKind("epson2:libusb:001:018", .ir));
+    try std.testing.expect(cachedDeviceUsableForKind("epson2:libusb:001:018", .rgb));
+    try std.testing.expect(cachedDeviceUsableForKind("epkowa:interpreter:001:017", .rgb_ir));
+    try expectDeviceName(selectDeviceForKind(devices, .rgb_ir), "epkowa:interpreter:001:017");
 }
 
 const NullWriter = struct {
@@ -1888,25 +1695,34 @@ test "failed fake discovery keeps device-discovery event and timing diagnostics"
 }
 
 test "parses scanimage progress chunks" {
-    try std.testing.expectEqual(@as(u8, 37), parseProgress("Progress: 37.2%").?.percent);
-    try std.testing.expectEqual(@as(u8, 100), parseProgress("\r100%").?.percent);
-    try std.testing.expect(parseProgress("warming up") == null);
-}
+    const ProgressCapture = struct {
+        percents: [8]u8 = undefined,
+        len: usize = 0,
 
-test "maps TIFF metadata tags to Python SANE parity values" {
-    const tags = tiffMetadataTags(.{ .model = "Epson Perfection V600 Photo" });
-    try std.testing.expectEqual(TiffMetadataTag.make, tags[0].tag);
-    try std.testing.expectEqualStrings("271", tiffTagNumber(tags[0].tag));
-    try std.testing.expectEqualStrings("EPSON", tags[0].value);
-    try std.testing.expectEqual(TiffMetadataTag.model, tags[1].tag);
-    try std.testing.expectEqualStrings("272", tiffTagNumber(tags[1].tag));
-    try std.testing.expectEqualStrings("Epson Perfection V600 Photo", tags[1].value);
-    try std.testing.expectEqual(TiffMetadataTag.software, tags[2].tag);
-    try std.testing.expectEqualStrings("305", tiffTagNumber(tags[2].tag));
-    try std.testing.expectEqualStrings(tiff_software, tags[2].value);
-
-    const fallback = tiffMetadataTags(.{ .model = "" });
-    try std.testing.expectEqualStrings("Epson Scanner", fallback[1].value);
+        fn emit(raw_context: *anyopaque, event: events.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(raw_context));
+            switch (event) {
+                .progress => |progress| {
+                    self.percents[self.len] = progress.percent;
+                    self.len += 1;
+                },
+                else => {},
+            }
+        }
+    };
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, std.testing.allocator);
+    defer environ_map.deinit();
+    var capture = ProgressCapture{};
+    const runtime = Runtime{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .environ_map = &environ_map,
+        .event_sink = .{ .context = &capture, .emit = ProgressCapture.emit },
+    };
+    try emitProgressFromChunk(runtime, "Progress: 37.2%");
+    try emitProgressFromChunk(runtime, "\r100%");
+    try emitProgressFromChunk(runtime, "warming up");
+    try std.testing.expectEqualSlices(u8, &.{ 37, 100 }, capture.percents[0..capture.len]);
 }
 
 test "devices are matched by model, and only a V600 or an unnamed device gets the V600 wrappers" {
@@ -1971,13 +1787,6 @@ test "formats Linux USB device paths like Python fallback scanner reset" {
     const path = try usbDevicePath(allocator, 1, 7);
     defer allocator.free(path);
     try std.testing.expectEqualStrings("/dev/bus/usb/001/007", path);
-}
-
-test "names USB reset outcomes for explicit CLI reporting" {
-    try std.testing.expectEqualStrings("reset-performed", usbResetStatusName(.reset_performed));
-    try std.testing.expectEqualStrings("device-not-found", usbResetStatusName(.device_not_found));
-    try std.testing.expectEqualStrings("permission-denied", usbResetStatusName(.permission_denied));
-    try std.testing.expectEqualStrings("reset-failed", usbResetStatusName(.reset_failed));
 }
 
 test "mirrors only TPU TIFF outputs" {
@@ -2476,71 +2285,8 @@ test "applies custom LUT TIFF metadata marker through native TIFF wrapper" {
     });
     const marker = (try tiff.readAsciiTag(allocator, tiff_path, tiff.scanner_custom_lut_tag, tiff.scanner_custom_lut_name)).?;
     defer allocator.free(marker);
-    try std.testing.expectEqualStrings(custom_lut_marker, marker);
+    try std.testing.expectEqualStrings(tiff.scanner_custom_lut_marker, marker);
     try std.testing.expectEqual(@as(?u32, 800), try tiff.readDpi(allocator, tiff_path));
-}
-
-test "SANE backend identity status and close match Python no-hardware methods" {
-    const allocator = std.testing.allocator;
-    var environ_map = try std.process.Environ.createMap(std.testing.environ, allocator);
-    defer environ_map.deinit();
-    const runtime = Runtime{
-        .allocator = allocator,
-        .io = std.testing.io,
-        .environ_map = &environ_map,
-    };
-
-    const identity = try runtime.getIdentity(sane_default_model_name);
-    defer allocator.free(identity);
-    try std.testing.expectEqualStrings("SANE Perfection V600 / GT-X820 (SANE)", identity);
-    const status = runtime.getStatus();
-    try std.testing.expectEqualSlices(u8, &.{0}, &status);
-    const extended = runtime.getExtendedIdentity();
-    const expected_extended = [_]u8{0} ** 80;
-    try std.testing.expectEqual(@as(usize, 80), extended.len);
-    try std.testing.expectEqualSlices(u8, &expected_extended, &extended);
-    runtime.close();
-}
-
-test "SANE backend init state mirrors Python constructor defaults" {
-    const default_state = SaneBackendState.init(null);
-    try std.testing.expect(default_state.device_name == null);
-    try std.testing.expect(default_state.model_name == null);
-    try std.testing.expect(default_state.product_id == null);
-    try std.testing.expect(default_state.cached_capabilities == null);
-
-    const explicit_state = SaneBackendState.init(models.v600.product_id);
-    try std.testing.expectEqual(@as(?u16, models.v600.product_id), explicit_state.product_id);
-    try std.testing.expect(explicit_state.device_name == null);
-    try std.testing.expect(explicit_state.model_name == null);
-    try std.testing.expect(explicit_state.cached_capabilities == null);
-}
-
-test "SANE save image planning mirrors Python extension and depth routing" {
-    const allocator = std.testing.allocator;
-
-    const tiff_plan = try planSaveImage(allocator, "scan.tiff", .sixteen);
-    defer tiff_plan.deinit(allocator);
-    try std.testing.expectEqual(SaveImageFormat.tiff, tiff_plan.format);
-    try std.testing.expectEqualStrings("scan.tiff", tiff_plan.path);
-    try std.testing.expect(!tiff_plan.converted_png_16_to_tiff);
-
-    const png_8_plan = try planSaveImage(allocator, "scan.png", .eight);
-    defer png_8_plan.deinit(allocator);
-    try std.testing.expectEqual(SaveImageFormat.png, png_8_plan.format);
-    try std.testing.expectEqualStrings("scan.png", png_8_plan.path);
-    try std.testing.expect(!png_8_plan.converted_png_16_to_tiff);
-
-    const png_16_plan = try planSaveImage(allocator, "scan.png", .sixteen);
-    defer png_16_plan.deinit(allocator);
-    try std.testing.expectEqual(SaveImageFormat.tiff, png_16_plan.format);
-    try std.testing.expectEqualStrings("scan.tiff", png_16_plan.path);
-    try std.testing.expect(png_16_plan.converted_png_16_to_tiff);
-
-    const unknown_plan = try planSaveImage(allocator, "scan.raw", .eight);
-    defer unknown_plan.deinit(allocator);
-    try std.testing.expectEqual(SaveImageFormat.tiff, unknown_plan.format);
-    try std.testing.expectEqualStrings("scan.raw", unknown_plan.path);
 }
 
 fn processExists(pid: std.posix.pid_t) bool {

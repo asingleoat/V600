@@ -2,17 +2,9 @@ const std = @import("std");
 
 const color = @import("color.zig");
 const numeric = @import("numeric_fixture.zig");
-const parallelism = @import("parallelism.zig");
 
 pub const exact_percentile_sample_limit: usize = 0;
 pub const default_percentile_sample_limit: usize = 16_384;
-
-pub const SigmoidTonemapOptions = struct {
-    mid_grey: f64 = 0.18,
-    white_point: f64 = 1.0,
-    black_point: f64 = 0.0,
-    contrast: f64 = 1.4,
-};
 
 pub const RenderToDisplayOptions = struct {
     /// Contrast of the display curve, a log-logistic through 18% grey: its
@@ -53,28 +45,6 @@ pub const RenderToDisplayOptions = struct {
 /// border slivers of real crops; more starts to drop picture (5% shifted a
 /// Portra frame's balance as much as its edge lettering did).
 const frame_measure_inset: f64 = 0.025;
-
-pub fn sigmoidTonemapValue(value: f64, options: SigmoidTonemapOptions) f64 {
-    if (value <= 0.0) return options.black_point;
-    const xp = std.math.pow(f64, value, options.contrast);
-    const mp = std.math.pow(f64, options.mid_grey, options.contrast);
-    const sigmoid = xp / (xp + mp);
-    return options.black_point + (options.white_point - options.black_point) * sigmoid;
-}
-
-pub fn sigmoidTonemap(input: []const f64, output: []f64, options: SigmoidTonemapOptions) !void {
-    try validateRgbBuffers(input, output);
-    for (input, output) |value, *out| {
-        out.* = sigmoidTonemapValue(value, options);
-    }
-}
-
-pub fn applySrgbGamma(input: []const f64, output: []f64) !void {
-    try validateRgbBuffers(input, output);
-    for (input, output) |value, *out| {
-        out.* = color.linearToSrgbValue(value);
-    }
-}
 
 pub fn renderToDisplay(
     allocator: std.mem.Allocator,
@@ -472,21 +442,6 @@ fn displayToU16(display: f64) u16 {
     return @intFromFloat(clamp(display * 65535.0, 0.0, 65535.0));
 }
 
-fn validateRgbBuffers(input: []const f64, output: []const f64) !void {
-    try validateRgbInput(input);
-    if (input.len != output.len) return error.InvalidRenderBuffer;
-}
-
-fn validateRgbInput(input: []const f64) !void {
-    if (input.len == 0) return error.InvalidRenderBuffer;
-    if (input.len % 3 != 0) return error.InvalidRenderBuffer;
-}
-
-fn validateRgbInputF32(input: []const f32) !void {
-    if (input.len == 0) return error.InvalidRenderBuffer;
-    if (input.len % 3 != 0) return error.InvalidRenderBuffer;
-}
-
 fn validateWhiteBalance(strength: f64) !void {
     if (!std.math.isFinite(strength) or strength < 0.0 or strength > 1.0) return error.InvalidRenderWhiteBalance;
 }
@@ -497,163 +452,6 @@ fn validatePercentile(percentile: f64) !void {
     }
 }
 
-pub const LuminanceRange = struct {
-    lo: f64,
-    hi: f64,
-};
-
-pub fn estimateDisplayLuminanceRange(
-    allocator: std.mem.Allocator,
-    input: []const f64,
-    options: RenderToDisplayOptions,
-) !LuminanceRange {
-    try validateRgbInput(input);
-    try validatePercentile(options.percentile_lo);
-    try validatePercentile(options.percentile_hi);
-    return robustLuminanceRange(allocator, input, options.percentile_lo, options.percentile_hi, options.percentile_sample_limit);
-}
-
-pub fn estimateDisplayLuminanceRangeF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    options: RenderToDisplayOptions,
-) !LuminanceRange {
-    try validateRgbInputF32(input);
-    try validatePercentile(options.percentile_lo);
-    try validatePercentile(options.percentile_hi);
-    return robustLuminanceRangeF32(allocator, input, options.percentile_lo, options.percentile_hi, options.percentile_sample_limit);
-}
-
-fn robustLuminanceRange(
-    allocator: std.mem.Allocator,
-    input: []const f64,
-    percentile_lo: f64,
-    percentile_hi: f64,
-    sample_limit: usize,
-) !LuminanceRange {
-    const pixel_count = input.len / 3;
-    const sample_count = percentileSampleCount(pixel_count, sample_limit);
-    if (sample_count == pixel_count) {
-        return robustLuminanceRangeExact(allocator, input, percentile_lo, percentile_hi);
-    }
-
-    return robustLuminanceRangeSampled(allocator, input, percentile_lo, percentile_hi, sample_count);
-}
-
-fn robustLuminanceRangeF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    percentile_lo: f64,
-    percentile_hi: f64,
-    sample_limit: usize,
-) !LuminanceRange {
-    const pixel_count = input.len / 3;
-    const sample_count = percentileSampleCount(pixel_count, sample_limit);
-    if (sample_count == pixel_count) {
-        return robustLuminanceRangeExactF32(allocator, input, percentile_lo, percentile_hi);
-    }
-
-    return robustLuminanceRangeSampledF32(allocator, input, percentile_lo, percentile_hi, sample_count);
-}
-
-fn robustLuminanceRangeExact(
-    allocator: std.mem.Allocator,
-    input: []const f64,
-    percentile_lo: f64,
-    percentile_hi: f64,
-) !LuminanceRange {
-    const pixel_count = input.len / 3;
-    const positive = try allocator.alloc(f64, pixel_count);
-    defer allocator.free(positive);
-
-    const count = collectPositiveLuminanceExact(input, positive);
-
-    if (count == 0) return .{ .lo = 0.0, .hi = 1.0 };
-
-    const values = positive[0..count];
-    std.sort.pdq(f64, values, {}, lessThanF64);
-    const lo = percentileSorted(values, percentile_lo);
-    var hi = percentileSorted(values, percentile_hi);
-    if (hi <= lo) {
-        hi = lo + 1.0;
-    }
-    return .{ .lo = lo, .hi = hi };
-}
-
-fn robustLuminanceRangeExactF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    percentile_lo: f64,
-    percentile_hi: f64,
-) !LuminanceRange {
-    const pixel_count = input.len / 3;
-    const positive = try allocator.alloc(f64, pixel_count);
-    defer allocator.free(positive);
-
-    const count = collectPositiveLuminanceExactF32(input, positive);
-
-    if (count == 0) return .{ .lo = 0.0, .hi = 1.0 };
-
-    const values = positive[0..count];
-    std.sort.pdq(f64, values, {}, lessThanF64);
-    const lo = percentileSorted(values, percentile_lo);
-    var hi = percentileSorted(values, percentile_hi);
-    if (hi <= lo) {
-        hi = lo + 1.0;
-    }
-    return .{ .lo = lo, .hi = hi };
-}
-
-fn robustLuminanceRangeSampled(
-    allocator: std.mem.Allocator,
-    input: []const f64,
-    percentile_lo: f64,
-    percentile_hi: f64,
-    sample_count: usize,
-) !LuminanceRange {
-    const positive = try allocator.alloc(f32, sample_count);
-    defer allocator.free(positive);
-
-    const count = collectPositiveLuminanceSampled(input, positive, sample_count);
-    if (count == 0) {
-        return robustLuminanceRangeExact(allocator, input, percentile_lo, percentile_hi);
-    }
-
-    const values = positive[0..count];
-    std.sort.pdq(f32, values, {}, lessThanF32);
-    const lo = percentileSortedF32(values, percentile_lo);
-    var hi = percentileSortedF32(values, percentile_hi);
-    if (hi <= lo) {
-        hi = lo + 1.0;
-    }
-    return .{ .lo = lo, .hi = hi };
-}
-
-fn robustLuminanceRangeSampledF32(
-    allocator: std.mem.Allocator,
-    input: []const f32,
-    percentile_lo: f64,
-    percentile_hi: f64,
-    sample_count: usize,
-) !LuminanceRange {
-    const positive = try allocator.alloc(f32, sample_count);
-    defer allocator.free(positive);
-
-    const count = collectPositiveLuminanceSampledF32(input, positive, sample_count);
-    if (count == 0) {
-        return robustLuminanceRangeExactF32(allocator, input, percentile_lo, percentile_hi);
-    }
-
-    const values = positive[0..count];
-    std.sort.pdq(f32, values, {}, lessThanF32);
-    const lo = percentileSortedF32(values, percentile_lo);
-    var hi = percentileSortedF32(values, percentile_hi);
-    if (hi <= lo) {
-        hi = lo + 1.0;
-    }
-    return .{ .lo = lo, .hi = hi };
-}
-
 fn percentileSampleCount(pixel_count: usize, sample_limit: usize) usize {
     if (sample_limit == exact_percentile_sample_limit or sample_limit >= pixel_count) return pixel_count;
     return @max(sample_limit, 1);
@@ -661,62 +459,6 @@ fn percentileSampleCount(pixel_count: usize, sample_limit: usize) usize {
 
 pub fn percentileScratchSampleCount(pixel_count: usize, sample_limit: usize) usize {
     return percentileSampleCount(pixel_count, sample_limit);
-}
-
-fn collectPositiveLuminanceExact(input: []const f64, output: []f64) usize {
-    var count: usize = 0;
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        const luminance = pixelLuminance(input[index], input[index + 1], input[index + 2]);
-        if (luminance > 0.001) {
-            output[count] = luminance;
-            count += 1;
-        }
-    }
-    return count;
-}
-
-fn collectPositiveLuminanceExactF32(input: []const f32, output: []f64) usize {
-    var count: usize = 0;
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        const luminance = pixelLuminance(@floatCast(input[index]), @floatCast(input[index + 1]), @floatCast(input[index + 2]));
-        if (luminance > 0.001) {
-            output[count] = luminance;
-            count += 1;
-        }
-    }
-    return count;
-}
-
-fn collectPositiveLuminanceSampled(input: []const f64, output: []f32, sample_count: usize) usize {
-    const pixel_count = input.len / 3;
-    var count: usize = 0;
-    for (0..sample_count) |sample_index| {
-        const pixel_index = stratifiedPixelIndex(pixel_count, sample_count, sample_index);
-        const index = pixel_index * 3;
-        const luminance = pixelLuminance(input[index], input[index + 1], input[index + 2]);
-        if (luminance > 0.001) {
-            output[count] = @floatCast(luminance);
-            count += 1;
-        }
-    }
-    return count;
-}
-
-fn collectPositiveLuminanceSampledF32(input: []const f32, output: []f32, sample_count: usize) usize {
-    const pixel_count = input.len / 3;
-    var count: usize = 0;
-    for (0..sample_count) |sample_index| {
-        const pixel_index = stratifiedPixelIndex(pixel_count, sample_count, sample_index);
-        const index = pixel_index * 3;
-        const luminance = pixelLuminance(@floatCast(input[index]), @floatCast(input[index + 1]), @floatCast(input[index + 2]));
-        if (luminance > 0.001) {
-            output[count] = @floatCast(luminance);
-            count += 1;
-        }
-    }
-    return count;
 }
 
 fn stratifiedPixelIndex(pixel_count: usize, sample_count: usize, sample_index: usize) usize {
@@ -738,14 +480,6 @@ fn pixelLuminance(r: f64, g: f64, b: f64) f64 {
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-fn percentileSorted(values: []const f64, percentile: f64) f64 {
-    const rank = (@as(f64, @floatFromInt(values.len - 1)) * percentile) / 100.0;
-    const lower: usize = @intFromFloat(@floor(rank));
-    const upper: usize = @intFromFloat(@ceil(rank));
-    const fraction = rank - @as(f64, @floatFromInt(lower));
-    return values[lower] * (1.0 - fraction) + values[upper] * fraction;
-}
-
 fn percentileSortedF32(values: []const f32, percentile: f64) f64 {
     const rank = (@as(f64, @floatFromInt(values.len - 1)) * percentile) / 100.0;
     const lower: usize = @intFromFloat(@floor(rank));
@@ -754,10 +488,6 @@ fn percentileSortedF32(values: []const f32, percentile: f64) f64 {
     const lower_value: f64 = @floatCast(values[lower]);
     const upper_value: f64 = @floatCast(values[upper]);
     return lower_value * (1.0 - fraction) + upper_value * fraction;
-}
-
-fn lessThanF64(_: void, lhs: f64, rhs: f64) bool {
-    return lhs < rhs;
 }
 
 fn lessThanF32(_: void, lhs: f32, rhs: f32) bool {
@@ -783,40 +513,6 @@ fn expectRenderDisplayFixture(path: []const u8, options: RenderToDisplayOptions)
     for (actual_u16, actual) |sample, *out| {
         out.* = @floatFromInt(sample);
     }
-    try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
-}
-
-test "sigmoid tone map matches Python fixture" {
-    const allocator = std.testing.allocator;
-    var fixture = try numeric.loadJsonFixture(allocator, std.testing.io, "test/fixtures/processing/numeric/sigmoid-tonemap.json");
-    defer fixture.deinit();
-
-    const value = fixture.value();
-    const actual = try allocator.alloc(f64, value.expected.len);
-    defer allocator.free(actual);
-    try sigmoidTonemap(value.input, actual, .{
-        .mid_grey = 0.18,
-        .white_point = 0.9,
-        .black_point = 0.02,
-        .contrast = 1.4,
-    });
-    try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
-}
-
-test "sigmoid tone map rejects non-RGB flat buffers" {
-    var out: [2]f64 = undefined;
-    try std.testing.expectError(error.InvalidRenderBuffer, sigmoidTonemap(&.{ 0.1, 0.2 }, &out, .{}));
-}
-
-test "apply sRGB gamma matches Python render fixture" {
-    const allocator = std.testing.allocator;
-    var fixture = try numeric.loadJsonFixture(allocator, std.testing.io, "test/fixtures/processing/numeric/apply-srgb-gamma.json");
-    defer fixture.deinit();
-
-    const value = fixture.value();
-    const actual = try allocator.alloc(f64, value.expected.len);
-    defer allocator.free(actual);
-    try applySrgbGamma(value.input, actual);
     try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
 }
 

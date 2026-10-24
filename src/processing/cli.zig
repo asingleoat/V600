@@ -541,7 +541,7 @@ fn runExport(
             dmin = saved;
             dmin_source = "config";
         } else {
-            dmin = try inversion.computeDmin(allocator, pages.rgb.pixels, null, .{});
+            dmin = try inversion.computeDmin(allocator, pages.rgb.pixels, .{});
             dmin_source = "image";
         }
     }

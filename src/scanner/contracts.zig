@@ -83,11 +83,6 @@ pub const ScannerCapabilities = struct {
     }
 };
 
-pub const Progress = struct {
-    percent: u8,
-    eta_seconds: u64,
-};
-
 pub const CancelState = enum {
     keep_scanning,
     cancel_requested,

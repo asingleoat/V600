@@ -184,10 +184,6 @@ pub const InvertedPreviewCache = struct {
             self.scene_linear_f32 = null;
         }
     }
-
-    pub fn invalidate(self: *InvertedPreviewCache, allocator: std.mem.Allocator) void {
-        self.deinit(allocator);
-    }
 };
 
 pub const InvertedPreviewOptions = struct {
@@ -626,17 +622,6 @@ pub fn decodeJpegRgb(
     return decoded;
 }
 
-pub fn renderInvertedPreviewJpeg(
-    allocator: std.mem.Allocator,
-    preview: QuickPreview,
-    cache: *InvertedPreviewCache,
-    options: InvertedPreviewOptions,
-) !?[]u8 {
-    const display8 = (try renderInvertedPreviewRgb8(allocator, preview, cache, options)) orelse return null;
-    defer allocator.free(display8);
-    return try encodeRgbJpeg(allocator, display8, preview.preview_width, preview.preview_height, 90);
-}
-
 pub fn renderInvertedPreviewRgb8(
     allocator: std.mem.Allocator,
     preview: QuickPreview,
@@ -796,12 +781,6 @@ pub fn autoDetectDetectedFrames(
     };
 }
 
-pub fn loadRgbImageAsF64(allocator: std.mem.Allocator, path: []const u8) !export_pipeline.Image {
-    const image = try tiff.loadRgbPage(allocator, path);
-    defer image.deinit(allocator);
-    return tiffImageToF64(allocator, image);
-}
-
 pub fn loadFullImageAsF64(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -843,7 +822,7 @@ pub fn computeRebateDminFromImage(
         .angle = rect.angle * 180.0 / std.math.pi,
     });
     defer crop.deinit(allocator);
-    return inversion.computeDmin(allocator, crop.pixels, null, .{});
+    return inversion.computeDmin(allocator, crop.pixels, .{});
 }
 
 /// Reads only the rows the rebate covers: a rebate is a sliver of a scan
@@ -881,7 +860,7 @@ pub fn computeRebateDminFromTiffImage(
         .angle = rect.angle * 180.0 / std.math.pi,
     });
     defer crop.deinit(allocator);
-    return inversion.computeDmin(allocator, crop.pixels, null, .{});
+    return inversion.computeDmin(allocator, crop.pixels, .{});
 }
 
 pub fn saveRebateDmin(
@@ -958,7 +937,7 @@ pub fn processExportFromTiff(
             }
         }
         if (dmin == null) {
-            dmin = try inversion.computeDmin(allocator, full.rgb.pixels, null, .{});
+            dmin = try inversion.computeDmin(allocator, full.rgb.pixels, .{});
         }
         if (options.timings) |timings| timings.dmin_ns += monotonicNowNs() - dmin_started;
     }
@@ -2872,7 +2851,7 @@ test "process rebate Dmin workflow mirrors route crop and save" {
         4000.0,  5000.0,  6000.0,  7000.0,  8000.0,  9000.0,
         13000.0, 14000.0, 15000.0, 16000.0, 17000.0, 18000.0,
     };
-    const expected = try inversion.computeDmin(allocator, &expected_crop, null, .{});
+    const expected = try inversion.computeDmin(allocator, &expected_crop, .{});
     const actual = try computeRebateDminFromImage(allocator, image, .{
         .x = 1.0,
         .y = 0.0,
@@ -3276,22 +3255,24 @@ fn expectInvertedPreviewFixture(path: []const u8) !void {
 
     var empty_cache = InvertedPreviewCache{};
     defer empty_cache.deinit(allocator);
-    try std.testing.expect((try renderInvertedPreviewJpeg(allocator, preview, &empty_cache, .{})) == null);
+    try std.testing.expect((try renderInvertedPreviewRgb8(allocator, preview, &empty_cache, .{})) == null);
     try std.testing.expect(empty_cache.scene_linear == null);
 
     var grayscale_preview = preview;
     grayscale_preview.info.is_grayscale = true;
-    try std.testing.expect((try renderInvertedPreviewJpeg(allocator, grayscale_preview, &empty_cache, .{
+    try std.testing.expect((try renderInvertedPreviewRgb8(allocator, grayscale_preview, &empty_cache, .{
         .stock = fixture.input.stock,
     })) == null);
     try std.testing.expect(empty_cache.scene_linear == null);
 
     var cache = InvertedPreviewCache{};
     defer cache.deinit(allocator);
-    const jpeg = (try renderInvertedPreviewJpeg(allocator, preview, &cache, .{
+    const display8 = (try renderInvertedPreviewRgb8(allocator, preview, &cache, .{
         .stock = fixture.input.stock,
         .dmin = fixture.input.dmin,
     })).?;
+    defer allocator.free(display8);
+    const jpeg = try encodeRgbJpeg(allocator, display8, preview.preview_width, preview.preview_height, 90);
     defer allocator.free(jpeg);
     try std.testing.expect(cache.scene_linear != null);
     try std.testing.expectEqual(fixture.expected.jpeg_len, jpeg.len);
@@ -3304,13 +3285,13 @@ fn expectInvertedPreviewFixture(path: []const u8) !void {
     try expectMaxAbsDiff(decoded, fixture.expected.jpeg_decoded_rgb, fixture.expected.jpeg_decoded_abs_tolerance);
 
     const cached_scene_ptr = cache.scene_linear.?.ptr;
-    const rerendered = (try renderInvertedPreviewJpeg(allocator, preview, &cache, .{
+    const rerendered = (try renderInvertedPreviewRgb8(allocator, preview, &cache, .{
         .stock = fixture.input.stock,
         .render_options = .{ .exposure_compensation = 0.1 },
     })).?;
     defer allocator.free(rerendered);
     try std.testing.expectEqual(cached_scene_ptr, cache.scene_linear.?.ptr);
-    cache.invalidate(allocator);
+    cache.deinit(allocator);
     try std.testing.expect(cache.scene_linear == null);
 }
 
@@ -3409,14 +3390,6 @@ fn uniformPreview(allocator: std.mem.Allocator) !QuickPreview {
         .preview_rgb8 = preview_rgb8,
         .jpeg = jpeg,
     };
-}
-
-fn expectFrameRectApprox(expected: frames.FrameRect, actual: frames.FrameRect, tolerance: f64) !void {
-    try std.testing.expectApproxEqAbs(expected.cx, actual.cx, tolerance);
-    try std.testing.expectApproxEqAbs(expected.cy, actual.cy, tolerance);
-    try std.testing.expectApproxEqAbs(expected.w, actual.w, tolerance);
-    try std.testing.expectApproxEqAbs(expected.h, actual.h, tolerance);
-    try std.testing.expectApproxEqAbs(expected.angle, actual.angle, tolerance);
 }
 
 fn expectDminApprox(expected: [3]f64, actual: [3]f64, tolerance: f64) !void {

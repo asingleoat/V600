@@ -11,26 +11,6 @@ pub const m_srgb_to_rec2020_d50: [3][3]f64 = .{
     .{ 0.01639405, 0.08801124, 0.89538034 },
 };
 
-pub const m_rec2020_d50_to_srgb: [3][3]f64 = .{
-    .{ 1.66022695, -0.58754781, -0.07283824 },
-    .{ -0.12455353, 1.13292614, -0.00834966 },
-    .{ -0.01815511, -0.10060300, 1.11899818 },
-};
-
-pub const m_cat16: [3][3]f64 = .{
-    .{ 0.401288, 0.650173, -0.051461 },
-    .{ -0.250268, 1.204414, 0.045854 },
-    .{ -0.002079, 0.048952, 0.953127 },
-};
-
-pub const m_cat16_inv: [3][3]f64 = .{
-    .{ 1.8620678550872327, -1.0112546305316843, 0.14918677544445175 },
-    .{ 0.3875265432361372, 0.6214474419314753, -0.008973985167612516 },
-    .{ -0.01584149884933386, -0.03412293802851557, 1.0499644368778496 },
-};
-
-pub const d50_xy: [2]f64 = .{ 0.3457, 0.3585 };
-
 pub const DarktableSigmoidParams = struct {
     middle_grey_contrast: f64,
     contrast_skewness: f64,
@@ -51,21 +31,6 @@ pub const DarktableSigmoidCommit = struct {
 
 pub const ApplySigmoidOptions = struct {
     request: webgpu.Request = .{},
-};
-
-pub const processing_gpu_env_var = webgpu.processing_gpu_env_var;
-
-pub const NegadoctorParams = struct {
-    film_stock: i32 = 0,
-    dmin: [3]f64,
-    wb_high: [3]f64,
-    wb_low: [3]f64,
-    d_max: f64,
-    offset: f64,
-    black: f64,
-    gamma: f64,
-    soft_clip: f64,
-    exposure: f64,
 };
 
 pub fn srgbToLinearValue(value: f64) f64 {
@@ -239,53 +204,6 @@ pub fn applySigmoidWithBackend(
     @memcpy(output, gpu_output);
 }
 
-pub fn negadoctor(input: []const f64, output: []f64, params: NegadoctorParams) !void {
-    try validateRgbBuffers(input, output);
-    const threshold = 2.3283064365386963e-10;
-    const log2_to_log10 = 0.30103;
-    const black_effective = -params.exposure * (1.0 + params.black);
-
-    var index: usize = 0;
-    while (index < input.len) : (index += 3) {
-        const normalized = [3]f64{
-            roundF32(input[index] / 65535.0),
-            roundF32(input[index + 1] / 65535.0),
-            roundF32(input[index + 2] / 65535.0),
-        };
-        const linear = [3]f64{
-            roundF32(srgbToLinearValue(normalized[0])),
-            roundF32(srgbToLinearValue(normalized[1])),
-            roundF32(srgbToLinearValue(normalized[2])),
-        };
-        const rec2020_raw = applyColorMatrixPixel(linear, m_srgb_to_rec2020_d50);
-        const rec2020 = [3]f64{
-            roundF32(rec2020_raw[0]),
-            roundF32(rec2020_raw[1]),
-            roundF32(rec2020_raw[2]),
-        };
-
-        inline for (0..3) |channel| {
-            const density = params.dmin[channel] / @max(rec2020[channel], threshold);
-            const log_density = std.math.log2(density) * -log2_to_log10;
-            const wb_high_normed = params.wb_high[channel] / params.d_max;
-            const offset_precomp = params.wb_high[channel] * params.offset * params.wb_low[channel];
-            const corrected = wb_high_normed * log_density + offset_precomp;
-
-            var print_linear = -(params.exposure * std.math.pow(f64, 10.0, corrected) + black_effective);
-            if (print_linear < 0.0) {
-                print_linear = 0.0;
-            }
-
-            var print_gamma = std.math.pow(f64, print_linear, params.gamma);
-            if (print_gamma > params.soft_clip) {
-                const excess = print_gamma - params.soft_clip;
-                print_gamma = params.soft_clip + (1.0 - @exp(-excess / (1.0 - params.soft_clip))) * (1.0 - params.soft_clip);
-            }
-            output[index + channel] = roundF32(print_gamma);
-        }
-    }
-}
-
 fn validateRgbBuffers(input: []const f64, output: []const f64) !void {
     if (input.len != output.len) return error.InvalidColorBuffer;
     if (input.len % 3 != 0) return error.InvalidColorBuffer;
@@ -326,27 +244,10 @@ fn testSigmoidParams() DarktableSigmoidParams {
 
 test "color matrix constants match Python oracle values" {
     try std.testing.expectApproxEqAbs(0.1845, middle_grey, 0.0);
-    try std.testing.expectApproxEqAbs(0.3457, d50_xy[0], 0.0);
-    try std.testing.expectApproxEqAbs(0.3585, d50_xy[1], 0.0);
     try expectMatrixFlat(m_srgb_to_rec2020_d50, &.{
         0.62750372, 0.3292755,  0.04330266,
         0.06910838, 0.91951916, 0.01135963,
         0.01639405, 0.08801124, 0.89538034,
-    });
-    try expectMatrixFlat(m_rec2020_d50_to_srgb, &.{
-        1.66022695,  -0.58754781, -0.07283824,
-        -0.12455353, 1.13292614,  -0.00834966,
-        -0.01815511, -0.100603,   1.11899818,
-    });
-    try expectMatrixFlat(m_cat16, &.{
-        0.401288,  0.650173, -0.051461,
-        -0.250268, 1.204414, 0.045854,
-        -0.002079, 0.048952, 0.953127,
-    });
-    try expectMatrixFlat(m_cat16_inv, &.{
-        1.8620678550872327,   -1.0112546305316843,  0.14918677544445175,
-        0.3875265432361372,   0.6214474419314753,   -0.008973985167612516,
-        -0.01584149884933386, -0.03412293802851557, 1.0499644368778496,
     });
 }
 
@@ -497,43 +398,20 @@ test "darktable sigmoid runtime request honors explicit processing GPU env" {
     defer env.deinit();
 
     try std.testing.expectEqual(webgpu.Backend.cpu, (try applySigmoidRequestFromEnvironment(&env)).backend);
-    try env.put(processing_gpu_env_var, "0");
+    try env.put(webgpu.processing_gpu_env_var, "0");
     try std.testing.expectEqual(webgpu.Backend.cpu, (try applySigmoidRequestFromEnvironment(&env)).backend);
-    try env.put(processing_gpu_env_var, "1");
+    try env.put(webgpu.processing_gpu_env_var, "1");
     const webgpu_request = try applySigmoidRequestFromEnvironment(&env);
     try std.testing.expectEqual(webgpu.Backend.webgpu, webgpu_request.backend);
     try std.testing.expectEqual(webgpu.FallbackPolicy.fail, webgpu_request.fallback);
 
-    try env.put(processing_gpu_env_var, "allow-cpu");
+    try env.put(webgpu.processing_gpu_env_var, "allow-cpu");
     const fallback_request = try applySigmoidRequestFromEnvironment(&env);
     try std.testing.expectEqual(webgpu.Backend.webgpu, fallback_request.backend);
     try std.testing.expectEqual(webgpu.FallbackPolicy.allow_cpu, fallback_request.fallback);
 
-    try env.put(processing_gpu_env_var, "yes-please");
+    try env.put(webgpu.processing_gpu_env_var, "yes-please");
     try std.testing.expectError(error.InvalidProcessingGpuEnv, applySigmoidRequestFromEnvironment(&env));
-}
-
-test "negadoctor matches Python smoke fixture" {
-    const allocator = std.testing.allocator;
-    var fixture = try numeric.loadJsonFixture(allocator, std.testing.io, "test/fixtures/processing/numeric/negadoctor-smoke.json");
-    defer fixture.deinit();
-
-    const value = fixture.value();
-    const actual = try allocator.alloc(f64, value.expected.len);
-    defer allocator.free(actual);
-    try negadoctor(value.input, actual, .{
-        .film_stock = 1,
-        .dmin = .{ 0.11, 0.22, 0.33 },
-        .wb_high = .{ 1.10, 1.20, 1.30 },
-        .wb_low = .{ 0.01, 0.02, 0.03 },
-        .d_max = 2.5,
-        .offset = 0.125,
-        .black = 0.015,
-        .gamma = 1.7,
-        .soft_clip = 0.85,
-        .exposure = 1.25,
-    });
-    try numeric.assertCloseSlices(value.expected, actual, value.tolerance);
 }
 
 test "color buffer helpers reject non-RGB flat buffers" {

@@ -889,21 +889,6 @@ pub const TranslationEstimate = struct {
     iterations: u32,
 };
 
-pub fn estimateTranslationEccF32(
-    allocator: std.mem.Allocator,
-    rgb_f32: []const f32,
-    rgb_width: usize,
-    rgb_height: usize,
-    ir_f32: []const f32,
-    ir_width: usize,
-    ir_height: usize,
-    ecc_scale: f64,
-    max_iterations: u32,
-    epsilon: f64,
-) !TranslationEstimate {
-    return estimateTranslationEcc(f32, allocator, rgb_f32, rgb_width, rgb_height, ir_f32, ir_width, ir_height, ecc_scale, max_iterations, epsilon);
-}
-
 /// Translation-only ECC of the IR channel against the RGB image's gray at
 /// IR resolution. `T` is the sample type (f32 or f64, so a full-resolution
 /// f64 strip is never copied). Sizes and indexes are usize,

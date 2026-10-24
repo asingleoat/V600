@@ -9,9 +9,6 @@ const ScanWorker = cerealgrain.native_ui_scan_worker.Worker;
 const ProcessWorker = cerealgrain.native_ui_process_worker.Worker;
 const ProcessExportWorker = cerealgrain.native_ui_process_export_worker.Worker;
 const InvertedPreviewWorker = cerealgrain.native_ui_inverted_preview_worker.Worker;
-const InvertedPreviewKey = cerealgrain.native_ui_inverted_preview_worker.Key;
-const InvertedPreviewResult = cerealgrain.native_ui_inverted_preview_worker.Result;
-const ProcessCache = cerealgrain.native_ui_process_cache;
 
 const c = @import("sdl_nuklear.zig").c;
 const chrome = @import("chrome.zig");
@@ -30,59 +27,39 @@ const tooltip = chrome.tooltip;
 /// (it can be restored), Delete the smaller one beside it.
 const navigation_ratios = [_]f32{ 0.2, 0.2, 0.2, 0.24, 0.16 };
 const applyNuklearStyle = chrome.applyNuklearStyle;
-const nkColor = chrome.nkColor;
 const setRendererColor = chrome.setRendererColor;
 const controlPanelFlags = chrome.controlPanelFlags;
 const footerBarFlags = chrome.footerBarFlags;
 const controlPanelRect = chrome.controlPanelRect;
 const footerBarRect = chrome.footerBarRect;
 const updateUiChromeRects = chrome.updateUiChromeRects;
-const footerBarHeight = chrome.footerBarHeight;
-const footerBarRectForSize = chrome.footerBarRectForSize;
-const controlPanelRectForSize = chrome.controlPanelRectForSize;
 const feedNuklearInput = chrome.feedNuklearInput;
-const pointInControlPanel = chrome.pointInControlPanel;
-const pointInFooterBar = chrome.pointInFooterBar;
 const pointInUiChrome = chrome.pointInUiChrome;
-const controlPanelShouldReceiveWheel = chrome.controlPanelShouldReceiveWheel;
 const assertControlPanelPolicy = chrome.assertControlPanelPolicy;
 const nkBool = chrome.nkBool;
 const drawText = chrome.drawText;
 
-const ProcessSelectionEditMode = selection_geometry.ProcessSelectionEditMode;
 const ScanSelectionInteraction = selection_geometry.ScanSelectionInteraction;
 const ProcessSelectionTarget = selection_geometry.ProcessSelectionTarget;
-const ProcessDrawTarget = selection_geometry.ProcessDrawTarget;
 const ProcessSelectionInteraction = selection_geometry.ProcessSelectionInteraction;
-const ScanPreviewBounds = selection_geometry.ScanPreviewBounds;
-const ScanPreviewPoint = selection_geometry.ScanPreviewPoint;
 const ProcessPreviewPoint = selection_geometry.ProcessPreviewPoint;
-const ProcessScreenPoint = selection_geometry.ProcessScreenPoint;
 const ProcessPreviewBounds = selection_geometry.ProcessPreviewBounds;
-const ProcessSelectionHit = selection_geometry.ProcessSelectionHit;
 const scanImageRect = selection_geometry.scanImageRect;
 const scanPreviewBounds = selection_geometry.scanPreviewBounds;
 const screenToScanPreview = selection_geometry.screenToScanPreview;
 const screenToScanPreviewUnclamped = selection_geometry.screenToScanPreviewUnclamped;
 const hitScanSelection = selection_geometry.hitScanSelection;
-const scanSelectionHandleAt = selection_geometry.scanSelectionHandleAt;
 const processImageRect = selection_geometry.processImageRect;
 const processPreviewBounds = selection_geometry.processPreviewBounds;
 const screenToPreview = selection_geometry.screenToPreview;
 const screenToPreviewUnclamped = selection_geometry.screenToPreviewUnclamped;
 const processSelectionCenter = selection_geometry.processSelectionCenter;
-const pointerAngleFromSelectionCenter = selection_geometry.pointerAngleFromSelectionCenter;
-const selectionLocalToPreview = selection_geometry.selectionLocalToPreview;
 const selectionLocalToScreen = selection_geometry.selectionLocalToScreen;
-const previewToSelectionLocal = selection_geometry.previewToSelectionLocal;
 const previewDeltaToSelectionLocal = selection_geometry.previewDeltaToSelectionLocal;
 const processRotationHandleOffsetPreview = selection_geometry.processRotationHandleOffsetPreview;
 const hitProcessSelection = selection_geometry.hitProcessSelection;
-const processSelectionHandleAt = selection_geometry.processSelectionHandleAt;
 const adjustedProcessSelection = selection_geometry.adjustedProcessSelection;
 const rotatedProcessSelection = selection_geometry.rotatedProcessSelection;
-const normalizeAngle = selection_geometry.normalizeAngle;
-const clampSpanCenter = selection_geometry.clampSpanCenter;
 const clampFloat = selection_geometry.clampFloat;
 const imagePointOutsideUiChrome = selection_geometry.imagePointOutsideUiChrome;
 
@@ -92,20 +69,9 @@ const GalleryViewTransform = render_layer.GalleryViewTransform;
 const GalleryTextureCache = render_layer.GalleryTextureCache;
 const GalleryThumbnailCache = render_layer.GalleryThumbnailCache;
 const NuklearRenderer = render_layer.NuklearRenderer;
-const invertedPreviewCacheKey = render_layer.invertedPreviewCacheKey;
-const cacheInvertedPreviewResult = render_layer.cacheInvertedPreviewResult;
-const createProcessRgbTexture = render_layer.createProcessRgbTexture;
-const nkImageForTexture = render_layer.nkImageForTexture;
 const renderPreviewTexture = render_layer.renderPreviewTexture;
 const renderProcessTexture = render_layer.renderProcessTexture;
 const renderGalleryTexture = render_layer.renderGalleryTexture;
-const galleryImageRgb8 = render_layer.galleryImageRgb8;
-const renderSelectionOverlay = render_layer.renderSelectionOverlay;
-const renderProcessSelections = render_layer.renderProcessSelections;
-const renderSelectionHandles = render_layer.renderSelectionHandles;
-const renderProcessSelectionHandles = render_layer.renderProcessSelectionHandles;
-const processSelectionScreenCorners = render_layer.processSelectionScreenCorners;
-const containsGalleryName = render_layer.containsGalleryName;
 const setGalleryUiError = render_layer.setGalleryUiError;
 
 const print_sizes = cerealgrain.processing.print.sizes;
@@ -397,10 +363,7 @@ pub fn main(init: std.process.Init) !void {
     else
         cerealgrain.native_ui.processingConfigPath(&processing_config_path_buffer) catch cerealgrain.processing.config.config_file;
     model.loadProcessingConfig(std.heap.page_allocator, init.io, processing_config_path) catch {};
-    model.setProcessingGpuRequest(
-        std.heap.page_allocator,
-        try cerealgrain.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map),
-    );
+    model.setProcessingGpuRequest(try cerealgrain.processing.inversion.invertNegativeRequestFromEnvironment(init.environ_map));
     syncProcessUiFromConfig(&process_ui, &model);
     var timing_report: ?cerealgrain.scanner.events.TimingReport = null;
     defer if (timing_report) |*report| report.deinit();

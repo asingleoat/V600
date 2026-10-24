@@ -2,7 +2,6 @@
 //! and ECC alignment over row bands around the pure-Zig estimator.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const ir_pure = @import("ir_pure.zig");
 const parallelism = @import("parallelism.zig");

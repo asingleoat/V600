@@ -796,7 +796,7 @@ test "process export worker copies native processing GPU request into workflow c
 
     var model = ui_state.State.init("scans", output_dir, 0);
     defer model.deinit(allocator);
-    model.setProcessingGpuRequest(allocator, .{
+    model.setProcessingGpuRequest(.{
         .backend = .webgpu,
         .fallback = .allow_cpu,
     });

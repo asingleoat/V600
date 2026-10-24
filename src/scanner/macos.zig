@@ -10,50 +10,12 @@ pub const callback_success: i8 = 1;
 pub const callback_failure: i8 = 0;
 pub const callback_error: i16 = -1;
 pub const callback_ok: i16 = 0;
-pub const ica_driver_url = "https://ftp.epson.com/drivers/ESICA_5.8.23.dmg";
 pub const epson_vendor_id: u16 = 0x04b8;
 
 pub const InterpreterHost = enum {
     linux,
     macos,
     other,
-};
-
-pub const InterpreterRequirementStatus = enum {
-    ready,
-    missing_manual_install_required,
-    unsupported_linux,
-};
-
-pub const InterpreterRequirement = struct {
-    status: InterpreterRequirementStatus,
-    path: ?[]u8 = null,
-    interp_id: []const u8,
-    driver_url: []const u8 = ica_driver_url,
-
-    pub fn deinit(self: *InterpreterRequirement, allocator: std.mem.Allocator) void {
-        if (self.path) |path| allocator.free(path);
-        self.* = undefined;
-    }
-};
-
-pub const ScanDataStatus = enum {
-    complete,
-    read_failed,
-    fatal_error,
-    cancel_request,
-};
-
-pub const ScanDataReadResult = struct {
-    data: []u8,
-    status: ScanDataStatus,
-    blocks_read: u32,
-    status_byte: ?u8,
-
-    pub fn deinit(self: *ScanDataReadResult, allocator: std.mem.Allocator) void {
-        allocator.free(self.data);
-        self.* = undefined;
-    }
 };
 
 pub const valid_resolutions = [_]u32{
@@ -313,16 +275,9 @@ pub const GammaTables = struct {
     b: ?[]const u8 = null,
 };
 
-pub fn interpreterSearchPaths(
-    allocator: std.mem.Allocator,
-    base_dir: []const u8,
-    interp_id: []const u8,
-) ![]const []u8 {
-    return interpreterSearchPathsUnderRoot(allocator, base_dir, interp_id, "");
-}
-
-/// Like `interpreterSearchPaths`, with the system `/Library` locations moved
-/// under `system_root`, so tests do not depend on what the host has installed.
+/// Where to look for an interpreter: the repo's firmware folder, then the
+/// system `/Library` locations, moved under `system_root` ("" for the real
+/// ones) so tests do not depend on what the host has installed.
 fn interpreterSearchPathsUnderRoot(
     allocator: std.mem.Allocator,
     base_dir: []const u8,
@@ -407,52 +362,6 @@ fn findInterpreterUnderRoot(
         if (pathExists(io, path)) return try allocator.dupe(u8, path);
     }
     return null;
-}
-
-pub fn ensureInterpreterManual(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    base_dir: []const u8,
-    interp_id: []const u8,
-) !InterpreterRequirement {
-    return ensureInterpreterManualForHost(allocator, io, base_dir, interp_id, currentInterpreterHost());
-}
-
-pub fn ensureInterpreterManualForHost(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    base_dir: []const u8,
-    interp_id: []const u8,
-    host: InterpreterHost,
-) !InterpreterRequirement {
-    return ensureInterpreterManualUnderRoot(allocator, io, base_dir, interp_id, host, "");
-}
-
-fn ensureInterpreterManualUnderRoot(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    base_dir: []const u8,
-    interp_id: []const u8,
-    host: InterpreterHost,
-    system_root: []const u8,
-) !InterpreterRequirement {
-    if (host == .linux) {
-        return .{
-            .status = .unsupported_linux,
-            .interp_id = interp_id,
-        };
-    }
-    if (try findInterpreterUnderRoot(allocator, io, base_dir, interp_id, host, system_root)) |path| {
-        return .{
-            .status = .ready,
-            .path = path,
-            .interp_id = interp_id,
-        };
-    }
-    return .{
-        .status = .missing_manual_install_required,
-        .interp_id = interp_id,
-    };
 }
 
 pub fn usbReadCallback(buffer: ?[*]u8, length: u32, handle: ?*anyopaque, err: ?*i16) callconv(.c) i8 {
@@ -556,24 +465,6 @@ pub fn reset(session: *InterpreterSession) bool {
     return commandAck(session, &command);
 }
 
-pub fn getIdentity(session: *InterpreterSession, out: *[256]u8) bool {
-    const command = interpreter.identityCommand();
-    if (!writeCommand(session, &command)) return false;
-    return readResponse(session, out);
-}
-
-pub fn getStatus(session: *InterpreterSession, out: *[16]u8) bool {
-    const command = interpreter.statusCommand();
-    if (!writeCommand(session, &command)) return false;
-    return readResponse(session, out);
-}
-
-pub fn getExtendedStatus(session: *InterpreterSession, out: *[64]u8) bool {
-    const command = interpreter.extendedStatusCommand();
-    if (!writeCommand(session, &command)) return false;
-    return readResponse(session, out);
-}
-
 pub fn getExtendedIdentity(session: *InterpreterSession) ?interpreter.ExtendedIdentity {
     const command = interpreter.extendedIdentityCommand();
     if (!writeCommand(session, &command)) return null;
@@ -652,36 +543,6 @@ pub fn planScan(request: contracts.ScanRequest, caps: contracts.ScannerCapabilit
     };
 }
 
-pub fn setResolution(session: *InterpreterSession, dpi: u16) bool {
-    const command = interpreter.setResolutionCommand(dpi);
-    return writeCommand(session, &command);
-}
-
-pub fn setScanArea(session: *InterpreterSession, x: u32, y: u32, width: u32, height: u32) bool {
-    const command = interpreter.setScanAreaCommand(x, y, width, height);
-    return writeCommand(session, &command);
-}
-
-pub fn setColorMode(session: *InterpreterSession, mode: u8) bool {
-    const command = interpreter.setColorModeCommand(mode);
-    return writeCommand(session, &command);
-}
-
-pub fn setDataFormat(session: *InterpreterSession, bits: u8) bool {
-    const command = interpreter.setDataFormatCommand(bits);
-    return writeCommand(session, &command);
-}
-
-pub fn setSource(session: *InterpreterSession, source: u8, enable: bool) bool {
-    const command = interpreter.setSourceCommand(source, enable);
-    return writeCommand(session, &command);
-}
-
-pub fn startScan(session: *InterpreterSession) bool {
-    const command = interpreter.startScanCommand();
-    return writeCommand(session, &command);
-}
-
 pub fn setScanningParameters(session: *InterpreterSession, params: interpreter.SetParameters) bool {
     const command = interpreter.setScanningParametersCommand();
     if (!commandAck(session, &command)) return false;
@@ -709,59 +570,6 @@ pub fn startExtendedScan(session: *InterpreterSession) ?interpreter.StartScanInf
     var resp: [14]u8 = undefined;
     session.read(&resp) catch return null;
     return interpreter.parseStartScanResponse(&resp) catch null;
-}
-
-pub fn readScanData(
-    allocator: std.mem.Allocator,
-    session: *InterpreterSession,
-    block_size: u32,
-    block_count: u32,
-    last_block_size: u32,
-) !ScanDataReadResult {
-    const total_blocks = try std.math.add(u32, block_count, if (last_block_size != 0) 1 else 0);
-    var data = std.array_list.Managed(u8).init(allocator);
-    errdefer data.deinit();
-
-    if (total_blocks == 0) {
-        return finishScanDataRead(&data, .complete, 0, null);
-    }
-
-    const max_payload_size = @max(block_size, last_block_size);
-    const chunk_len = try std.math.add(usize, @as(usize, @intCast(max_payload_size)), 1);
-    const chunk = try allocator.alloc(u8, chunk_len);
-    defer allocator.free(chunk);
-
-    var block_index: u32 = 0;
-    var blocks_read: u32 = 0;
-    var last_status: ?u8 = null;
-    while (block_index < total_blocks) : (block_index += 1) {
-        const is_last = block_index == total_blocks - 1;
-        const payload_size = if (is_last and last_block_size != 0) last_block_size else block_size;
-        const payload_len: usize = @intCast(payload_size);
-        const read_buf = chunk[0 .. payload_len + 1];
-
-        session.read(read_buf) catch {
-            return finishScanDataRead(&data, .read_failed, blocks_read, null);
-        };
-
-        const status_byte = read_buf[payload_len];
-        last_status = status_byte;
-        try data.appendSlice(read_buf[0..payload_len]);
-        blocks_read += 1;
-
-        if ((status_byte & 0x80) != 0) {
-            return finishScanDataRead(&data, .fatal_error, blocks_read, status_byte);
-        }
-        if ((status_byte & 0x20) != 0) {
-            return finishScanDataRead(&data, .cancel_request, blocks_read, status_byte);
-        }
-
-        if (!is_last) {
-            session.write(&.{interpreter.ACK}) catch {};
-        }
-    }
-
-    return finishScanDataRead(&data, .complete, blocks_read, last_status);
 }
 
 fn callbackSlice(buffer: ?[*]u8, length: u32) UsbTransferError![]u8 {
@@ -842,20 +650,6 @@ fn nearestResolution(dpi: u32, valid: []const u32) u32 {
 
 fn absDiff(a: u32, b: u32) u32 {
     return if (a >= b) a - b else b - a;
-}
-
-fn finishScanDataRead(
-    data: *std.array_list.Managed(u8),
-    status: ScanDataStatus,
-    blocks_read: u32,
-    status_byte: ?u8,
-) !ScanDataReadResult {
-    return .{
-        .data = try data.toOwnedSlice(),
-        .status = status,
-        .blocks_read = blocks_read,
-        .status_byte = status_byte,
-    };
 }
 
 const FakeUsb = struct {
@@ -1043,7 +837,7 @@ fn fakeDynamicInterpreterError() callconv(.c) i32 {
 }
 
 test "builds macOS interpreter search paths like Python" {
-    const paths = try interpreterSearchPaths(std.testing.allocator, "/repo", "A1");
+    const paths = try interpreterSearchPathsUnderRoot(std.testing.allocator, "/repo", "A1", "");
     defer freeInterpreterSearchPaths(std.testing.allocator, paths);
     try std.testing.expectEqual(@as(usize, 3), paths.len);
     try std.testing.expectEqualStrings("/repo/firmware/Interpreter A1", paths[0]);
@@ -1156,57 +950,6 @@ test "find_interpreter returns null when no non-Linux search path exists" {
     try std.testing.expectEqual(@as(?[]u8, null), found);
 }
 
-test "ensure_interpreter manual helper reports unsupported Linux without download" {
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDir(std.testing.io, "firmware", .default_dir);
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "firmware/Interpreter A1", .data = "stub" });
-    const base_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
-    defer allocator.free(base_dir);
-
-    var requirement = try ensureInterpreterManualForHost(allocator, std.testing.io, base_dir, "A1", .linux);
-    defer requirement.deinit(allocator);
-    try std.testing.expectEqual(InterpreterRequirementStatus.unsupported_linux, requirement.status);
-    try std.testing.expect(requirement.path == null);
-    try std.testing.expectEqualStrings("A1", requirement.interp_id);
-    try std.testing.expectEqualStrings(ica_driver_url, requirement.driver_url);
-}
-
-test "ensure_interpreter manual helper returns ready path when interpreter exists" {
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDir(std.testing.io, "firmware", .default_dir);
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "firmware/Interpreter A1", .data = "stub" });
-    const base_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
-    defer allocator.free(base_dir);
-    const expected = try std.fmt.allocPrint(allocator, "{s}/firmware/Interpreter A1", .{base_dir});
-    defer allocator.free(expected);
-
-    var requirement = try ensureInterpreterManualForHost(allocator, std.testing.io, base_dir, "A1", .macos);
-    defer requirement.deinit(allocator);
-    try std.testing.expectEqual(InterpreterRequirementStatus.ready, requirement.status);
-    try std.testing.expectEqualStrings(expected, requirement.path.?);
-}
-
-test "ensure_interpreter manual helper reports missing without automatic download" {
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const base_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
-    defer allocator.free(base_dir);
-
-    var requirement = try ensureInterpreterManualUnderRoot(allocator, std.testing.io, base_dir, "A1", .macos, base_dir);
-    defer requirement.deinit(allocator);
-    try std.testing.expectEqual(InterpreterRequirementStatus.missing_manual_install_required, requirement.status);
-    try std.testing.expect(requirement.path == null);
-    try std.testing.expectEqualStrings(ica_driver_url, requirement.driver_url);
-}
-
 test "initializes and reinitializes interpreter session with persistent callbacks" {
     var fake_usb = FakeUsb{ .read_bytes = &.{0xaa} };
     var fake_interpreter = FakeInterpreter{};
@@ -1254,90 +997,6 @@ test "detached session passes a NULL handle and routes callbacks to its context"
 
     session.close();
     try std.testing.expectEqual(callback_failure, usbReadCallback(&buf, buf.len, null, &err));
-}
-
-test "read_scan_data reads full and final blocks with ACKs between blocks" {
-    const allocator = std.testing.allocator;
-    var fake_interpreter = FakeInterpreter{ .read_bytes = &.{
-        'a', 'b', 'c',  0x00,
-        'd', 'e', 'f',  0x00,
-        'g', 'h', 0x00,
-    } };
-    var session = InterpreterSession{
-        .api = fake_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-
-    var result = try readScanData(allocator, &session, 3, 2, 2);
-    defer result.deinit(allocator);
-
-    try std.testing.expectEqual(ScanDataStatus.complete, result.status);
-    try std.testing.expectEqual(@as(u32, 3), result.blocks_read);
-    try std.testing.expectEqual(@as(?u8, 0x00), result.status_byte);
-    try std.testing.expectEqualSlices(u8, "abcdefgh", result.data);
-    try std.testing.expectEqualSlices(u8, &.{ interpreter.ACK, interpreter.ACK }, fake_interpreter.written());
-}
-
-test "read_scan_data returns partial bytes on interpreter read failure" {
-    const allocator = std.testing.allocator;
-    var fake_interpreter = FakeInterpreter{ .read_bytes = &.{
-        'a', 'b', 0x00,
-    } };
-    var session = InterpreterSession{
-        .api = fake_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-
-    var result = try readScanData(allocator, &session, 2, 2, 0);
-    defer result.deinit(allocator);
-
-    try std.testing.expectEqual(ScanDataStatus.read_failed, result.status);
-    try std.testing.expectEqual(@as(u32, 1), result.blocks_read);
-    try std.testing.expectEqual(@as(?u8, null), result.status_byte);
-    try std.testing.expectEqualSlices(u8, "ab", result.data);
-    try std.testing.expectEqualSlices(u8, &.{interpreter.ACK}, fake_interpreter.written());
-}
-
-test "read_scan_data keeps fatal block payload and does not ACK it" {
-    const allocator = std.testing.allocator;
-    var fake_interpreter = FakeInterpreter{ .read_bytes = &.{
-        'a', 'b', 0x80,
-        'c', 'd', 0x00,
-    } };
-    var session = InterpreterSession{
-        .api = fake_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-
-    var result = try readScanData(allocator, &session, 2, 2, 0);
-    defer result.deinit(allocator);
-
-    try std.testing.expectEqual(ScanDataStatus.fatal_error, result.status);
-    try std.testing.expectEqual(@as(u32, 1), result.blocks_read);
-    try std.testing.expectEqual(@as(?u8, 0x80), result.status_byte);
-    try std.testing.expectEqualSlices(u8, "ab", result.data);
-    try std.testing.expectEqualSlices(u8, &.{}, fake_interpreter.written());
-}
-
-test "read_scan_data keeps cancel block payload and stops after previous ACK" {
-    const allocator = std.testing.allocator;
-    var fake_interpreter = FakeInterpreter{ .read_bytes = &.{
-        'a', 'b', 0x00,
-        'c', 'd', 0x20,
-    } };
-    var session = InterpreterSession{
-        .api = fake_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-
-    var result = try readScanData(allocator, &session, 2, 2, 0);
-    defer result.deinit(allocator);
-
-    try std.testing.expectEqual(ScanDataStatus.cancel_request, result.status);
-    try std.testing.expectEqual(@as(u32, 2), result.blocks_read);
-    try std.testing.expectEqual(@as(?u8, 0x20), result.status_byte);
-    try std.testing.expectEqualSlices(u8, "abcd", result.data);
-    try std.testing.expectEqualSlices(u8, &.{interpreter.ACK}, fake_interpreter.written());
 }
 
 test "start_extended_scan writes FS G and parses scan block info" {
@@ -1429,44 +1088,6 @@ test "reset uses Python ESC at command ACK exchange" {
     const command = interpreter.resetCommand();
     try std.testing.expect(reset(&session));
     try std.testing.expectEqualSlices(u8, &command, fake_interpreter.written());
-}
-
-test "identity and status runtime reads write Python commands and fill buffers" {
-    var identity_bytes = [_]u8{0x11} ** 256;
-    var identity_interpreter = FakeInterpreter{ .read_bytes = &identity_bytes };
-    var identity_session = InterpreterSession{
-        .api = identity_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-    var identity_out: [256]u8 = undefined;
-    const identity_command = interpreter.identityCommand();
-    try std.testing.expect(getIdentity(&identity_session, &identity_out));
-    try std.testing.expectEqualSlices(u8, &identity_command, identity_interpreter.written());
-    try std.testing.expectEqualSlices(u8, &identity_bytes, &identity_out);
-
-    var status_bytes = [_]u8{0x22} ** 16;
-    var status_interpreter = FakeInterpreter{ .read_bytes = &status_bytes };
-    var status_session = InterpreterSession{
-        .api = status_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-    var status_out: [16]u8 = undefined;
-    const status_command = interpreter.statusCommand();
-    try std.testing.expect(getStatus(&status_session, &status_out));
-    try std.testing.expectEqualSlices(u8, &status_command, status_interpreter.written());
-    try std.testing.expectEqualSlices(u8, &status_bytes, &status_out);
-
-    var extended_status_bytes = [_]u8{0x33} ** 64;
-    var extended_status_interpreter = FakeInterpreter{ .read_bytes = &extended_status_bytes };
-    var extended_status_session = InterpreterSession{
-        .api = extended_status_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-    var extended_status_out: [64]u8 = undefined;
-    const extended_status_command = interpreter.extendedStatusCommand();
-    try std.testing.expect(getExtendedStatus(&extended_status_session, &extended_status_out));
-    try std.testing.expectEqualSlices(u8, &extended_status_command, extended_status_interpreter.written());
-    try std.testing.expectEqualSlices(u8, &extended_status_bytes, &extended_status_out);
 }
 
 test "get_extended_identity writes FS I and parses capability response" {
@@ -1598,38 +1219,6 @@ test "macOS scan planning uses IR resolution table and selected area" {
     try std.testing.expectEqual(@as(u32, 80), plan.params.x);
     try std.testing.expectEqual(@as(u32, 160), plan.params.y);
     try std.testing.expectEqual(@as(u8, 3), plan.params.source);
-}
-
-test "write-only setup commands use Python command builders" {
-    const allocator = std.testing.allocator;
-    var fake_interpreter = FakeInterpreter{};
-    var session = InterpreterSession{
-        .api = fake_interpreter.api(),
-        .callback_context = .{ .usb = undefined },
-    };
-
-    try std.testing.expect(setResolution(&session, 3200));
-    try std.testing.expect(setScanArea(&session, 1, 2, 3, 4));
-    try std.testing.expect(setColorMode(&session, 0x13));
-    try std.testing.expect(setDataFormat(&session, 16));
-    try std.testing.expect(setSource(&session, 3, true));
-    try std.testing.expect(startScan(&session));
-
-    const resolution = interpreter.setResolutionCommand(3200);
-    const area = interpreter.setScanAreaCommand(1, 2, 3, 4);
-    const color = interpreter.setColorModeCommand(0x13);
-    const format = interpreter.setDataFormatCommand(16);
-    const source = interpreter.setSourceCommand(3, true);
-    const start = interpreter.startScanCommand();
-    var expected = std.array_list.Managed(u8).init(allocator);
-    defer expected.deinit();
-    try expected.appendSlice(&resolution);
-    try expected.appendSlice(&area);
-    try expected.appendSlice(&color);
-    try expected.appendSlice(&format);
-    try expected.appendSlice(&source);
-    try expected.appendSlice(&start);
-    try std.testing.expectEqualSlices(u8, expected.items, fake_interpreter.written());
 }
 
 test "set_scanning_parameters sends FS W then parameter block with ACKs" {

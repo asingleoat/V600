@@ -10,11 +10,7 @@ pub const InvertOptions = struct {
     dmin: ?[3]f64 = null,
     coeffs: ?film_stocks.Coefficients = null,
     stock: []const u8 = "kodak_gold",
-    dark_rgb: ?[3]f64 = null,
-    light_rgb: ?[3]f64 = null,
     default_light: f64 = 65535.0,
-    rebate_mask: ?[]const bool = null,
-    dmin_percentile: f64 = 1.0,
     request: webgpu.Request = .{},
 };
 
@@ -88,7 +84,6 @@ pub const DensityLutF32 = struct {
 pub fn computeDmin(
     allocator: std.mem.Allocator,
     raw_rgb: []const f64,
-    rebate_mask: ?[]const bool,
     options: measurement.NormalizeOptions,
 ) ![3]f64 {
     const transmittance = try allocator.alloc(f64, raw_rgb.len);
@@ -98,7 +93,7 @@ pub fn computeDmin(
     const density = try allocator.alloc(f64, raw_rgb.len);
     defer allocator.free(density);
     try measurement.transmittanceToDensity(transmittance, density);
-    return measurement.estimateDmin(allocator, density, rebate_mask, 1.0);
+    return measurement.estimateDmin(allocator, density, null, 1.0);
 }
 
 pub fn invertNegative(
@@ -116,10 +111,8 @@ pub fn invertNegative(
     else
         return error.UnknownFilmStock;
 
-    if (!try shouldUseCpuForInvert(options)) {
-        const dmin = options.dmin orelse try computeDmin(allocator, raw_rgb, options.rebate_mask, .{
-            .dark_rgb = options.dark_rgb,
-            .light_rgb = options.light_rgb,
+    if (!try webgpu.shouldUseCpu(options.request)) {
+        const dmin = options.dmin orelse try computeDmin(allocator, raw_rgb, .{
             .default_light = options.default_light,
         });
         const gpu_output = try webgpu.applyInvertNegativeKernel(allocator, raw_rgb, .{
@@ -138,8 +131,6 @@ pub fn invertNegative(
             try invertNegativeProvidedDminSimd(raw_rgb, output, dmin, coeffs, options.default_light);
         } else {
             try invertNegativeProvidedDminScalar(allocator, raw_rgb, output, dmin, coeffs, .{
-                .dark_rgb = options.dark_rgb,
-                .light_rgb = options.light_rgb,
                 .default_light = options.default_light,
             });
         }
@@ -149,8 +140,6 @@ pub fn invertNegative(
     const transmittance = try allocator.alloc(f64, raw_rgb.len);
     defer allocator.free(transmittance);
     try measurement.normalizeTransmittance(raw_rgb, transmittance, .{
-        .dark_rgb = options.dark_rgb,
-        .light_rgb = options.light_rgb,
         .default_light = options.default_light,
     });
 
@@ -158,12 +147,7 @@ pub fn invertNegative(
     defer allocator.free(density);
     try measurement.transmittanceToDensity(transmittance, density);
 
-    const dmin = try measurement.estimateDmin(
-        allocator,
-        density,
-        options.rebate_mask,
-        options.dmin_percentile,
-    );
+    const dmin = try measurement.estimateDmin(allocator, density, null, 1.0);
 
     const net_density = try allocator.alloc(f64, raw_rgb.len);
     defer allocator.free(net_density);
@@ -474,93 +458,6 @@ pub fn invertNegativeProvidedDminU16WithDensityLutF64(
         const dr = r_lut[lutIndex(raw_rgb[base])];
         const dg = g_lut[lutIndex(raw_rgb[base + 1])];
         const db = b_lut[lutIndex(raw_rgb[base + 2])];
-        const basis = [_]f64{ dr, dg, db, dr * dr, dg * dg, db * db, dr * dg, dr * db, dg * db, 1.0 };
-        const transformed = film_stocks.applyBasis(coeffs, basis);
-        output[base] = @max(transformed[0], 0.0);
-        output[base + 1] = @max(transformed[1], 0.0);
-        output[base + 2] = @max(transformed[2], 0.0);
-    }
-}
-
-pub fn invertNegativeProvidedDminU16WithDensityLutF32(
-    raw_rgb: []const u16,
-    output: []f64,
-    lut: DensityLutF32,
-    coeffs: film_stocks.Coefficients,
-) !void {
-    try validateU16InvertBuffers(raw_rgb, output.len);
-    try validateDensityLutLen(lut.values.len);
-
-    if (film_stocks.usesOnlyLinearTerms(coeffs)) {
-        return invertNegativeProvidedDminU16LinearDensityLutF32(raw_rgb, output, lut, coeffs);
-    }
-
-    const r_lut = lut.channel(0);
-    const g_lut = lut.channel(1);
-    const b_lut = lut.channel(2);
-    const pixel_count = raw_rgb.len / 3;
-    const zero: SimdF64 = @splat(0.0);
-    const one: SimdF64 = @splat(1.0);
-
-    var pixel: usize = 0;
-    while (pixel + simd_width <= pixel_count) : (pixel += simd_width) {
-        const base = pixel * 3;
-        const dr: SimdF64 = .{
-            lookupF32AsF64(r_lut, raw_rgb[base]),
-            lookupF32AsF64(r_lut, raw_rgb[base + 3]),
-            lookupF32AsF64(r_lut, raw_rgb[base + 6]),
-            lookupF32AsF64(r_lut, raw_rgb[base + 9]),
-        };
-        const dg: SimdF64 = .{
-            lookupF32AsF64(g_lut, raw_rgb[base + 1]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 4]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 7]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 10]),
-        };
-        const db: SimdF64 = .{
-            lookupF32AsF64(b_lut, raw_rgb[base + 2]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 5]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 8]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 11]),
-        };
-
-        const basis = [_]SimdF64{
-            dr,
-            dg,
-            db,
-            dr * dr,
-            dg * dg,
-            db * db,
-            dr * dg,
-            dr * db,
-            dg * db,
-            one,
-        };
-
-        var out_r: SimdF64 = @splat(0.0);
-        var out_g: SimdF64 = @splat(0.0);
-        var out_b: SimdF64 = @splat(0.0);
-        inline for (0..film_stocks.basis_len) |row| {
-            out_r += basis[row] * @as(SimdF64, @splat(coeffs[row][0]));
-            out_g += basis[row] * @as(SimdF64, @splat(coeffs[row][1]));
-            out_b += basis[row] * @as(SimdF64, @splat(coeffs[row][2]));
-        }
-        out_r = @max(out_r, zero);
-        out_g = @max(out_g, zero);
-        out_b = @max(out_b, zero);
-
-        inline for (0..simd_width) |lane| {
-            output[base + lane * 3] = out_r[lane];
-            output[base + lane * 3 + 1] = out_g[lane];
-            output[base + lane * 3 + 2] = out_b[lane];
-        }
-    }
-
-    while (pixel < pixel_count) : (pixel += 1) {
-        const base = pixel * 3;
-        const dr = lookupF32AsF64(r_lut, raw_rgb[base]);
-        const dg = lookupF32AsF64(g_lut, raw_rgb[base + 1]);
-        const db = lookupF32AsF64(b_lut, raw_rgb[base + 2]);
         const basis = [_]f64{ dr, dg, db, dr * dr, dg * dg, db * db, dr * dg, dr * db, dg * db, 1.0 };
         const transformed = film_stocks.applyBasis(coeffs, basis);
         output[base] = @max(transformed[0], 0.0);
@@ -887,92 +784,12 @@ fn invertNegativeProvidedDminU16LinearDensityLutF64(
     }
 }
 
-fn invertNegativeProvidedDminU16LinearDensityLutF32(
-    raw_rgb: []const u16,
-    output: []f64,
-    lut: DensityLutF32,
-    coeffs: film_stocks.Coefficients,
-) !void {
-    const r_lut = lut.channel(0);
-    const g_lut = lut.channel(1);
-    const b_lut = lut.channel(2);
-    const pixel_count = raw_rgb.len / 3;
-    const zero: SimdF64 = @splat(0.0);
-    const c00: SimdF64 = @splat(coeffs[0][0]);
-    const c01: SimdF64 = @splat(coeffs[0][1]);
-    const c02: SimdF64 = @splat(coeffs[0][2]);
-    const c10: SimdF64 = @splat(coeffs[1][0]);
-    const c11: SimdF64 = @splat(coeffs[1][1]);
-    const c12: SimdF64 = @splat(coeffs[1][2]);
-    const c20: SimdF64 = @splat(coeffs[2][0]);
-    const c21: SimdF64 = @splat(coeffs[2][1]);
-    const c22: SimdF64 = @splat(coeffs[2][2]);
-
-    var pixel: usize = 0;
-    while (pixel + simd_width <= pixel_count) : (pixel += simd_width) {
-        const base = pixel * 3;
-        const dr: SimdF64 = .{
-            lookupF32AsF64(r_lut, raw_rgb[base]),
-            lookupF32AsF64(r_lut, raw_rgb[base + 3]),
-            lookupF32AsF64(r_lut, raw_rgb[base + 6]),
-            lookupF32AsF64(r_lut, raw_rgb[base + 9]),
-        };
-        const dg: SimdF64 = .{
-            lookupF32AsF64(g_lut, raw_rgb[base + 1]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 4]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 7]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 10]),
-        };
-        const db: SimdF64 = .{
-            lookupF32AsF64(b_lut, raw_rgb[base + 2]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 5]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 8]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 11]),
-        };
-
-        const out_r = @max(dr * c00 + dg * c10 + db * c20, zero);
-        const out_g = @max(dr * c01 + dg * c11 + db * c21, zero);
-        const out_b = @max(dr * c02 + dg * c12 + db * c22, zero);
-
-        inline for (0..simd_width) |lane| {
-            output[base + lane * 3] = out_r[lane];
-            output[base + lane * 3 + 1] = out_g[lane];
-            output[base + lane * 3 + 2] = out_b[lane];
-        }
-    }
-
-    while (pixel < pixel_count) : (pixel += 1) {
-        const base = pixel * 3;
-        const transformed = film_stocks.applyLinearTerms(coeffs, .{
-            lookupF32AsF64(r_lut, raw_rgb[base]),
-            lookupF32AsF64(g_lut, raw_rgb[base + 1]),
-            lookupF32AsF64(b_lut, raw_rgb[base + 2]),
-        });
-        output[base] = @max(transformed[0], 0.0);
-        output[base + 1] = @max(transformed[1], 0.0);
-        output[base + 2] = @max(transformed[2], 0.0);
-    }
-}
-
 pub fn invertNegativeRequestFromEnvironment(environ_map: *const std.process.Environ.Map) !webgpu.Request {
     return webgpu.requestFromEnvironment(environ_map);
 }
 
-fn shouldUseCpuForInvert(options: InvertOptions) !bool {
-    const should_use_cpu = try webgpu.shouldUseCpu(options.request);
-    if (should_use_cpu) return true;
-    const gpu_supports_options = options.dark_rgb == null and options.light_rgb == null;
-    if (gpu_supports_options) return false;
-    return switch (options.request.fallback) {
-        .allow_cpu => true,
-        .fail => error.WebGpuInvertNegativeUnsupportedOptions,
-    };
-}
-
 fn canUseProvidedDminSimd(raw_rgb: []const f64, options: InvertOptions) bool {
-    return options.dark_rgb == null and
-        options.light_rgb == null and
-        raw_rgb.len != 0 and
+    return raw_rgb.len != 0 and
         raw_rgb.len % 3 == 0 and
         std.math.isFinite(options.default_light) and
         options.default_light >= measurement.eps;
@@ -1033,10 +850,6 @@ fn netDensityForRawSample(sample: u16, dmin: f64, default_light: f64) f64 {
 
 inline fn lutIndex(sample: u16) usize {
     return @intCast(sample);
-}
-
-inline fn lookupF32AsF64(lut: []const f32, sample: u16) f64 {
-    return @as(f64, @floatCast(lut[lutIndex(sample)]));
 }
 
 inline fn lookupF64SampleF32(lut: []const f32, sample: f64) f32 {
@@ -1137,7 +950,7 @@ test "computeDmin composes Python measurement pipeline" {
         65535.0, 32768.0, 16384.0,
         32768.0, 16384.0, 8192.0,
     };
-    const dmin = try computeDmin(allocator, &raw, null, .{});
+    const dmin = try computeDmin(allocator, &raw, .{});
     try std.testing.expectApproxEqAbs(0.0030102336880553178, dmin[0], 0.000002);
     try std.testing.expectApproxEqAbs(0.30403351178932945, dmin[1], 0.000002);
     try std.testing.expectApproxEqAbs(0.6050626465457164, dmin[2], 0.000002);
@@ -1453,43 +1266,6 @@ test "inversion backend request rejects unavailable WebGPU and runs compiled GPU
         });
     } else {
         try std.testing.expectError(error.WebGpuNotCompiled, result);
-    }
-}
-
-test "inversion backend request keeps unsupported dark-light options on explicit fallback CPU" {
-    const allocator = std.testing.allocator;
-    const input = [_]f64{ 10000.0, 20000.0, 30000.0 };
-    var expected: [input.len]f64 = undefined;
-    var actual: [input.len]f64 = undefined;
-    _ = try invertNegative(allocator, &input, &expected, .{
-        .dmin = .{ 0.2, 0.1, 0.05 },
-        .coeffs = film_stocks.kodak_gold_coeffs,
-        .dark_rgb = .{ 100.0, 100.0, 100.0 },
-        .light_rgb = .{ 65000.0, 65000.0, 65000.0 },
-    });
-    _ = try invertNegative(allocator, &input, &actual, .{
-        .dmin = .{ 0.2, 0.1, 0.05 },
-        .coeffs = film_stocks.kodak_gold_coeffs,
-        .dark_rgb = .{ 100.0, 100.0, 100.0 },
-        .light_rgb = .{ 65000.0, 65000.0, 65000.0 },
-        .request = .{ .backend = .webgpu, .fallback = .allow_cpu },
-    });
-    try numeric.assertCloseSlices(&expected, &actual, .{
-        .abs = 0.0,
-        .rel = 0.0,
-        .reason = "unsupported GPU options fallback to CPU only when requested",
-    });
-
-    const fail_fast = invertNegative(allocator, &input, &actual, .{
-        .dmin = .{ 0.2, 0.1, 0.05 },
-        .coeffs = film_stocks.kodak_gold_coeffs,
-        .dark_rgb = .{ 100.0, 100.0, 100.0 },
-        .request = .{ .backend = .webgpu },
-    });
-    if (webgpu.compiled) {
-        try std.testing.expectError(error.WebGpuInvertNegativeUnsupportedOptions, fail_fast);
-    } else {
-        try std.testing.expectError(error.WebGpuNotCompiled, fail_fast);
     }
 }
 

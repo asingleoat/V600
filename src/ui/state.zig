@@ -26,7 +26,6 @@ pub const PreviewScanPlan = scan_workflow.PreviewScanPlan;
 pub const ScanStartPlan = scan_workflow.ScanStartPlan;
 pub const previewSelectionFromDraw = scan_workflow.previewSelectionFromDraw;
 pub const adjustedPreviewSelection = scan_workflow.adjustedPreviewSelection;
-pub const scanSelectionEstimate = scan_workflow.scanSelectionEstimate;
 pub const formatScanSelectionEstimate = scan_workflow.formatScanSelectionEstimate;
 pub const handleScanFormatEta = scan_workflow.handleScanFormatEta;
 pub const detectFilmAreaSelection = scan_workflow.detectFilmAreaSelection;
@@ -49,16 +48,6 @@ pub const ProcessNavigationInfo = struct {
     can_navigate: bool,
     progress: []const u8,
     status: []const u8,
-};
-
-pub const ProcessPreviewResponse = struct {
-    jpeg: []u8,
-    used_inverted: bool,
-    fell_back_to_quick: bool,
-
-    pub fn deinit(self: ProcessPreviewResponse, allocator: std.mem.Allocator) void {
-        allocator.free(self.jpeg);
-    }
 };
 
 pub fn stableScannerCapabilities(
@@ -152,17 +141,6 @@ pub const ProcessViewTransform = struct {
     /// control panel); `output_width` and `output_height` are its size.
     area_x: f64 = 0.0,
     area_y: f64 = 0.0,
-
-    pub fn ensureFit(
-        self: *ProcessViewTransform,
-        key: []const u8,
-        output_width: usize,
-        output_height: usize,
-        image_width: usize,
-        image_height: usize,
-    ) void {
-        self.ensureFitIn(key, 0.0, 0.0, output_width, output_height, image_width, image_height);
-    }
 
     /// Fits the image into the area at (`area_x`, `area_y`) of the given size
     /// when the key or the area changes.
@@ -293,14 +271,6 @@ fn clampFloat(value: f64, min_value: f64, max_value: f64) f64 {
     return @min(@max(value, min_value), max_value);
 }
 
-pub const ProcessRebateInfo = struct {
-    preview_rect: ?ProcessSelection,
-    full_rect: ?app_state.RebateRect,
-    has_dmin: bool,
-    dmin: ?[3]f64,
-    dmin_display: []const u8,
-};
-
 pub const ProcessExportControls = struct {
     basename: []const u8 = "",
     export_ir_neg: bool = false,
@@ -336,12 +306,6 @@ pub const GalleryInfo = struct {
     filename: []const u8,
     can_navigate: bool,
     status: []const u8,
-};
-
-pub const ProcessSettingsInfo = struct {
-    entries: []const processing_config.Entry,
-    active_stock: ?[]const u8,
-    preview_inversion: bool,
 };
 
 pub const ProcessSettingsDraft = struct {
@@ -407,14 +371,6 @@ pub const View = enum {
     process,
     gallery,
 
-    pub fn title(self: View) []const u8 {
-        return switch (self) {
-            .scan => "Scan",
-            .process => "Process",
-            .gallery => "Gallery",
-        };
-    }
-
     pub fn titleZ(self: View) [*:0]const u8 {
         return switch (self) {
             .scan => "Scan",
@@ -433,7 +389,6 @@ pub const State = struct {
     processing_images: tiff.ImageList = .{ .paths = &.{} },
     gallery_files: processing_export.GalleryFileList = .{ .files = &.{} },
     processing_preview: ?processing_workflow.QuickPreview = null,
-    processing_inverted_cache: processing_workflow.InvertedPreviewCache = .{},
     processing_result_cache: process_cache.ProcessResultCache = .{},
     status: []const u8 = "",
     quit_requested: bool = false,
@@ -508,7 +463,6 @@ pub const State = struct {
 
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
         self.clearProcessingPreview(allocator);
-        self.processing_inverted_cache.deinit(allocator);
         self.processing_result_cache.deinit(allocator);
         self.processing_images.deinit(allocator);
         self.processing_images = .{ .paths = &.{} };
@@ -601,10 +555,6 @@ pub const State = struct {
         self.scanner_progress_percent = null;
     }
 
-    pub fn setScanStatus(self: *State, message: []const u8) void {
-        self.scanner.scan_status = message;
-    }
-
     pub fn updateScanProgressStatus(self: *State, now_ms: u64) void {
         if (!self.scanner.scanning or self.preview_requested) {
             self.scan_started_ms = null;
@@ -643,15 +593,6 @@ pub const State = struct {
     pub fn syncScanCounter(self: *State, io: std.Io) void {
         const next = tiff.nextScanNumber(io, self.scanner.output_dir, "scan_") catch return;
         self.scanner.scan_counter = @max(self.scanner.scan_counter, next);
-    }
-
-    pub fn finishScan(self: *State) void {
-        self.scanner.scanning = false;
-        self.scanner.scan_status = "";
-        self.scanner.scan_counter += 1;
-        self.active_scan_mode = null;
-        self.active_scan_selection = null;
-        self.active_scan_dpi = 0;
     }
 
     pub fn requestScannerCancel(self: *State) void {
@@ -1025,23 +966,6 @@ pub const State = struct {
         self.applyProcessingConfig(loaded);
     }
 
-    pub fn processingSettingsInfo(
-        self: *const State,
-        out_entries: *[processing_config.max_entries]processing_config.Entry,
-    ) ProcessSettingsInfo {
-        var count: usize = 0;
-        for (self.processing_config.entries[0..self.processing_config.len]) |entry| {
-            if (std.mem.eql(u8, entry.name.slice(), "_stocks")) continue;
-            out_entries[count] = entry;
-            count += 1;
-        }
-        return .{
-            .entries = out_entries[0..count],
-            .active_stock = self.processing_config.activeStock(),
-            .preview_inversion = processingConfigBool(&self.processing_config, "preview_inversion") orelse false,
-        };
-    }
-
     pub fn processingStocksInfo(
         self: *const State,
         out_stocks: []ProcessStockChoice,
@@ -1074,11 +998,9 @@ pub const State = struct {
         path: []const u8,
         updates: []const processing_config.Override,
     ) !void {
-        const changes_stock = processingUpdatesContain(updates, "stock");
         try self.processing_config.apply(updates);
         self.applyProcessingConfigState();
         try processing_config.saveLoadedFile(allocator, io, path, self.processing_config);
-        if (changes_stock) self.invalidateProcessingInversionCache(allocator);
     }
 
     pub fn beginProcessingImageLoad(self: *State, path: []const u8, index: usize) void {
@@ -1229,66 +1151,12 @@ pub const State = struct {
         return pending;
     }
 
-    pub fn invalidateProcessingInversionCache(self: *State, allocator: std.mem.Allocator) void {
-        self.processing_inverted_cache.invalidate(allocator);
-    }
-
     pub fn setProcessingPreviewInversionEnabled(self: *State, enabled: bool) void {
         self.processing_preview_inversion_enabled = enabled;
     }
 
-    pub fn setProcessingGpuRequest(
-        self: *State,
-        allocator: std.mem.Allocator,
-        request: processing_webgpu.Request,
-    ) void {
-        if (self.processing_gpu_request.backend != request.backend or
-            self.processing_gpu_request.fallback != request.fallback)
-        {
-            self.processing_inverted_cache.invalidate(allocator);
-        }
+    pub fn setProcessingGpuRequest(self: *State, request: processing_webgpu.Request) void {
         self.processing_gpu_request = request;
-    }
-
-    pub fn renderInvertedProcessingPreview(
-        self: *State,
-        allocator: std.mem.Allocator,
-        options: processing_workflow.InvertedPreviewOptions,
-    ) !?[]u8 {
-        const preview = self.processing_preview orelse return null;
-        return processing_workflow.renderInvertedPreviewJpeg(
-            allocator,
-            preview,
-            &self.processing_inverted_cache,
-            options,
-        );
-    }
-
-    pub fn renderSelectedProcessingPreview(
-        self: *State,
-        allocator: std.mem.Allocator,
-        options: processing_workflow.InvertedPreviewOptions,
-    ) !?ProcessPreviewResponse {
-        const preview = self.processing_preview orelse return null;
-        if (self.processing_preview_inversion_enabled) {
-            if (self.renderInvertedProcessingPreview(allocator, options) catch null) |jpeg| {
-                return .{
-                    .jpeg = jpeg,
-                    .used_inverted = true,
-                    .fell_back_to_quick = false,
-                };
-            }
-            return .{
-                .jpeg = try allocator.dupe(u8, preview.jpeg),
-                .used_inverted = false,
-                .fell_back_to_quick = true,
-            };
-        }
-        return .{
-            .jpeg = try allocator.dupe(u8, preview.jpeg),
-            .used_inverted = false,
-            .fell_back_to_quick = false,
-        };
     }
 
     pub fn processingInvertedPreviewOptions(self: *const State) processing_workflow.InvertedPreviewOptions {
@@ -1584,47 +1452,8 @@ pub const State = struct {
         ) catch "Detected frames";
     }
 
-    pub fn runProcessAutoDetect(
-        self: *State,
-        allocator: std.mem.Allocator,
-        options: processing_workflow.AutoDetectOptions,
-    ) !processing_workflow.AutoDetectResult {
-        const preview = self.processing_preview orelse {
-            self.status = "No image loaded";
-            return error.NoProcessImageLoaded;
-        };
-        return try processing_workflow.autoDetectPreview(allocator, preview, options);
-    }
-
-    pub fn runProcessAutoDetectWorkflow(
-        self: *State,
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        config_path: []const u8,
-        options: processing_workflow.AutoDetectOptions,
-        scale_percent: f64,
-        rotation: i32,
-    ) ![]const u8 {
-        const before = self.processSelectionsSnapshot();
-        var result = try self.runProcessAutoDetect(allocator, options);
-        defer result.deinit(allocator);
-        try self.applyProcessAutoDetect(
-            result.frames,
-            result.aspect,
-            result.rebate,
-            scale_percent,
-            rotation,
-        );
-        if (result.rebate != null) {
-            _ = try self.runProcessAutoDetectRebate(allocator, io, config_path);
-        }
-        self.finishProcessAutoDetect(before);
-        return result.aspect;
-    }
-
     pub fn applyProcessAutoDetectWorkerResult(
         self: *State,
-        allocator: std.mem.Allocator,
         generation: usize,
         path: []const u8,
         result: *processing_workflow.AutoDetectResult,
@@ -1647,7 +1476,7 @@ pub const State = struct {
         }
         if (dmin) |value| {
             try self.applyProcessDminConfig(value);
-            self.applyProcessRebateDmin(allocator, value);
+            self.applyProcessRebateDmin(value);
         }
         self.finishProcessAutoDetect(before);
         return true;
@@ -1727,37 +1556,8 @@ pub const State = struct {
         };
     }
 
-    pub fn runProcessRebate(
-        self: *State,
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        config_path: []const u8,
-        rect: app_state.RebateRect,
-    ) ![3]f64 {
-        const input_path = self.currentProcessingImagePath() orelse {
-            self.status = "No image loaded";
-            return error.NoProcessImageLoaded;
-        };
-        const result = try processing_workflow.processRebateFromTiff(
-            allocator,
-            io,
-            input_path,
-            config_path,
-            .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h, .angle = rect.angle },
-            false,
-        );
-        const list = try processing_config.FloatList.init(&result.dmin);
-        try self.saveProcessingSettings(allocator, io, config_path, &.{
-            .{ .name = "dmin", .value = .{ .list = list } },
-        });
-        self.processing.rebate_rect = rect;
-        self.applyProcessRebateDmin(allocator, result.dmin);
-        return result.dmin;
-    }
-
     pub fn applyProcessRebateWorkerResult(
         self: *State,
-        allocator: std.mem.Allocator,
         generation: usize,
         path: []const u8,
         rect: app_state.RebateRect,
@@ -1769,25 +1569,13 @@ pub const State = struct {
         if (self.process_rebate_dmin_pending) return false;
         self.processing.rebate_rect = rect;
         try self.applyProcessDminConfig(dmin);
-        self.applyProcessRebateDmin(allocator, dmin);
+        self.applyProcessRebateDmin(dmin);
         self.setProcessingProgress("Dmin computed");
         return true;
     }
 
-    pub fn runProcessAutoDetectRebate(
-        self: *State,
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        config_path: []const u8,
-    ) !bool {
-        const rect = (try self.processRebateRequest()) orelse return false;
-        _ = try self.runProcessRebate(allocator, io, config_path, rect);
-        return true;
-    }
-
-    pub fn applyProcessRebateDmin(self: *State, allocator: std.mem.Allocator, dmin: ?[3]f64) void {
+    pub fn applyProcessRebateDmin(self: *State, dmin: ?[3]f64) void {
         self.processing.dmin = dmin;
-        self.invalidateProcessingInversionCache(allocator);
     }
 
     fn applyProcessDminConfig(self: *State, dmin: [3]f64) !void {
@@ -1795,16 +1583,6 @@ pub const State = struct {
         try self.processing_config.apply(&.{
             .{ .name = "dmin", .value = .{ .list = list } },
         });
-    }
-
-    pub fn processRebateInfo(self: *State) ProcessRebateInfo {
-        return .{
-            .preview_rect = self.process_rebate_rect,
-            .full_rect = self.processing.rebate_rect,
-            .has_dmin = self.processing.dmin != null,
-            .dmin = self.processing.dmin,
-            .dmin_display = self.processDminDisplay(),
-        };
     }
 
     pub fn processDminDisplay(self: *State) []const u8 {
@@ -1838,65 +1616,6 @@ pub const State = struct {
             .rects = rects,
             .outputs = controls.outputSelection(),
         };
-    }
-
-    pub fn runProcessExport(
-        self: *State,
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        controls: ProcessExportControls,
-        out_rects: *[64]processing_export.FrameRect,
-        total_seconds_override: ?f64,
-    ) !?processing_workflow.ExportWorkflowResult {
-        const request = (try self.beginProcessExport(controls, out_rects)) orelse return null;
-        errdefer self.process_exporting = false;
-        const input_path = self.currentProcessingImagePath() orelse {
-            self.status = "No image loaded";
-            self.processing.setProgress(self.status);
-            return error.NoProcessImageLoaded;
-        };
-        var overrides_buffer: [processing_config.max_entries]processing_config.Override = undefined;
-        const overrides = self.processing_config.overrides(&overrides_buffer);
-        const active_stock = self.processing_config.activeStock();
-        const stock_coeffs = if (active_stock) |stock_name| blk: {
-            const profile = self.processing_config.availableStock(stock_name) orelse return error.UnknownFilmStock;
-            if (!profile.has_coeffs) return error.UnknownFilmStock;
-            break :blk profile.coeffs;
-        } else null;
-        const rebate = if (self.processing.rebate_rect) |rect| processing_frames.RebateOriginRect{
-            .x = rect.x,
-            .y = rect.y,
-            .w = rect.w,
-            .h = rect.h,
-            .angle = rect.angle,
-        } else null;
-
-        var result = try processing_workflow.processExportFromTiff(allocator, io, .{
-            .input_path = input_path,
-            .output_dir = self.processing.output_dir,
-            .basename = request.basename,
-            .rects = request.rects,
-            .outputs = request.outputs,
-            .active_stock = active_stock,
-            .stock_coeffs = stock_coeffs,
-            .dmin = self.processing.dmin,
-            .rebate_rect = rebate,
-            .current_dpi = self.processing.current_dpi,
-            .config_overrides = overrides,
-            .invert_request = self.processing_gpu_request,
-            .total_seconds_override = total_seconds_override,
-        });
-        errdefer result.deinit(allocator);
-        if (result.dmin) |dmin| {
-            self.processing.dmin = dmin;
-        }
-        const message = std.fmt.bufPrint(
-            &self.process_status_buffer,
-            "{s}",
-            .{result.message},
-        ) catch "Export complete";
-        self.finishProcessExport(message, result.files.len);
-        return result;
     }
 
     pub fn currentProcessingImageStem(self: State) []const u8 {
@@ -2170,18 +1889,6 @@ pub const State = struct {
         return mutation;
     }
 
-    pub fn deleteCurrentGalleryFile(
-        self: *State,
-        allocator: std.mem.Allocator,
-        io: std.Io,
-    ) !processing_export.GalleryMutation {
-        const name = self.currentGalleryFileName() orelse {
-            self.status = "No exports found";
-            return error.NoGalleryFileSelected;
-        };
-        return self.deleteGalleryFileByName(allocator, io, name);
-    }
-
     pub fn deleteGalleryFileByName(
         self: *State,
         allocator: std.mem.Allocator,
@@ -2219,34 +1926,6 @@ pub const State = struct {
         return self.processingNavigationInfo();
     }
 
-    pub fn switchPreviousProcessingImage(
-        self: *State,
-        allocator: std.mem.Allocator,
-        preview_size: i64,
-    ) !?app_state.ProcessingInfo {
-        const count = self.processing_images.paths.len;
-        if (count == 0) {
-            self.status = "No images";
-            return null;
-        }
-        const index = if (self.processing.image_idx > 0) self.processing.image_idx - 1 else count - 1;
-        return try self.switchProcessingImage(allocator, index, preview_size);
-    }
-
-    pub fn switchNextProcessingImage(
-        self: *State,
-        allocator: std.mem.Allocator,
-        preview_size: i64,
-    ) !?app_state.ProcessingInfo {
-        const count = self.processing_images.paths.len;
-        if (count == 0) {
-            self.status = "No images";
-            return null;
-        }
-        const index = if (self.processing.image_idx < count - 1) self.processing.image_idx + 1 else 0;
-        return try self.switchProcessingImage(allocator, index, preview_size);
-    }
-
     pub fn scannerStatus(self: State) app_state.ScannerStatus {
         return self.scanner.status();
     }
@@ -2263,10 +1942,6 @@ pub const State = struct {
 
     pub fn processingInfo(self: State) app_state.ProcessingInfo {
         return self.processing.info();
-    }
-
-    pub fn activeTitle(self: State) []const u8 {
-        return self.active_view.title();
     }
 
     pub fn activeTitleZ(self: State) [*:0]const u8 {
@@ -2365,7 +2040,6 @@ pub const State = struct {
             preview.deinit(allocator);
             self.processing_preview = null;
         }
-        self.processing_inverted_cache.invalidate(allocator);
     }
 
     fn currentProcessingImagePath(self: State) ?[]const u8 {
@@ -2506,13 +2180,6 @@ fn galleryFileListsEqual(lhs: []const []const u8, rhs: []const []const u8) bool 
     return true;
 }
 
-fn processingUpdatesContain(updates: []const processing_config.Override, name: []const u8) bool {
-    for (updates) |update| {
-        if (std.mem.eql(u8, update.name, name)) return true;
-    }
-    return false;
-}
-
 fn processingCustomStock(
     loaded: *const processing_config.LoadedConfig,
     name: []const u8,
@@ -2627,7 +2294,7 @@ fn scanModeSupportsDpi(controls: *const ScanControls, mode: ScanMode, dpi: u32) 
 
 test "native Process preview transform mirrors extract_ui zoom pan and viewport center math" {
     var transform = ProcessViewTransform{};
-    transform.ensureFit("scan-a.tiff", 1000, 800, 500, 400);
+    transform.ensureFitIn("scan-a.tiff", 0.0, 0.0, 1000, 800, 500, 400);
     try std.testing.expect(transform.fitted);
     try std.testing.expectApproxEqAbs(1.9, transform.scale, 0.000001);
     try std.testing.expectApproxEqAbs(25.0, transform.offset_x, 0.000001);
@@ -2653,7 +2320,7 @@ test "native Process preview transform mirrors extract_ui zoom pan and viewport 
     try std.testing.expectApproxEqAbs(expected_center.x, center.x, 0.000001);
     try std.testing.expectApproxEqAbs(expected_center.y, center.y, 0.000001);
 
-    transform.ensureFit("scan-b.tiff", 1000, 800, 500, 400);
+    transform.ensureFitIn("scan-b.tiff", 0.0, 0.0, 1000, 800, 500, 400);
     try std.testing.expectApproxEqAbs(1.9, transform.scale, 0.000001);
     try std.testing.expectApproxEqAbs(25.0, transform.offset_x, 0.000001);
     try std.testing.expectApproxEqAbs(20.0, transform.offset_y, 0.000001);
@@ -2673,12 +2340,12 @@ test "native UI state initializes without SDL or Nuklear bindings" {
     try std.testing.expectEqualStrings("scans", state.processing.input_dir);
     try std.testing.expectEqualStrings("frames", state.processing.output_dir);
     try std.testing.expectEqual(@as(usize, 3), state.processing.image_count);
-    try std.testing.expectEqualStrings("Scan", state.activeTitle());
+    try std.testing.expectEqualStrings("Scan", std.mem.span(state.activeTitleZ()));
 
     state.show(.process);
     state.setStatus("Ready");
     try std.testing.expectEqual(View.process, state.active_view);
-    try std.testing.expectEqualStrings("Process", state.activeTitle());
+    try std.testing.expectEqualStrings("Process", std.mem.span(state.activeTitleZ()));
     try std.testing.expectEqualStrings("Ready", state.status);
 
     state.requestQuit();
@@ -2768,19 +2435,10 @@ test "native UI scanner transitions mirror browser workflow state headlessly" {
     try std.testing.expect(status.scanning);
     try std.testing.expectEqualStrings("Scanning...", status.status);
 
-    state.setScanStatus("Saving...");
-    status = state.scannerStatus();
-    try std.testing.expectEqualStrings("Saving...", status.status);
-
     state.requestScannerCancel();
     status = state.scannerStatus();
     try std.testing.expect(state.scanner.cancel_requested);
     try std.testing.expectEqualStrings("Cancelling...", status.status);
-
-    state.finishScan();
-    status = state.scannerStatus();
-    try std.testing.expect(!status.scanning);
-    try std.testing.expectEqual(@as(usize, 2), state.scanner.scan_counter);
 }
 
 test "native Scan status display renders scanner state messages by priority" {
@@ -2985,7 +2643,7 @@ test "native UI processing and gallery transitions are headless state changes" {
 
     state.show(.gallery);
     try std.testing.expectEqual(View.gallery, state.active_view);
-    try std.testing.expectEqualStrings("Gallery", state.activeTitle());
+    try std.testing.expectEqualStrings("Gallery", std.mem.span(state.activeTitleZ()));
 }
 
 test "native Scan numbering resumes after existing scans and never moves backwards" {
@@ -3069,20 +2727,6 @@ test "native UI switches process image through process_handlers metadata state" 
     try std.testing.expect(state.takeProcessAutoDetectPending());
     try std.testing.expect(!state.takeProcessAutoDetectPending());
 
-    var missing_preview = State.init("scans", "frames", 0);
-    defer missing_preview.deinit(allocator);
-    try std.testing.expect((try missing_preview.renderInvertedProcessingPreview(allocator, .{
-        .stock = "kodak_gold",
-    })) == null);
-
-    const inverted = (try state.renderInvertedProcessingPreview(allocator, .{
-        .stock = "kodak_gold",
-    })).?;
-    defer allocator.free(inverted);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear != null);
-    state.invalidateProcessingInversionCache(allocator);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
-
     try std.testing.expectError(error.InvalidProcessImageIndex, state.switchProcessingImage(allocator, 2, 8192));
     try std.testing.expectEqualStrings("Invalid index", state.status);
 }
@@ -3095,8 +2739,6 @@ test "native UI process navigation state mirrors extract_ui image controls" {
     try std.testing.expect(!nav.can_navigate);
     try std.testing.expect(!nav.preview_ready);
     try std.testing.expectEqualStrings("", nav.filename);
-    try std.testing.expect((try empty.switchNextProcessingImage(allocator, 8192)) == null);
-    try std.testing.expectEqualStrings("No images", empty.status);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3119,7 +2761,7 @@ test "native UI process navigation state mirrors extract_ui image controls" {
     state.processing_images = .{ .paths = paths };
     state.processing.image_count = paths.len;
 
-    _ = try state.switchNextProcessingImage(allocator, 8192);
+    _ = try state.switchProcessingImage(allocator, 1, 8192);
     try std.testing.expect(state.takeProcessAutoDetectPending());
     try std.testing.expect(!state.takeProcessAutoDetectPending());
     nav = state.processingNavigationInfo();
@@ -3127,10 +2769,10 @@ test "native UI process navigation state mirrors extract_ui image controls" {
     try std.testing.expect(nav.preview_ready);
     try std.testing.expectEqualStrings("rgb-thumb-ir.tiff", nav.filename);
 
-    _ = try state.switchNextProcessingImage(allocator, 8192);
+    _ = try state.switchProcessingImage(allocator, 0, 8192);
     try std.testing.expect(state.takeProcessAutoDetectPending());
     try std.testing.expectEqual(@as(usize, 0), state.processing.image_idx);
-    _ = try state.switchPreviousProcessingImage(allocator, 8192);
+    _ = try state.switchProcessingImage(allocator, 1, 8192);
     try std.testing.expect(state.takeProcessAutoDetectPending());
     try std.testing.expectEqual(@as(usize, 1), state.processing.image_idx);
 }
@@ -3185,66 +2827,19 @@ test "native UI direct process selector refreshes and switches by arbitrary inde
     try std.testing.expectEqualStrings("Invalid index", state.status);
 }
 
-test "native UI process preview mode falls back like extract_ui preview image" {
-    const allocator = std.testing.allocator;
-    var state = State.init("scans", "frames", 0);
-    defer state.deinit(allocator);
-    const paths = try allocator.alloc([]u8, 1);
-    paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
-    state.processing_images = .{ .paths = paths };
-    state.processing.image_count = paths.len;
-    _ = try state.switchProcessingImage(allocator, 0, 8192);
-
-    const response = (try state.renderSelectedProcessingPreview(allocator, .{})).?;
-    defer response.deinit(allocator);
-    try std.testing.expect(!response.used_inverted);
-    try std.testing.expect(!response.fell_back_to_quick);
-    try std.testing.expectEqualSlices(u8, state.processing_preview.?.jpeg, response.jpeg);
-
-    state.setProcessingPreviewInversionEnabled(true);
-    const fallback = (try state.renderSelectedProcessingPreview(allocator, .{})).?;
-    defer fallback.deinit(allocator);
-    try std.testing.expect(!fallback.used_inverted);
-    try std.testing.expect(fallback.fell_back_to_quick);
-    try std.testing.expectEqualSlices(u8, state.processing_preview.?.jpeg, fallback.jpeg);
-
-    const unknown_stock = (try state.renderSelectedProcessingPreview(allocator, .{
-        .stock = "missing-stock",
-    })).?;
-    defer unknown_stock.deinit(allocator);
-    try std.testing.expect(!unknown_stock.used_inverted);
-    try std.testing.expect(unknown_stock.fell_back_to_quick);
-
-    const inverted = (try state.renderSelectedProcessingPreview(allocator, .{
-        .stock = "kodak_gold",
-    })).?;
-    defer inverted.deinit(allocator);
-    try std.testing.expect(inverted.used_inverted);
-    try std.testing.expect(!inverted.fell_back_to_quick);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear != null);
-
-    var no_preview = State.init("scans", "frames", 0);
-    defer no_preview.deinit(allocator);
-    try std.testing.expect((try no_preview.renderSelectedProcessingPreview(allocator, .{
-        .stock = "kodak_gold",
-    })) == null);
-}
-
 test "native UI processing GPU request is state-owned and feeds inverted preview options" {
     const allocator = std.testing.allocator;
     var state = State.init("scans", "frames", 0);
     defer state.deinit(allocator);
 
     try std.testing.expectEqual(processing_webgpu.Backend.cpu, state.processingInvertedPreviewOptions().invert_request.backend);
-    state.processing_inverted_cache.scene_linear = try allocator.alloc(f64, 3);
-    state.setProcessingGpuRequest(allocator, .{
+    state.setProcessingGpuRequest(.{
         .backend = .webgpu,
         .fallback = .allow_cpu,
     });
     const options = state.processingInvertedPreviewOptions();
     try std.testing.expectEqual(processing_webgpu.Backend.webgpu, options.invert_request.backend);
     try std.testing.expectEqual(processing_webgpu.FallbackPolicy.allow_cpu, options.invert_request.fallback);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
 }
 
 test "native UI process settings and stocks mirror process_handlers routes" {
@@ -3260,18 +2855,8 @@ test "native UI process settings and stocks mirror process_handlers routes" {
     );
     defer allocator.free(custom_text);
     state.applyProcessingConfig(processing_config.parseText(custom_text));
-    try state.processing_config.set("_stocks", .{ .boolean = true });
-
-    var entries_buffer: [processing_config.max_entries]processing_config.Entry = undefined;
-    const settings = state.processingSettingsInfo(&entries_buffer);
-    try std.testing.expectEqualStrings("custom_c41", settings.active_stock.?);
-    try std.testing.expect(!settings.preview_inversion);
-    var saw_stock = false;
-    for (settings.entries) |entry| {
-        try std.testing.expect(!std.mem.eql(u8, entry.name.slice(), "_stocks"));
-        if (std.mem.eql(u8, entry.name.slice(), "stock")) saw_stock = true;
-    }
-    try std.testing.expect(saw_stock);
+    try std.testing.expectEqualStrings("custom_c41", state.processing_config.activeStock().?);
+    try std.testing.expect(!state.processing_preview_inversion_enabled);
 
     var stocks_buffer: [16]ProcessStockChoice = undefined;
     const stocks = try state.processingStocksInfo(&stocks_buffer);
@@ -3293,7 +2878,6 @@ test "native UI process settings and stocks mirror process_handlers routes" {
     state.applyProcessingConfig(processing_config.parseText(partial_text));
     try std.testing.expect(state.processing_preview_inversion_enabled);
     try std.testing.expectApproxEqAbs(0.2, state.processing.dmin.?[1], 0.0);
-    state.processing_inverted_cache.scene_linear = try allocator.alloc(f64, 3);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3308,7 +2892,6 @@ test "native UI process settings and stocks mirror process_handlers routes" {
         .{ .name = "preview_inversion", .value = .{ .boolean = false } },
     };
     try state.saveProcessingSettings(allocator, std.testing.io, config_path, &updates);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
     try std.testing.expect(!state.processing_preview_inversion_enabled);
     try std.testing.expectEqualStrings("kodak_portra", state.processing_config.activeStock().?);
     const preview_options = state.processingInvertedPreviewOptions();
@@ -3372,7 +2955,6 @@ test "native UI auto-detect selections mirror extract_ui export geometry" {
 
     state.processing.rebate_rect = .{ .x = 268.0, .y = 52.0, .w = 24.0, .h = 16.0, .angle = 0.25 };
     state.processing.dmin = .{ 0.1, 0.2, 0.3 };
-    state.processing_inverted_cache.scene_linear = try std.testing.allocator.alloc(f64, 3);
     state.clearProcessingSelections();
     try std.testing.expectEqual(@as(usize, 0), state.process_selection_count);
     try std.testing.expect(state.process_active_selection == null);
@@ -3380,7 +2962,6 @@ test "native UI auto-detect selections mirror extract_ui export geometry" {
     try std.testing.expect(state.process_rebate_rect != null);
     try std.testing.expect(state.processing.rebate_rect != null);
     try std.testing.expect(state.processing.dmin != null);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear != null);
 
     state.rescaleProcessAutoSelections(0.0);
     try std.testing.expectEqual(@as(usize, 2), state.process_selection_count);
@@ -3393,7 +2974,6 @@ test "native UI auto-detect selections mirror extract_ui export geometry" {
     try std.testing.expect(state.process_rebate_rect == null);
     try std.testing.expect(state.processing.rebate_rect == null);
     try std.testing.expect(state.processing.dmin != null);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear != null);
 }
 
 test "native Process dump selections formats diagnostics and status without mutation" {
@@ -3487,36 +3067,11 @@ test "native UI drawn process frame finalization mirrors browser fixed 10 px thr
     try std.testing.expectEqual(ProcessDrawnFrameFinalization.invalid_index, state.finalizeProcessDrawnFrame(7));
 }
 
-test "native UI auto-detect workflow mirrors no-image route boundary" {
-    var state = State.init("scans", "frames", 0);
-    defer state.deinit(std.testing.allocator);
-
-    try std.testing.expectError(error.NoProcessImageLoaded, state.runProcessAutoDetect(std.testing.allocator, .{
-        .format = "35mm",
-    }));
-    try std.testing.expectEqualStrings("No image loaded", state.status);
-}
-
-test "native UI auto-detect suggested rebate computes and persists Dmin" {
+test "native UI auto-detect suggests the rebate to measure" {
     const allocator = std.testing.allocator;
     var state = State.init("scans", "frames", 0);
     defer state.deinit(allocator);
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const config_path = try std.fmt.allocPrint(
-        allocator,
-        ".zig-cache/tmp/{s}/{s}",
-        .{ tmp.sub_path[0..], processing_config.config_file },
-    );
-    defer allocator.free(config_path);
-
-    state.processing_images.paths = try allocator.alloc([]u8, 1);
-    state.processing_images.paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
-    state.processing.image_count = 1;
-    state.processing.image_idx = 0;
     state.processing.preview_scale = 1.0;
-    state.processing_inverted_cache.scene_linear = try allocator.alloc(f64, 3);
 
     const frames = [_]processing_frames.FrameRect{
         .{ .cx = 4.0, .cy = 4.0, .w = 4.0, .h = 4.0, .angle = 0.0 },
@@ -3529,13 +3084,8 @@ test "native UI auto-detect suggested rebate computes and persists Dmin" {
         0,
     );
 
-    try std.testing.expect(try state.runProcessAutoDetectRebate(allocator, std.testing.io, config_path));
-    try std.testing.expect(state.processing.dmin != null);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
-    try std.testing.expectApproxEqAbs(2.0, state.processing.rebate_rect.?.w, 0.0);
-    const dmin = state.processing.dmin.?;
-    const saved = try processing_config.loadFile(allocator, std.testing.io, config_path);
-    try saved.value("dmin").?.expectEqual(.{ .list = try processing_config.FloatList.init(&dmin) });
+    const rect = (try state.processRebateRequest()).?;
+    try std.testing.expectApproxEqAbs(2.0, rect.w, 0.0);
 }
 
 test "native UI rebate controls mirror extract_ui rebate state" {
@@ -3562,15 +3112,11 @@ test "native UI rebate controls mirror extract_ui rebate state" {
     try std.testing.expectApproxEqAbs(42.4, request.h, 0.0000001);
     try std.testing.expectApproxEqAbs(0.25, request.angle, 0.0);
     try std.testing.expectApproxEqAbs(request.x, state.processing.rebate_rect.?.x, 0.0);
-    try std.testing.expect(!state.processRebateInfo().has_dmin);
+    try std.testing.expect(state.processing.dmin == null);
 
-    state.processing_inverted_cache.scene_linear = try allocator.alloc(f64, 3);
-    state.applyProcessRebateDmin(allocator, .{ 0.1234, 0.5678, 1.0 });
-    const info = state.processRebateInfo();
-    try std.testing.expect(info.has_dmin);
-    try std.testing.expectApproxEqAbs(0.5678, info.dmin.?[1], 0.0);
-    try std.testing.expectEqualStrings("Dmin: 0.123 0.568 1.000", info.dmin_display);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
+    state.applyProcessRebateDmin(.{ 0.1234, 0.5678, 1.0 });
+    try std.testing.expectApproxEqAbs(0.5678, state.processing.dmin.?[1], 0.0);
+    try std.testing.expectEqualStrings("Dmin: 0.123 0.568 1.000", state.processDminDisplay());
 
     try std.testing.expect(!try state.setProcessRebatePreviewRect(.{
         .x = 1.0,
@@ -3592,46 +3138,6 @@ test "native UI rebate controls mirror extract_ui rebate state" {
         .angle = 0.0,
     }));
     try std.testing.expect(state.process_rebate_rect == null);
-}
-
-test "native UI rebate workflow mirrors process_handlers route" {
-    const allocator = std.testing.allocator;
-    var state = State.init("scans", "frames", 0);
-    defer state.deinit(allocator);
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const config_path = try std.fmt.allocPrint(
-        allocator,
-        ".zig-cache/tmp/{s}/{s}",
-        .{ tmp.sub_path[0..], processing_config.config_file },
-    );
-    defer allocator.free(config_path);
-
-    try std.testing.expectError(error.NoProcessImageLoaded, state.runProcessRebate(allocator, std.testing.io, config_path, .{
-        .x = 0.0,
-        .y = 0.0,
-        .w = 2.0,
-        .h = 2.0,
-        .angle = 0.0,
-    }));
-    try std.testing.expectEqualStrings("No image loaded", state.status);
-
-    state.processing_images.paths = try allocator.alloc([]u8, 1);
-    state.processing_images.paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
-    state.processing.image_count = 1;
-    state.processing.image_idx = 0;
-    state.processing_inverted_cache.scene_linear = try allocator.alloc(f64, 3);
-
-    const rect: app_state.RebateRect = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .angle = 0.0 };
-    const dmin = try state.runProcessRebate(allocator, std.testing.io, config_path, rect);
-    try std.testing.expect(state.processing_inverted_cache.scene_linear == null);
-    try std.testing.expectApproxEqAbs(dmin[1], state.processing.dmin.?[1], 0.0);
-    try std.testing.expectApproxEqAbs(rect.w, state.processing.rebate_rect.?.w, 0.0);
-
-    const saved = try processing_config.loadFile(allocator, std.testing.io, config_path);
-    try saved.value("dmin").?.expectEqual(.{ .list = try processing_config.FloatList.init(&dmin) });
-    try state.processing_config.value("dmin").?.expectEqual(.{ .list = try processing_config.FloatList.init(&dmin) });
 }
 
 test "native UI export controls mirror extract_ui request and progress state" {
@@ -3699,50 +3205,6 @@ test "native UI export controls mirror extract_ui request and progress state" {
     try std.testing.expect(!export_status.exporting);
     try std.testing.expectEqual(@as(usize, 0), export_status.files_written);
     try std.testing.expectEqualStrings("No output variants selected", export_status.status);
-}
-
-test "native UI export workflow mirrors process_handlers handle_export" {
-    const allocator = std.testing.allocator;
-    var state = State.init("scans", "frames", 0);
-    defer state.deinit(allocator);
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const output_dir = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/frames", .{tmp.sub_path[0..]});
-    defer allocator.free(output_dir);
-    state.processing.output_dir = output_dir;
-    state.processing.preview_scale = 1.0;
-    state.processing.current_dpi = 800;
-    state.processing.rebate_rect = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .angle = 0.0 };
-    state.applyProcessingConfig(processing_config.parseText(
-        \\stock = "kodak_gold"
-        \\
-    ));
-    state.processing_images.paths = try allocator.alloc([]u8, 1);
-    state.processing_images.paths[0] = try allocator.dupe(u8, "test/fixtures/tiff/rgb-thumb-ir.tiff");
-    state.processing.image_count = 1;
-    state.processing.image_idx = 0;
-    state.process_selections[0] = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .angle = 0.0, .rotation = 0 };
-    state.process_selection_count = 1;
-
-    var rect_buffer: [64]processing_export.FrameRect = undefined;
-    const result = (try state.runProcessExport(allocator, std.testing.io, .{
-        .basename = "roll",
-        .export_ir_inv = false,
-        .export_inv_only = true,
-    }, &rect_buffer, 0.04)).?;
-    defer result.deinit(allocator);
-
-    try std.testing.expect(!state.process_exporting);
-    try std.testing.expectEqual(@as(usize, 1), state.process_export_files_written);
-    const expected_status = try std.fmt.allocPrint(allocator, "Exported 1 file to {s}/ (0.0s)", .{output_dir});
-    defer allocator.free(expected_status);
-    try std.testing.expectEqualStrings(expected_status, state.status);
-    try std.testing.expect(state.processing.dmin != null);
-    try std.testing.expectEqualStrings("roll_01_inv.tif", result.files[0]);
-    const output_path = try std.fs.path.join(allocator, &.{ output_dir, result.files[0] });
-    defer allocator.free(output_path);
-    try std.Io.Dir.cwd().access(std.testing.io, output_path, .{});
 }
 
 test "native UI scan trash and delete mirror extract_ui image recovery" {
@@ -3852,7 +3314,7 @@ test "native UI gallery handoff mirrors browser list navigation and mutations" {
     try std.testing.expectEqualStrings("a.tif", info.filename);
     try std.testing.expectEqualStrings("Moved b.TIFF to the Trash", info.status);
 
-    var deleted = try state.deleteCurrentGalleryFile(allocator, std.testing.io);
+    var deleted = try state.deleteGalleryFileByName(allocator, std.testing.io, "a.tif");
     defer deleted.deinit(allocator);
     try std.testing.expectEqualStrings("Deleted a.tif", deleted.message);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(std.testing.io, "a.tif", .{}));

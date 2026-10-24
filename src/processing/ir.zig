@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const numeric = @import("numeric_fixture.zig");
 const ir_pure = @import("ir_pure.zig");
@@ -231,31 +230,6 @@ pub fn makeDefectMaskTimed(
     options: DefectMaskOptions,
     timings: ?*IrCleanTimings,
 ) !bool {
-    return makeDefectMaskTimedWithLineBackend(allocator, ir, width, height, output, options, timings, false);
-}
-
-pub fn makeDefectMaskScalarLineReference(
-    allocator: std.mem.Allocator,
-    ir: []const f64,
-    width: usize,
-    height: usize,
-    output: []u8,
-    options: DefectMaskOptions,
-    timings: ?*IrCleanTimings,
-) !bool {
-    return makeDefectMaskTimedWithLineBackend(allocator, ir, width, height, output, options, timings, true);
-}
-
-fn makeDefectMaskTimedWithLineBackend(
-    allocator: std.mem.Allocator,
-    ir: []const f64,
-    width: usize,
-    height: usize,
-    output: []u8,
-    options: DefectMaskOptions,
-    timings: ?*IrCleanTimings,
-    scalar_line: bool,
-) !bool {
     if (width == 0 or height == 0 or ir.len != width * height or output.len != ir.len) {
         return error.InvalidIrDefectMaskBuffer;
     }
@@ -283,7 +257,7 @@ fn makeDefectMaskTimedWithLineBackend(
     try detectLineDefectsTimedWithMeijering(allocator, n_sigma2, width, height, line_mask, .{
         .threshold = options.threshold,
         .hair_sensitivity = options.hair_sensitivity,
-    }, timings, scalar_line);
+    }, timings, false);
     if (timings) |out| out.line_detection_ns += monotonicNowNs() - line_started;
 
     for (dust_mask, line_mask, output) |dust, line, *mask| {
@@ -2220,10 +2194,6 @@ fn validateAlignmentInputs(
     if (rgb.len != rgb_width * rgb_height * 3) return error.InvalidIrAlignmentBuffer;
     if (ir.len != ir_width * ir_height) return error.InvalidIrAlignmentBuffer;
     if (output.len != ir.len) return error.InvalidIrAlignmentBuffer;
-}
-
-pub fn applyTranslation(comptime T: type, ir: []const T, width: usize, height: usize, output: []T, tx: f64, ty: f64) void {
-    applyTranslationRows(T, ir, width, height, output, tx, ty, 0, height);
 }
 
 fn applyTranslationRows(comptime T: type, ir: []const T, width: usize, height: usize, output: []T, tx: f64, ty: f64, row_start: usize, row_end: usize) void {

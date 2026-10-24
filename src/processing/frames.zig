@@ -17,13 +17,9 @@ pub const formats = film_formats.formats;
 pub const formatByName = film_formats.formatByName;
 pub const detectFramesAspect = film_formats.detectFramesAspect;
 
-pub const ClaheOptions = clahe_ops.ClaheOptions;
 pub const applyClahe8 = clahe_ops.applyClahe8;
 
 pub const FrameRect = rotation.FrameRect;
-pub const AffineTransform = rotation.AffineTransform;
-pub const ExpandedRotation = rotation.ExpandedRotation;
-pub const RotatedCrop = rotation.RotatedCrop;
 pub const expandedRotationTransform = rotation.expandedRotationTransform;
 pub const transformFramesFromRotatedToOriginal = rotation.transformFramesFromRotatedToOriginal;
 pub const rotateImageExpandedReplicate = rotation.rotateImageExpandedReplicate;
@@ -224,13 +220,6 @@ const AngleGradientStripsContext = struct {
     gradient_kernel: []const f64,
     strip_start: usize,
     strip_end: usize,
-};
-
-pub const RebateMaskRect = struct {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
 };
 
 pub const RebateRect = struct {
@@ -511,35 +500,6 @@ pub fn resizeImageArea(
         }
     }
     return output;
-}
-
-pub fn detectFilmExtentAxisAligned(
-    allocator: std.mem.Allocator,
-    raw_gray: []const f64,
-    width: usize,
-    height: usize,
-) !?FilmExtent {
-    if (width == 0 or height == 0 or raw_gray.len != width * height) return error.InvalidFilmExtentInput;
-    const threshold = otsuThreshold(raw_gray);
-    const pixel_count = try std.math.mul(usize, width, height);
-    const mask = try allocator.alloc(bool, pixel_count);
-    defer allocator.free(mask);
-    for (mask, raw_gray) |*value, pixel| {
-        value.* = grayToU8(pixel) <= threshold;
-    }
-
-    var kernel = @max(@as(usize, 3), @min(width, height) / 20);
-    kernel |= 1;
-    try closeBinaryMask(allocator, mask, width, height, kernel);
-
-    const component_mask = try allocator.alloc(bool, pixel_count);
-    defer allocator.free(component_mask);
-    const component = try largestComponentBounds(allocator, mask, width, height, component_mask);
-    const bounds = component orelse return null;
-    if (@as(f64, @floatFromInt(bounds.area)) < @as(f64, @floatFromInt(pixel_count)) * 0.10) {
-        return null;
-    }
-    return try componentRotatedExtent(allocator, component_mask, width, height, bounds);
 }
 
 pub fn detectFilmExtentAxisAlignedU8(
@@ -1727,64 +1687,10 @@ pub fn frameAngleErrorRadians(detected_angle: f64, ground_truth_angle: f64) f64 
     return detected_angle - ground_truth_angle;
 }
 
-pub fn makeRebateMask(
-    allocator: std.mem.Allocator,
-    height: usize,
-    width: usize,
-    rect: ?RebateMaskRect,
-) !?[]bool {
-    if (height == 0 or width == 0) return error.InvalidRebateMaskInput;
-    const rebate = rect orelse return null;
-    if (rebate.width <= 0.0) return null;
-
-    const mask = try allocator.alloc(bool, height * width);
-    errdefer allocator.free(mask);
-    @memset(mask, false);
-
-    var x0: i64 = @intFromFloat(rebate.x);
-    var y0: i64 = @intFromFloat(rebate.y);
-    var x1: i64 = x0 + @as(i64, @intFromFloat(rebate.width));
-    var y1: i64 = y0 + @as(i64, @intFromFloat(rebate.height));
-    x0 = @max(0, x0);
-    y0 = @max(0, y0);
-    x1 = @min(@as(i64, @intCast(width)), x1);
-    y1 = @min(@as(i64, @intCast(height)), y1);
-    if (x1 > x0 and y1 > y0) {
-        for (@as(usize, @intCast(y0))..@as(usize, @intCast(y1))) |y| {
-            for (@as(usize, @intCast(x0))..@as(usize, @intCast(x1))) |x| {
-                mask[y * width + x] = true;
-            }
-        }
-    }
-    return mask;
-}
-
 pub fn rebateInBounds(image_width: usize, image_height: usize, rect: RebateOriginRect) bool {
     const cx = rect.x + rect.w / 2.0;
     const cy = rect.y + rect.h / 2.0;
     return cx >= 0.0 and cy >= 0.0 and cx < @as(f64, @floatFromInt(image_width)) and cy < @as(f64, @floatFromInt(image_height));
-}
-
-pub fn extractRebatePixels(
-    allocator: std.mem.Allocator,
-    image: []const f64,
-    image_width: usize,
-    image_height: usize,
-    rect: RebateOriginRect,
-) !RotatedCrop {
-    const cx = rect.x + rect.w / 2.0;
-    const cy = rect.y + rect.h / 2.0;
-    return cropRotatedRect(
-        allocator,
-        image,
-        image_width,
-        image_height,
-        cx,
-        cy,
-        rect.w,
-        rect.h,
-        rect.angle * 180.0 / std.math.pi,
-    );
 }
 
 /// The rebate for measuring Dmin, in a gap between neighbouring frames: the
@@ -1968,11 +1874,6 @@ fn computeBandProfile(
     }
 }
 
-fn gaussianBlur1dInPlace(allocator: std.mem.Allocator, values: []f64) !void {
-    if (values.len == 0) return error.InvalidFrameProfileBuffer;
-    try gaussianBlur1dInPlaceWithKernel(allocator, values, profileBlurKernelSize(values.len));
-}
-
 fn gaussianBlur1dInPlaceWithKernel(allocator: std.mem.Allocator, values: []f64, kernel_size: usize) !void {
     if (values.len == 0 or kernel_size == 0 or kernel_size % 2 == 0) return error.InvalidFrameProfileBuffer;
     const kernel = try gaussianKernel(allocator, kernel_size);
@@ -2043,12 +1944,6 @@ fn gaussianBlur1dInPlacePrepared(values: []f64, scratch: []f64, kernel: []const 
     const output = scratch[0..values.len];
     try gaussianBlur1dTo(values, output, kernel);
     @memcpy(values, output);
-}
-
-fn profileBlurKernelSize(len: usize) usize {
-    var kernel_size = @max(@as(usize, 3), len / 100);
-    kernel_size |= 1;
-    return kernel_size;
 }
 
 fn computeSignedGradientBlurred(allocator: std.mem.Allocator, profile: []const f64, blur_kernel: usize) ![]f64 {
@@ -2652,14 +2547,6 @@ fn grayToU8(value: f64) u8 {
     return @intFromFloat(@floor(value * 255.0 + 0.5));
 }
 
-fn otsuThreshold(raw_gray: []const f64) u8 {
-    var hist = [_]usize{0} ** 256;
-    for (raw_gray) |value| {
-        hist[grayToU8(value)] += 1;
-    }
-    return otsuThresholdFromHist(hist);
-}
-
 fn otsuThresholdU8(raw_gray: []const u8) u8 {
     var hist0 = [_]usize{0} ** 256;
     var hist1 = [_]usize{0} ** 256;
@@ -2735,28 +2622,6 @@ fn closeBinaryMask(allocator: std.mem.Allocator, mask: []bool, width: usize, hei
     try verticalWindowAny(scratch_a, scratch_b, width, height, radius, prefix);
     try horizontalWindowAll(scratch_b, scratch_a, width, height, radius, prefix);
     try verticalWindowAll(scratch_a, mask, width, height, radius, prefix);
-}
-
-fn dilateBinaryMask(allocator: std.mem.Allocator, input: []const bool, output: []bool, width: usize, height: usize, kernel_size: usize) !void {
-    if (input.len != output.len or input.len != width * height) return error.InvalidFilmExtentInput;
-    const radius = kernel_size / 2;
-    const temp = try allocator.alloc(bool, input.len);
-    defer allocator.free(temp);
-    const prefix = try allocator.alloc(usize, @max(width, height) + 1);
-    defer allocator.free(prefix);
-    try horizontalWindowAny(input, temp, width, height, radius, prefix);
-    try verticalWindowAny(temp, output, width, height, radius, prefix);
-}
-
-fn erodeBinaryMask(allocator: std.mem.Allocator, input: []const bool, output: []bool, width: usize, height: usize, kernel_size: usize) !void {
-    if (input.len != output.len or input.len != width * height) return error.InvalidFilmExtentInput;
-    const radius = kernel_size / 2;
-    const temp = try allocator.alloc(bool, input.len);
-    defer allocator.free(temp);
-    const prefix = try allocator.alloc(usize, @max(width, height) + 1);
-    defer allocator.free(prefix);
-    try horizontalWindowAll(input, temp, width, height, radius, prefix);
-    try verticalWindowAll(temp, output, width, height, radius, prefix);
 }
 
 fn horizontalWindowAny(input: []const bool, output: []bool, width: usize, height: usize, radius: usize, prefix: []usize) !void {
@@ -4113,23 +3978,6 @@ fn fillU8ToF64Range(input: []const u8, output: []f64, start: usize, end: usize) 
     }
     for (input[index..end], output[index..end]) |value, *out| {
         out.* = u8_to_unit_f64[value];
-    }
-}
-
-fn fillRect(image: []f64, width: usize, height: usize, rect: RebateMaskRect, value: f64) void {
-    var x0: i64 = @intFromFloat(rect.x);
-    var y0: i64 = @intFromFloat(rect.y);
-    var x1: i64 = x0 + @as(i64, @intFromFloat(rect.width));
-    var y1: i64 = y0 + @as(i64, @intFromFloat(rect.height));
-    x0 = @max(0, x0);
-    y0 = @max(0, y0);
-    x1 = @min(@as(i64, @intCast(width)), x1);
-    y1 = @min(@as(i64, @intCast(height)), y1);
-    if (x1 <= x0 or y1 <= y0) return;
-    for (@as(usize, @intCast(y0))..@as(usize, @intCast(y1))) |y| {
-        for (@as(usize, @intCast(x0))..@as(usize, @intCast(x1))) |x| {
-            image[y * width + x] = value;
-        }
     }
 }
 

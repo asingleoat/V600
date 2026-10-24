@@ -116,10 +116,6 @@ pub const CpuImageView = struct {
         if (self.data.len < try self.requiredByteLen()) return error.InvalidBufferLength;
     }
 
-    pub fn rowBytes(self: CpuImageView) !usize {
-        return tightRowStride(self.width, self.format);
-    }
-
     pub fn requiredByteLen(self: CpuImageView) !usize {
         return requiredBytes(self.width, self.height, self.format, self.row_stride_bytes);
     }
@@ -272,16 +268,6 @@ pub const gpu_kernel_candidates = [_]KernelCandidate{
         .python_contract = "scratchndent/calibration/film_stocks.py polynomial density transform",
         .cpu_symbol = "src/processing/film_stocks.zig applyDensityTransform",
         .input_role = .net_density,
-        .output_role = .scene_linear,
-        .input_format = .rgb_f64,
-        .output_format = .rgb_f64,
-    },
-    .{
-        .name = "sigmoid_tonemap",
-        .priority = .deferred,
-        .python_contract = "scratchndent/processing/negative/render.py:13 _sigmoid_tonemap_kernel; :50 sigmoid_tonemap",
-        .cpu_symbol = "src/processing/render.zig sigmoidTonemap",
-        .input_role = .scene_linear,
         .output_role = .scene_linear,
         .input_format = .rgb_f64,
         .output_format = .rgb_f64,
@@ -455,7 +441,7 @@ test "scene-linear f64 f32 staging preserves explicit representation semantics" 
 }
 
 test "every future GPU kernel candidate requires CPU fallback and download comparison" {
-    try std.testing.expect(gpu_kernel_candidates.len >= 8);
+    try std.testing.expect(gpu_kernel_candidates.len >= 7);
     for (gpu_kernel_candidates) |candidate| {
         try validateGpuCandidate(candidate);
         try std.testing.expect(candidate.requires_cpu_fallback);

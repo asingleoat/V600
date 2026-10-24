@@ -31,10 +31,6 @@ pub fn backendKindForOs(os_tag: std.Target.Os.Tag) BackendKind {
     };
 }
 
-pub fn backendKindForCurrentHost() BackendKind {
-    return backendKindForOs(builtin.os.tag);
-}
-
 test {
     _ = contracts;
     _ = models;

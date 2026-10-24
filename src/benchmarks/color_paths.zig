@@ -68,8 +68,6 @@ pub fn main(init: std.process.Init) !void {
     try benchInvertNegativeU16Simd(stdout, raw_u16, out);
     try benchDarktableSigmoid(stdout, scene, out);
     coverage.mark("apply_sigmoid");
-    try benchNegadoctor(stdout, raw, out);
-    coverage.mark("negadoctor");
     try benchRenderToDisplay(stdout, allocator, scene, out_u16);
     coverage.mark("render_to_display");
     try benchRenderToDisplayU16ThenU8(stdout, allocator, scene, out_u16, out_u8);
@@ -213,26 +211,6 @@ fn benchDarktableSigmoid(stdout: anytype, input: []const f64, output: []f64) !vo
     try reportF64(stdout, "darktable_sigmoid", transform_iterations, monotonicNowNs() - start, output);
 }
 
-fn benchNegadoctor(stdout: anytype, input: []const f64, output: []f64) !void {
-    const params = color.NegadoctorParams{
-        .film_stock = 1,
-        .dmin = .{ 0.11, 0.22, 0.33 },
-        .wb_high = .{ 1.10, 1.20, 1.30 },
-        .wb_low = .{ 0.01, 0.02, 0.03 },
-        .d_max = 2.5,
-        .offset = 0.125,
-        .black = 0.015,
-        .gamma = 1.7,
-        .soft_clip = 0.85,
-        .exposure = 1.25,
-    };
-    const start = monotonicNowNs();
-    for (0..transform_iterations) |_| {
-        try color.negadoctor(input, output, params);
-    }
-    try reportF64(stdout, "negadoctor", transform_iterations, monotonicNowNs() - start, output);
-}
-
 fn benchRenderToDisplay(stdout: anytype, allocator: std.mem.Allocator, input: []const f64, output: []u16) !void {
     const start = monotonicNowNs();
     for (0..render_iterations) |_| {
@@ -356,7 +334,6 @@ const BenchmarkCoverage = struct {
     apply_density_transform: bool = false,
     invert_negative: bool = false,
     apply_sigmoid: bool = false,
-    negadoctor: bool = false,
     render_to_display: bool = false,
 
     fn mark(self: *BenchmarkCoverage, candidate_name: []const u8) void {
@@ -372,8 +349,6 @@ const BenchmarkCoverage = struct {
             self.invert_negative = true;
         } else if (std.mem.eql(u8, candidate_name, "apply_sigmoid")) {
             self.apply_sigmoid = true;
-        } else if (std.mem.eql(u8, candidate_name, "negadoctor")) {
-            self.negadoctor = true;
         } else if (std.mem.eql(u8, candidate_name, "render_to_display")) {
             self.render_to_display = true;
         }
@@ -386,7 +361,6 @@ const BenchmarkCoverage = struct {
         if (std.mem.eql(u8, candidate_name, "apply_density_transform")) return self.apply_density_transform;
         if (std.mem.eql(u8, candidate_name, "invert_negative")) return self.invert_negative;
         if (std.mem.eql(u8, candidate_name, "apply_sigmoid")) return self.apply_sigmoid;
-        if (std.mem.eql(u8, candidate_name, "negadoctor")) return self.negadoctor;
         if (std.mem.eql(u8, candidate_name, "render_to_display")) return self.render_to_display;
         return false;
     }

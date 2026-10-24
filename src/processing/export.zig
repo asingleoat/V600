@@ -788,7 +788,7 @@ fn prepareInvertedSceneF32OutputU16WithTimings(
 
 pub fn f32DensityLutExportCoeffs(options: inversion.InvertOptions) ?film_stocks.Coefficients {
     if (options.request.backend != .cpu) return null;
-    if (options.dark_rgb != null or options.light_rgb != null or options.dmin == null) return null;
+    if (options.dmin == null) return null;
     if (!std.math.isFinite(options.default_light) or options.default_light <= 0.0) return null;
     const coeffs = options.coeffs orelse if (film_stocks.builtinStock(options.stock)) |stock| stock.coeffs else return null;
     if (!film_stocks.usesOnlyLinearTerms(coeffs)) return null;

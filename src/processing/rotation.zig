@@ -3,7 +3,6 @@
 //! and the byte-sample helpers shared with detection gray preparation.
 
 const std = @import("std");
-const parallelism = @import("parallelism.zig");
 
 pub const rotation_parallel_min_pixels: usize = 1_000_000;
 pub const FrameRect = struct {

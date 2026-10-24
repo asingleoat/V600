@@ -2088,36 +2088,6 @@ const DiffSummary = struct {
     abs_gt_4096: usize,
 };
 
-const MaskAreaOverlap = struct {
-    reference_area: usize = 0,
-    candidate_area: usize = 0,
-    intersection_area: usize = 0,
-    union_area: usize = 0,
-
-    fn add(self: *MaskAreaOverlap, other: MaskAreaOverlap) void {
-        self.reference_area += other.reference_area;
-        self.candidate_area += other.candidate_area;
-        self.intersection_area += other.intersection_area;
-        self.union_area += other.union_area;
-    }
-
-    fn iouX1000(self: MaskAreaOverlap) u64 {
-        return ratioX1000(self.intersection_area, self.union_area);
-    }
-
-    fn referenceRetainedX1000(self: MaskAreaOverlap) u64 {
-        return ratioX1000(self.intersection_area, self.reference_area);
-    }
-
-    fn candidateConfirmedX1000(self: MaskAreaOverlap) u64 {
-        return ratioX1000(self.intersection_area, self.candidate_area);
-    }
-
-    fn diceX1000(self: MaskAreaOverlap) u64 {
-        return ratioX1000(self.intersection_area * 2, self.reference_area + self.candidate_area);
-    }
-};
-
 const F64DiffSummary = struct {
     count: usize,
     max_abs: f64,
@@ -2299,11 +2269,6 @@ fn speedupX1000(cpu_ns: u64, gpu_ns: u64) u64 {
 fn pctX1000(part_us: u64, total_us: u64) u64 {
     if (total_us == 0) return 0;
     return @intCast((@as(u128, part_us) * 100_000) / @as(u128, total_us));
-}
-
-fn ratioX1000(part: usize, total: usize) u64 {
-    if (total == 0) return 0;
-    return @intCast((@as(u128, part) * 100_000) / @as(u128, total));
 }
 
 fn scan0006RepresentativeFrame() export_pipeline.FrameRect {

@@ -325,18 +325,6 @@ pub const GalleryViewTransform = struct {
         }
     }
 
-    pub fn ensureFit(
-        self: *GalleryViewTransform,
-        allocator: std.mem.Allocator,
-        key: []const u8,
-        output_width: c_int,
-        output_height: c_int,
-        image_width: u32,
-        image_height: u32,
-    ) !void {
-        try self.ensureFitIn(allocator, key, 0.0, 0.0, output_width, output_height, image_width, image_height);
-    }
-
     /// Fits into the area at (`area_x`, `area_y`) of the given size.
     pub fn ensureFitIn(
         self: *GalleryViewTransform,

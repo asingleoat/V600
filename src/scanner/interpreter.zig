@@ -149,21 +149,6 @@ const gain_shading_data = block: {
     break :block data;
 };
 
-pub const tpu_calibration_sequence = [_]RsCommand{
-    .{ .subcommand = 0xa2, .data = &cmd_a2 },
-    .{ .subcommand = 0x25, .data = &cmd_25 },
-    .{ .subcommand = 0x5a, .data = &cmd_5a },
-    .{ .subcommand = 0x11, .data = &cmd_11 },
-    .{ .subcommand = 0x31, .data = &cmd_31 },
-    .{ .subcommand = 0x21, .data = &cmd_21 },
-    .{ .subcommand = 0x22, .data = &cmd_22 },
-    .{ .subcommand = 0x41, .data = &cmd_41 },
-    .{ .subcommand = 0x42, .data = &cmd_42 },
-    .{ .subcommand = 0x43, .data = &cmd_43 },
-    .{ .subcommand = 0x01, .data = &cmd_01 },
-    .{ .subcommand = 0x05 },
-};
-
 pub const tpu_calibration_program = [_]TpuCalibrationOp{
     .{ .rs = .{ .subcommand = 0xa2, .data = &cmd_a2 } },
     .{ .rs = .{ .subcommand = 0x25, .data = &cmd_25 } },
@@ -184,52 +169,8 @@ pub fn resetCommand() [2]u8 {
     return .{ ESC, 0x40 };
 }
 
-pub fn identityCommand() [2]u8 {
-    return .{ ESC, 0x49 };
-}
-
-pub fn statusCommand() [2]u8 {
-    return .{ ESC, 0x46 };
-}
-
-pub fn extendedStatusCommand() [2]u8 {
-    return .{ ESC, 0x66 };
-}
-
 pub fn extendedIdentityCommand() [2]u8 {
     return .{ FS, 0x49 };
-}
-
-pub fn setResolutionCommand(dpi: u16) [6]u8 {
-    var command = [_]u8{ ESC, 0x52, 0, 0, 0, 0 };
-    std.mem.writeInt(u16, command[2..4], dpi, .little);
-    std.mem.writeInt(u16, command[4..6], dpi, .little);
-    return command;
-}
-
-pub fn setScanAreaCommand(x: u32, y: u32, width: u32, height: u32) [18]u8 {
-    var command = [_]u8{ ESC, 0x41 } ++ ([_]u8{0} ** 16);
-    std.mem.writeInt(u32, command[2..6], x, .little);
-    std.mem.writeInt(u32, command[6..10], y, .little);
-    std.mem.writeInt(u32, command[10..14], width, .little);
-    std.mem.writeInt(u32, command[14..18], height, .little);
-    return command;
-}
-
-pub fn setColorModeCommand(mode: u8) [3]u8 {
-    return .{ ESC, 0x43, mode };
-}
-
-pub fn setDataFormatCommand(bits: u8) [3]u8 {
-    return .{ ESC, 0x44, bits };
-}
-
-pub fn setSourceCommand(source: u8, enable: bool) [4]u8 {
-    return .{ ESC, 0x65, if (enable) 0x01 else 0x00, source };
-}
-
-pub fn startScanCommand() [2]u8 {
-    return .{ ESC, 0x47 };
 }
 
 pub fn readScanParametersCommand() [2]u8 {
@@ -296,14 +237,6 @@ pub fn gammaRegisterHeader(table_id: u8) [8]u8 {
     return .{ 0x03, 0x00, table_id, 0x1f, 0x02, 0x00, 0x01, 0x00 };
 }
 
-pub fn tpuGainShadingHeader() [8]u8 {
-    return gain_shading_header;
-}
-
-pub fn tpuGainShadingData() [256]u8 {
-    return gain_shading_data;
-}
-
 pub fn parseExtendedIdentity(resp: []const u8) Error!ExtendedIdentity {
     if (resp.len < 80) return Error.InvalidExtendedIdentityResponse;
     var model: [16]u8 = undefined;
@@ -342,26 +275,8 @@ pub fn parseStartScanResponse(resp: []const u8) Error!StartScanInfo {
 test "builds basic ESC and FS commands from Python command fixtures" {
     const reset = resetCommand();
     try expectFixtureCommand("reset", &reset);
-    const identity = identityCommand();
-    try expectFixtureCommand("identity", &identity);
-    const status = statusCommand();
-    try expectFixtureCommand("status", &status);
-    const extended_status = extendedStatusCommand();
-    try expectFixtureCommand("extended_status", &extended_status);
     const extended_identity = extendedIdentityCommand();
     try expectFixtureCommand("extended_identity", &extended_identity);
-    const set_resolution = setResolutionCommand(3200);
-    try expectFixtureCommand("set_resolution_3200", &set_resolution);
-    const set_area = setScanAreaCommand(320, 640, 4800, 6400);
-    try expectFixtureCommand("set_scan_area_320_640_4800_6400", &set_area);
-    const color_mode = setColorModeCommand(0x13);
-    try expectFixtureCommand("set_color_mode_rgb_byte_seq", &color_mode);
-    const data_format = setDataFormatCommand(16);
-    try expectFixtureCommand("set_data_format_16", &data_format);
-    const source = setSourceCommand(1, true);
-    try expectFixtureCommand("set_source_tpu_enabled", &source);
-    const start = startScanCommand();
-    try expectFixtureCommand("start_scan", &start);
     const read_params = readScanParametersCommand();
     try expectFixtureCommand("read_scan_parameters", &read_params);
     const set_params = setScanningParametersCommand();
@@ -403,11 +318,11 @@ test "builds IR challenge by XORing first 32 parameter bytes" {
 }
 
 test "exposes captured TPU RS calibration sequence" {
-    try std.testing.expectEqual(@as(u8, 0xa2), tpu_calibration_sequence[0].subcommand);
-    try std.testing.expectEqualSlices(u8, &.{0x02}, tpu_calibration_sequence[0].data);
-    try std.testing.expectEqual(@as(u8, 0x31), tpu_calibration_sequence[4].subcommand);
-    try std.testing.expectEqual(@as(usize, 12), tpu_calibration_sequence[4].data.len);
-    try std.testing.expectEqual(@as(u8, 0x05), tpu_calibration_sequence[tpu_calibration_sequence.len - 1].subcommand);
+    try std.testing.expectEqual(@as(u8, 0xa2), tpu_calibration_program[0].rs.subcommand);
+    try std.testing.expectEqualSlices(u8, &.{0x02}, tpu_calibration_program[0].rs.data);
+    try std.testing.expectEqual(@as(u8, 0x31), tpu_calibration_program[4].rs.subcommand);
+    try std.testing.expectEqual(@as(usize, 12), tpu_calibration_program[4].rs.data.len);
+    try std.testing.expectEqual(@as(u8, 0x05), tpu_calibration_program[tpu_calibration_program.len - 1].rs.subcommand);
 }
 
 test "models full TPU calibration program including gain shading register write" {

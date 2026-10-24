@@ -201,15 +201,10 @@ Recorded in the May-July log; correct anything that is wrong:
 
 ### Native code cleanup
 
-- Delete dead code: 31 unused aliases in `src/ui/main.zig`, uncalled
-  functions (frames, film_formats, tiff, process_cache, linux, macos,
-  interpreter, gpu_boundary, ui/state), the `linux.zig` Python-port stubs,
-  unused imports, and test-only `State` methods. Also the ports of Python
-  code that was dead in Python too: `src/processing/xmp.zig` (darktable XMP),
-  `negadoctor`, the darktable sigmoid and CAT16 paths in `color.zig`,
-  `sigmoidTonemap`/`applySrgbGamma`, `makeRebateMask`, and the unused
-  rebate-mask and dark/light inputs to `inversion.zig`. Check the WebGPU
-  `apply_sigmoid` kernel, which depends on the sigmoid code.
+- Dead code kept for decisions: the darktable sigmoid in `color.zig` lives
+  only for the parked WebGPU `apply_sigmoid` kernel and `bench-color`, and
+  goes if WebGPU goes. No test reads `test/fixtures/tiff/export-metadata.json`
+  or `rgb-thumb-ir.json`.
 - Remove the reference paths only the removed benchmark comparisons used:
   benchmark-only `invertNegative*` variants in `inversion.zig`. The f64
   adaptive dust detector stays as the reference for `f32_down4_coarse`.

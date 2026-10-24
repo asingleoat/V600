@@ -13,7 +13,6 @@ const PreviewBuffer = cerealgrain.native_ui_preview_worker.PreviewBuffer;
 const film_lut = cerealgrain.scanner.film_lut;
 const layoutRow = chrome.layoutRow;
 const drawText = chrome.drawText;
-const nkBool = chrome.nkBool;
 const tooltip = chrome.tooltip;
 
 const allocator = std.heap.page_allocator;

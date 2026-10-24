@@ -106,8 +106,6 @@ pub const Runtime = struct {
     scanimage_command: ?[]const u8 = null,
     event_sink: ?events.Sink = null,
 
-    pub fn close(_: Runtime) void {}
-
     pub fn discoverDevices(self: Runtime) ![]Device {
         const found = usb.listScanners(self.allocator) catch |err| {
             self.emitDeviceDiscovery(.{ .discovery_attempted = true, .devices_found = 0, .selected_device = null, .selection_source = .none });
