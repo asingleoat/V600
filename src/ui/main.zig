@@ -3599,6 +3599,9 @@ fn drawProcessView(
 
     syncProcessExportBasename(ui, model);
     layoutRow(ctx, 24.0, 1);
+    // The print pulldowns' help: a tooltip on a pulldown itself stops it
+    // opening, since Nuklear opens a combo only while no other popup is.
+    tooltip(ctx, "Print copy: also write an 8-bit sRGB JPEG of each frame scaled to fit the print size, uncropped, next to the full-resolution TIFF; roll exports follow it too. Print dpi: labs print at 300 dpi, Epson printers at 360, or 720 at their finest. Never upscales: a frame too small for the size keeps its pixels at a lower dpi");
     c.nk_label(ctx, "Export", c.NK_TEXT_LEFT);
     drawProcessPrintControls(ctx, model, allocator, io, config_path, ui);
     // A strip of the open roll exports through the roll: its names, and the
@@ -4091,9 +4094,7 @@ fn drawProcessPrintControls(
     const metrics = chrome.runtime_ui_config.metrics();
     const item_height: c_int = @intFromFloat(metrics.row(24.0));
     layoutRow(ctx, 28.0, 2);
-    tooltip(ctx, "Also write an 8-bit sRGB JPEG of each frame scaled to fit this print size, uncropped, next to the full-resolution TIFF. Roll exports follow it too");
     const size_index = c.nk_combo(ctx, &print_size_labels, print_size_labels.len, ui.print_size_index, item_height, c.nk_vec2(metrics.row(200.0), metrics.row(420.0)));
-    tooltip(ctx, "Print copy resolution: labs print at 300 dpi, Epson printers at 360, or 720 at their finest. Never upscales: a frame too small for the size keeps its pixels at a lower dpi");
     const resolution_index = c.nk_combo(ctx, &print_resolution_labels, print_resolution_labels.len, ui.print_resolution_index, item_height, c.nk_vec2(metrics.row(200.0), metrics.row(120.0)));
     if (size_index != ui.print_size_index) {
         ui.print_size_index = size_index;
