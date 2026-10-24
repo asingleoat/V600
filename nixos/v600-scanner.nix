@@ -26,44 +26,43 @@
   environment.etc."sane.d/dll.d/epkowa.conf".text = "epkowa";
   
   # udev rules for the Epson film scanners CerealGrain knows (the model table
-  # in src/scanner/models.zig); only the V600 has been tested.
-  # This grants proper permissions for USB access
+  # in src/scanner/models.zig); only the V600 has been tested. The scanner
+  # group can use them, and so can whoever is logged in at the machine
+  # (uaccess); nobody else.
   services.udev.extraRules = ''
     # Perfection V600 / GT-X820 (tested)
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013a", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013a", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection V550
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013b", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013b", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection V800 / V850
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0151", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0151", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection V700 / V750 / GT-X900
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="012c", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="012c", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # GT-X970
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0135", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0135", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection V500 / GT-X770
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0130", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0130", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection 4990 / GT-X800
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="012a", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="012a", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection 4870 / GT-X700
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0128", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0128", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection 4490 / GT-X750
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0119", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0119", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection V370 / V37
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="014a", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="014a", MODE="0660", GROUP="scanner", TAG+="uaccess"
     # Perfection V330 / V33
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0142", MODE="0666", GROUP="scanner", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0142", MODE="0660", GROUP="scanner", TAG+="uaccess"
   '';
   
   # Add scanner utilities to system packages
-  environment.systemPackages = with pkgs; [
+  environment.systemPackages = [
     # GUI scanner applications
-    simple-scan    # GNOME simple scanner interface
-    xsane         # Advanced scanner interface
-    
-    # Command-line scanner tools (with V600 wrappers if overlay is used)
-    # These will be available if you use the v600-overlay.nix
-    (lib.mkIf (builtins.hasAttr "scanimage-v600" pkgs) pkgs.scanimage-v600)
-    (lib.mkIf (builtins.hasAttr "scanimage-v600-ir" pkgs) pkgs.scanimage-v600-ir)
-  ];
+    pkgs.simple-scan
+    pkgs.xsane
+  ]
+  # The V600 wrappers, when the overlay (v600-overlay.nix) is in use.
+  ++ lib.optional (pkgs ? scanimage-v600) pkgs.scanimage-v600
+  ++ lib.optional (pkgs ? scanimage-v600-ir) pkgs.scanimage-v600-ir;
   
   # Ensure users who need scanner access are in the scanner group
   # Add your username to this group in your main configuration:

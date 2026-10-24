@@ -18,7 +18,16 @@ Custom film LUTs are not applied by these wrappers yet; see `plan.md`.
 
 ## Installation
 
-Add the overlay and module to your NixOS configuration:
+With flakes, take the module and overlay from this repository's flake:
+
+    # flake.nix
+    inputs.cerealgrain.url = "github:asingleoat/V600";
+
+    # in your nixosSystem's modules
+    cerealgrain.nixosModules.default
+    { nixpkgs.overlays = [ cerealgrain.overlays.default ]; }
+
+Without flakes, import them by path:
 
     # configuration.nix
     { config, pkgs, ... }:
@@ -28,9 +37,13 @@ Add the overlay and module to your NixOS configuration:
       nixpkgs.overlays = [
         (import /path/to/cerealgrain/nixos/v600-overlay.nix)
       ];
-
-      users.users.yourname.extraGroups = [ "scanner" "lp" ];
     }
+
+The udev rules give the scanner to the `scanner` group and to whoever is
+logged in at the machine; nobody else can open it. To scan from another
+session (over SSH, say), join the group:
+
+    users.users.yourname.extraGroups = [ "scanner" "lp" ];
 
 Rebuild and re-login:
 

@@ -146,6 +146,11 @@ EOF
         };
     in
     {
+      # The scanner's system side on NixOS: udev rules, SANE, and the
+      # patched epkowa backend with the V600 wrappers (nixos/README.md).
+      nixosModules.default = import ./nixos/v600-scanner.nix;
+      overlays.default = import ./nixos/v600-overlay.nix;
+
       packages = forAllSystems (pkgs:
         let
           nuklear = nuklearPackage pkgs;

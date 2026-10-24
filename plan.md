@@ -267,10 +267,9 @@ Recorded in the May-July log; correct anything that is wrong:
   in history (commit 48a4c79). `docs/PYTHON_PORT_MAP.md` line references
   would then point at that commit.
 - One Nix entry point: `shell.nix` and the flake dev shell have drifted
-  (Nuklear defined twice, different Python sets). Add `build.zig.zon` with
-  `minimum_zig_version`. Expose `nixos/` as flake outputs; fix the `lib.mkIf`
-  inside a list and the world-writable `MODE="0666"` in
-  `nixos/v600-scanner.nix`; update `nixos/README.md`.
+  (Nuklear defined twice, different Python sets); the Linux checkout's
+  direnv uses `shell.nix`, so making it load the flake's shell needs the
+  owner to reload there. Add `build.zig.zon` with `minimum_zig_version`.
 - Flake checks: make sure the gate builds from git-tracked sources.
 - Fixtures: compact the one-number-per-line IR JSON arrays, delete or use the
   14 unreferenced scanner fixtures, and update the fixture READMEs, which
