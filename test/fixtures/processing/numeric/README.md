@@ -1,9 +1,10 @@
-Small JSON numeric oracle fixtures for floating-point parity tests.
+Small JSON numeric fixtures, regression baselines for floating-point code,
+generated from the frozen Python implementation.
 
 Each fixture records:
 
 - the operation under test;
-- the frozen Python oracle source or generation note;
+- the frozen Python source or generation note;
 - the exact command or script description used to create the values;
 - the input tensor shape;
 - optional `expected_shape` when an operation reduces or expands the data;

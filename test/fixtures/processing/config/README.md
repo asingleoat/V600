@@ -1,7 +1,7 @@
 Processing config TOML fixtures generated from the frozen Python
 `scratchndent.config.save_config()` implementation.
 
-Oracle command pattern:
+Generation command:
 
 ```python
 from pathlib import Path

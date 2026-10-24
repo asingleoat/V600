@@ -1554,6 +1554,14 @@ test "parses scanimage device list and selects preferred V600 backend" {
     defer freeDevices(allocator, devices);
     try std.testing.expectEqual(@as(usize, 2), devices.len);
     try expectDeviceName(selectDevice(devices), "epson2:libusb:001:018");
+
+    // A V600's listing as captured on Linux.
+    const captured = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "test/fixtures/scanner/scanimage-list/epkowa-v600-linux.txt", allocator, .limited(4096));
+    defer allocator.free(captured);
+    const live = try parseDeviceList(allocator, captured);
+    defer freeDevices(allocator, live);
+    try std.testing.expectEqual(@as(usize, 1), live.len);
+    try expectDeviceName(selectDeviceForKind(live, .rgb_ir), "epkowa:interpreter:001:017");
 }
 
 test "selects epkowa interpreter backend for IR-capable scan kinds" {
@@ -1985,15 +1993,24 @@ test "marks custom LUT metadata only for RGB-bearing scan requests" {
     try std.testing.expect(!customLutsApplied(.{ .kind = .rgb }));
 }
 
-test "classifies common scan failures" {
-    try std.testing.expectEqual(FailureKind.device_busy, classifyFailure("open of device failed: Device busy"));
-    try std.testing.expectEqual(FailureKind.no_device, classifyFailure("No scanners were identified"));
-    try std.testing.expectEqual(FailureKind.permission_denied, classifyFailure("open of device failed: Access denied"));
-    try std.testing.expectEqual(FailureKind.unsupported_option, classifyFailure("setting of option --source failed: Invalid argument"));
-    try std.testing.expectEqual(FailureKind.paper_jam, classifyFailure("sane_read: Document feeder jammed"));
-    try std.testing.expectEqual(FailureKind.cancelled, classifyFailure("scan cancelled by user"));
-    try std.testing.expectEqual(FailureKind.backend_failure, classifyFailure("sane_start: Error during device I/O"));
-    try std.testing.expectEqual(FailureKind.scanimage_failed, classifyFailure("unexpected scanner diagnostic"));
+test "classifies scanimage's captured failure messages" {
+    const cases = [_]struct { file: []const u8, kind: FailureKind }{
+        .{ .file = "device-busy.txt", .kind = .device_busy },
+        .{ .file = "no-device.txt", .kind = .no_device },
+        .{ .file = "permission-denied.txt", .kind = .permission_denied },
+        .{ .file = "unsupported-option.txt", .kind = .unsupported_option },
+        .{ .file = "paper-jam.txt", .kind = .paper_jam },
+        .{ .file = "cancelled.txt", .kind = .cancelled },
+        .{ .file = "backend-failure.txt", .kind = .backend_failure },
+        .{ .file = "unknown.txt", .kind = .scanimage_failed },
+    };
+    for (cases) |case| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ "test/fixtures/scanner/stderr", case.file });
+        defer std.testing.allocator.free(path);
+        const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(4096));
+        defer std.testing.allocator.free(text);
+        try std.testing.expectEqual(case.kind, classifyFailure(text));
+    }
 }
 
 test "maps cancel file observation to scanner cancel state" {

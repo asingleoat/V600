@@ -483,23 +483,12 @@ test "parses live-style TPU capability help" {
     try std.testing.expectApproxEqAbs(242.316 / 25.4, caps.tpu_height_in, 0.0001);
 }
 
-test "combines flatbed and TPU capability help like the Python scanner layer" {
-    const flatbed_help =
-        \\Options specific to device `epkowa:interpreter:001:017':
-        \\    --resolution 400|800|1600|3200dpi [400]
-        \\    -x 0..215.9mm [215.9]
-        \\    -y 0..297.18mm [297.18]
-        \\    --source Flatbed|Transparency Unit [Flatbed]
-        \\
-    ;
-    const tpu_help =
-        \\Options specific to device `epkowa:interpreter:001:017':
-        \\    --resolution 400|800|1600|3200dpi [400]
-        \\    -x 0..68.58mm [68.58]
-        \\    -y 0..242.316mm [242.316]
-        \\    --source Flatbed|Transparency Unit [Transparency Unit]
-        \\
-    ;
+test "combines a V600's captured flatbed and TPU capability help" {
+    const allocator = std.testing.allocator;
+    const flatbed_help = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "test/fixtures/scanner/scanimage-help/flatbed-minimal-epkowa-v600.txt", allocator, .limited(16 * 1024));
+    defer allocator.free(flatbed_help);
+    const tpu_help = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "test/fixtures/scanner/scanimage-help/tpu-minimal-epkowa-v600.txt", allocator, .limited(16 * 1024));
+    defer allocator.free(tpu_help);
     const caps = parseCombinedCapabilities(flatbed_help, tpu_help);
     try std.testing.expectApproxEqAbs(215.9 / 25.4, caps.flatbed_width_in, 0.0001);
     try std.testing.expectApproxEqAbs(297.18 / 25.4, caps.flatbed_height_in, 0.0001);

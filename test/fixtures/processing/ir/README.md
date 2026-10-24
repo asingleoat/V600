@@ -2,7 +2,7 @@ IR processing fixtures.
 
 The alignment fixtures keep only compact IR and expected aligned arrays.
 Tests reconstruct matching RGB inputs from the deterministic pattern used to
-generate the Python oracle values, then verify 1:2 and 1:4 RGB:IR scale cases
+generate the expected values with the Python tools, then verify 1:2 and 1:4 RGB:IR scale cases
 through Python's OpenCV ECC translation path and SciPy reflect/bilinear final
 shift.
 

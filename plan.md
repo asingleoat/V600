@@ -271,9 +271,6 @@ Recorded in the May-July log; correct anything that is wrong:
   direnv uses `shell.nix`, so making it load the flake's shell needs the
   owner to reload there. Add `build.zig.zon` with `minimum_zig_version`.
 - Flake checks: make sure the gate builds from git-tracked sources.
-- Fixtures: compact the one-number-per-line IR JSON arrays, delete or use the
-  14 unreferenced scanner fixtures, and update the fixture READMEs, which
-  still describe the fixtures as Python oracles.
 
 ### Needs the scanner
 
