@@ -74,7 +74,8 @@ pub fn main(init: std.process.Init) !void {
         shouldRun(options.case_filter, "export_detected_frames_ir_gaussian_approx_tradeoff") or
         shouldRun(options.case_filter, "auto_detect") or
         shouldRun(options.case_filter, "auto_detect_breakdown") or
-        shouldRun(options.case_filter, "rebate"))
+        shouldRun(options.case_filter, "rebate") or
+        shouldRun(options.case_filter, "color_contrast"))
     {
         const started = monotonicNowNs();
         preview = try workflow.loadQuickPreview(allocator, options.scan_path, 8192);
@@ -136,6 +137,10 @@ pub fn main(init: std.process.Init) !void {
 
         if (shouldRun(options.case_filter, "process_result_cache_repeat")) {
             try benchProcessResultCacheRepeat(allocator, init.io, stdout, options.scan_path, loaded);
+        }
+
+        if (shouldRun(options.case_filter, "color_contrast")) {
+            try benchColorContrast(allocator, stdout, options.scan_path, loaded);
         }
 
         if (shouldRun(options.case_filter, "invert_negative_preview_breakdown")) {
@@ -736,6 +741,61 @@ fn benchInvertedPreviewPair(
             diff.mismatches,
             checksumU8(cpu_rgb),
             checksumU8(gpu_warm_rgb),
+        },
+    );
+}
+
+/// The 16-bit render of the inverted preview with colour contrast off and
+/// on (default settings): the best of five runs each, and what changed.
+fn benchColorContrast(
+    allocator: std.mem.Allocator,
+    stdout: anytype,
+    scan_path: []const u8,
+    loaded: workflow.QuickPreview,
+) !void {
+    const scene = try allocator.alloc(f32, loaded.preview_raw.len);
+    defer allocator.free(scene);
+    const dmin = [3]f32{ @floatCast(benchmark_dmin[0]), @floatCast(benchmark_dmin[1]), @floatCast(benchmark_dmin[2]) };
+    const density_lut = try inversion.DensityLutF32.initF32(allocator, dmin, 65535.0);
+    defer density_lut.deinit(allocator);
+    try inversion.invertNegativeProvidedDminU16WithDensityLutF32OutputF32(loaded.preview_raw, scene, density_lut, film_stocks.builtinStock(benchmark_stock).?.coeffs);
+
+    const plain = try allocator.alloc(u16, scene.len);
+    defer allocator.free(plain);
+    const contrast = try allocator.alloc(u16, scene.len);
+    defer allocator.free(contrast);
+    var plain_ns: u64 = std.math.maxInt(u64);
+    var contrast_ns: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const started = monotonicNowNs();
+        try render.renderToDisplayU16F32(allocator, scene, plain, .{});
+        plain_ns = @min(plain_ns, monotonicNowNs() - started);
+    }
+    for (0..5) |_| {
+        const started = monotonicNowNs();
+        try render.renderToDisplayU16F32(allocator, scene, contrast, .{ .chroma = .{}, .image_width = loaded.preview_width });
+        contrast_ns = @min(contrast_ns, monotonicNowNs() - started);
+    }
+    const pixels = loaded.preview_width * loaded.preview_height;
+    var changed: usize = 0;
+    for (0..pixels) |pixel| {
+        if (!std.mem.eql(u16, plain[pixel * 3 ..][0..3], contrast[pixel * 3 ..][0..3])) changed += 1;
+    }
+    const diff = try compareU16(plain, contrast);
+    try stdout.print(
+        "color_contrast,{s},{d},{d},{d},{d},plain_us={d};contrast_us={d};slowdown_x1000={d};changed_pixels={d};max_abs={d};rms={d:.1}\n",
+        .{
+            scan_path,
+            loaded.preview_width,
+            loaded.preview_height,
+            pixels,
+            contrast_ns / std.time.ns_per_us,
+            plain_ns / std.time.ns_per_us,
+            contrast_ns / std.time.ns_per_us,
+            speedupX1000(contrast_ns, plain_ns),
+            changed,
+            diff.max_abs,
+            diff.rms,
         },
     );
 }

@@ -287,6 +287,12 @@ pub const defaults = [_]ParamDefault{
     .{ .name = "film_gamma", .value = .{ .float = 0.55 }, .section = .render },
     .{ .name = "film_toe", .value = .{ .float = 0.25 }, .section = .render },
     .{ .name = "dye_crosstalk", .value = .{ .float = 0.2 }, .section = .render },
+    .{ .name = "color_contrast_gain", .value = .{ .float = 0.40 }, .section = .render },
+    .{ .name = "color_contrast_boost", .value = .{ .float = 0.30 }, .section = .render },
+    .{ .name = "color_contrast_radius", .value = .{ .float = 0.025 }, .section = .render },
+    .{ .name = "color_cohesion_hue", .value = .{ .float = 0.70 }, .section = .render },
+    .{ .name = "color_cohesion_chroma", .value = .{ .float = 0.55 }, .section = .render },
+    .{ .name = "color_contrast_families", .value = .{ .integer = 12 }, .section = .render },
     .{ .name = "preview_size", .value = .{ .integer = 8192 } },
     .{ .name = "clahe_clip", .value = .{ .float = 2.0 } },
 };
@@ -312,6 +318,13 @@ pub const comments = [_]ParamComment{
     .{ .name = "film_gamma", .text = "Film contrast: net density per decade of exposure on the straight part of its curve" },
     .{ .name = "film_toe", .text = "Width of the film's toe in decades of exposure" },
     .{ .name = "dye_crosstalk", .text = "Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)" },
+    .{ .name = "color_contrast", .text = "Colour contrast within each colour family of a frame (the color_contrast_* and color_cohesion_* settings); off unless true" },
+    .{ .name = "color_contrast_gain", .text = "Colour contrast: how much chroma differences grow near each family's centre, 0 to 0.5" },
+    .{ .name = "color_contrast_boost", .text = "Colour contrast: chroma added to each family's centre, as a share of it, 0 to 0.8" },
+    .{ .name = "color_contrast_radius", .text = "Colour contrast: largest family core, in Oklab units, 0 to 0.08" },
+    .{ .name = "color_cohesion_hue", .text = "Colour contrast: how far hues are pulled toward their family's, 0 to 1" },
+    .{ .name = "color_cohesion_chroma", .text = "Colour contrast: how far chroma is pulled toward the family's, 0 to 1" },
+    .{ .name = "color_contrast_families", .text = "Colour contrast: the most colour families fitted per frame, the tallest kept, 1 to 12" },
     .{ .name = "clahe_clip", .text = "CLAHE clip limit for preview contrast enhancement" },
     .{ .name = "dmin", .text = "Film base density [R, G, B]" },
     .{ .name = "ir_clean", .text = "Enable IR dust/scratch removal" },
@@ -732,7 +745,7 @@ fn appendPythonFloat(out: *std.array_list.Managed(u8), value: f64) !void {
 
 test "preserves processing config default order, values, and types" {
     try std.testing.expectEqual(@as(u32, 800), reference_dpi);
-    try std.testing.expectEqual(@as(usize, 20), defaults.len);
+    try std.testing.expectEqual(@as(usize, 26), defaults.len);
     try std.testing.expectEqualStrings("processing.toml", config_file);
 
     try defaultValue("ir_threshold").?.expectEqual(.{ .float = 0.10 });
@@ -768,7 +781,7 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 30), comments.len);
+    try std.testing.expectEqual(@as(usize, 37), comments.len);
     try std.testing.expect(comment("exact_aspect") != null);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);

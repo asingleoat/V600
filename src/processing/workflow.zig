@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const chroma = @import("chroma.zig");
 const config = @import("config.zig");
 const export_pipeline = @import("export.zig");
 const film_stocks = @import("film_stocks.zig");
@@ -483,10 +484,12 @@ pub fn renderInvertedPreviewRgb8(
 
     const display8 = try allocator.alloc(u8, sample_count);
     errdefer allocator.free(display8);
+    var render_options = options.render_options;
+    render_options.image_width = preview.preview_width;
     if (cache.scene_linear_f32) |scene| {
-        try render.renderToDisplayU8F32(allocator, scene, display8, options.render_options);
+        try render.renderToDisplayU8F32(allocator, scene, display8, render_options);
     } else {
-        try render.renderToDisplayU8(allocator, cache.scene_linear.?, display8, options.render_options);
+        try render.renderToDisplayU8(allocator, cache.scene_linear.?, display8, render_options);
     }
     return display8;
 }
@@ -2514,6 +2517,27 @@ pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Overr
         .film_gamma = config.getParam("film_gamma", current_dpi, overrides).?.asFloat(),
         .film_toe = config.getParam("film_toe", current_dpi, overrides).?.asFloat(),
         .dye_crosstalk = config.getParam("dye_crosstalk", current_dpi, overrides).?.asFloat(),
+        .chroma = chromaSettingsForConfig(current_dpi, overrides, null),
+    };
+}
+
+/// The colour contrast settings, or null when it is off: `enabled`, else
+/// the config's `color_contrast` (off unless true).
+pub fn chromaSettingsForConfig(current_dpi: ?u32, overrides: []const config.Override, enabled: ?bool) ?chroma.Settings {
+    const on = enabled orelse for (overrides) |entry| {
+        if (std.mem.eql(u8, entry.name, "color_contrast")) break switch (entry.value) {
+            .boolean => |boolean| boolean,
+            else => false,
+        };
+    } else false;
+    if (!on) return null;
+    return .{
+        .hue = config.getParam("color_cohesion_hue", current_dpi, overrides).?.asFloat(),
+        .chroma = config.getParam("color_cohesion_chroma", current_dpi, overrides).?.asFloat(),
+        .boost = config.getParam("color_contrast_boost", current_dpi, overrides).?.asFloat(),
+        .radius = config.getParam("color_contrast_radius", current_dpi, overrides).?.asFloat(),
+        .gain = config.getParam("color_contrast_gain", current_dpi, overrides).?.asFloat(),
+        .families = @intFromFloat(std.math.clamp(@round(config.getParam("color_contrast_families", current_dpi, overrides).?.asFloat()), 1.0, chroma.max_families)),
     };
 }
 

@@ -1050,6 +1050,15 @@ fn appendRenderOptions(builder: *StateBuilder, options: processing_render.Render
     try builder.appendF64(options.film_toe);
     try builder.appendF64(options.dye_crosstalk);
     try builder.appendUsize(options.percentile_sample_limit);
+    try builder.appendBool(options.chroma != null);
+    if (options.chroma) |settings| {
+        try builder.appendF64(settings.hue);
+        try builder.appendF64(settings.chroma);
+        try builder.appendF64(settings.boost);
+        try builder.appendF64(settings.radius);
+        try builder.appendF64(settings.gain);
+        try builder.appendUsize(settings.families);
+    }
 }
 
 fn appendGpuRequest(builder: *StateBuilder, request: processing_webgpu.Request) !void {

@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const config = @import("processing/config.zig");
+pub const chroma = @import("processing/chroma.zig");
 pub const cli = @import("processing/cli.zig");
 pub const color = @import("processing/color.zig");
 pub const events = @import("processing/events.zig");

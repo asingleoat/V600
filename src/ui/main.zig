@@ -114,6 +114,14 @@ const ProcessUiState = struct {
     color_temp: f32 = 0.0,
     color_tint: f32 = 0.0,
     auto_white_balance: f32 = 1.0,
+    color_contrast: bool = false,
+    color_contrast_gain: f32 = 0.40,
+    color_contrast_boost: f32 = 0.30,
+    /// color_contrast_radius in thousandths, which the property shows whole.
+    color_contrast_core: f32 = 25.0,
+    color_cohesion_hue: f32 = 0.70,
+    color_cohesion_chroma: f32 = 0.55,
+    color_contrast_families: c_int = 12,
     ir_threshold: f32 = 0.10,
     ir_hair_sensitivity: f32 = 0.10,
     ir_dilate_radius: c_int = 4,
@@ -3787,6 +3795,31 @@ fn drawProcessSettingsControls(
     }
 
     layoutRow(ctx, 24.0, 1);
+    c.nk_label(ctx, "Color Contrast", c.NK_TEXT_LEFT);
+    layoutRow(ctx, 24.0, 1);
+    tooltip(ctx, "Finds each frame's main colours (skin, sky, foliage) and spreads the shades of each apart in chroma around a richer centre, keeping hue and lightness as rendered. Greys are left alone. Exports and roll exports follow it too");
+    var color_contrast = nkBool(ui.color_contrast);
+    if (c.nk_checkbox_label(ctx, "Color contrast", &color_contrast) != 0) {
+        ui.color_contrast = color_contrast != 0;
+        const updates = [_]cerealgrain.processing.config.Override{.{ .name = "color_contrast", .value = .{ .boolean = ui.color_contrast } }};
+        model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
+    }
+    if (ui.color_contrast) {
+        drawIntSetting(ctx, model, ui, "Colors", "color_contrast_families", &ui.color_contrast_families, 1, 12, 1, "The most colours to find in each frame, the most common kept. Fewer leaves the rarer colours to the pull of the main ones, or alone when far from them");
+        drawFloatSetting(ctx, model, ui, "Local", "color_contrast_gain", &ui.color_contrast_gain, 0.0, 0.5, 0.05, "How much chroma differences between shades near each colour's centre grow. 0 keeps them as they are");
+        drawFloatSetting(ctx, model, ui, "Boost", "color_contrast_boost", &ui.color_contrast_boost, 0.0, 0.8, 0.05, "Chroma added to the centre of each colour, as a share of it. 0 keeps each colour's saturation");
+        const core_before = ui.color_contrast_core;
+        layoutRow(ctx, 26.0, 1);
+        tooltip(ctx, "Size of the region about each colour's centre whose chroma differences grow, in thousandths of Oklab. It shrinks where colours crowd each other or the greys");
+        c.nk_property_float(ctx, "Core", 0.0, &ui.color_contrast_core, 80.0, 1.0, 0.25);
+        if (@abs(ui.color_contrast_core - core_before) > 0.000001) {
+            ui.settings_draft.put("color_contrast_radius", .{ .float = @round(@as(f64, ui.color_contrast_core)) / 1000.0 }) catch |err| setProcessUiError(model, err);
+        }
+        drawFloatSetting(ctx, model, ui, "Hue pull", "color_cohesion_hue", &ui.color_cohesion_hue, 0.0, 1.0, 0.05, "How far each shade's hue moves toward its colour's. Higher makes each colour more even in hue");
+        drawFloatSetting(ctx, model, ui, "Chroma pull", "color_cohesion_chroma", &ui.color_cohesion_chroma, 0.0, 1.0, 0.05, "How far each shade's chroma moves toward its colour's, outside the core");
+    }
+
+    layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Dust & Scratch", c.NK_TEXT_LEFT);
     drawFloatSetting(ctx, model, ui, "IR thresh", "ir_threshold", &ui.ir_threshold, 0.02, 0.50, 0.01, "How far below the local background a pixel must be to count as a defect. Lower values detect fainter dust but may flag film grain. Higher values only catch obvious defects");
     drawFloatSetting(ctx, model, ui, "Hair sens", "ir_hair_sensitivity", &ui.ir_hair_sensitivity, 0.02, 0.30, 0.01, "Meijering ridge filter threshold for detecting thin linear features like hairs and scratches. Lower values catch finer or fainter hairs but may produce false positives on textured areas");
@@ -4007,6 +4040,13 @@ fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const cerealgrain.native
     ui.color_temp = processSettingFloat(model, "color_temp");
     ui.color_tint = processSettingFloat(model, "color_tint");
     ui.auto_white_balance = processSettingFloat(model, "auto_white_balance");
+    ui.color_contrast = processSettingBool(model, "color_contrast", false);
+    ui.color_contrast_gain = processSettingFloat(model, "color_contrast_gain");
+    ui.color_contrast_boost = processSettingFloat(model, "color_contrast_boost");
+    ui.color_contrast_core = processSettingFloat(model, "color_contrast_radius") * 1000.0;
+    ui.color_cohesion_hue = processSettingFloat(model, "color_cohesion_hue");
+    ui.color_cohesion_chroma = processSettingFloat(model, "color_cohesion_chroma");
+    ui.color_contrast_families = processSettingInt(model, "color_contrast_families");
     ui.ir_threshold = processSettingFloat(model, "ir_threshold");
     ui.ir_hair_sensitivity = processSettingFloat(model, "ir_hair_sensitivity");
     ui.ir_dilate_radius = processSettingInt(model, "ir_dilate_radius");

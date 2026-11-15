@@ -39,6 +39,18 @@
 # film_toe = 0.25
 # Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)
 # dye_crosstalk = 0.2
+# Colour contrast: how much chroma differences grow near each family's centre, 0 to 0.5
+# color_contrast_gain = 0.4
+# Colour contrast: chroma added to each family's centre, as a share of it, 0 to 0.8
+# color_contrast_boost = 0.3
+# Colour contrast: largest family core, in Oklab units, 0 to 0.08
+# color_contrast_radius = 0.025
+# Colour contrast: how far hues are pulled toward their family's, 0 to 1
+# color_cohesion_hue = 0.7
+# Colour contrast: how far chroma is pulled toward the family's, 0 to 1
+# color_cohesion_chroma = 0.55
+# Colour contrast: the most colour families fitted per frame, the tallest kept, 1 to 12
+# color_contrast_families = 12
 
 # Film stock profiles
 

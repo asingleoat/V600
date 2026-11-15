@@ -294,6 +294,31 @@ deliberately, not by accident.
   Scene contrast is kept, not stretched per frame. A frame crop's white
   balance and exposure are measured on its inner 95% each way, clear of
   film-border slivers. Formulas: `docs/RENDER_TRANSFORM_CLOSED_FORM.md`.
+- Colour contrast (`color_contrast`, off unless true: the Process view's
+  "Color contrast", `processing export --color-contrast on`; roll exports
+  follow it) is the render's last step, on display light before it is
+  quantized (`processing/chroma.zig`). Each image's colourful objects are
+  fitted as up to twelve families in Oklab a,b, on a copy of the measured
+  region 256 px on its long side (each pixel the mean of 2x2 points):
+  three passes of edge-preserving smoothing (7x7, range 0.03 in Oklab)
+  average colours within objects but not across their edges; a pixel counts
+  by the square of its chroma (over 0.05) plus the square of its a,b
+  distance from its surround (a box mean a tenth of the long side each way,
+  over 0.03), so families sit on colourful objects, and on small ones
+  unlike their setting (brown hair against rock and sky), rather than a
+  frame's near-grey general tones; and only if it lies in a patch of its
+  colour at least 2x2 pixels across, so lone specks count for nothing.
+  Families are peaks of that histogram (smoothed 0.012) at chroma 0.034 or
+  more, down to 1% of the tallest (a hillside's fireweed came to 1.5%). `color_contrast_families` (default 12) keeps only the tallest.
+  Each family's centre gains chroma (`color_contrast_boost` 0.3),
+  its shades are pulled toward it in hue and chroma (`color_cohesion_hue`
+  0.7, `color_cohesion_chroma` 0.55), and inside a core about the centre
+  (`color_contrast_radius` 0.025, shrunk to clear neighbouring families
+  and the greys) chroma differences grow (`color_contrast_gain` 0.4), at
+  constant hue and lightness. Greys (chroma under 0.015) stay; colours
+  pushed out of gamut lose chroma at constant lightness. The math follows
+  a browser prototype; `test/fixtures/processing/chroma/` holds its
+  output. The preview fits the whole strip, exports each frame.
 - Film stocks are 3x10 quadratic polynomials in density space with basis
   `[R, G, B, R^2, G^2, B^2, RG, RB, GB, 1]`. See
   `docs/FILM_STOCK_PROFILES.md`.

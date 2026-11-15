@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const chroma = @import("chroma.zig");
 const color = @import("color.zig");
 const numeric = @import("numeric_fixture.zig");
 
@@ -38,6 +39,14 @@ pub const RenderToDisplayOptions = struct {
     /// out the slivers of film border a frame crop takes in. 0 measures the
     /// whole image.
     frame_width: usize = 0,
+    /// Colour contrast within the image's colour families, on the display
+    /// colours (chroma.zig), fitted where the white balance is measured;
+    /// null leaves colour as the render gives it.
+    chroma: ?chroma.Settings = null,
+    /// The image's width when it is not one frame (`frame_width` 0), so
+    /// colour contrast can fit its families on the image's shape; 0 fits
+    /// them on samples along it, without the spatial smoothing.
+    image_width: usize = 0,
 };
 
 /// The share of a frame's width and height left out on each side when
@@ -115,6 +124,7 @@ const display_table_hi: f64 = 4.0;
 const mid_grey: f64 = 0.18;
 const temp_tint_decades: f64 = 0.15;
 const render_pixels_per_worker: usize = 1 << 18;
+const encode_table_entries: usize = 16384 + 1;
 
 const DisplayTransform = struct {
     scale: [3]f64,
@@ -126,6 +136,17 @@ const DisplayTransform = struct {
     table: [display_table_entries]f32,
     curve_table: [curve_table_entries]f32,
     low_curve_table: [low_curve_entries]f32,
+    chroma_stage: ?*const ChromaStage = null,
+};
+
+/// The colour contrast filter, its fit, and the tables around it (display
+/// light before sRGB encoding, over the display table's log exposures, and
+/// sRGB encoding over linear light): one allocation per render.
+const ChromaStage = struct {
+    fit: chroma.Fit,
+    filter: chroma.Filter,
+    linear_table: [display_table_entries]f32,
+    encode_table: [encode_table_entries]f32,
 };
 
 fn renderPixels(
@@ -141,6 +162,13 @@ fn renderPixels(
     const transform = try allocator.create(DisplayTransform);
     defer allocator.destroy(transform);
     try buildDisplayTransform(In, allocator, input, options, transform);
+    var stage: ?*ChromaStage = null;
+    defer if (stage) |owned| allocator.destroy(owned);
+    if (options.chroma) |settings| {
+        stage = try allocator.create(ChromaStage);
+        try buildChromaStage(In, input, options, settings, transform, stage.?);
+        if (!stage.?.filter.isIdentity()) transform.chroma_stage = stage;
+    }
 
     const pixel_count = input.len / 3;
     const worker_count = workerCountForPixels(pixel_count, render_pixels_per_worker);
@@ -192,18 +220,62 @@ fn renderRange(
     pixel_start: usize,
     pixel_end: usize,
 ) void {
+    if (transform.chroma_stage) |stage| return renderRangeChroma(In, Out, input, output, transform, stage, pixel_start, pixel_end);
     for (pixel_start..pixel_end) |pixel| {
         const index = pixel * 3;
         const x = displayLogExposure(transform, .{ input[index], input[index + 1], input[index + 2] });
         inline for (0..3) |channel| {
-            const display = displayLookup(transform, x[channel] + transform.log_offset[channel]);
-            output[index + channel] = switch (Out) {
-                u16 => displayToU16(display),
-                u8 => @intCast(displayToU16(display) >> 8),
-                else => @compileError("render output must be u8 or u16"),
-            };
+            output[index + channel] = quantizeDisplay(Out, displayLookup(transform, x[channel] + transform.log_offset[channel]));
         }
     }
+}
+
+/// renderRange with colour contrast, a span of pixels at a time. Pixels the
+/// filter leaves alone keep the plain render's values.
+fn renderRangeChroma(
+    comptime In: type,
+    comptime Out: type,
+    input: []const In,
+    output: []Out,
+    transform: *const DisplayTransform,
+    stage: *const ChromaStage,
+    pixel_start: usize,
+    pixel_end: usize,
+) void {
+    var pixels: chroma.Span = undefined;
+    var start = pixel_start;
+    while (start < pixel_end) : (start += chroma.span_pixels) {
+        const count = @min(chroma.span_pixels, pixel_end - start);
+        for (0..count) |i| {
+            const index = (start + i) * 3;
+            const x = displayLogExposure(transform, .{ input[index], input[index + 1], input[index + 2] });
+            var light: [3]f32 = undefined;
+            inline for (0..3) |channel| {
+                const log_exposure = x[channel] + transform.log_offset[channel];
+                output[index + channel] = quantizeDisplay(Out, displayLookup(transform, log_exposure));
+                light[channel] = linearDisplayLookup(stage, log_exposure);
+            }
+            pixels.r[i] = light[0];
+            pixels.g[i] = light[1];
+            pixels.b[i] = light[2];
+        }
+        stage.filter.applySpan(&pixels, count);
+        for (0..count) |i| {
+            if (!pixels.changed[i]) continue;
+            const index = (start + i) * 3;
+            output[index] = quantizeDisplay(Out, encodeLookup(stage, pixels.r[i]));
+            output[index + 1] = quantizeDisplay(Out, encodeLookup(stage, pixels.g[i]));
+            output[index + 2] = quantizeDisplay(Out, encodeLookup(stage, pixels.b[i]));
+        }
+    }
+}
+
+inline fn quantizeDisplay(comptime Out: type, display: f64) Out {
+    return switch (Out) {
+        u16 => displayToU16(display),
+        u8 => @intCast(displayToU16(display) >> 8),
+        else => @compileError("render output must be u8 or u16"),
+    };
 }
 
 /// Log10 exposure of one pixel after channel alignment, curve inversion,
@@ -273,6 +345,28 @@ inline fn displayLookup(transform: *const DisplayTransform, log_exposure: f64) f
     return lo + (hi - lo) * fraction;
 }
 
+inline fn linearDisplayLookup(stage: *const ChromaStage, log_exposure: f64) f32 {
+    const steps = @as(f64, @floatFromInt(display_table_entries - 1));
+    const position = (log_exposure - display_table_lo) * (steps / (display_table_hi - display_table_lo));
+    if (!(position > 0.0)) return stage.linear_table[0];
+    if (position >= steps) return stage.linear_table[display_table_entries - 1];
+    const lower: usize = @intFromFloat(position);
+    const fraction: f32 = @floatCast(position - @as(f64, @floatFromInt(lower)));
+    const lo = stage.linear_table[lower];
+    return lo + (stage.linear_table[lower + 1] - lo) * fraction;
+}
+
+/// sRGB encoding of linear light, interpolated: within 0.1 of a 16-bit
+/// level.
+inline fn encodeLookup(stage: *const ChromaStage, linear: f32) f64 {
+    const steps: f32 = @floatFromInt(encode_table_entries - 1);
+    const position = std.math.clamp(linear, 0.0, 1.0) * steps;
+    const lower: usize = @min(@as(usize, @intFromFloat(position)), encode_table_entries - 2);
+    const fraction = position - @as(f32, @floatFromInt(lower));
+    const lo = stage.encode_table[lower];
+    return lo + (stage.encode_table[lower + 1] - lo) * fraction;
+}
+
 /// Display value (sRGB-encoded, 0 to 1) for scene-linear exposure `exposure`,
 /// with 18% grey at 18% display light.
 fn displayCurve(exposure: f64, contrast: f64) f64 {
@@ -286,8 +380,82 @@ fn displayCurveKeyPower(contrast: f64) f64 {
 }
 
 fn displayCurveWithKey(exposure: f64, contrast: f64, key_power: f64) f64 {
+    return color.linearToSrgbValue(displayLightWithKey(exposure, contrast, key_power));
+}
+
+/// The display curve's light before sRGB encoding.
+fn displayLightWithKey(exposure: f64, contrast: f64, key_power: f64) f64 {
     const ep = std.math.pow(f64, @max(exposure, 0.0), contrast);
-    return color.linearToSrgbValue(ep / (ep + key_power));
+    return ep / (ep + key_power);
+}
+
+/// Fits the colour families to display colours sampled where the white
+/// balance is measured, and builds the filter with its tables.
+fn buildChromaStage(
+    comptime In: type,
+    input: []const In,
+    options: RenderToDisplayOptions,
+    settings: chroma.Settings,
+    transform: *const DisplayTransform,
+    stage: *ChromaStage,
+) !void {
+    const key_power = displayCurveKeyPower(options.contrast);
+    for (&stage.linear_table, 0..) |*entry, index| {
+        const fraction = @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(display_table_entries - 1));
+        const log_exposure = display_table_lo + fraction * (display_table_hi - display_table_lo);
+        entry.* = @floatCast(displayLightWithKey(std.math.pow(f64, 10.0, log_exposure), options.contrast, key_power));
+    }
+    for (&stage.encode_table, 0..) |*entry, index| {
+        entry.* = @floatCast(color.linearToSrgbValue(@as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(encode_table_entries - 1))));
+    }
+
+    // The fitting image: each pixel the mean display light of 2 x 2 points
+    // spread over its cell of the measured region.
+    const region = chromaRegion(input.len / 3, options);
+    const size = chroma.fitSize(region.width, region.height);
+    stage.fit.begin(size);
+    const lanes = chroma.lanes;
+    for (0..size[1]) |fy| {
+        const ys = cellPoints(fy, size[1], region.height);
+        var fx: usize = 0;
+        while (fx < size[0]) : (fx += lanes) {
+            const count = @min(lanes, size[0] - fx);
+            var values: [3][lanes]f32 = @splat(@splat(0.0));
+            for (0..count) |lane| {
+                const xs = cellPoints(fx + lane, size[0], region.width);
+                for (ys) |y| {
+                    for (xs) |x| {
+                        const index = ((region.y + y) * region.stride + region.x + x) * 3;
+                        const exposure = displayLogExposure(transform, .{ input[index], input[index + 1], input[index + 2] });
+                        inline for (0..3) |channel| values[channel][lane] += 0.25 * linearDisplayLookup(stage, exposure[channel] + transform.log_offset[channel]);
+                    }
+                }
+            }
+            const lab = chroma.oklabV(.{ values[0], values[1], values[2] });
+            const L: [lanes]f32 = lab[0];
+            const a: [lanes]f32 = lab[1];
+            const b: [lanes]f32 = lab[2];
+            for (0..count) |lane| stage.fit.set(fx + lane, fy, .{ L[lane], a[lane], b[lane] });
+        }
+    }
+    const model = stage.fit.model();
+    try stage.filter.init(&model, settings);
+}
+
+/// The quarter points of cell `cell` of `cells` across `length` pixels.
+fn cellPoints(cell: usize, cells: usize, length: usize) [2]usize {
+    const lo = cell * length / cells;
+    const span = @max(1, (cell + 1) * length / cells - lo);
+    return .{ lo + span / 4, lo + (3 * span) / 4 };
+}
+
+/// Where colour contrast fits its families: a frame's measured region, or
+/// a whole image of known width.
+fn chromaRegion(pixel_count: usize, options: RenderToDisplayOptions) MeasureRegion {
+    if (options.frame_width == 0 and options.image_width != 0 and pixel_count % options.image_width == 0) {
+        return .{ .x = 0, .y = 0, .width = options.image_width, .height = pixel_count / options.image_width, .stride = options.image_width };
+    }
+    return measureRegion(pixel_count, options.frame_width);
 }
 
 fn buildDisplayTransform(
@@ -297,6 +465,7 @@ fn buildDisplayTransform(
     options: RenderToDisplayOptions,
     transform: *DisplayTransform,
 ) !void {
+    transform.chroma_stage = null;
     transform.scale = .{ 1.0, 1.0, 1.0 };
     transform.offset = .{ 0.0, 0.0, 0.0 };
     transform.inv_gamma_toe = 1.0 / (options.film_gamma * options.film_toe);
@@ -429,6 +598,7 @@ fn validateRenderOptions(options: RenderToDisplayOptions) !void {
     if (!finite(options.exposure_compensation) or !finite(options.color_temp) or !finite(options.color_tint)) return error.InvalidRenderAdjustment;
     if (!finite(options.film_gamma) or options.film_gamma <= 0.0 or !finite(options.film_toe) or options.film_toe <= 0.0) return error.InvalidRenderFilmCurve;
     if (!finite(options.dye_crosstalk) or options.dye_crosstalk < 0.0 or options.dye_crosstalk >= 0.95) return error.InvalidRenderCrosstalk;
+    if (options.chroma) |settings| try settings.validate();
 }
 
 fn workerCountForPixels(pixel_count: usize, min_pixels: usize) usize {
@@ -703,4 +873,50 @@ test "render paths agree: u8 is the u16 output shifted, f32 within one level" {
     defer allocator.free(from_f32);
     try renderToDisplayU16F32(allocator, input_f32, from_f32, fixture_adjusted_options);
     for (expected_u16, from_f32) |a, b| try std.testing.expect(@abs(@as(i32, a) - @as(i32, b)) <= 1);
+}
+
+/// A 64x64 negative whose dyes vary out of step, so its positive holds
+/// many hues and chromas.
+fn colourfulNegative() [64 * 64 * 3]f64 {
+    var rgb: [64 * 64 * 3]f64 = undefined;
+    for (0..64) |y| {
+        for (0..64) |x| {
+            const u = @as(f64, @floatFromInt(x)) / 63.0;
+            const v = @as(f64, @floatFromInt(y)) / 63.0;
+            const index = (y * 64 + x) * 3;
+            rgb[index] = 0.5 + 0.35 * @sin(6.0 * u + 1.0 * v);
+            rgb[index + 1] = 0.5 + 0.35 * @sin(5.0 * v + 2.0);
+            rgb[index + 2] = 0.5 + 0.35 * @cos(4.0 * u - 3.0 * v);
+        }
+    }
+    return rgb;
+}
+
+test "colour contrast leaves greys alone, and its identity settings change nothing" {
+    const allocator = std.testing.allocator;
+    var grey = greyRamp(256, 1.0, 0.0, 1.0, 0.0);
+    var plain: [256 * 3]u16 = undefined;
+    var filtered: [256 * 3]u16 = undefined;
+    try renderToDisplay(allocator, &grey, &plain, .{ .auto_white_balance = 0.0 });
+    try renderToDisplay(allocator, &grey, &filtered, .{ .auto_white_balance = 0.0, .chroma = .{} });
+    try std.testing.expectEqualSlices(u16, &plain, &filtered);
+
+    var colourful = colourfulNegative();
+    var plain_colour: [64 * 64 * 3]u16 = undefined;
+    var identity: [64 * 64 * 3]u16 = undefined;
+    var contrast: [64 * 64 * 3]u16 = undefined;
+    try renderToDisplay(allocator, &colourful, &plain_colour, .{});
+    try renderToDisplay(allocator, &colourful, &identity, .{ .chroma = .{ .hue = 0.0, .chroma = 0.0, .boost = 0.0, .gain = 0.0 } });
+    try std.testing.expectEqualSlices(u16, &plain_colour, &identity);
+    try renderToDisplay(allocator, &colourful, &contrast, .{ .chroma = .{}, .image_width = 64 });
+    var changed: usize = 0;
+    for (0..64 * 64) |pixel| {
+        if (!std.mem.eql(u16, plain_colour[pixel * 3 ..][0..3], contrast[pixel * 3 ..][0..3])) changed += 1;
+    }
+    try std.testing.expect(changed > 64 * 64 / 4);
+
+    var u8_out: [64 * 64 * 3]u8 = undefined;
+    try renderToDisplayU8(allocator, &colourful, &u8_out, .{ .chroma = .{}, .image_width = 64 });
+    for (contrast, u8_out) |sample, byte| try std.testing.expectEqual(@as(u8, @intCast(sample >> 8)), byte);
+    try std.testing.expectError(error.InvalidChromaSetting, renderToDisplay(allocator, &colourful, &contrast, .{ .chroma = .{ .gain = 0.9 } }));
 }

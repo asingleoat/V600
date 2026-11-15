@@ -258,7 +258,8 @@ pub fn renderOptionsEqual(
         a.film_gamma == b.film_gamma and
         a.film_toe == b.film_toe and
         a.dye_crosstalk == b.dye_crosstalk and
-        a.percentile_sample_limit == b.percentile_sample_limit;
+        a.percentile_sample_limit == b.percentile_sample_limit and
+        (if (a.chroma) |settings| b.chroma != null and settings.eql(b.chroma.?) else b.chroma == null);
 }
 
 pub fn stockEqual(a: ?[]const u8, b: ?[]const u8) bool {

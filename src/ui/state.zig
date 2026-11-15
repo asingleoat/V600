@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const app_state = @import("../app_state.zig");
+const processing_chroma = @import("../processing/chroma.zig");
 const processing_config = @import("../processing/config.zig");
 const processing_export = @import("../processing/export.zig");
 const processing_events = @import("../processing/events.zig");
@@ -1174,6 +1175,7 @@ pub const State = struct {
                 .film_gamma = processingConfigFloat(&self.processing_config, "film_gamma"),
                 .film_toe = processingConfigFloat(&self.processing_config, "film_toe"),
                 .dye_crosstalk = processingConfigFloat(&self.processing_config, "dye_crosstalk"),
+                .chroma = processingChromaSettings(&self.processing_config),
             },
             .invert_request = self.processing_gpu_request,
         };
@@ -2164,6 +2166,19 @@ fn processingConfigBool(loaded: *const processing_config.LoadedConfig, name: []c
     const entry = processingConfigEntry(loaded, name) orelse return null;
     if (std.meta.activeTag(entry.value) != .boolean) return null;
     return entry.value.boolean;
+}
+
+/// Colour contrast as the config sets it, or null when off (the default).
+fn processingChromaSettings(loaded: *const processing_config.LoadedConfig) ?processing_chroma.Settings {
+    if (!(processingConfigBool(loaded, "color_contrast") orelse false)) return null;
+    return .{
+        .hue = processingConfigFloat(loaded, "color_cohesion_hue"),
+        .chroma = processingConfigFloat(loaded, "color_cohesion_chroma"),
+        .boost = processingConfigFloat(loaded, "color_contrast_boost"),
+        .radius = processingConfigFloat(loaded, "color_contrast_radius"),
+        .gain = processingConfigFloat(loaded, "color_contrast_gain"),
+        .families = @intFromFloat(std.math.clamp(@round(processingConfigFloat(loaded, "color_contrast_families")), 1.0, processing_chroma.max_families)),
+    };
 }
 
 fn processingConfigFloat(loaded: *const processing_config.LoadedConfig, name: []const u8) f64 {

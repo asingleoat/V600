@@ -1,0 +1,173 @@
+{
+  "formatVersion": 1,
+  "source": "core-chroma-contrast.html, right-hand filtered output; raw input supplied directly as decoded ImageData",
+  "bytes": "Row-major RGBA, unsigned 8-bit straight-alpha sRGB. Four bytes per pixel, no header or padding. All pixel indices below are zero-based.",
+  "width": 32,
+  "height": 24,
+  "input": "swatches.rgba",
+  "inputSha256": "2e5bdf99c9c1c46b30b0f27aad47f4616a1d4bc1f62679eef6fc0c9faf5df45f",
+  "defaults": {
+    "hue": 0.7,
+    "chroma": 0.55,
+    "boost": 0.3,
+    "radius": 0.025,
+    "gain": 0.4
+  },
+  "expectedPeaks": [
+    {
+      "a": 0.09,
+      "b": 0.07200000000000001,
+      "h": 254.9836757934614
+    },
+    {
+      "a": 0.156,
+      "b": 0.07200000000000001,
+      "h": 160.98802180025245
+    },
+    {
+      "a": 0.20400000000000001,
+      "b": 0.114,
+      "h": 81.01048147489317
+    },
+    {
+      "a": -0.20400000000000001,
+      "b": 0.15,
+      "h": 72.4832513907801
+    },
+    {
+      "a": -0.018000000000000002,
+      "b": -0.24,
+      "h": 66.78495653513545
+    }
+  ],
+  "invariants": {
+    "alphaPreserved": true,
+    "fullyTransparentRGBPreserved": true,
+    "neutralSampleIndices": [
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68
+    ],
+    "corePair": {
+      "pixelIndices": [
+        0,
+        1
+      ],
+      "units": "Oklab chroma before gamut mapping or 8-bit conversion",
+      "rigidDeltaC": 0.010910052084883881,
+      "defaultDeltaC": 0.01527407291883745,
+      "ratio": 1.4000000000000015
+    }
+  },
+  "cases": [
+    {
+      "name": "default",
+      "settings": {
+        "hue": 0.7,
+        "chroma": 0.55,
+        "boost": 0.3,
+        "radius": 0.025,
+        "gain": 0.4
+      },
+      "output": "default.rgba",
+      "outputSha256": "5e591e92cc35ff256a6984e73e100f68cfb24a385a0399e01f1d2db91819dfe7",
+      "changedPixelCount": 730,
+      "gamutMappedPixelCount": 319
+    },
+    {
+      "name": "rigid",
+      "settings": {
+        "hue": 0.7,
+        "chroma": 0.55,
+        "boost": 0.3,
+        "radius": 0.025,
+        "gain": 0
+      },
+      "output": "rigid.rgba",
+      "outputSha256": "18df8bde7b8f185cde702d31f93c3199ed980f6f89f35aa9c12053ad7fe892b4",
+      "changedPixelCount": 730,
+      "gamutMappedPixelCount": 320
+    },
+    {
+      "name": "point",
+      "settings": {
+        "hue": 0.7,
+        "chroma": 0.55,
+        "boost": 0.3,
+        "radius": 0,
+        "gain": 0.4
+      },
+      "output": "point.rgba",
+      "outputSha256": "93aad873bcc92c0530b17002809c849d924e309f5c49e574a822e361089ad9dc",
+      "changedPixelCount": 731,
+      "gamutMappedPixelCount": 310
+    },
+    {
+      "name": "gamut",
+      "settings": {
+        "hue": 1,
+        "chroma": 1,
+        "boost": 0.8,
+        "radius": 0.06,
+        "gain": 0.5
+      },
+      "output": "gamut.rgba",
+      "outputSha256": "c2b29ff417d1293542772341f4aa0cf654a2db14a684af450b38adf15f0a5d8d",
+      "changedPixelCount": 731,
+      "gamutMappedPixelCount": 684
+    },
+    {
+      "name": "gain-only",
+      "settings": {
+        "hue": 0,
+        "chroma": 0,
+        "boost": 0,
+        "radius": 0.04,
+        "gain": 0.5
+      },
+      "output": "gain-only.rgba",
+      "outputSha256": "a7337ebf45093ae558753f63c28d7dd91315be33e73935b80ffd3c902718db13",
+      "changedPixelCount": 564,
+      "gamutMappedPixelCount": 27
+    },
+    {
+      "name": "identity",
+      "settings": {
+        "hue": 0,
+        "chroma": 0,
+        "boost": 0,
+        "radius": 0.025,
+        "gain": 0
+      },
+      "output": "identity.rgba",
+      "outputSha256": "2e5bdf99c9c1c46b30b0f27aad47f4616a1d4bc1f62679eef6fc0c9faf5df45f",
+      "changedPixelCount": 0,
+      "gamutMappedPixelCount": 0
+    }
+  ]
+}

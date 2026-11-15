@@ -70,6 +70,8 @@ pub const ExportOptions = struct {
     print_dpi: ?u32 = null,
     /// Overrides the config's `reduce_newton_rings`.
     reduce_rings: ?bool = null,
+    /// Overrides the config's `color_contrast`.
+    color_contrast: ?bool = null,
 };
 
 pub const ProcessingCommand = union(CommandTag) {
@@ -372,6 +374,10 @@ fn parseExportArgs(argv: []const []const u8) !ExportOptions {
             index += 1;
             if (index >= argv.len) return error.MissingReduceRings;
             options.reduce_rings = if (std.mem.eql(u8, argv[index], "on")) true else if (std.mem.eql(u8, argv[index], "off")) false else return error.InvalidReduceRings;
+        } else if (std.mem.eql(u8, arg, "--color-contrast")) {
+            index += 1;
+            if (index >= argv.len) return error.MissingColorContrast;
+            options.color_contrast = if (std.mem.eql(u8, argv[index], "on")) true else if (std.mem.eql(u8, argv[index], "off")) false else return error.InvalidColorContrast;
         } else {
             return error.UnknownProcessingOption;
         }
@@ -574,7 +580,8 @@ fn runExport(
     defer allocator.free(ring_frames);
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
-    const render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
+    var render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
+    render_options.chroma = workflow.chromaSettingsForConfig(current_dpi, overrides, options.color_contrast);
     const print_spec = printSpecFor(print.specForConfig(overrides), options.print_size, options.print_dpi);
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0;
