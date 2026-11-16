@@ -281,18 +281,22 @@ pub const defaults = [_]ParamDefault{
     .{ .name = "render_percentile_lo", .value = .{ .float = 0.5 }, .section = .render },
     .{ .name = "render_percentile_hi", .value = .{ .float = 99.5 }, .section = .render },
     .{ .name = "exposure_compensation", .value = .{ .float = 0.0 }, .section = .render },
+    .{ .name = "render_highlight_target", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "color_temp", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "color_tint", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "auto_white_balance", .value = .{ .float = 1.0 }, .section = .render },
+    .{ .name = "neutral_white_balance", .value = .{ .float = 1.0 }, .section = .render },
     .{ .name = "film_gamma", .value = .{ .float = 0.55 }, .section = .render },
     .{ .name = "film_toe", .value = .{ .float = 0.25 }, .section = .render },
     .{ .name = "dye_crosstalk", .value = .{ .float = 0.2 }, .section = .render },
+    .{ .name = "render_primaries", .value = .{ .string = FixedString.init("auto") }, .section = .render },
     .{ .name = "color_contrast_gain", .value = .{ .float = 0.40 }, .section = .render },
     .{ .name = "color_contrast_boost", .value = .{ .float = 0.30 }, .section = .render },
     .{ .name = "color_contrast_radius", .value = .{ .float = 0.025 }, .section = .render },
     .{ .name = "color_cohesion_hue", .value = .{ .float = 0.70 }, .section = .render },
     .{ .name = "color_cohesion_chroma", .value = .{ .float = 0.55 }, .section = .render },
     .{ .name = "color_contrast_families", .value = .{ .integer = 12 }, .section = .render },
+    .{ .name = "color_contrast_target", .value = .{ .float = 0.0 }, .section = .render },
     .{ .name = "preview_size", .value = .{ .integer = 8192 } },
     .{ .name = "clahe_clip", .value = .{ .float = 2.0 } },
 };
@@ -312,19 +316,23 @@ pub const comments = [_]ParamComment{
     .{ .name = "render_percentile_lo", .text = "Low percentile for each channel's black point (white balance)" },
     .{ .name = "render_percentile_hi", .text = "High percentile for each channel's white point (white balance)" },
     .{ .name = "exposure_compensation", .text = "Exposure in stops on top of automatic exposure: positive=brighter" },
+    .{ .name = "render_highlight_target", .text = "Automatic exposure puts the frame's 99th-percentile lightness here (Oklab L, e.g. 0.84) instead of the average at 18% grey; 0 = off" },
     .{ .name = "color_temp", .text = "Color temperature, about half a stop per unit: positive=warmer, negative=cooler" },
     .{ .name = "color_tint", .text = "Color tint, about half a stop per unit: positive=magenta, negative=green" },
     .{ .name = "auto_white_balance", .text = "Per-frame white balance from each channel's black and white points: 0=off, 1=full" },
+    .{ .name = "render_primaries", .text = "Colour space of the render, how saturated the film's colours can come out: srgb, display_p3, adobe_rgb, rec2020, or auto (rec2020 on macOS, which holds a photo printer's gamut; srgb elsewhere). Exports embed its ICC profile" },
+    .{ .name = "neutral_white_balance", .text = "Then takes the cast of the frame's nearly neutral surfaces (greys, whites, glass) out of the render: 0=off, 1=full" },
     .{ .name = "film_gamma", .text = "Film contrast: net density per decade of exposure on the straight part of its curve" },
     .{ .name = "film_toe", .text = "Width of the film's toe in decades of exposure" },
     .{ .name = "dye_crosstalk", .text = "Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)" },
     .{ .name = "color_contrast", .text = "Colour contrast within each colour family of a frame (the color_contrast_* and color_cohesion_* settings); off unless true" },
     .{ .name = "color_contrast_gain", .text = "Colour contrast: how much chroma differences grow near each family's centre, 0 to 0.5" },
-    .{ .name = "color_contrast_boost", .text = "Colour contrast: chroma added to each family's centre, as a share of it, 0 to 0.8" },
+    .{ .name = "color_contrast_boost", .text = "Colour contrast: how much each family's colours gain chroma along their own hue, 0 to 0.8" },
     .{ .name = "color_contrast_radius", .text = "Colour contrast: largest family core, in Oklab units, 0 to 0.08" },
     .{ .name = "color_cohesion_hue", .text = "Colour contrast: how far hues are pulled toward their family's, 0 to 1" },
     .{ .name = "color_cohesion_chroma", .text = "Colour contrast: how far chroma is pulled toward the family's, 0 to 1" },
     .{ .name = "color_contrast_families", .text = "Colour contrast: the most colour families fitted per frame, the tallest kept, 1 to 12" },
+    .{ .name = "color_contrast_target", .text = "Colour contrast: the colourfulness the boost aims for (90th percentile of chroma), up to the boost; 0 = always the boost" },
     .{ .name = "clahe_clip", .text = "CLAHE clip limit for preview contrast enhancement" },
     .{ .name = "dmin", .text = "Film base density [R, G, B]" },
     .{ .name = "ir_clean", .text = "Enable IR dust/scratch removal" },
@@ -335,6 +343,16 @@ pub const comments = [_]ParamComment{
     .{ .name = "reduce_newton_rings", .text = "Subtract the Newton's rings the IR finds in colour from exports (scans with IR); on unless false" },
     .{ .name = "print_size", .text = "Also export an 8-bit JPEG sized for this print (4x6 to 24x36, letter, a4, a3), or off" },
     .{ .name = "print_dpi", .text = "Print copy resolution: 300 for labs, 360 or 720 for Epson printers" },
+    .{ .name = "print_printer", .text = "Printing: the print queue the Frame view prints to" },
+    .{ .name = "print_paper", .text = "Printing: the driver's paper (media type) choice" },
+    .{ .name = "print_quality", .text = "Printing: the driver's print quality choice" },
+    .{ .name = "print_resolution", .text = "Printing: the driver's resolution choice" },
+    .{ .name = "print_page_size", .text = "Printing: the driver's paper size choice" },
+    .{ .name = "print_layout", .text = "Printing: the print size (4x6, 8x10, ...), or page for the printable area" },
+    .{ .name = "print_fill", .text = "Printing: fill the print size, trimming the frame, instead of fitting it" },
+    .{ .name = "print_profile", .text = "Printing: the paper's ICC profile by name; empty takes the driver's for the paper" },
+    .{ .name = "print_perceptual", .text = "Printing: perceptual rendering intent instead of relative colorimetric" },
+    .{ .name = "print_black_point", .text = "Printing: black point compensation; on unless false" },
 };
 
 pub fn defaultValue(name: []const u8) ?Value {
@@ -745,7 +763,7 @@ fn appendPythonFloat(out: *std.array_list.Managed(u8), value: f64) !void {
 
 test "preserves processing config default order, values, and types" {
     try std.testing.expectEqual(@as(u32, 800), reference_dpi);
-    try std.testing.expectEqual(@as(usize, 26), defaults.len);
+    try std.testing.expectEqual(@as(usize, 30), defaults.len);
     try std.testing.expectEqualStrings("processing.toml", config_file);
 
     try defaultValue("ir_threshold").?.expectEqual(.{ .float = 0.10 });
@@ -763,6 +781,7 @@ test "preserves processing config default order, values, and types" {
     try defaultValue("color_temp").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("color_tint").?.expectEqual(.{ .float = 0.0 });
     try defaultValue("auto_white_balance").?.expectEqual(.{ .float = 1.0 });
+    try defaultValue("neutral_white_balance").?.expectEqual(.{ .float = 1.0 });
     try defaultValue("film_gamma").?.expectEqual(.{ .float = 0.55 });
     try defaultValue("film_toe").?.expectEqual(.{ .float = 0.25 });
     try defaultValue("dye_crosstalk").?.expectEqual(.{ .float = 0.2 });
@@ -781,7 +800,7 @@ test "preserves processing config sections and comments" {
 
     try std.testing.expectEqualStrings("dust_removal", Section.dust_removal.name());
     try std.testing.expectEqualStrings("render", Section.render.name());
-    try std.testing.expectEqual(@as(usize, 37), comments.len);
+    try std.testing.expectEqual(@as(usize, 51), comments.len);
     try std.testing.expect(comment("exact_aspect") != null);
     try std.testing.expectEqualStrings("Active film stock name", comment("stock").?);
     try std.testing.expectEqualStrings("Film base density [R, G, B]", comment("dmin").?);

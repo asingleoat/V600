@@ -150,6 +150,7 @@ license_dir() {
     *libdeflate.*) echo libdeflate ;;
     *libz.*) echo zlib ;;
     *libusb-1.0.*) echo libusb ;;
+    *liblcms2.*) echo lcms2 ;;
     *) return 1 ;;
   esac
 }

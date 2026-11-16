@@ -5,9 +5,11 @@ const processing_config = @import("../processing/config.zig");
 const processing_events = @import("../processing/events.zig");
 const processing_export = @import("../processing/export.zig");
 const processing_film_stocks = @import("../processing/film_stocks.zig");
+const processing_frame_adjust = @import("../processing/frame_adjust.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
 const processing_workflow = @import("../processing/workflow.zig");
+const print_order = @import("print_order.zig");
 const process_cache = @import("process_cache.zig");
 const tiff = @import("../tiff.zig");
 const ui_state = @import("state.zig");
@@ -110,6 +112,9 @@ pub const Context = struct {
     output_dir: []u8,
     basename: []u8,
     rects: []processing_export.FrameRect,
+    /// The frames' own looks, by index into `rects`.
+    frame_adjustments: []processing_frame_adjust.Adjustments,
+    frame_number_offset: usize,
     outputs: processing_export.OutputSelection,
     active_stock: ?[]u8,
     stock_coeffs: ?@import("../processing/film_stocks.zig").Coefficients,
@@ -120,6 +125,8 @@ pub const Context = struct {
     config_override_names: [][]u8,
     invert_request: processing_webgpu.Request,
     rgb_page: ?tiff.RgbPageWithMetadata = null,
+    /// A print to send once the frame is written.
+    print: ?print_order.PrintOrder = null,
     total_seconds_override: ?f64 = null,
     result: ?processing_workflow.ExportWorkflowResult = null,
     error_detail: []const u8 = "",
@@ -190,7 +197,7 @@ pub const Worker = struct {
         self.failed.store(false, .release);
         self.event_queue.clear();
 
-        const context = try self.createContext(model, input_path, request);
+        const context = try self.createContext(model, input_path, request, controls);
         errdefer self.destroyContext(context);
 
         self.thread = try std.Thread.spawn(.{}, threadMain, .{context});
@@ -256,18 +263,24 @@ pub const Worker = struct {
         model: *ui_state.State,
         input_path: []const u8,
         request: processing_export.ExportRequest,
+        controls: ui_state.ProcessExportControls,
     ) !*Context {
         const context = try self.allocator.create(Context);
         errdefer self.allocator.destroy(context);
 
         const owned_input_path = try self.allocator.dupe(u8, input_path);
         errdefer self.allocator.free(owned_input_path);
-        const owned_output_dir = try self.allocator.dupe(u8, model.processing.output_dir);
+        const owned_output_dir = try self.allocator.dupe(u8, controls.output_dir orelse model.processing.output_dir);
         errdefer self.allocator.free(owned_output_dir);
         const owned_basename = try self.allocator.dupe(u8, request.basename);
         errdefer self.allocator.free(owned_basename);
-        const owned_rects = try self.allocator.dupe(processing_export.FrameRect, request.rects);
+        const first = controls.only_frame orelse 0;
+        if (first >= request.rects.len) return error.NoSuchFrame;
+        const end = if (controls.only_frame != null) first + 1 else request.rects.len;
+        const owned_rects = try self.allocator.dupe(processing_export.FrameRect, request.rects[first..end]);
         errdefer self.allocator.free(owned_rects);
+        const owned_adjustments = try self.allocator.dupe(processing_frame_adjust.Adjustments, model.process_frame_adjustments[first..end]);
+        errdefer self.allocator.free(owned_adjustments);
 
         const active_stock_name = if (request.outputs.needInvert())
             processingConfigActiveStock(&model.processing_config)
@@ -304,6 +317,8 @@ pub const Worker = struct {
             .output_dir = owned_output_dir,
             .basename = owned_basename,
             .rects = owned_rects,
+            .frame_adjustments = owned_adjustments,
+            .frame_number_offset = first,
             .outputs = request.outputs,
             .active_stock = owned_active_stock,
             .stock_coeffs = stock_coeffs,
@@ -314,6 +329,7 @@ pub const Worker = struct {
             .config_override_names = override_names,
             .invert_request = model.processing_gpu_request,
             .rgb_page = cached_rgb_page,
+            .print = if (controls.print) |order| order.* else null,
             .done = &self.done,
             .failed = &self.failed,
             .event_queue = &self.event_queue,
@@ -338,6 +354,7 @@ pub const Worker = struct {
         self.allocator.free(context.output_dir);
         self.allocator.free(context.basename);
         self.allocator.free(context.rects);
+        self.allocator.free(context.frame_adjustments);
         if (context.active_stock) |name| self.allocator.free(name);
         if (context.rgb_page) |page| page.deinit(self.allocator);
         freeConfigOverrides(self.allocator, context.config_overrides, context.config_override_names);
@@ -352,7 +369,43 @@ fn threadMain(context: *Context) void {
         emitExportError("export", @errorName(err));
         context.failed.store(true, .release);
     };
+    if (!context.failed.load(.acquire) and context.print != null) {
+        printExported(context) catch |err| {
+            context.error_detail = printErrorDetail(err);
+            emitExportError("print", @errorName(err));
+            context.failed.store(true, .release);
+        };
+    }
     context.done.store(true, .release);
+}
+
+/// Sends the exported positive to the printer, and says so in the
+/// export's message.
+fn printExported(context: *Context) !void {
+    const order = &context.print.?;
+    const result = &(context.result orelse return error.NothingToPrint);
+    const file = print_order.positiveTiff(result.files) orelse return error.NoPositiveToPrint;
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try formatExportPath(&path_buffer, context.output_dir, file);
+    var progress_buffer: [320]u8 = undefined;
+    context.event_queue.pushProgress(std.fmt.bufPrint(&progress_buffer, "Sending {s} to {s}...", .{ file, order.queue.slice() }) catch "Sending to the printer...");
+    const id = try print_order.run(context.allocator, context.io, order, path);
+    const message = try std.fmt.allocPrint(context.allocator, "{s} Sent {s} to {s} as job {d}.", .{ result.message, file, order.queue.slice(), id });
+    context.allocator.free(result.message);
+    result.message = message;
+}
+
+fn printErrorDetail(err: anyerror) []const u8 {
+    return switch (err) {
+        error.CupsUnavailable => "printing needs CUPS, which was not found",
+        error.PrinterTakesNoRaster => "this printer's driver does not take raster, which colour-managed printing sends",
+        error.PrintNoProfile => "no ICC profile matches the chosen paper; pick one",
+        error.PrinterNotRgb => "this printer's driver does not take 8-bit RGB",
+        error.IccProfileInvalid => "the paper's ICC profile could not be read",
+        error.CupsCreateJobFailed, error.CupsStartDocumentFailed, error.CupsWriteFailed, error.CupsFinishFailed => "the print system refused the job",
+        error.NoPositiveToPrint => "the export wrote no positive to print",
+        else => @errorName(err),
+    };
 }
 
 fn runProcessingExport(context: *Context) !void {
@@ -370,6 +423,8 @@ fn runProcessingExport(context: *Context) !void {
             .rebate_rect = context.rebate_rect,
             .current_dpi = context.current_dpi,
             .config_overrides = context.config_overrides,
+            .frame_adjustments = context.frame_adjustments,
+            .frame_number_offset = context.frame_number_offset,
             .invert_request = context.invert_request,
             .total_seconds_override = context.total_seconds_override,
             .progress_sink = .{
@@ -394,6 +449,8 @@ fn runProcessingExport(context: *Context) !void {
         .rebate_rect = context.rebate_rect,
         .current_dpi = context.current_dpi,
         .config_overrides = context.config_overrides,
+        .frame_adjustments = context.frame_adjustments,
+        .frame_number_offset = context.frame_number_offset,
         .invert_request = context.invert_request,
         .total_seconds_override = context.total_seconds_override,
         .progress_sink = .{

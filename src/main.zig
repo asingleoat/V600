@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const cerealgrain = @import("cerealgrain");
+const print_cli = @import("print_cli.zig");
 const roll_cli = @import("roll_cli.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -35,6 +36,12 @@ pub fn main(init: std.process.Init) !void {
         try stdout.flush();
     } else if (std.mem.eql(u8, command, "roll")) {
         roll_cli.handle(init.gpa, io, init.environ_map, &args, stdout) catch |err| {
+            try stdout.flush();
+            return err;
+        };
+        try stdout.flush();
+    } else if (std.mem.eql(u8, command, "print")) {
+        print_cli.handle(init.gpa, io, &args, stdout) catch |err| {
             try stdout.flush();
             return err;
         };
@@ -566,6 +573,7 @@ fn printUsage() !void {
         \\  scanner <command> run scanner discovery, probe, or scan commands
         \\  processing <cmd>  run processing workflow commands
         \\  roll <command>    scan and process a film roll strip by strip
+        \\  print <command>   print exported frames, colour-managed
         \\
     , .{});
 }

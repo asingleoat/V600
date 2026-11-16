@@ -4,12 +4,14 @@ const chroma = @import("chroma.zig");
 const config = @import("config.zig");
 const export_pipeline = @import("export.zig");
 const film_stocks = @import("film_stocks.zig");
+const frame_adjust = @import("frame_adjust.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
 const newton_rings = @import("newton_rings.zig");
 const print = @import("print.zig");
 const render = @import("render.zig");
+const rgb_space = @import("rgb_space.zig");
 const tiff = @import("../tiff.zig");
 const quick_preview = @import("quick_preview.zig");
 const webgpu = @import("webgpu.zig");
@@ -206,6 +208,12 @@ pub const ExportWorkflowOptions = struct {
     rebate_rect: ?frames.RebateOriginRect = null,
     current_dpi: ?u32 = null,
     config_overrides: []const config.Override = &.{},
+    /// Each frame's own render settings over `config_overrides`, by index
+    /// into `rects`; frames past its end take the config's.
+    frame_adjustments: []const frame_adjust.Adjustments = &.{},
+    /// The image's frames before `rects[0]`, so frames exported on their own
+    /// keep their numbers in file names, seeds, and warnings.
+    frame_number_offset: usize = 0,
     align_ir: bool = true,
     invert_request: webgpu.Request = .{},
     parallel_frames: bool = true,
@@ -486,6 +494,7 @@ pub fn renderInvertedPreviewRgb8(
     errdefer allocator.free(display8);
     var render_options = options.render_options;
     render_options.image_width = preview.preview_width;
+    render_options.output = .srgb;
     if (cache.scene_linear_f32) |scene| {
         try render.renderToDisplayU8F32(allocator, scene, display8, render_options);
     } else {
@@ -792,7 +801,7 @@ pub fn processExportFromTiff(
 
     // Ahead of the frames, so a warning reaches the user while the strip may
     // still be on the scanner.
-    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, full.rgb, aligned_ir orelse full.ir, current_dpi, newton_rings.reduceForConfig(options.config_overrides));
+    const ring_frames = try newtonRingFrames(allocator, options.progress_sink, options.rects, options.frame_number_offset, full.rgb, aligned_ir orelse full.ir, current_dpi, newton_rings.reduceForConfig(options.config_overrides));
     errdefer allocator.free(ring_frames);
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input_path));
@@ -832,11 +841,13 @@ pub fn processExportFromTiff(
         for (jobs[0..jobs_len]) |*job| job.paths.deinit(allocator);
         allocator.free(jobs);
     }
-    for (options.rects, 0..) |rect, frame_index| {
+    for (options.rects, 0..) |rect, index| {
+        const frame_index = options.frame_number_offset + index;
         jobs[jobs_len] = .{
             .frame_index = frame_index,
             .rect = rect,
             .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs, print_spec),
+            .render_options = frameRenderOptions(current_dpi, options.config_overrides, options.frame_adjustments, index),
         };
         jobs_len += 1;
     }
@@ -896,7 +907,7 @@ pub fn processExportFromTiff(
                     .film_stock = film_stock,
                     .stock_coeffs = stock_coeffs,
                     .dmin = dmin,
-                    .render_options = render_options,
+                    .render_options = job.render_options,
                     .ir_clean_options = ir_clean_options,
                     .invert_request = options.invert_request,
                     .random = prng.random(),
@@ -998,6 +1009,8 @@ pub fn newtonRingFrames(
     allocator: std.mem.Allocator,
     sink: ?ExportProgressSink,
     rects: []const export_pipeline.FrameRect,
+    /// The frames before `rects[0]`, for the numbers.
+    frame_number_offset: usize,
     rgb: export_pipeline.Image,
     ir: ?export_pipeline.Image,
     dpi: ?u32,
@@ -1015,7 +1028,7 @@ pub fn newtonRingFrames(
             try newton_rings.reduceRings(allocator, .{ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels }, ir_view, frame, scan_dpi)
         else
             try newton_rings.ringScore(f64, f64, allocator, .{ .pixels = rgb.pixels, .width = rgb.width, .height = rgb.height, .channels = rgb.channels }, .{}, ir_view, frame, scan_dpi);
-        if (newton_rings.warns(score)) try found.append(index + 1);
+        if (newton_rings.warns(score)) try found.append(frame_number_offset + index + 1);
     }
     const ring_frames = try found.toOwnedSlice();
     errdefer allocator.free(ring_frames);
@@ -1142,11 +1155,13 @@ fn processExportDirectRgbCropFromLoadedPage(
         for (jobs[0..jobs_len]) |*job| job.paths.deinit(allocator);
         allocator.free(jobs);
     }
-    for (options.rects, 0..) |rect, frame_index| {
+    for (options.rects, 0..) |rect, index| {
+        const frame_index = options.frame_number_offset + index;
         jobs[jobs_len] = .{
             .frame_index = frame_index,
             .rect = rect,
             .paths = try outputPathsForFrame(allocator, io, options.output_dir, basename, frame_index, options.outputs, print_spec),
+            .render_options = frameRenderOptions(current_dpi, options.config_overrides, options.frame_adjustments, index),
         };
         jobs_len += 1;
     }
@@ -1500,7 +1515,79 @@ const FrameExportJob = struct {
     frame_index: usize,
     rect: export_pipeline.FrameRect,
     paths: OwnedOutputPaths,
+    render_options: render.RenderToDisplayOptions,
 };
+
+/// The render settings for frame `index`: the config's, under the frame's
+/// own adjustments.
+pub fn frameRenderOptions(current_dpi: ?u32, config_overrides: []const config.Override, adjustments: []const frame_adjust.Adjustments, index: usize) render.RenderToDisplayOptions {
+    return frameRenderOptionsWith(current_dpi, config_overrides, adjustments, index, null);
+}
+
+/// frameRenderOptions with colour contrast forced on or off (the CLI's
+/// --color-contrast), else as the settings say.
+pub fn frameRenderOptionsWith(current_dpi: ?u32, config_overrides: []const config.Override, adjustments: []const frame_adjust.Adjustments, index: usize, color_contrast: ?bool) render.RenderToDisplayOptions {
+    var default_look = renderOptionsForConfig(current_dpi, config_overrides);
+    if (color_contrast) |on| default_look.chroma = chromaSettingsForConfig(current_dpi, config_overrides, on);
+    if (index >= adjustments.len) return default_look;
+    var merged: [frame_adjust.max_overrides]config.Override = undefined;
+    const frame_overrides = adjustments[index].overrides(config_overrides, &merged);
+    var own = renderOptionsForConfig(current_dpi, frame_overrides);
+    if (color_contrast) |on| own.chroma = chromaSettingsForConfig(current_dpi, frame_overrides, on);
+    return mixLook(default_look, own, adjustments[index].mix());
+}
+
+/// A frame's own look at strength `mix`: 0 renders the default look, 1 its
+/// own. Settings that vary smoothly go part way; those that switch a mode
+/// go part way in what they do. Highlight-targeted exposure moves exposure
+/// part way from the log-average's toward it; colour contrast turned on by
+/// the look scales its boost, local contrast, and pulls up from none.
+pub fn mixLook(default_look: render.RenderToDisplayOptions, own: render.RenderToDisplayOptions, mix: f64) render.RenderToDisplayOptions {
+    if (mix >= 1.0) return own;
+    const Lerp = struct {
+        t: f64,
+        fn of(self: @This(), a: f64, b: f64) f64 {
+            return a + self.t * (b - a);
+        }
+    };
+    const l = Lerp{ .t = mix };
+    var out = own;
+    inline for (.{ "contrast", "percentile_lo", "percentile_hi", "exposure_compensation", "neutral_white_balance", "color_temp", "color_tint", "auto_white_balance", "film_gamma", "film_toe", "dye_crosstalk" }) |name| {
+        @field(out, name) = l.of(@field(default_look, name), @field(own, name));
+    }
+    if (default_look.highlight_target > 0.0 and own.highlight_target > 0.0) {
+        out.highlight_target = l.of(default_look.highlight_target, own.highlight_target);
+        out.highlight_mix = l.of(default_look.highlight_mix, own.highlight_mix);
+    } else if (own.highlight_target > 0.0) {
+        out.highlight_mix = own.highlight_mix * mix;
+    } else if (default_look.highlight_target > 0.0) {
+        out.highlight_target = default_look.highlight_target;
+        out.highlight_mix = default_look.highlight_mix * (1.0 - mix);
+    }
+    const off = chroma.Settings{ .hue = 0, .chroma = 0, .boost = 0, .gain = 0 };
+    if (own.chroma) |o| {
+        var d = default_look.chroma orelse off;
+        if (default_look.chroma == null) {
+            d.radius = o.radius;
+            d.families = o.families;
+            d.target = o.target;
+        }
+        out.chroma = .{
+            .hue = l.of(d.hue, o.hue),
+            .chroma = l.of(d.chroma, o.chroma),
+            .boost = l.of(d.boost, o.boost),
+            .gain = l.of(d.gain, o.gain),
+            .radius = l.of(d.radius, o.radius),
+            .families = o.families,
+            .target = if (d.target > 0.0 and o.target > 0.0) l.of(d.target, o.target) else o.target,
+        };
+    } else if (default_look.chroma) |d| {
+        var faded = d;
+        inline for (.{ "hue", "chroma", "boost", "gain" }) |name| @field(faded, name) = @field(d, name) * (1.0 - mix);
+        out.chroma = faded;
+    }
+    return out;
+}
 
 const FrameExportShared = struct {
     rgb: export_pipeline.Image,
@@ -1620,7 +1707,7 @@ fn processDirectRgbFrameJob(
                 .film_stock = shared.film_stock,
                 .stock_coeffs = shared.stock_coeffs,
                 .dmin = shared.dmin,
-                .render_options = shared.render_options,
+                .render_options = job.render_options,
                 .ir_clean_options = shared.ir_clean_options,
                 .invert_request = shared.invert_request,
                 .timings = &body_timings,
@@ -1655,7 +1742,7 @@ fn processDirectRgbFrameJob(
             .film_stock = shared.film_stock,
             .stock_coeffs = shared.stock_coeffs,
             .dmin = shared.dmin,
-            .render_options = shared.render_options,
+            .render_options = job.render_options,
             .ir_clean_options = shared.ir_clean_options,
             .invert_request = shared.invert_request,
             .timings = &body_timings,
@@ -1846,7 +1933,7 @@ fn frameExportWorker(queue: *FrameExportQueue) void {
                 .film_stock = queue.shared.film_stock,
                 .stock_coeffs = queue.shared.stock_coeffs,
                 .dmin = queue.shared.dmin,
-                .render_options = queue.shared.render_options,
+                .render_options = job.render_options,
                 .ir_clean_options = queue.shared.ir_clean_options,
                 .invert_request = queue.shared.invert_request,
                 .random = prng.random(),
@@ -2511,13 +2598,25 @@ pub fn renderOptionsForConfig(current_dpi: ?u32, overrides: []const config.Overr
         .percentile_lo = config.getParam("render_percentile_lo", current_dpi, overrides).?.asFloat(),
         .percentile_hi = config.getParam("render_percentile_hi", current_dpi, overrides).?.asFloat(),
         .exposure_compensation = config.getParam("exposure_compensation", current_dpi, overrides).?.asFloat(),
+        .highlight_target = config.getParam("render_highlight_target", current_dpi, overrides).?.asFloat(),
         .color_temp = config.getParam("color_temp", current_dpi, overrides).?.asFloat(),
         .color_tint = config.getParam("color_tint", current_dpi, overrides).?.asFloat(),
         .auto_white_balance = config.getParam("auto_white_balance", current_dpi, overrides).?.asFloat(),
+        .neutral_white_balance = config.getParam("neutral_white_balance", current_dpi, overrides).?.asFloat(),
         .film_gamma = config.getParam("film_gamma", current_dpi, overrides).?.asFloat(),
         .film_toe = config.getParam("film_toe", current_dpi, overrides).?.asFloat(),
         .dye_crosstalk = config.getParam("dye_crosstalk", current_dpi, overrides).?.asFloat(),
         .chroma = chromaSettingsForConfig(current_dpi, overrides, null),
+        .primaries = primariesForConfig(overrides),
+    };
+}
+
+/// The config's `render_primaries` (`auto` is the platform's default).
+pub fn primariesForConfig(overrides: []const config.Override) rgb_space.Space {
+    const value = config.getParam("render_primaries", null, overrides).?;
+    return switch (value) {
+        .string => |*text| rgb_space.named(text.slice()) orelse .srgb,
+        else => .srgb,
     };
 }
 
@@ -2538,6 +2637,7 @@ pub fn chromaSettingsForConfig(current_dpi: ?u32, overrides: []const config.Over
         .radius = config.getParam("color_contrast_radius", current_dpi, overrides).?.asFloat(),
         .gain = config.getParam("color_contrast_gain", current_dpi, overrides).?.asFloat(),
         .families = @intFromFloat(std.math.clamp(@round(config.getParam("color_contrast_families", current_dpi, overrides).?.asFloat()), 1.0, chroma.max_families)),
+        .target = config.getParam("color_contrast_target", current_dpi, overrides).?.asFloat(),
     };
 }
 
@@ -3225,4 +3325,33 @@ fn expectStringSetContains(values: []const []const u8, expected: []const u8) !vo
         if (std.mem.eql(u8, value, expected)) return;
     }
     return error.MissingExpectedString;
+}
+
+test "a look at part strength goes part way, and switched modes fade in what they do" {
+    const default_look = render.RenderToDisplayOptions{};
+    var own = render.RenderToDisplayOptions{ .contrast = 2.2, .highlight_target = 0.9, .color_temp = 0.4, .chroma = .{ .boost = 0.3, .gain = 0.4, .hue = 0.5, .chroma = 0.3, .target = 0.085 } };
+    own.dye_crosstalk = 0.3;
+    const none = mixLook(default_look, own, 0.0);
+    try std.testing.expectEqual(default_look.contrast, none.contrast);
+    try std.testing.expectEqual(@as(f64, 0.0), none.highlight_mix);
+    try std.testing.expectEqual(@as(f64, 0.0), none.chroma.?.boost);
+    try std.testing.expectEqual(@as(f64, 0.0), none.chroma.?.gain);
+    const half = mixLook(default_look, own, 0.5);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), half.contrast, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.2), half.color_temp, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.25), half.dye_crosstalk, 1e-12);
+    // Highlight placement keeps its target and moves exposure half way.
+    try std.testing.expectEqual(@as(f64, 0.9), half.highlight_target);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), half.highlight_mix, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.15), half.chroma.?.boost, 1e-12);
+    try std.testing.expectEqual(@as(f64, 0.085), half.chroma.?.target);
+    try std.testing.expect(std.meta.eql(own, mixLook(default_look, own, 1.0)));
+
+    // A frame's strength reaches its render options; the rest of its
+    // settings still win over the config's.
+    var looks = [_]frame_adjust.Adjustments{.{}};
+    looks[0].set(.render_contrast, 2.6);
+    looks[0].set(.look_mix, 0.25);
+    const options = frameRenderOptions(null, &.{}, &looks, 0);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.8 + 0.25 * 0.8), options.contrast, 1e-12);
 }

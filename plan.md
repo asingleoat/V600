@@ -27,6 +27,11 @@ As of 2026-09-28, on branch `zig-rewrite`:
   roll strip by strip (preview, film area, one LUT per roll, full scan) and
   export each strip in the background with a review page. Exercised on the
   V600 from the CLI and the UI's Scan Strip at 800 dpi.
+- Printing: colour-managed printing from the Frame view and `cerealgrain
+  print` on macOS (the app converts to the paper's ICC profile and sends
+  raster with the driver's colour adjustment off); checked against an
+  ET-8500's queue by writing the raster to a file, with a header matching
+  macOS's own; no page has been printed yet.
 - Linux: `nix build .#cli-static` makes a fully static x86-64 CLI (musl);
   the native UI is not static.
 - Windows: not wired.
@@ -112,8 +117,8 @@ Recorded in the May-July log; correct anything that is wrong:
   centres score under the warning level, often beside strong picture
   content (the ring by the peony in KODAKGOLD_200_2 s05_04 scores 0.029).
   Weighting the score away from picture edges inflates ring-free frames'
-  scores, so it is not the fix. The Process view's preview does
-  not show the reduction.
+  scores, so it is not the fix. The Strip and Frame views' previews
+  do not show the reduction.
 - IR dust fills in textured picture still read as smooth patches
   (KODAKGOLD_200_0 s04_03, the patch in the green wall): the fills
   reproduce grain, not picture texture, and that frame's flattest tiles
@@ -150,7 +155,7 @@ Recorded in the May-July log; correct anything that is wrong:
     sky of KODAKGOLD_200_120_0 strip 1 frame 2 passed the ratio test but
     not that one. `ir_threshold` sets both tests and moves them opposite
     ways.
-- Loading an image, auto-detect, and export in the Process view copy the
+- Loading an image, auto-detect, and export in the Strip view copy the
   cached RGB page on the UI thread before starting their worker
   (`getCachedRgbPage`, `rgb_pages.getClone`). Pages over the 1 GiB cache
   budget (6400 dpi strips) are never cached, so this bites at 3200 dpi and
@@ -198,6 +203,19 @@ Recorded in the May-July log; correct anything that is wrong:
   Within a roll every strip shares one LUT, so the roll's Dmin fallback
   holds; a Dmin saved from another roll or plain scan is off by the
   difference in LUT gains.
+
+- Printing has not yet put ink on paper: the first prints should compare
+  the soft proof with the sheet, on the owner's ET-8500 and a paper with a
+  driver profile.
+- The Frame view and the gallery show Display P3 on macOS through
+  SDL's extended linear sRGB output; no one has looked at it on a screen
+  yet (the headless smokes run the software renderer, which stays sRGB).
+  The Strip view's preview is still sRGB.
+- Printing on Linux: CUPS there takes raster too, but Epson's ICC profiles
+  describe its macOS driver, not escpr2 or driverless printing; it needs
+  profiles measured through that path.
+- A print's job state after it is sent (the panel says only that it was
+  sent).
 
 ### Native code cleanup
 

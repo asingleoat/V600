@@ -32,8 +32,8 @@ diffs for this before committing.
 ### Nix and the build environment
 
 - Assume you are inside the project's Nix dev shell and use plain `zig ...`
-  commands. libjpeg, libtiff, libdeflate, SDL3, and Nuklear come from that
-  shell; outside it the build fails at the C libraries.
+  commands. libjpeg, libtiff, libdeflate, Little CMS, SDL3, and Nuklear
+  come from that shell; outside it the build fails at the C libraries.
 - Do not run `nix develop`, `nix-shell`, `nix build`, or `nix flake check` in
   ordinary build/test loops. If a dependency or the Zig version is missing,
   edit `flake.nix` (the one dev shell; `shell.nix` only loads it), then stop
@@ -57,7 +57,9 @@ pushed `v*` tag publishes them as a GitHub pre-release.
 CLI: `version`, `scanner-contract`,
 `scanner devices|probe|preview|scan|usb-reset|smoke|processing-smoke|macos-smoke`,
 `processing info|detect|rebate|export`,
-`roll start|use|status|scan|export|review|check-frames`. Build with
+`roll start|use|status|scan|export|review|check-frames`,
+`print printers|options|file` (`print file --raster-out FILE` writes the
+page instead of printing it). Build with
 `-Doptimize=ReleaseFast` for real scanning sessions; Debug export is several
 times slower.
 
@@ -79,7 +81,8 @@ scripts in the scanner tests use `magick` too.
 Environment variables: `CEREALGRAIN_HARDWARE_SMOKE`,
 `CEREALGRAIN_MACOS_HARDWARE_SMOKE`, `CEREALGRAIN_PROCESSING_GPU` (opt-in
 WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
-`CEREALGRAIN_UI_SCALE`, `CEREALGRAIN_SCANNER_DEVICE_CACHE`,
+`CEREALGRAIN_UI_SCALE`, `CEREALGRAIN_UI_WIDE_GAMUT` (`0` keeps the macOS
+screen sRGB), `CEREALGRAIN_SCANNER_DEVICE_CACHE`,
 `CEREALGRAIN_DATA_DIR` (the UI's folder for scans, exports, and configs).
 
 ## Layout
@@ -90,6 +93,9 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
       root.zig              the `v600` module: scanner, processing, tiff, UI state
       roll.zig, roll_cli.zig rolls: strips of one film roll, roll LUT,
                             background export, review page; `roll` CLI
+      printing/, print_cli.zig colour-managed printing: CUPS (libcups
+                            loaded at run time), PPDs, CUPS raster, print
+                            jobs; `print` CLI
       tiff.zig              libtiff wrapper: page layout, metadata tags
       scanner/              Linux SANE runtime (linux.zig, sane.zig), macOS
                             interpreter runtime (interpreter_runtime.zig,
@@ -108,8 +114,9 @@ WebGPU processing in the native UI), `CEREALGRAIN_UI_THEME`,
     scanner.py, scan.py, v600/, scratchndent/, test_detect.py
                             original Python implementation (reference only)
 
-Dependency direction: `ui` imports `roll`, `processing`, `scanner`, and
-`tiff`; `roll` imports `processing`, `scanner`, and `tiff`; `processing` and
+Dependency direction: `ui` imports `roll`, `printing`, `processing`,
+`scanner`, and `tiff`; `roll` imports `processing`, `scanner`, and `tiff`;
+`printing` imports `processing` and `tiff`; `processing` and
 `scanner` import only `tiff`. Keep it that way. `processing` and `scanner`
 must not import each other or UI code. `clock.zig` (the monotonic clock) is a
 leaf any of them may import.
@@ -270,7 +277,7 @@ deliberately, not by accident.
   fitted 34.45 mm against the roll's 36.4).
 - If detection returns exactly one frame covering less than 30% of the
   image, treat it as a failure and fall back to a full-image frame.
-- The `exact_aspect` processing setting (the Process view's "Exact aspect",
+- The `exact_aspect` processing setting (the Strip view's "Exact aspect",
   `processing detect --exact-aspect`; roll exports follow the setting)
   trims each detected frame about its center to the format's exact aspect,
   for prints: the largest such rectangle inside the frame the camera
@@ -291,10 +298,39 @@ deliberately, not by accident.
   crosstalk undone (`dye_crosstalk` 0.2), automatic exposure (log-average to
   18% grey, plus compensation in stops; temperature/tint as gains), a
   log-logistic display curve through 18% grey (`render_contrast` 1.8), sRGB.
+  With `render_highlight_target` (0 = off) automatic exposure instead puts
+  the frame's 99th percentile of display lightness (Oklab L) at the target,
+  bisected on the measured samples, within two stops of the log-average's
+  exposure; compensation still applies on top.
+  Then neutral white balance (`neutral_white_balance`, default 1, the
+  Frame view's "Neutral WB"; before temperature/tint, which stay a
+  deliberate cast on top): the render measures its own nearly neutral
+  surfaces (Oklab chroma under 0.07, narrowing to 0.035 over five passes;
+  lightness 0.25-0.92; nothing clipped) and takes their average cast out
+  by channel gains at constant luminance, at most half a stop, only half
+  of each step along blue-yellow (pale skies, haze, and sunsets read as
+  nearly neutral). A frame with under 3% nearly neutral is left alone.
+  The render's three channels take the primaries of `render_primaries`
+  (srgb, display_p3, adobe_rgb, rec2020; `processing/rgb_space.zig`): how
+  saturated the film's colours can come out. The default, `auto`, is
+  Rec. 2020 on macOS, the only one of them holding the ET-8500's glossy
+  papers' gamut (they pass Display P3 in yellow and from cyan to blue,
+  Adobe RGB in yellow and blue, measured through Epson's profiles), and
+  sRGB elsewhere. Exposure, white balance, and colour contrast measure luminance and
+  Oklab in that space; exports are written in it, 16-bit with the sRGB
+  curve, and embed its ICC profile (`processing/icc.zig`, Little CMS);
+  print copies get sRGB, colours beyond it brought in at the same Oklab
+  lightness and hue. On macOS the UI's renderer draws in extended linear
+  sRGB (Metal's half-float layer, which ColorSync shows across a Display P3
+  panel; `ui/chrome.zig` createRenderer): the Frame view's preview and soft
+  proof, and the gallery's wide exports (through their embedded profile),
+  fill Display P3 the same way, as half-float textures; the Strip view's
+  preview and the UI's own colours stay sRGB. Elsewhere, or when the
+  renderer refuses, every screen image is sRGB.
   Scene contrast is kept, not stretched per frame. A frame crop's white
   balance and exposure are measured on its inner 95% each way, clear of
   film-border slivers. Formulas: `docs/RENDER_TRANSFORM_CLOSED_FORM.md`.
-- Colour contrast (`color_contrast`, off unless true: the Process view's
+- Colour contrast (`color_contrast`, off unless true: the Frame view's
   "Color contrast", `processing export --color-contrast on`; roll exports
   follow it) is the render's last step, on display light before it is
   quantized (`processing/chroma.zig`). Each image's colourful objects are
@@ -310,15 +346,25 @@ deliberately, not by accident.
   colour at least 2x2 pixels across, so lone specks count for nothing.
   Families are peaks of that histogram (smoothed 0.012) at chroma 0.034 or
   more, down to 1% of the tallest (a hillside's fireweed came to 1.5%). `color_contrast_families` (default 12) keeps only the tallest.
-  Each family's centre gains chroma (`color_contrast_boost` 0.3),
-  its shades are pulled toward it in hue and chroma (`color_cohesion_hue`
-  0.7, `color_cohesion_chroma` 0.55), and inside a core about the centre
-  (`color_contrast_radius` 0.025, shrunk to clear neighbouring families
-  and the greys) chroma differences grow (`color_contrast_gain` 0.4), at
-  constant hue and lightness. Greys (chroma under 0.015) stay; colours
-  pushed out of gamut lose chroma at constant lightness. The math follows
-  a browser prototype; `test/fixtures/processing/chroma/` holds its
-  output. The preview fits the whole strip, exports each frame.
+  A colour belongs to a family by a Gaussian of its distance from the
+  centre (sigma 0.044), shared out only where families overlap. Its chroma
+  grows along its own hue by the share it belongs (`color_contrast_boost`
+  0.3), it is pulled toward the family's centre in hue and chroma
+  (`color_cohesion_hue` 0.7, `color_cohesion_chroma` 0.55), and inside a
+  core about the centre (`color_contrast_radius` 0.025, shrunk to clear
+  neighbouring families and the greys) chroma differences grow
+  (`color_contrast_gain` 0.4), at constant hue and lightness. Greys stay
+  neutral: the boost and the pull fade in with a colour's own chroma, from
+  nothing at 0.015 to full at 0.04, and the boost never moves a colour
+  toward another hue, so toggling colour contrast leaves a frame's white
+  balance alone. With a colourfulness target (`color_contrast_target`, 0 =
+  off: the 90th percentile of the frame's chroma), the filter measures its
+  own output on the fitting image and bisects for the boost, between none
+  and `color_contrast_boost`, that reaches it: a muted frame gets up to the
+  boost, an already colourful one none (it never takes colour away).
+  Colours pushed out of gamut lose chroma at constant lightness. The math follows a browser prototype, except its boost and
+  pull, which moved near-greys toward the families' hues (a cast);
+  `test/fixtures/processing/chroma/` holds the prototype's output. The preview fits the whole strip, exports each frame.
 - Film stocks are 3x10 quadratic polynomials in density space with basis
   `[R, G, B, R^2, G^2, B^2, RG, RB, GB, 1]`. See
   `docs/FILM_STOCK_PROFILES.md`.
@@ -347,7 +393,7 @@ deliberately, not by accident.
   along rays from each as a sinusoid of a multiple of the IR fringe phase,
   and scores the variance explained at 1.3-1.8 above that 0.3 either side.
   Warns at 0.06. With the `reduce_newton_rings` setting (on unless set
-  off: the Process view's "Reduce Newton's rings", `processing export
+  off: the Strip view's "Reduce Newton's rings", `processing export
   --reduce-rings`; roll exports follow it) the same pass, before any frame
   is written, subtracts the rings in density about every centre scoring at
   the warning level, in two passes. Each runs along 2048 rays: a local
@@ -410,8 +456,34 @@ deliberately, not by accident.
   `strip_NN_*.tiff.frames.json`, `review/`) and
   `frames/<roll>/<roll>_sNN_FF.tif`; the current roll is the `[roll]` key in
   the scanner config.
+- The UI works on a loaded scan in two views. Strip: the scan as a whole
+  (its frames, the rebate and Dmin, film stock, dust removal, exporting its
+  frames). Frame: one frame at a time, its look (contrast, exposure,
+  colour balance, colour contrast) previewed live: the frame cut from the
+  strip preview and rendered as its export is (`ui/frame_view.zig`,
+  `ui/frame_preview_worker.zig`), with Export This Frame. A frame's look is
+  its own overrides of processing.toml's render settings, kept beside the
+  scan by the frames' order in `<scan>.adjust.json`
+  (`processing/frame_adjust.zig`); every export path applies them (the
+  Strip and Frame views, `processing export`, roll exports), and a roll
+  strip whose looks changed since its export counts as needing one.
+  Built-in looks (`processing/looks.zig`, the Frame view's Preset buttons)
+  are complete sets of those settings (unnamed ones at the built-in
+  defaults, so a look does not depend on processing.toml): Pastel
+  (highlights at 0.84, soft contrast, a warm cast, colour contrast with a
+  0.052 colourfulness target), fitted to the colour signature of a
+  reference photograph on the owner's frames, and Vivid (contrast 2.0,
+  highlights at 0.90, crosstalk 0.25, colour contrast with a 0.085 target),
+  chosen by the owner from renders. Applying one replaces the frame's own
+  settings. A frame's Strength (`look_mix`, a frame setting only, 1 unless
+  set) blends its own look with the default look
+  (`workflow.mixLook`): settings that vary smoothly go part way;
+  highlight placement moves exposure part way from the log-average's
+  toward it (`highlight_mix`), and colour contrast the default lacks
+  scales its boost, local contrast, and pulls up from none. Make Default
+  saves the frame's look at its strength.
 - Print copies: with the `print_size` and `print_dpi` processing settings
-  (the Process view's Export pulldowns, `processing export --print SIZE
+  (the Strip view's Export pulldowns, `processing export --print SIZE
   --print-dpi DPI`; roll exports follow them), each positive TIFF gets an
   8-bit sRGB JPEG beside it, `<tiff stem>_<size>_<dpi>dpi.jpg`, with its DPI
   in the JFIF header. The frame is fitted inside the print uncropped, turned
@@ -421,9 +493,33 @@ deliberately, not by accident.
   give exact-aspect copies. Sizes are common lab prints and the paper Epson's
   EcoTank photo printers take; resolutions are 300 dpi (labs) and 360 or 720
   (Epson's printer drivers).
+- Printing (macOS for now; `printing/`, the Frame view's Print section,
+  `cerealgrain print file`): the app converts the frame to the printer's
+  ICC profile for the chosen paper and sends CUPS raster to the queue,
+  with the driver's own colour adjustment turned off (a PPD choice named
+  for it, Epson's "Off (No Color Adjustment)"), so nothing converts the
+  colours again. The UI exports the frame with its look first and prints
+  that TIFF; any RGB TIFF prints through its embedded profile. The frame
+  is laid out in linear Rec. 2020: fitted inside the print size uncropped
+  (or filling it, trimmed), turned to the paper, resampled with a tent
+  filter, converted with the chosen intent (relative colorimetric with
+  black point compensation by default), and dithered to 8 bits. The page
+  header follows what macOS's own PDF filter writes for the same choices
+  (resolution, paper size, borderless overscan by
+  cupsBorderlessScalingFactor, and what each choice's setpagedevice code
+  sets, Epson's cupsCompression per resolution): `cupsfilter -m
+  application/vnd.cups-raster` on any PDF shows it. The paper's profile
+  defaults to the driver's that matches the paper's name; ColorSync's
+  installed printer profiles are offered too. Soft proof previews the
+  frame through the profile, optionally on the paper's own white.
+  libcups is loaded at run time, so no build links it. Drivers that take
+  no raster, or no 8-bit RGB, are refused. Never send a job to a real
+  printer unless the owner asks; `--raster-out` and the smoke check
+  without printing.
 - TIFF metadata: make, model, software, resolution, datetime. Custom tag
   50000 marks scanner custom LUTs; BYTE tag 50001 holds the applied LUT,
   which the RGB loaders invert; tag 65000 holds export metadata JSON.
+  Positives embed the ICC profile of the space they are in.
 - macOS gamma LUTs clip clear areas by design (both points come from the
   film strip), so scans need clear margins for frame detection; auto-select
   adds 2 mm per side.

@@ -415,6 +415,8 @@ pub const GalleryTextureCache = struct {
     key: ?[]u8 = null,
     width: u32 = 0,
     height: u32 = 0,
+    /// The screen's gamut (chrome.Screen): wide exports fill it.
+    screen: cerealgrain.processing.rgb_space.Space = .srgb,
 
     pub fn deinit(self: *GalleryTextureCache, allocator: std.mem.Allocator) void {
         if (self.texture) |texture| {
@@ -433,6 +435,7 @@ pub const GalleryTextureCache = struct {
         allocator: std.mem.Allocator,
         model: *const cerealgrain.native_ui.State,
     ) !?*c.SDL_Texture {
+        const screen = self.screen;
         const name = model.currentGalleryFileName() orelse return null;
         const path = try std.fs.path.join(allocator, &.{ model.processing.output_dir, name });
         defer allocator.free(path);
@@ -445,7 +448,16 @@ pub const GalleryTextureCache = struct {
         self.deinit(allocator);
         var image = try cerealgrain.tiff.loadRgbPage(allocator, path);
         defer image.deinit(allocator);
-        const rgb = try galleryImageRgb8(allocator, image);
+        if (screen != .srgb) {
+            if (try galleryWideTexture(renderer, allocator, image, path, screen)) |texture| {
+                self.texture = texture;
+                self.key = try allocator.dupe(u8, path);
+                self.width = image.width;
+                self.height = image.height;
+                return texture;
+            }
+        }
+        const rgb = try galleryScreenRgb8(allocator, image, path);
         defer allocator.free(rgb);
         const texture = c.SDL_CreateTexture(
             renderer,
@@ -534,7 +546,7 @@ pub const GalleryThumbnailCache = struct {
         defer allocator.free(path);
         var image = try cerealgrain.tiff.loadRgbPage(allocator, path);
         defer image.deinit(allocator);
-        const rgb = try galleryImageRgb8(allocator, image);
+        const rgb = try galleryScreenRgb8(allocator, image, path);
         defer allocator.free(rgb);
         const dimensions = thumbnailDimensions(image.width, image.height);
         const resized = try cerealgrain.processing.frames.resizeImageArea(
@@ -867,6 +879,52 @@ pub fn renderGalleryTexture(
     };
     const dst = transform.destination(cache.width, cache.height);
     _ = c.SDL_RenderTexture(renderer, texture, null, &dst);
+}
+
+/// An RGB export in a space wider than sRGB, as a half-float texture in
+/// extended linear sRGB filling `screen`'s gamut; null for other images,
+/// which show as they are.
+fn galleryWideTexture(
+    renderer: *c.SDL_Renderer,
+    allocator: std.mem.Allocator,
+    image: cerealgrain.tiff.Image,
+    path: []const u8,
+    screen: cerealgrain.processing.rgb_space.Space,
+) !?*c.SDL_Texture {
+    const icc = cerealgrain.processing.icc;
+    if (image.samples_per_pixel != 3 or (image.bits_per_sample != 8 and image.bits_per_sample != 16)) return null;
+    const bytes = (try cerealgrain.tiff.readIccProfile(allocator, path)) orelse return null;
+    defer allocator.free(bytes);
+    const profile = icc.Profile.openMemory(bytes) catch return null;
+    defer profile.deinit();
+    if (!profile.isRgb() or icc.isSrgb(profile)) return null;
+    const pixel_count = @as(usize, image.width) * image.height;
+    const linear = try icc.toScreenLinear(allocator, image.data, image.bits_per_sample, pixel_count, profile, screen);
+    defer allocator.free(linear);
+    const half = try allocator.alloc([4]f16, pixel_count);
+    defer allocator.free(half);
+    cerealgrain.native_ui_frame_preview_worker.writeExtendedHalf(screen, linear, half);
+    const texture = chrome.createExtendedTexture(renderer, image.width, image.height) orelse return error.SdlGalleryTextureFailed;
+    errdefer c.SDL_DestroyTexture(texture);
+    if (!c.SDL_UpdateTexture(texture, null, half.ptr, @intCast(@as(usize, image.width) * 8))) return error.SdlGalleryTextureUpdateFailed;
+    return texture;
+}
+
+/// The image for the screen: an RGB export in a wider space than sRGB
+/// (its embedded profile says) is brought into sRGB.
+fn galleryScreenRgb8(allocator: std.mem.Allocator, image: cerealgrain.tiff.Image, path: []const u8) ![]u8 {
+    const icc = cerealgrain.processing.icc;
+    if (image.samples_per_pixel == 3 and (image.bits_per_sample == 8 or image.bits_per_sample == 16)) {
+        if (try cerealgrain.tiff.readIccProfile(allocator, path)) |bytes| {
+            defer allocator.free(bytes);
+            const profile = icc.Profile.openMemory(bytes) catch return galleryImageRgb8(allocator, image);
+            defer profile.deinit();
+            if (profile.isRgb() and !icc.isSrgb(profile)) {
+                return icc.toScreenSrgb8(allocator, image.data, image.bits_per_sample, @as(usize, image.width) * image.height, profile);
+            }
+        }
+    }
+    return galleryImageRgb8(allocator, image);
 }
 
 pub fn galleryImageRgb8(allocator: std.mem.Allocator, image: cerealgrain.tiff.Image) ![]u8 {

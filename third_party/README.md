@@ -21,6 +21,7 @@ Every component is built by nixpkgs at the revision pinned in `flake.lock`;
 | liblzma (XZ Utils) | 5.8.3 | 0BSD | `xz` | macOS app, Linux CLI |
 | zstd | 1.5.7 | BSD-3-Clause (dual-licensed with GPL-2.0; used under BSD) | `zstd` | macOS app, Linux CLI |
 | libdeflate | 1.25 | MIT | `libdeflate` | macOS app, Linux CLI |
+| Little CMS | 2.18 | MIT | `lcms2` | macOS app, Linux CLI |
 | zlib | 1.3.2 | Zlib | `zlib` | macOS app, Linux CLI |
 | libusb | 1.0.29 | LGPL-2.1-or-later | `libusb` | macOS app |
 | Zig standard library and runtime | 0.16.0 | MIT | `zig` | macOS app, Linux CLI |

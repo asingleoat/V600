@@ -1,10 +1,10 @@
 //! Colour contrast within colour families, in Oklab. A frame's chromatic
 //! colours are fitted as up to twelve families (peaks of its a,b
-//! histogram); each family's centre moves out to higher chroma, the shades
-//! around it are pulled toward it in hue and chroma (cohesion), and inside
-//! a small core about the moved centre their chroma differences grow
+//! histogram); each family's colours gain chroma along their own hue, are
+//! pulled toward the family's centre in hue and chroma (cohesion), and
+//! inside a small core about the moved centre their chroma differences grow
 //! (local gain), keeping the hue and lightness the earlier steps gave.
-//! Neutral colours stay as they are. Out-of-gamut results lose chroma at
+//! Greys stay neutral. Out-of-gamut results lose chroma at
 //! constant lightness until they fit.
 //!
 //! The filter's math follows the browser prototype the fixtures in
@@ -24,12 +24,15 @@
 
 const std = @import("std");
 
+const rgb_space = @import("rgb_space.zig");
+
 pub const Settings = struct {
     /// How far each colour's hue is pulled toward its family's centre, 0 to 1.
     hue: f64 = 0.70,
     /// How far its chroma is pulled toward the centre's, 0 to 1.
     chroma: f64 = 0.55,
-    /// Chroma added to every family's centre, as a share of it, 0 to 0.8.
+    /// How much each family's colours gain chroma, along their own hue, as a
+    /// share of it, 0 to 0.8.
     boost: f64 = 0.30,
     /// Largest core radius, in Oklab a,b: the shades whose chroma
     /// differences grow, 0 to 0.08.
@@ -38,11 +41,16 @@ pub const Settings = struct {
     gain: f64 = 0.40,
     /// The most colour families to fit, 1 to 12: the tallest are kept.
     families: usize = max_families,
+    /// The colourfulness the boost aims for, 0 to 0.15: the 90th percentile
+    /// of the frame's chroma after the filter. With a target, `boost` is the
+    /// most a frame gets: a muted frame gets up to it, one already as
+    /// colourful none. 0 always boosts by `boost`.
+    target: f64 = 0.0,
 
-    pub const max = Settings{ .hue = 1.0, .chroma = 1.0, .boost = 0.8, .radius = 0.08, .gain = 0.5 };
+    pub const max = Settings{ .hue = 1.0, .chroma = 1.0, .boost = 0.8, .radius = 0.08, .gain = 0.5, .target = 0.15 };
 
     pub fn validate(self: Settings) !void {
-        inline for (.{ "hue", "chroma", "boost", "radius", "gain" }) |name| {
+        inline for (.{ "hue", "chroma", "boost", "radius", "gain", "target" }) |name| {
             const value = @field(self, name);
             if (!std.math.isFinite(value) or value < 0.0 or value > @field(max, name)) return error.InvalidChromaSetting;
         }
@@ -51,7 +59,8 @@ pub const Settings = struct {
 
     pub fn eql(self: Settings, other: Settings) bool {
         return self.hue == other.hue and self.chroma == other.chroma and self.boost == other.boost and
-            self.radius == other.radius and self.gain == other.gain and self.families == other.families;
+            self.radius == other.radius and self.gain == other.gain and self.families == other.families and
+            self.target == other.target;
     }
 
     fn isIdentity(self: Settings) bool {
@@ -71,8 +80,10 @@ const grid_bins = grid_size * grid_size;
 const neutral_lo: f64 = 0.015;
 const neutral_hi: f64 = 0.055;
 const gate_hi: f64 = 0.021;
+// Greys stay neutral: the pull and the boost fade in with a colour's own
+// chroma, from nothing at neutral_lo to full at protect_hi.
+const protect_hi: f64 = 0.04;
 const field_sigma: f64 = 0.044;
-const background_weight: f64 = 0.065;
 
 /// The longest side of the image the families are fitted on.
 pub const fit_side = 256;
@@ -427,8 +438,9 @@ fn gridCoordinate(index: usize) f64 {
 pub const lanes = 8;
 pub const V = @Vector(lanes, f32);
 /// A field grid node: the cohesion pull (hue times the total pull plus
-/// chroma minus hue times its radial part) and the boost direction (the
-/// weighted family centre), each an a,b pair, faded toward neutral.
+/// chroma minus hue times its radial part), an a,b pair, and how much the
+/// families claim the colour there (their share of the weight), faded
+/// toward neutral; the fourth lane is unused.
 const Node = @Vector(4, f32);
 
 /// The fitted families and settings, ready to filter pixels.
@@ -446,10 +458,14 @@ pub const Filter = struct {
     core: [max_families]f32,
     collar: [max_families]f32,
     nodes: [grid_bins]Node,
+    /// The colour space of the pixels it filters.
+    lms: Lms,
 
+    /// For linear sRGB; set `lms` afterwards for another space.
     pub fn init(self: *Filter, model: *const Model, settings: Settings) !void {
         try settings.validate();
         self.settings = settings;
+        self.lms = srgb_lms;
         // Families come tallest first, so the first ones are the kept ones.
         self.count = if (settings.isIdentity()) 0 else @min(model.count, settings.families);
         self.gated = settings.radius > 0.0;
@@ -477,12 +493,67 @@ pub const Filter = struct {
         self.buildField(families);
     }
 
+    /// With a target, sets the boost (between none and the settings') at
+    /// which the frame's colours, as `rgb` samples them in linear light,
+    /// come out at the target colourfulness. Bisects on the filter's own
+    /// output, so a frame already that colourful gets no boost.
+    pub fn adaptBoost(self: *Filter, r: []const f32, g: []const f32, b: []const f32) void {
+        const target = self.settings.target;
+        if (self.count == 0 or target == 0.0 or r.len == 0) return;
+        const most = self.settings.boost;
+        if (self.colourfulness(r, g, b, 0.0) >= target) return self.setBoost(0.0);
+        if (self.colourfulness(r, g, b, most) <= target) return self.setBoost(most);
+        var lo: f64 = 0.0;
+        var hi = most;
+        for (0..8) |_| {
+            const mid = (lo + hi) / 2.0;
+            if (self.colourfulness(r, g, b, mid) < target) lo = mid else hi = mid;
+        }
+        self.setBoost(lo);
+    }
+
+    fn setBoost(self: *Filter, boost: f64) void {
+        self.settings.boost = boost;
+        self.boost = @floatCast(boost);
+    }
+
+    /// The 90th percentile of the samples' chroma after the filter, at
+    /// `boost`.
+    fn colourfulness(self: *Filter, r: []const f32, g: []const f32, b: []const f32, boost: f64) f64 {
+        self.setBoost(boost);
+        const bins = 600;
+        const bin_width: f32 = 0.0005;
+        var counts: [bins]u32 = @splat(0);
+        var pixels: Span = undefined;
+        var start: usize = 0;
+        while (start < r.len) : (start += span_pixels) {
+            const n = @min(span_pixels, r.len - start);
+            @memcpy(pixels.r[0..n], r[start..][0..n]);
+            @memcpy(pixels.g[0..n], g[start..][0..n]);
+            @memcpy(pixels.b[0..n], b[start..][0..n]);
+            self.applySpan(&pixels, n);
+            var first: usize = 0;
+            while (first < n) : (first += lanes) {
+                const lab = oklabWith(&self.lms, .{ @as(V, pixels.r[first..][0..lanes].*), @as(V, pixels.g[first..][0..lanes].*), @as(V, pixels.b[first..][0..lanes].*) });
+                const chroma: [lanes]f32 = @as(V, @sqrt(lab[1] * lab[1] + lab[2] * lab[2]));
+                for (chroma[0..@min(lanes, n - first)]) |c| counts[@min(bins - 1, @as(usize, @intFromFloat(c / bin_width)))] += 1;
+            }
+        }
+        const wanted = (r.len * 9 + 9) / 10;
+        var seen: usize = 0;
+        for (counts, 0..) |count, bin| {
+            seen += count;
+            if (seen >= wanted) return (@as(f64, @floatFromInt(bin)) + 0.5) * bin_width;
+        }
+        return bins * bin_width;
+    }
+
     pub fn isIdentity(self: *const Filter) bool {
         return self.count == 0;
     }
 
-    /// Each family pulls with a Gaussian weight; the sums are shared with a
-    /// background weight, so sparse regions keep their colour.
+    /// Each family pulls with a Gaussian weight of distance, so colours far
+    /// from every family (greys of other hues among them) keep theirs.
     fn buildField(self: *Filter, families: []const Family) void {
         const spread = 2.0 * field_sigma * field_sigma;
         const radial_share = self.settings.chroma - self.settings.hue;
@@ -490,9 +561,8 @@ pub const Filter = struct {
             for (0..grid_size) |x| {
                 const a = gridCoordinate(x);
                 const b = gridCoordinate(y);
-                var weight_sum = background_weight;
+                var weight_sum: f64 = 0.0;
                 var pull = [2]f64{ 0.0, 0.0 };
-                var boost = [2]f64{ 0.0, 0.0 };
                 for (families) |center| {
                     const da = center.a - a;
                     const db = center.b - b;
@@ -501,16 +571,16 @@ pub const Filter = struct {
                     const projection = (da * center.a + db * center.b) / (center.a * center.a + center.b * center.b);
                     pull[0] += w * (self.settings.hue * da + radial_share * projection * center.a);
                     pull[1] += w * (self.settings.hue * db + radial_share * projection * center.b);
-                    boost[0] += w * center.a;
-                    boost[1] += w * center.b;
                     weight_sum += w;
                 }
-                const scale = smoothstep(neutral_lo, neutral_hi, @sqrt(a * a + b * b)) / weight_sum;
+                // A colour belongs to the families by their weights, which
+                // fall off with distance; shared out only where they overlap.
+                const scale = smoothstep(neutral_lo, neutral_hi, @sqrt(a * a + b * b)) / @max(1.0, weight_sum);
                 self.nodes[y * grid_size + x] = .{
                     @floatCast(scale * pull[0]),
                     @floatCast(scale * pull[1]),
-                    @floatCast(scale * boost[0]),
-                    @floatCast(scale * boost[1]),
+                    @floatCast(scale * weight_sum),
+                    0.0,
                 };
             }
         }
@@ -529,7 +599,7 @@ pub const Filter = struct {
         while (start < count) : (start += lanes) {
             const rgb = [3]V{ pixels.r[start..][0..lanes].*, pixels.g[start..][0..lanes].*, pixels.b[start..][0..lanes].* };
             const moved = self.move(rgb) orelse continue;
-            const out = oklabToLinear(moved.L, moved.a, moved.b);
+            const out = oklabToLinear(&self.lms, moved.L, moved.a, moved.b);
             const outside: [lanes]bool = !inGamut(out) & moved.changed;
             const changed: [lanes]bool = moved.changed;
             const values = [3][lanes]f32{ out[0], out[1], out[2] };
@@ -563,7 +633,7 @@ pub const Filter = struct {
             @memcpy(L[0..n], queue.L[first..][0..n]);
             @memcpy(a[0..n], queue.a[first..][0..n]);
             @memcpy(b[0..n], queue.b[first..][0..n]);
-            const out = intoGamut(L, a, b);
+            const out = intoGamut(&self.lms, L, a, b);
             const values = [3][lanes]f32{ out[0], out[1], out[2] };
             for (0..n) |lane| {
                 const index = queue.index[first + lane];
@@ -579,7 +649,7 @@ pub const Filter = struct {
     /// Where `lanes` colours move in Oklab, or null when none does.
     inline fn move(self: *const Filter, rgb: [3]V) ?Moved {
         const none: ?Moved = null;
-        const lab = oklabV(rgb);
+        const lab = oklabWith(&self.lms, rgb);
         const L = lab[0];
         const a = lab[1];
         const b = lab[2];
@@ -592,8 +662,6 @@ pub const Filter = struct {
         var smallest = sv(1.0);
         var owned: @Vector(lanes, bool) = @splat(false);
         var owner_distance = sv(0.0);
-        var owner_a = sv(0.0);
-        var owner_b = sv(0.0);
         var owner_chroma = sv(0.0);
         var owner_core = sv(0.0);
         var owner_collar = sv(0.0);
@@ -615,26 +683,25 @@ pub const Filter = struct {
                 const inside = distance < sv(self.collar[k]);
                 owned = owned | inside;
                 owner_distance = @select(f32, inside, distance, owner_distance);
-                owner_a = @select(f32, inside, sv(self.a[k]), owner_a);
-                owner_b = @select(f32, inside, sv(self.b[k]), owner_b);
                 owner_chroma = @select(f32, inside, sv(self.chroma[k]), owner_chroma);
                 owner_core = @select(f32, inside, core, owner_core);
                 owner_collar = @select(f32, inside, sv(self.collar[k]), owner_collar);
             }
         }
-        const cohesion = gate * smallest;
-        // Inside a core the boost is the owner's own centre; across its
-        // collar it blends back to the field's.
+        const protect = smoothstepV(sv(neutral_lo), sv(protect_hi), c);
+        const cohesion = gate * smallest * protect;
+        // Boost moves each colour out along its own hue, as far as the
+        // families claim it: fully inside a core, blending across its
+        // collar to the field's share. So greys gain no cast.
         const in_core = owned & (owner_distance <= owner_core);
         const in_collar = owned & !in_core;
         const core_weight = sv(1.0) - smoothstepV(sv(1.0 / 3.0), sv(1.0), owner_distance / @max(owner_core, sv(1e-12)));
         const weighted_gain = @select(f32, in_core & (owner_distance < owner_core), sv(self.gain) * core_weight, sv(0.0));
         const mix = sv(1.0) - smoothstepV(owner_core, @max(owner_collar, owner_core + sv(1e-12)), owner_distance);
-        const boost_a = @select(f32, in_core, owner_a, @select(f32, in_collar, (sv(1.0) - mix) * gate * field[2] + mix * owner_a, gate * field[2]));
-        const boost_b = @select(f32, in_core, owner_b, @select(f32, in_collar, (sv(1.0) - mix) * gate * field[3] + mix * owner_b, gate * field[3]));
+        const share = protect * @select(f32, in_core, sv(1.0), @select(f32, in_collar, (sv(1.0) - mix) * gate * field[2] + mix, gate * field[2]));
 
-        const da = cohesion * field[0] + sv(self.boost) * boost_a;
-        const db = cohesion * field[1] + sv(self.boost) * boost_b;
+        const da = cohesion * field[0] + sv(self.boost) * share * a;
+        const db = cohesion * field[1] + sv(self.boost) * share * b;
         const changed = (@abs(da) + @abs(db) >= sv(1e-7)) | (weighted_gain != sv(0.0));
         if (!@reduce(.Or, changed)) return none;
 
@@ -696,24 +763,48 @@ const Queue = struct {
 
 /// Linear light for out-of-gamut Oklab colours: the largest share of their
 /// chroma, to 1/4096, that fits, at the same lightness.
-fn intoGamut(L: V, a: V, b: V) [3]V {
+fn intoGamut(lms: *const Lms, L: V, a: V, b: V) [3]V {
     var lo = sv(0.0);
     var hi = sv(1.0);
     for (0..12) |_| {
         const mid = (lo + hi) * sv(0.5);
-        const fits = inGamut(oklabToLinear(L, a * mid, b * mid));
+        const fits = inGamut(oklabToLinear(lms, L, a * mid, b * mid));
         lo = @select(f32, fits, mid, lo);
         hi = @select(f32, fits, hi, mid);
     }
-    return oklabToLinear(L, a * lo, b * lo);
+    return oklabToLinear(lms, L, a * lo, b * lo);
 }
+
+/// A colour space's matrices to and from Oklab's cone space, in f32.
+pub const Lms = struct {
+    to: [3][3]f32,
+    from: [3][3]f32,
+
+    pub fn of(space: rgb_space.Space) Lms {
+        const m = rgb_space.lms(space);
+        var out: Lms = undefined;
+        for (0..3) |row| for (0..3) |column| {
+            out.to[row][column] = @floatCast(m.to_lms[row][column]);
+            out.from[row][column] = @floatCast(m.from_lms[row][column]);
+        };
+        return out;
+    }
+};
+
+pub const srgb_lms = Lms.of(.srgb);
 
 /// Oklab of `lanes` pixels of linear-light sRGB, in f32.
 pub inline fn oklabV(rgb: [3]V) [3]V {
+    return oklabWith(&srgb_lms, rgb);
+}
+
+/// Oklab of `lanes` pixels of linear light in the space of `m`, in f32.
+pub inline fn oklabWith(m: *const Lms, rgb: [3]V) [3]V {
+    const t = &m.to;
     const lms = [3]V{
-        cbrtV(sv(0.4122214708) * rgb[0] + sv(0.5363325363) * rgb[1] + sv(0.0514459929) * rgb[2]),
-        cbrtV(sv(0.2119034982) * rgb[0] + sv(0.6806995451) * rgb[1] + sv(0.1073969566) * rgb[2]),
-        cbrtV(sv(0.0883024619) * rgb[0] + sv(0.2817188376) * rgb[1] + sv(0.6299787005) * rgb[2]),
+        cbrtV(sv(t[0][0]) * rgb[0] + sv(t[0][1]) * rgb[1] + sv(t[0][2]) * rgb[2]),
+        cbrtV(sv(t[1][0]) * rgb[0] + sv(t[1][1]) * rgb[1] + sv(t[1][2]) * rgb[2]),
+        cbrtV(sv(t[2][0]) * rgb[0] + sv(t[2][1]) * rgb[1] + sv(t[2][2]) * rgb[2]),
     };
     return .{
         sv(0.2104542553) * lms[0] + sv(0.793617785) * lms[1] - sv(0.0040720468) * lms[2],
@@ -722,18 +813,58 @@ pub inline fn oklabV(rgb: [3]V) [3]V {
     };
 }
 
-inline fn oklabToLinear(L: V, a: V, b: V) [3]V {
+inline fn oklabToLinear(space: *const Lms, L: V, a: V, b: V) [3]V {
     const l0 = L + sv(0.3963377774) * a + sv(0.2158037573) * b;
     const m0 = L - sv(0.1055613458) * a - sv(0.0638541728) * b;
     const s0 = L - sv(0.0894841775) * a - sv(1.291485548) * b;
     const l = l0 * l0 * l0;
     const m = m0 * m0 * m0;
     const s = s0 * s0 * s0;
+    const f = &space.from;
     return .{
-        sv(4.0767416621) * l - sv(3.3077115913) * m + sv(0.2309699292) * s,
-        sv(-1.2684380046) * l + sv(2.6097574011) * m - sv(0.3413193965) * s,
-        sv(-0.0041960863) * l - sv(0.7034186147) * m + sv(1.707614701) * s,
+        sv(f[0][0]) * l + sv(f[0][1]) * m + sv(f[0][2]) * s,
+        sv(f[1][0]) * l + sv(f[1][1]) * m + sv(f[1][2]) * s,
+        sv(f[2][0]) * l + sv(f[2][1]) * m + sv(f[2][2]) * s,
     };
+}
+
+/// One colour brought into the gamut of `m`'s space as fitSpan does.
+pub fn fitPixel(m: *const Lms, rgb: [3]f32) @Vector(3, f32) {
+    const v = [3]V{ @splat(rgb[0]), @splat(rgb[1]), @splat(rgb[2]) };
+    if (@reduce(.And, inGamut(v))) return .{ rgb[0], rgb[1], rgb[2] };
+    const lab = oklabWith(m, v);
+    const fitted = intoGamut(m, lab[0], lab[1], lab[2]);
+    return .{
+        std.math.clamp(fitted[0][0], 0.0, 1.0),
+        std.math.clamp(fitted[1][0], 0.0, 1.0),
+        std.math.clamp(fitted[2][0], 0.0, 1.0),
+    };
+}
+
+/// Brings the colours of a span that lie outside its space's gamut (the
+/// unit cube) back in: their largest share of Oklab chroma that fits, at the
+/// same lightness and hue, then clipped (for lightness above white).
+pub fn fitSpan(m: *const Lms, pixels: *Span, count: usize) void {
+    var start: usize = 0;
+    while (start < count) : (start += lanes) {
+        const n = @min(lanes, count - start);
+        var rgb: [3]V = undefined;
+        inline for (.{ &pixels.r, &pixels.g, &pixels.b }, 0..) |channel, k| {
+            var values: [lanes]f32 = @splat(0.5);
+            @memcpy(values[0..n], channel[start..][0..n]);
+            rgb[k] = values;
+        }
+        if (@reduce(.And, inGamut(rgb))) continue;
+        const lab = oklabWith(m, rgb);
+        const fitted = intoGamut(m, lab[0], lab[1], lab[2]);
+        const outside: [lanes]bool = !inGamut(rgb);
+        inline for (.{ &pixels.r, &pixels.g, &pixels.b }, 0..) |channel, k| {
+            const values: [lanes]f32 = std.math.clamp(fitted[k], sv(0.0), sv(1.0));
+            for (0..n) |lane| {
+                if (outside[lane]) channel[start + lane] = values[lane];
+            }
+        }
+    }
 }
 
 inline fn inGamut(rgb: [3]V) @Vector(lanes, bool) {
@@ -765,6 +896,19 @@ inline fn cbrtV(x: V) V {
         y = y * (y3 + sv(2.0) * clamped) / (sv(2.0) * y3 + clamped);
     }
     return y;
+}
+
+/// Oklab of linear light in the space of `m`, in f64.
+pub fn oklabFromLinearWith(m: *const rgb_space.Lms, r: f64, g: f64, b: f64) [3]f64 {
+    const cone = rgb_space.multiplyVector(m.to_lms, .{ r, g, b });
+    const l = std.math.cbrt(cone[0]);
+    const mm = std.math.cbrt(cone[1]);
+    const s = std.math.cbrt(cone[2]);
+    return .{
+        0.2104542553 * l + 0.793617785 * mm - 0.0040720468 * s,
+        1.9779984951 * l - 2.428592205 * mm + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * mm - 0.808675766 * s,
+    };
 }
 
 /// Oklab of linear-light sRGB, in f64.
@@ -855,25 +999,24 @@ fn filterReference(filter: *const Filter, lab: [3]f64) ?[3]f64 {
             }
         }
     }
-    const cohesion = gate * smallest;
-    var boost_a = gate * field[2];
-    var boost_b = gate * field[3];
+    const protect = smoothstep(neutral_lo, protect_hi, @sqrt(a * a + b * b));
+    const cohesion = gate * smallest * protect;
+    var share = gate * field[2];
     var weighted_gain: f64 = 0.0;
     if (owner) |k| {
         const core: f64 = filter.core[k];
         if (owner_distance <= core) {
-            boost_a = filter.a[k];
-            boost_b = filter.b[k];
+            share = 1.0;
             const weight = if (owner_distance >= core) 0.0 else 1.0 - smoothstep(1.0 / 3.0, 1.0, owner_distance / core);
             weighted_gain = settings.gain * weight;
         } else {
             const mix = 1.0 - smoothstep(core, filter.collar[k], owner_distance);
-            boost_a = (1.0 - mix) * boost_a + mix * filter.a[k];
-            boost_b = (1.0 - mix) * boost_b + mix * filter.b[k];
+            share = (1.0 - mix) * share + mix;
         }
     }
-    const da = cohesion * field[0] + settings.boost * boost_a;
-    const db = cohesion * field[1] + settings.boost * boost_b;
+    share *= protect;
+    const da = cohesion * field[0] + settings.boost * share * a;
+    const db = cohesion * field[1] + settings.boost * share * b;
     if (@abs(da) + @abs(db) < 1e-7 and weighted_gain == 0.0) return null;
 
     var out_a = a + da;
@@ -1022,7 +1165,7 @@ test "the fit finds colourful objects, not near-grey tones or scattered specks" 
     try std.testing.expectApproxEqAbs(@as(f64, -0.03), model.families[1].b, 0.006);
 }
 
-test "both paths stay within an 8-bit level of the prototype's output" {
+test "without boost or pull, both paths stay within an 8-bit level of the prototype's output" {
     const allocator = std.testing.allocator;
     var prototype = try Prototype.load(allocator);
     defer prototype.deinit(allocator);
@@ -1033,6 +1176,9 @@ test "both paths stay within an 8-bit level of the prototype's output" {
     const output = try allocator.alloc(u8, source.len);
     defer allocator.free(output);
     for (prototype.parsed.value.cases) |case| {
+        // Boost and pull leave greys neutral here, unlike the prototype's,
+        // which moved them toward the families' hues.
+        if (case.settings.boost != 0.0 or case.settings.hue != 0.0 or case.settings.chroma != 0.0) continue;
         const expected = try readFixture(allocator, case.output);
         defer allocator.free(expected);
         try filter.init(&model, case.settings);
@@ -1106,7 +1252,9 @@ test "the fast f32 path stays within a few 16-bit levels of f64 over the sRGB cu
             }
         }
         const rms = @sqrt(sum_squares / @as(f64, @floatFromInt(3 * total)));
-        try std.testing.expect(inner_worst <= 3 and edge_worst <= 257 and rms < 2.0);
+        // Inside, f32 rounding near black (sRGB's slope there is 12.92)
+        // reaches 4 levels with the boost at its 0.8 maximum.
+        try std.testing.expect(inner_worst <= 4 and edge_worst <= 257 and rms < 2.0);
     }
 }
 
@@ -1114,6 +1262,76 @@ test "the fast f32 path stays within a few 16-bit levels of f64 over the sRGB cu
 fn u16Level(linear: anytype) u16 {
     const v = std.math.clamp(@as(f64, linear), 0.0, 1.0);
     return @intFromFloat(std.math.clamp(srgbEncode(v) * 65535.0, 0.0, 65535.0));
+}
+
+test "greys stay neutral while a family's colour moves out along its hue" {
+    const allocator = std.testing.allocator;
+    var model = Model{};
+    model.families[0] = .{ .a = 0.02, .b = 0.07, .height = 1.0 };
+    model.count = 1;
+    const filter = try allocator.create(Filter);
+    defer allocator.destroy(filter);
+    try filter.init(&model, .{});
+    const family_hue = std.math.atan2(@as(f64, 0.07), 0.02);
+    for (0..72) |step| {
+        const angle = @as(f64, @floatFromInt(step)) * std.math.pi / 36.0;
+        for ([_]f64{ 0.01, 0.02, 0.03, 0.04, 0.05 }) |radius| {
+            const lab = [3]f64{ 0.6, radius * @cos(angle), radius * @sin(angle) };
+            const moved = filterReference(filter, lab) orelse continue;
+            const out = oklabFromLinear(moved[0], moved[1], moved[2]);
+            const shift = @sqrt((out[1] - lab[1]) * (out[1] - lab[1]) + (out[2] - lab[2]) * (out[2] - lab[2]));
+            // Near greys of any hue barely move. Colours more than 120
+            // degrees from the family's hue feel only the edge of its pull:
+            // at chroma 0.04, under a twentieth of their chroma.
+            if (radius <= 0.02) try std.testing.expect(shift < 0.0005);
+            if (@cos(angle - family_hue) < -0.5) try std.testing.expect(shift < 0.002);
+        }
+    }
+    // The family's own colour moves out by the boost, keeping its hue.
+    const centre = filterReference(filter, .{ 0.6, 0.02, 0.07 }).?;
+    const out = oklabFromLinear(centre[0], centre[1], centre[2]);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.026), out[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.091), out[2], 0.001);
+}
+
+fn oklabToLinearScalar(lab: [3]f64) [3]f64 {
+    var rgb: [3]f64 = undefined;
+    _ = linearFromOklabReference(lab[0], lab[1], lab[2], &rgb);
+    return rgb;
+}
+
+test "the boost adapts to reach a colourfulness target" {
+    const allocator = std.testing.allocator;
+    var model = Model{};
+    model.families[0] = .{ .a = 0.03, .b = 0.05, .height = 1.0 };
+    model.count = 1;
+    const filter = try allocator.create(Filter);
+    defer allocator.destroy(filter);
+    // Samples of one warm colour family at three colourfulness levels.
+    var r: [4096]f32 = undefined;
+    var g: [4096]f32 = undefined;
+    var b: [4096]f32 = undefined;
+    for ([_]f64{ 0.6, 0.8, 1.4 }, [_]f64{ 0.3, -1.0, 0.0 }) |level, expected| {
+        var random = std.Random.DefaultPrng.init(5);
+        for (&r, &g, &b) |*rr, *gg, *bb| {
+            const spread = level * (0.7 + 0.6 * random.random().float(f64));
+            const lab = [3]f64{ 0.6, 0.03 * spread, 0.05 * spread };
+            const linear = oklabToLinearScalar(lab);
+            rr.* = @floatCast(linear[0]);
+            gg.* = @floatCast(linear[1]);
+            bb.* = @floatCast(linear[2]);
+        }
+        try filter.init(&model, .{ .boost = 0.3, .target = 0.06 });
+        filter.adaptBoost(&r, &g, &b);
+        if (expected >= 0.0) {
+            // Muted: the most it may; already colourful: none.
+            try std.testing.expectEqual(expected, filter.settings.boost);
+        } else {
+            // In between: the boost that reaches the target.
+            try std.testing.expect(filter.settings.boost > 0.0 and filter.settings.boost < 0.3);
+            try std.testing.expectApproxEqAbs(@as(f64, 0.06), filter.colourfulness(&r, &g, &b, filter.settings.boost), 0.001);
+        }
+    }
 }
 
 test "settings outside their ranges are rejected" {

@@ -252,13 +252,18 @@ pub fn renderOptionsEqual(
         a.percentile_lo == b.percentile_lo and
         a.percentile_hi == b.percentile_hi and
         a.exposure_compensation == b.exposure_compensation and
+        a.highlight_target == b.highlight_target and
+        a.highlight_mix == b.highlight_mix and
         a.color_temp == b.color_temp and
         a.color_tint == b.color_tint and
         a.auto_white_balance == b.auto_white_balance and
+        a.neutral_white_balance == b.neutral_white_balance and
         a.film_gamma == b.film_gamma and
         a.film_toe == b.film_toe and
         a.dye_crosstalk == b.dye_crosstalk and
         a.percentile_sample_limit == b.percentile_sample_limit and
+        a.primaries == b.primaries and
+        a.output == b.output and
         (if (a.chroma) |settings| b.chroma != null and settings.eql(b.chroma.?) else b.chroma == null);
 }
 

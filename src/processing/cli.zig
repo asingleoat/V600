@@ -3,6 +3,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const events = @import("events.zig");
 const export_pipeline = @import("export.zig");
+const frame_adjust = @import("frame_adjust.zig");
 const frames = @import("frames.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
@@ -576,12 +577,13 @@ fn runExport(
     const rects = try allocator.alloc(export_pipeline.FrameRect, options.frame_count);
     defer allocator.free(rects);
     @memcpy(rects, options.frames[0..options.frame_count]);
-    const ring_frames = try workflow.newtonRingFrames(allocator, null, rects, pages.rgb, aligned_ir orelse pages.ir, current_dpi, options.reduce_rings orelse newton_rings.reduceForConfig(overrides));
+    const ring_frames = try workflow.newtonRingFrames(allocator, null, rects, 0, pages.rgb, aligned_ir orelse pages.ir, current_dpi, options.reduce_rings orelse newton_rings.reduceForConfig(overrides));
     defer allocator.free(ring_frames);
 
     const basename = options.basename orelse std.fs.path.stem(std.fs.path.basename(options.input));
-    var render_options = workflow.renderOptionsForConfig(current_dpi, overrides);
-    render_options.chroma = workflow.chromaSettingsForConfig(current_dpi, overrides, options.color_contrast);
+    // Frames keep their own looks beside the scan (`<scan>.adjust.json`).
+    const adjustments = try frame_adjust.load(allocator, io, options.input);
+    defer allocator.free(adjustments);
     const print_spec = printSpecFor(print.specForConfig(overrides), options.print_size, options.print_dpi);
     const ir_scale_x = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.width)) / @as(f64, @floatFromInt(pages.rgb.width)) else 1.0;
     const ir_scale_y = if (aligned_ir) |ir| @as(f64, @floatFromInt(ir.height)) / @as(f64, @floatFromInt(pages.rgb.height)) else 1.0;
@@ -643,7 +645,7 @@ fn runExport(
                 .film_stock = stock_name,
                 .stock_coeffs = stock.coeffs,
                 .dmin = dmin,
-                .render_options = render_options,
+                .render_options = workflow.frameRenderOptionsWith(current_dpi, overrides, adjustments, frame_index, options.color_contrast),
                 .ir_clean_options = ir_clean_options,
                 .invert_request = processing_gpu_request,
                 .random = prng.random(),

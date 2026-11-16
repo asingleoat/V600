@@ -14,6 +14,7 @@ const scanner_lut = @import("scanner/lut.zig");
 const processing_config = @import("processing/config.zig");
 const export_pipeline = @import("processing/export.zig");
 const film_formats = @import("processing/film_formats.zig");
+const frame_adjust = @import("processing/frame_adjust.zig");
 const frames = @import("processing/frames.zig");
 const newton_rings = @import("processing/newton_rings.zig");
 const webgpu = @import("processing/webgpu.zig");
@@ -302,6 +303,17 @@ pub const Roll = struct {
         defer allocator.free(marker_text);
         const parsed = std.json.parseFromSlice(MarkerJson, allocator, marker_text, .{ .ignore_unknown_fields = true }) catch return true;
         defer parsed.deinit();
+        // The frames' looks changed since (or were added or removed).
+        var adjust_current: [16]u8 = undefined;
+        const adjust_now: ?[]const u8 = if (adjustHash(allocator, io, strip_path)) |hash|
+            (std.fmt.bufPrint(&adjust_current, "{x:0>16}", .{hash}) catch return true)
+        else
+            null;
+        if (adjust_now == null and parsed.value.adjust_hash != null) return true;
+        if (adjust_now) |now| {
+            const recorded = parsed.value.adjust_hash orelse return true;
+            if (!std.mem.eql(u8, recorded, now)) return true;
+        }
         const exported_manual = std.mem.eql(u8, parsed.value.framing, "manual");
         // An export that passed hand frames over stays current until they
         // change.
@@ -370,9 +382,12 @@ pub const Roll = struct {
         const rebate_rect = if (framing) |owned| owned.rebate orelse detected_rebate else detected_rebate;
         const use_roll_dmin = rebate_rect == null and self.dmin != null;
 
+        const adjustments = try frame_adjust.load(allocator, io, strip_path);
+        defer allocator.free(adjustments);
         const basename = try self.stripBasename(strip_path);
         defer allocator.free(basename);
         var outcome = StripOutcome{
+            .adjust_hash = adjustHash(allocator, io, strip_path),
             .frames = rects.len,
             .manual = framing != null,
             .framing_ignored = framing == null and saved_framing != null,
@@ -394,6 +409,7 @@ pub const Roll = struct {
                 .dmin = if (use_roll_dmin) self.dmin else null,
                 .rebate_rect = rebate_rect,
                 .config_overrides = overrides,
+                .frame_adjustments = adjustments,
                 .invert_request = options.invert_request,
                 .progress_sink = options.progress_sink,
             });
@@ -641,6 +657,7 @@ pub const Roll = struct {
         try out.print("{{\n  \"frames\": {d},\n  \"framing\": \"{s}\",\n  \"dmin_source\": \"{s}\"", .{ outcome.frames, framing, outcome.dmin_source });
         try appendTriple(&out, "dmin", outcome.dmin);
         if (outcome.framing_hash) |hash| try out.print(",\n  \"framing_hash\": \"{x:0>16}\"", .{hash});
+        if (outcome.adjust_hash) |hash| try out.print(",\n  \"adjust_hash\": \"{x:0>16}\"", .{hash});
         if (outcome.frame_length_mm) |length| try out.print(",\n  \"frame_length_mm\": {d:.3}", .{length});
         if (outcome.ring_frames.len != 0) {
             try out.appendSlice(",\n  \"newton_rings\": [");
@@ -1079,6 +1096,8 @@ pub const StripOutcome = struct {
     /// Detection was exported although the strip has a framing file.
     framing_ignored: bool = false,
     framing_hash: ?u64 = null,
+    /// The hash of the frames' own looks (`<strip>.adjust.json`) exported.
+    adjust_hash: ?u64 = null,
     dmin: ?[3]f64 = null,
     /// "rebate" (this strip), "roll" (another strip's), or "image".
     dmin_source: []const u8,
@@ -1187,6 +1206,7 @@ const MarkerJson = struct {
     files: []const []const u8 = &.{},
     framing: []const u8 = "auto",
     framing_hash: ?[]const u8 = null,
+    adjust_hash: ?[]const u8 = null,
     newton_rings: []const usize = &.{},
     frame_length_mm: ?f64 = null,
 };
@@ -1274,6 +1294,15 @@ fn lessThanString(_: void, a: []u8, b: []u8) bool {
 fn fileExists(io: std.Io, file_path: []const u8) bool {
     std.Io.Dir.cwd().access(io, file_path, .{}) catch return false;
     return true;
+}
+
+/// The hash of a strip's frame looks file, or null without one.
+fn adjustHash(allocator: std.mem.Allocator, io: std.Io, strip_path: []const u8) ?u64 {
+    const path = std.fmt.allocPrint(allocator, "{s}{s}", .{ strip_path, frame_adjust.suffix }) catch return null;
+    defer allocator.free(path);
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch return null;
+    defer allocator.free(text);
+    return std.hash.Wyhash.hash(0, text);
 }
 
 /// Writes `<path>.partial` and renames it over `path`, so readers never see

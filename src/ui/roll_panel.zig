@@ -40,10 +40,10 @@ pub const RollPanel = struct {
     /// Queued strips Close Roll or quitting dropped; they export when the
     /// roll is next opened.
     dropped_strips: usize = 0,
-    /// Bumped whenever a roll opens, so the Process view can follow its
+    /// Bumped whenever a roll opens, so the Strip view can follow its
     /// format and rotation.
     generation: usize = 0,
-    /// The Process view image whose saved frames were last loaded.
+    /// The Strip view image whose saved frames were last loaded.
     synced_image_buffer: [std.fs.max_path_bytes]u8 = undefined,
     synced_image_len: usize = 0,
     names: [][]u8 = &.{},
@@ -133,7 +133,7 @@ pub const RollPanel = struct {
             var path_buffer: [std.fs.max_path_bytes + 32]u8 = undefined;
             var where_buffer: [std.fs.max_path_bytes + 192]u8 = undefined;
             const shown = cerealgrain.native_ui_folders.displayPath(&path_buffer, roll.frames_dir);
-            chrome.drawWrappedText(ctx, std.fmt.bufPrint(&where_buffer, "Each strip's frames export to {s} as full-resolution 16-bit TIFFs, with print-sized JPEG copies when a print size is set in the Process view.", .{shown}) catch shown);
+            chrome.drawWrappedText(ctx, std.fmt.bufPrint(&where_buffer, "Each strip's frames export to {s} as full-resolution 16-bit TIFFs, with print-sized JPEG copies when a print size is set in the Strip view.", .{shown}) catch shown);
 
             const busy = model.scannerWorkActive() or self.strip_pending or self.scanning_strip != null;
             layoutRow(ctx, 30.0, 4);
@@ -277,7 +277,7 @@ pub const RollPanel = struct {
         model.setProcessingDirectories(allocator, self.io, active.dir, active.frames_dir);
         applyRollControls(model, active);
         self.saveCurrent(active.name);
-        // The Process view works on this roll's strips with its film stock.
+        // The Strip view works on this roll's strips with its film stock.
         if (cerealgrain.processing.config.FixedString.from(active.stock)) |stock| {
             const updates = [_]cerealgrain.processing.config.Override{.{ .name = "stock", .value = .{ .string = stock } }};
             model.saveProcessingSettings(allocator, self.io, self.processing_config_path, &updates) catch {};
@@ -628,7 +628,7 @@ pub const RollPanel = struct {
         return std.fmt.bufPrint(buffer, "{s}_s{d:0>2}", .{ roll.name, number }) catch "";
     }
 
-    /// Saves the Process view's frames (and rebate, if one is set) as the
+    /// Saves the Strip view's frames (and rebate, if one is set) as the
     /// strip's framing and re-exports the strip in the background under the
     /// roll's names, replacing its earlier exports. Later re-exports keep
     /// using these frames.
@@ -644,7 +644,7 @@ pub const RollPanel = struct {
         model.setStatus(self.notice);
     }
 
-    /// Writes the Process view's frames as the strip's framing file.
+    /// Writes the Strip view's frames as the strip's framing file.
     fn saveFraming(self: *RollPanel, model: *cerealgrain.native_ui.State, strip_path: []const u8) !usize {
         const roll = &(self.active orelse return error.NoOpenRoll);
         var framing = cerealgrain.native_ui.ProcessFraming{};
@@ -659,7 +659,7 @@ pub const RollPanel = struct {
         return rects.len;
     }
 
-    /// Call each frame: when the Process view moves to another image, hands
+    /// Call each frame: when the Strip view moves to another image, hands
     /// it that strip's saved frames (if it is one of the open roll's strips
     /// and has them), to show instead of its first auto-detect.
     pub fn syncSavedFraming(self: *RollPanel, model: *cerealgrain.native_ui.State) void {

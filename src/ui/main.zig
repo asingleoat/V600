@@ -11,12 +11,15 @@ const ProcessExportWorker = cerealgrain.native_ui_process_export_worker.Worker;
 const InvertedPreviewWorker = cerealgrain.native_ui_inverted_preview_worker.Worker;
 
 const c = @import("sdl_nuklear.zig").c;
+const builtin = @import("builtin");
 const chrome = @import("chrome.zig");
 const selection_geometry = @import("selection_geometry.zig");
 const render_layer = @import("render.zig");
 const sound = @import("sound.zig");
 const cursor = @import("cursor.zig");
 const roll_panel = @import("roll_panel.zig");
+const frame_view = @import("frame_view.zig");
+const print_panel_ui = @import("print_panel.zig");
 
 const layoutRow = chrome.layoutRow;
 const layoutRowStatic = chrome.layoutRowStatic;
@@ -106,22 +109,6 @@ const ProcessUiState = struct {
     last_w: f64 = 0.0,
     last_h: f64 = 0.0,
     last_rotation: i32 = cerealgrain.native_ui.default_process_output_rotation,
-    render_contrast: f32 = 1.8,
-    dye_crosstalk: f32 = 0.2,
-    render_percentile_lo: f32 = 0.5,
-    render_percentile_hi: f32 = 99.5,
-    exposure_compensation: f32 = 0.0,
-    color_temp: f32 = 0.0,
-    color_tint: f32 = 0.0,
-    auto_white_balance: f32 = 1.0,
-    color_contrast: bool = false,
-    color_contrast_gain: f32 = 0.40,
-    color_contrast_boost: f32 = 0.30,
-    /// color_contrast_radius in thousandths, which the property shows whole.
-    color_contrast_core: f32 = 25.0,
-    color_cohesion_hue: f32 = 0.70,
-    color_cohesion_chroma: f32 = 0.55,
-    color_contrast_families: c_int = 12,
     ir_threshold: f32 = 0.10,
     ir_hair_sensitivity: f32 = 0.10,
     ir_dilate_radius: c_int = 4,
@@ -204,6 +191,11 @@ pub fn main(init: std.process.Init) !void {
     var roll_name_input_smoke = false;
     var roll_strip_smoke = false;
     var process_render_smoke = false;
+    var frame_render_smoke = false;
+    var frame_print_smoke = false;
+    var print_click_step: usize = 0;
+    var print_scroll_notches: usize = 0;
+    var print_paper_before: c_int = 0;
     var process_interaction_smoke = false;
     var process_worker_smoke = false;
     var process_worker_screenshot_smoke = false;
@@ -293,6 +285,15 @@ pub fn main(init: std.process.Init) !void {
             process_render_smoke = true;
             process_confirm_smoke = true;
             smoke = true;
+        } else if (std.mem.eql(u8, arg, "--frame-render-smoke")) {
+            process_render_smoke = true;
+            frame_render_smoke = true;
+            smoke = true;
+        } else if (std.mem.eql(u8, arg, "--frame-print-smoke")) {
+            process_render_smoke = true;
+            frame_render_smoke = true;
+            frame_print_smoke = true;
+            smoke = true;
         } else if (std.mem.eql(u8, arg, "--process-export-smoke")) {
             process_render_smoke = true;
             process_export_smoke = true;
@@ -366,7 +367,8 @@ pub fn main(init: std.process.Init) !void {
     const scanner_config_path = cerealgrain.native_ui.scannerConfigPath(&scanner_config_path_buffer, model.scanner.output_dir) catch cerealgrain.scanner.config.file_name;
     model.loadScannerConfig(std.heap.page_allocator, init.io, scanner_config_path) catch {};
     var processing_config_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke)
+    // Smokes that change settings save them to a scratch config.
+    const processing_config_path = if (roll_smoke or roll_strip_smoke or roll_name_input_smoke or roll_reframe_smoke or roll_close_smoke or frame_print_smoke)
         roll_smoke_root ++ "/" ++ cerealgrain.processing.config.config_file
     else
         cerealgrain.native_ui.processingConfigPath(&processing_config_path_buffer) catch cerealgrain.processing.config.config_file;
@@ -501,8 +503,13 @@ pub fn main(init: std.process.Init) !void {
         } else {
             try seedProcessPreview(&model, std.heap.page_allocator, processingPreviewSize(&process_ui));
         }
-        model.show(.process);
+        model.show(.strip);
         try validateProcessExportBasenameUiParity(&process_ui, &model);
+        if (frame_render_smoke) {
+            model.process_selections[0] = .{ .x = 0.0, .y = 0.0, .w = 2.0, .h = 2.0, .rotation = 90 };
+            model.process_selection_count = 1;
+            model.show(.frame);
+        }
     }
     if (process_worker_smoke) {
         process_worker.execute = if (process_worker_screenshot_smoke)
@@ -510,7 +517,7 @@ pub fn main(init: std.process.Init) !void {
         else
             cerealgrain.native_ui_process_worker.fakeLoadDelayedSuccess;
         try seedProcessWorkerSmokeImages(&model, std.heap.page_allocator);
-        model.show(.process);
+        model.show(.strip);
         if (!(try process_worker.startLoadIndex(&model, 0, processingPreviewSize(&process_ui)))) {
             return error.ProcessWorkerSmokeFailed;
         }
@@ -553,13 +560,20 @@ pub fn main(init: std.process.Init) !void {
     if (smoke) try assertControlPanelPolicy();
     if (smoke and !process_worker_smoke) try assertFooterStatusPolicy(&process_worker, &process_export_worker);
 
-    const renderer = c.SDL_CreateRenderer(window, null) orelse return error.SdlCreateRendererFailed;
+    // CEREALGRAIN_UI_WIDE_GAMUT=0 keeps the screen sRGB.
+    const wide_screen = builtin.os.tag == .macos and !std.mem.eql(u8, init.environ_map.get("CEREALGRAIN_UI_WIDE_GAMUT") orelse "1", "0");
+    const screen = chrome.createRenderer(window, wide_screen) orelse return error.SdlCreateRendererFailed;
+    const renderer = screen.renderer;
     defer c.SDL_DestroyRenderer(renderer);
     var preview_texture = PreviewTextureCache{};
     defer preview_texture.deinit();
     var scan_selection_interaction = ScanSelectionInteraction{};
     var process_texture = ProcessPreviewTextureCache{};
     defer process_texture.deinit(std.heap.page_allocator);
+    var frame_preview = frame_view.FramePreview.init(std.heap.page_allocator, screen.space);
+    defer frame_preview.deinit();
+    var print_panel = print_panel_ui.PrintPanel.init(std.heap.page_allocator, init.io);
+    defer print_panel.deinit();
     var process_selection_interaction = ProcessSelectionInteraction{};
     var process_transform = cerealgrain.native_ui.ProcessViewTransform{};
     var scan_transform = cerealgrain.native_ui.ProcessViewTransform{};
@@ -569,7 +583,7 @@ pub fn main(init: std.process.Init) !void {
     defer process_confirmation.deinit(std.heap.page_allocator);
     var process_selector_checked = false;
     var process_export_checked = false;
-    var gallery_texture = GalleryTextureCache{};
+    var gallery_texture = GalleryTextureCache{ .screen = screen.space };
     defer gallery_texture.deinit(std.heap.page_allocator);
     var gallery_thumbnails = GalleryThumbnailCache{};
     defer gallery_thumbnails.deinit(std.heap.page_allocator);
@@ -689,7 +703,7 @@ pub fn main(init: std.process.Init) !void {
                 };
                 last_gallery_refresh_ms = c.SDL_GetTicks();
             }
-            if (active_view_before != .process and model.active_view == .process) {
+            if (!active_view_before.isProcessing() and model.active_view.isProcessing()) {
                 ensureProcessImageLoaded(
                     &model,
                     &process_worker,
@@ -700,7 +714,19 @@ pub fn main(init: std.process.Init) !void {
             }
             switch (model.active_view) {
                 .scan => drawScanView(&ctx, &model, init.io, &rolls, preview_worker.last_preview),
-                .process => drawProcessView(
+                .frame => drawFrameView(
+                    &ctx,
+                    &model,
+                    std.heap.page_allocator,
+                    init.io,
+                    processing_config_path,
+                    &process_ui,
+                    &process_export_worker,
+                    &frame_preview,
+                    &print_panel,
+                    &rolls,
+                ),
+                .strip => drawProcessView(
                     &ctx,
                     &model,
                     std.heap.page_allocator,
@@ -778,7 +804,18 @@ pub fn main(init: std.process.Init) !void {
         }
         rolls.syncSavedFraming(&model);
         followRollInProcessView(&rolls, &process_ui, &synced_roll_generation);
-        if (model.active_view == .process and model.takeProcessAutoDetectPending()) {
+        if (model.processing_preview != null) {
+            model.syncFrameAdjustments(std.heap.page_allocator, init.io) catch |err| setProcessUiError(&model, err);
+        }
+        // The frames' looks save once a drag ends.
+        if (model.process_adjustments_dirty and c.SDL_GetMouseState(null, null) == 0) {
+            model.saveFrameAdjustments(std.heap.page_allocator, init.io) catch |err| setProcessUiError(&model, err);
+        }
+        if (model.active_view == .frame) {
+            print_panel.update(&model);
+            frame_preview.update(renderer, &model, softProof(&print_panel)) catch |err| setProcessUiError(&model, err);
+        }
+        if (model.active_view.isProcessing() and model.takeProcessAutoDetectPending()) {
             startProcessAutoDetect(
                 &model,
                 &process_worker,
@@ -812,7 +849,9 @@ pub fn main(init: std.process.Init) !void {
         _ = c.SDL_RenderClear(renderer);
         if (model.active_view == .gallery) {
             renderGalleryTexture(renderer, &gallery_texture, &gallery_transform, &model, std.heap.page_allocator);
-        } else if (model.active_view == .process) {
+        } else if (model.active_view == .frame) {
+            renderFrameTexture(renderer, &frame_preview, &model);
+        } else if (model.active_view == .strip) {
             renderProcessTexture(renderer, init.io, &process_texture, &inverted_preview_worker, &model, &process_selection_interaction, &process_transform);
         } else {
             const now_ms = c.SDL_GetTicks();
@@ -822,7 +861,7 @@ pub fn main(init: std.process.Init) !void {
         try nuklear_renderer.render(&ctx);
         if ((preview_render_smoke or process_render_smoke or gallery_render_smoke) and !nuklear_render_probe_done) {
             try assertNuklearChromeRendered(renderer);
-            if (process_render_smoke and (model.processing_preview == null or process_texture.texture == null)) {
+            if (process_render_smoke and (model.processing_preview == null or (!frame_render_smoke and process_texture.texture == null))) {
                 return error.ProcessRenderSmokeFailed;
             }
             if (gallery_render_smoke) {
@@ -833,8 +872,64 @@ pub fn main(init: std.process.Init) !void {
             }
             nuklear_render_probe_done = true;
         }
-        if (process_render_smoke and process_texture.used_inverted) {
+        if (process_render_smoke and !frame_render_smoke and process_texture.used_inverted) {
             process_inverted_render_checked = true;
+        }
+        // The Frame view renders its frame, then renders it again live when
+        // the frame's look changes.
+        // The Frame view's Print section finds the printers (it never
+        // prints here); with one whose driver ships profiles, the soft
+        // proof renders the frame through its paper's profile.
+        if (frame_print_smoke and frame_preview.shown != null) {
+            if (print_panel.load == null and print_panel.printers.len == 0 and print_panel.status.len > 0) {
+                process_inverted_render_checked = true;
+            } else if (print_panel.ppd != null and print_click_step == 0 and print_panel.activeProfile() == null) {
+                // A paper the driver has a profile for, if any.
+                if (!print_panel.choosePaperWithProfile()) process_inverted_render_checked = true;
+            } else if (print_panel.ppd != null) {
+                print_panel.soft_proof = true;
+                // Then the Paper pulldown opens on a click and takes the
+                // next paper, through real mouse events.
+                if ((print_click_step > 0 or frame_preview.shown.?.proof != null) and print_panel.paper_rect.h > 0) {
+                    const r = print_panel.paper_rect;
+                    const item_y = r.y + r.h + print_panel.item_height * 1.5;
+                    // The Print section ends the panel: scroll, a notch a
+                    // frame, until the pulldown and two rows under it show.
+                    var window_h: c_int = 0;
+                    _ = c.SDL_GetWindowSize(window, null, &window_h);
+                    const below = r.y + r.h + 3.0 * print_panel.item_height > @as(f32, @floatFromInt(window_h)) - 80.0;
+                    const above = r.y < 40.0;
+                    if (print_click_step == 0 and print_scroll_notches < 200 and (below or above)) {
+                        pushMouseWheel(r.x / 2.0, 200.0, if (above) 1.0 else -1.0);
+                        print_scroll_notches += 1;
+                    } else {
+                        switch (print_click_step) {
+                            0 => print_paper_before = print_panel.paper.?.index,
+                            2 => pushMouseButton(c.SDL_EVENT_MOUSE_BUTTON_DOWN, r.x + r.w / 2.0, r.y + r.h / 2.0),
+                            3 => pushMouseButton(c.SDL_EVENT_MOUSE_BUTTON_UP, r.x + r.w / 2.0, r.y + r.h / 2.0),
+                            7 => pushMouseButton(c.SDL_EVENT_MOUSE_BUTTON_DOWN, r.x + r.w / 2.0, item_y),
+                            8 => pushMouseButton(c.SDL_EVENT_MOUSE_BUTTON_UP, r.x + r.w / 2.0, item_y),
+                            12 => {
+                                if (print_panel.paper.?.index == print_paper_before) {
+                                    std.debug.print("native frame print smoke: the Paper pulldown did not select ({d})\n", .{print_paper_before});
+                                    return error.FramePrintSmokeFailed;
+                                }
+                                process_inverted_render_checked = true;
+                            },
+                            else => {},
+                        }
+                        print_click_step += 1;
+                    }
+                }
+            }
+        } else if (frame_render_smoke and frame_preview.shown != null) {
+            if (model.process_frame_adjustments[0].isEmpty()) {
+                // In memory only: the smoke must not write beside the fixture.
+                model.process_frame_adjustments[0].set(.exposure_compensation, 1.0);
+            } else if (frame_preview.shown.?.render_options.exposure_compensation == 1.0) {
+                if (frame_preview.width != 2 or frame_preview.height != 2) return error.FrameRenderSmokeFailed;
+                process_inverted_render_checked = true;
+            }
         }
         if (scan_interaction_smoke and !scan_interaction_checked and preview_texture.texture != null) {
             try runScanSelectionInteractionSmokeEvents(
@@ -1171,7 +1266,7 @@ fn runRollReframeSmoke(rolls: *roll_panel.RollPanel, model: *cerealgrain.native_
     rolls.saveFramingIfEdited(model);
     if (try framingCx(allocator, io, strip) != 90.0) return error.RollReframeSmokeFailed;
     // The smoke's frame then draws the Process view's roll export controls.
-    model.active_view = .process;
+    model.active_view = .strip;
 }
 
 fn framingCx(allocator: std.mem.Allocator, io: std.Io, strip: []const u8) !f64 {
@@ -1290,6 +1385,20 @@ fn pushMouseButton(kind: u32, x: f32, y: f32) void {
     button.button.x = x;
     button.button.y = y;
     _ = c.SDL_PushEvent(&button);
+}
+
+fn pushMouseWheel(x: f32, y: f32, amount: f32) void {
+    var motion: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    motion.type = c.SDL_EVENT_MOUSE_MOTION;
+    motion.motion.x = x;
+    motion.motion.y = y;
+    _ = c.SDL_PushEvent(&motion);
+    var wheel: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    wheel.type = c.SDL_EVENT_MOUSE_WHEEL;
+    wheel.wheel.y = amount;
+    wheel.wheel.mouse_x = x;
+    wheel.wheel.mouse_y = y;
+    _ = c.SDL_PushEvent(&wheel);
 }
 
 fn pushTextEvent(text: [*:0]const u8) void {
@@ -1779,7 +1888,8 @@ fn canvasCursorShape(
             if (hitScanSelection(model.scan_controls.selection, rect, x, y, point.x, point.y)) |mode| return cursor.forScanEdit(mode);
             return if (screenToScanPreview(rect, x, y) != null) .crosshair else .default;
         },
-        .process => {
+        .frame => return .default,
+        .strip => {
             if (process_interaction.active_target != null) return null;
             if (process_transform.panning) return .move;
             if (!model.processPreviewInteractionReady()) return .default;
@@ -1900,7 +2010,7 @@ fn handleProcessSelectionEvent(
     config_path: []const u8,
     event: c.SDL_Event,
 ) void {
-    if (model.active_view != .process) {
+    if (model.active_view != .strip) {
         interaction.end();
         transform.panning = false;
         return;
@@ -2083,7 +2193,7 @@ fn handleProcessShortcutEvent(
     event: c.SDL_Event,
     editing_widget_active: bool,
 ) void {
-    if (model.active_view != .process or event.type != c.SDL_EVENT_KEY_DOWN or editing_widget_active) return;
+    if (model.active_view != .strip or event.type != c.SDL_EVENT_KEY_DOWN or editing_widget_active) return;
     switch (event.key.key) {
         c.SDLK_DELETE, c.SDLK_BACKSPACE => {
             if (model.process_active_selection) |index| {
@@ -2702,7 +2812,7 @@ fn runProcessSelectionInteractionSmokeEvents(
     model.process_active_selection = 0;
     handleProcessShortcutEvent(interaction, model, event, false);
     if (model.process_selection_count != add_count) return error.ProcessInteractionSmokeFailed;
-    model.active_view = .process;
+    model.active_view = .strip;
     event.key.key = c.SDLK_DELETE;
     model.process_active_selection = 0;
     handleProcessShortcutEvent(interaction, model, event, false);
@@ -3003,7 +3113,7 @@ fn footerStatusText(
 ) []const u8 {
     return switch (model.active_view) {
         .scan => scanFooterStatusText(buffer, model),
-        .process => processFooterStatusText(buffer, model, process_worker, export_worker),
+        .strip, .frame => processFooterStatusText(buffer, model, process_worker, export_worker),
         .gallery => galleryFooterStatusText(buffer, model),
     };
 }
@@ -3048,8 +3158,9 @@ fn processFooterStatusText(
     if (nav.preview_ready) {
         return std.fmt.bufPrint(
             buffer,
-            "Process | {s} | {d}/{d}: {s} | {d}x{d}px scale {d:.4} {s} | {s}",
+            "{s} | {s} | {d}/{d}: {s} | {d}x{d}px scale {d:.4} {s} | {s}",
             .{
+                std.mem.span(model.active_view.titleZ()),
                 primary,
                 nav.image_idx + 1,
                 nav.image_count,
@@ -3065,14 +3176,14 @@ fn processFooterStatusText(
     if (nav.image_count == 0) {
         return std.fmt.bufPrint(
             buffer,
-            "Process | {s} | No scan TIFFs found | {s}",
-            .{ primary, dmin },
+            "{s} | {s} | No scan TIFFs found | {s}",
+            .{ std.mem.span(model.active_view.titleZ()), primary, dmin },
         ) catch primary;
     }
     return std.fmt.bufPrint(
         buffer,
-        "Process | {s} | {d}/{d}: {s} | Refresh to load preview | {s}",
-        .{ primary, nav.image_idx + 1, nav.image_count, nav.filename, dmin },
+        "{s} | {s} | {d}/{d}: {s} | Refresh to load preview | {s}",
+        .{ std.mem.span(model.active_view.titleZ()), primary, nav.image_idx + 1, nav.image_count, nav.filename, dmin },
     ) catch primary;
 }
 
@@ -3120,10 +3231,10 @@ fn assertFooterStatusPolicy(process_worker: *ProcessWorker, export_worker: *Proc
     if (std.mem.indexOf(u8, scan_text, "Scan | Scanning... | 42%") == null) return error.FooterStatusPolicyMismatch;
 
     var process_model = cerealgrain.native_ui.State{};
-    process_model.show(.process);
+    process_model.show(.strip);
     process_model.setProcessingProgress("Processing 1 frame...");
     const process_text = footerStatusText(&buffer, &process_model, process_worker, export_worker);
-    if (std.mem.indexOf(u8, process_text, "Process | Processing 1 frame... | No scan TIFFs found | Dmin: not set") == null) {
+    if (std.mem.indexOf(u8, process_text, "Strip | Processing 1 frame... | No scan TIFFs found | Dmin: not set") == null) {
         return error.FooterStatusPolicyMismatch;
     }
 
@@ -3137,9 +3248,12 @@ fn assertFooterStatusPolicy(process_worker: *ProcessWorker, export_worker: *Proc
 }
 
 fn drawNavigation(ctx: *c.struct_nk_context, model: *cerealgrain.native_ui.State) void {
-    layoutRow(ctx, 28.0, 3);
+    layoutRow(ctx, 28.0, 4);
     if (chrome.optionClicked(ctx, "Scan", model.active_view == .scan)) model.show(.scan);
-    if (chrome.optionClicked(ctx, "Process", model.active_view == .process)) model.show(.process);
+    tooltip(ctx, "The whole strip: its frames, Dmin, dust removal, and export");
+    if (chrome.optionClicked(ctx, "Strip", model.active_view == .strip)) model.show(.strip);
+    tooltip(ctx, "One frame at a time: its exposure, colour, and contrast, previewed live");
+    if (chrome.optionClicked(ctx, "Frame", model.active_view == .frame)) model.show(.frame);
     if (chrome.optionClicked(ctx, "Gallery", model.active_view == .gallery)) model.show(.gallery);
 }
 
@@ -3629,6 +3743,8 @@ fn drawProcessView(
         if (export_active) {
             c.nk_label(ctx, "Exporting...", c.NK_TEXT_LEFT);
         } else if (c.nk_button_label(ctx, "Export Strip Frames") != 0) {
+            // The roll export reads the frames' looks from disk.
+            model.saveFrameAdjustments(allocator, io) catch |err| setProcessUiError(model, err);
             rolls.exportFramedStrip(model, image_path.?) catch |err| setProcessUiError(model, err);
         }
         return;
@@ -3769,57 +3885,6 @@ fn drawProcessSettingsControls(
     drawProcessStockControls(ctx, model, allocator, io, config_path, ui);
 
     layoutRow(ctx, 24.0, 1);
-    c.nk_label(ctx, "Render", c.NK_TEXT_LEFT);
-    drawFloatSetting(ctx, model, ui, "Contrast", "render_contrast", &ui.render_contrast, 1.0, 3.0, 0.05, "Contrast of the display curve through 18% grey. 1 is gentle; higher values deepen shadows and brighten highlights. The film's own contrast is kept, so a hazy scene stays soft");
-    drawFloatSetting(ctx, model, ui, "Crosstalk", "dye_crosstalk", &ui.dye_crosstalk, 0.0, 0.5, 0.02, "Dye crosstalk to undo: the scan sees each dye partly through the others, which mutes colour. Higher values restore more colour; 0 leaves the scan's colour as it is");
-    drawFloatSetting(ctx, model, ui, "Black %", "render_percentile_lo", &ui.render_percentile_lo, 0.0, 5.0, 0.1, "Percentile of each channel used as its black point for automatic white balance. Higher values ignore more dark outliers");
-    drawFloatSetting(ctx, model, ui, "White %", "render_percentile_hi", &ui.render_percentile_hi, 95.0, 100.0, 0.1, "Percentile of each channel used as its white point for automatic white balance. Lower values ignore more bright outliers such as specular highlights");
-    drawFloatSetting(ctx, model, ui, "Exposure", "exposure_compensation", &ui.exposure_compensation, -3.0, 3.0, 0.1, "Exposure in stops on top of automatic exposure, which puts the frame's average brightness at 18% grey. Positive values brighten");
-
-    layoutRow(ctx, 24.0, 1);
-    c.nk_label(ctx, "Color Balance", c.NK_TEXT_LEFT);
-    drawFloatSetting(ctx, model, ui, "Auto WB", "auto_white_balance", &ui.auto_white_balance, 0.0, 1.0, 0.05, "Automatic white balance for each frame: gives every channel its own black and white point so neutral shadows and highlights come out neutral. 1 = full, 0 = off (for scenes whose darkest and brightest parts are not neutral, like sunsets). Temp and tint adjust on top");
-    drawColorPad(ctx, model, ui);
-    drawFloatSetting(ctx, model, ui, "Temp", "color_temp", &ui.color_temp, -1.0, 1.0, 0.05, "Color temperature, from blue to yellow. 0 is neutral. Same as the horizontal axis of the pad above");
-    drawFloatSetting(ctx, model, ui, "Tint", "color_tint", &ui.color_tint, -1.0, 1.0, 0.05, "Tint, from green to magenta. 0 is neutral. Same as the vertical axis of the pad above");
-    layoutRow(ctx, 26.0, 1);
-    tooltip(ctx, "Set temperature and tint back to neutral and automatic white balance back to full");
-    if (c.nk_button_label(ctx, "Reset Color") != 0) {
-        ui.color_temp = 0.0;
-        ui.color_tint = 0.0;
-        ui.auto_white_balance = 1.0;
-        queueProcessFloatSetting(model, ui, "color_temp", ui.color_temp);
-        queueProcessFloatSetting(model, ui, "color_tint", ui.color_tint);
-        queueProcessFloatSetting(model, ui, "auto_white_balance", ui.auto_white_balance);
-        commitPendingProcessSettings(model, allocator, io, config_path, ui) catch |err| setProcessUiError(model, err);
-    }
-
-    layoutRow(ctx, 24.0, 1);
-    c.nk_label(ctx, "Color Contrast", c.NK_TEXT_LEFT);
-    layoutRow(ctx, 24.0, 1);
-    tooltip(ctx, "Finds each frame's main colours (skin, sky, foliage) and spreads the shades of each apart in chroma around a richer centre, keeping hue and lightness as rendered. Greys are left alone. Exports and roll exports follow it too");
-    var color_contrast = nkBool(ui.color_contrast);
-    if (c.nk_checkbox_label(ctx, "Color contrast", &color_contrast) != 0) {
-        ui.color_contrast = color_contrast != 0;
-        const updates = [_]cerealgrain.processing.config.Override{.{ .name = "color_contrast", .value = .{ .boolean = ui.color_contrast } }};
-        model.saveProcessingSettings(allocator, io, config_path, &updates) catch |err| setProcessUiError(model, err);
-    }
-    if (ui.color_contrast) {
-        drawIntSetting(ctx, model, ui, "Colors", "color_contrast_families", &ui.color_contrast_families, 1, 12, 1, "The most colours to find in each frame, the most common kept. Fewer leaves the rarer colours to the pull of the main ones, or alone when far from them");
-        drawFloatSetting(ctx, model, ui, "Local", "color_contrast_gain", &ui.color_contrast_gain, 0.0, 0.5, 0.05, "How much chroma differences between shades near each colour's centre grow. 0 keeps them as they are");
-        drawFloatSetting(ctx, model, ui, "Boost", "color_contrast_boost", &ui.color_contrast_boost, 0.0, 0.8, 0.05, "Chroma added to the centre of each colour, as a share of it. 0 keeps each colour's saturation");
-        const core_before = ui.color_contrast_core;
-        layoutRow(ctx, 26.0, 1);
-        tooltip(ctx, "Size of the region about each colour's centre whose chroma differences grow, in thousandths of Oklab. It shrinks where colours crowd each other or the greys");
-        c.nk_property_float(ctx, "Core", 0.0, &ui.color_contrast_core, 80.0, 1.0, 0.25);
-        if (@abs(ui.color_contrast_core - core_before) > 0.000001) {
-            ui.settings_draft.put("color_contrast_radius", .{ .float = @round(@as(f64, ui.color_contrast_core)) / 1000.0 }) catch |err| setProcessUiError(model, err);
-        }
-        drawFloatSetting(ctx, model, ui, "Hue pull", "color_cohesion_hue", &ui.color_cohesion_hue, 0.0, 1.0, 0.05, "How far each shade's hue moves toward its colour's. Higher makes each colour more even in hue");
-        drawFloatSetting(ctx, model, ui, "Chroma pull", "color_cohesion_chroma", &ui.color_cohesion_chroma, 0.0, 1.0, 0.05, "How far each shade's chroma moves toward its colour's, outside the core");
-    }
-
-    layoutRow(ctx, 24.0, 1);
     c.nk_label(ctx, "Dust & Scratch", c.NK_TEXT_LEFT);
     drawFloatSetting(ctx, model, ui, "IR thresh", "ir_threshold", &ui.ir_threshold, 0.02, 0.50, 0.01, "How far below the local background a pixel must be to count as a defect. Lower values detect fainter dust but may flag film grain. Higher values only catch obvious defects");
     drawFloatSetting(ctx, model, ui, "Hair sens", "ir_hair_sensitivity", &ui.ir_hair_sensitivity, 0.02, 0.30, 0.01, "Meijering ridge filter threshold for detecting thin linear features like hairs and scratches. Lower values catch finer or fainter hairs but may produce false positives on textured areas");
@@ -3858,64 +3923,6 @@ fn drawProcessStockControls(
     }
 }
 
-fn drawColorPad(
-    ctx: *c.struct_nk_context,
-    model: *cerealgrain.native_ui.State,
-    ui: *ProcessUiState,
-) void {
-    layoutRow(ctx, 88.0, 1);
-    tooltip(ctx, "Drag the point to adjust color balance. Horizontal: temperature, blue to yellow. Vertical: tint, green to magenta. The center is neutral");
-    var bounds: c.struct_nk_rect = undefined;
-    if (c.nk_widget(&bounds, ctx) == c.NK_WIDGET_INVALID) return;
-
-    const canvas = c.nk_window_get_canvas(ctx);
-    c.nk_fill_rect_multi_color(
-        canvas,
-        bounds,
-        c.nk_rgb(60, 95, 170),
-        c.nk_rgb(70, 150, 80),
-        c.nk_rgb(195, 170, 55),
-        c.nk_rgb(170, 75, 165),
-    );
-    c.nk_stroke_rect(canvas, bounds, 2.0, 1.0, c.nk_rgb(85, 88, 96));
-    c.nk_stroke_rect(
-        canvas,
-        c.nk_rect(bounds.x + bounds.w * 0.5, bounds.y, 1.0, bounds.h),
-        0.0,
-        1.0,
-        c.nk_rgb(210, 210, 210),
-    );
-    c.nk_stroke_rect(
-        canvas,
-        c.nk_rect(bounds.x, bounds.y + bounds.h * 0.5, bounds.w, 1.0),
-        0.0,
-        1.0,
-        c.nk_rgb(210, 210, 210),
-    );
-
-    const dot_x = bounds.x + ((ui.color_temp + 1.0) * 0.5) * bounds.w;
-    const dot_y = bounds.y + ((ui.color_tint + 1.0) * 0.5) * bounds.h;
-    const dot_radius = chrome.runtime_ui_config.metrics().color_dot_radius;
-    c.nk_fill_circle(canvas, c.nk_rect(dot_x - dot_radius, dot_y - dot_radius, dot_radius * 2.0, dot_radius * 2.0), c.nk_rgb(245, 245, 245));
-    c.nk_stroke_circle(canvas, c.nk_rect(dot_x - dot_radius, dot_y - dot_radius, dot_radius * 2.0, dot_radius * 2.0), 1.0, c.nk_rgb(20, 20, 24));
-
-    const input = &ctx.*.input;
-    const in_bounds = c.nk_input_is_mouse_hovering_rect(input, bounds) != 0;
-    const dragging = c.nk_input_is_mouse_down(input, c.NK_BUTTON_LEFT) != 0;
-    if (in_bounds and dragging) {
-        const before_temp = ui.color_temp;
-        const before_tint = ui.color_tint;
-        const mx = @min(bounds.x + bounds.w, @max(bounds.x, input.mouse.pos.x));
-        const my = @min(bounds.y + bounds.h, @max(bounds.y, input.mouse.pos.y));
-        ui.color_temp = ((mx - bounds.x) / bounds.w) * 2.0 - 1.0;
-        ui.color_tint = ((my - bounds.y) / bounds.h) * 2.0 - 1.0;
-        if (@abs(ui.color_temp - before_temp) > 0.000001 or @abs(ui.color_tint - before_tint) > 0.000001) {
-            queueProcessFloatSetting(model, ui, "color_temp", ui.color_temp);
-            queueProcessFloatSetting(model, ui, "color_tint", ui.color_tint);
-        }
-    }
-}
-
 fn drawFloatSetting(
     ctx: *c.struct_nk_context,
     model: *cerealgrain.native_ui.State,
@@ -3928,11 +3935,15 @@ fn drawFloatSetting(
     step: f32,
     help: []const u8,
 ) void {
-    const before = value.*;
+    // Nuklear cuts digits off rather than rounding (0.03 in f32 would read
+    // 0.02), so it is shown a hair high and kept to four decimals.
+    var shown = value.* + 0.00001;
+    const before = shown;
     layoutRow(ctx, 26.0, 1);
     tooltip(ctx, help);
-    c.nk_property_float(ctx, label, min, value, max, step, step * 0.25);
-    if (@abs(value.* - before) > 0.000001) {
+    c.nk_property_float(ctx, label, min, &shown, max, step, step * 0.25);
+    if (@abs(shown - before) > 0.000001) {
+        value.* = @floatCast(@round(@as(f64, shown) * 10000.0) / 10000.0);
         queueProcessFloatSetting(model, ui, name, value.*);
     }
 }
@@ -4032,21 +4043,6 @@ fn startProcessingImageAfterRefresh(
 
 fn syncProcessUiFromConfig(ui: *ProcessUiState, model: *const cerealgrain.native_ui.State) void {
     ui.preview_size = processSettingInt(model, "preview_size");
-    ui.render_contrast = processSettingFloat(model, "render_contrast");
-    ui.dye_crosstalk = processSettingFloat(model, "dye_crosstalk");
-    ui.render_percentile_lo = processSettingFloat(model, "render_percentile_lo");
-    ui.render_percentile_hi = processSettingFloat(model, "render_percentile_hi");
-    ui.exposure_compensation = processSettingFloat(model, "exposure_compensation");
-    ui.color_temp = processSettingFloat(model, "color_temp");
-    ui.color_tint = processSettingFloat(model, "color_tint");
-    ui.auto_white_balance = processSettingFloat(model, "auto_white_balance");
-    ui.color_contrast = processSettingBool(model, "color_contrast", false);
-    ui.color_contrast_gain = processSettingFloat(model, "color_contrast_gain");
-    ui.color_contrast_boost = processSettingFloat(model, "color_contrast_boost");
-    ui.color_contrast_core = processSettingFloat(model, "color_contrast_radius") * 1000.0;
-    ui.color_cohesion_hue = processSettingFloat(model, "color_cohesion_hue");
-    ui.color_cohesion_chroma = processSettingFloat(model, "color_cohesion_chroma");
-    ui.color_contrast_families = processSettingInt(model, "color_contrast_families");
     ui.ir_threshold = processSettingFloat(model, "ir_threshold");
     ui.ir_hair_sensitivity = processSettingFloat(model, "ir_hair_sensitivity");
     ui.ir_dilate_radius = processSettingInt(model, "ir_dilate_radius");
@@ -4127,6 +4123,84 @@ fn selectProcessStock(
 }
 
 /// Where the exports go, in full, and a button that opens it.
+fn drawFrameView(
+    ctx: *c.struct_nk_context,
+    model: *cerealgrain.native_ui.State,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config_path: []const u8,
+    ui: *const ProcessUiState,
+    export_worker: *ProcessExportWorker,
+    preview: *const frame_view.FramePreview,
+    printer: *print_panel_ui.PrintPanel,
+    rolls: *roll_panel.RollPanel,
+) void {
+    const export_active = model.process_exporting or export_worker.isRunning();
+    switch (frame_view.drawPanel(ctx, model, allocator, io, config_path, preview, export_active)) {
+        .none => {},
+        .export_frame => runFrameExport(model, export_worker, ui, rolls, null) catch |err| setProcessUiError(model, err),
+    }
+    if (model.process_selection_count == 0) return;
+    switch (printer.draw(ctx, model, allocator, config_path, export_active, frameAspect(model))) {
+        .none => {},
+        .print => {
+            const order = printer.order() catch |err| return setProcessUiError(model, err);
+            runFrameExport(model, export_worker, ui, rolls, &order) catch |err| setProcessUiError(model, err);
+        },
+    }
+}
+
+/// The Frame view's frame, width over height as it exports (turned).
+fn frameAspect(model: *const cerealgrain.native_ui.State) f64 {
+    const index = @min(model.frame_view_index, model.process_selection_count - 1);
+    const selection = model.process_selections[index];
+    if (!(selection.w > 0 and selection.h > 0)) return 1.5;
+    const turned = selection.rotation == 90 or selection.rotation == 270;
+    return if (turned) selection.h / selection.w else selection.w / selection.h;
+}
+
+/// The soft proof the print panel asks for, if any.
+fn softProof(printer: *const print_panel_ui.PrintPanel) ?cerealgrain.native_ui_frame_preview_worker.Proof {
+    if (!printer.soft_proof) return null;
+    const profile = printer.activeProfile() orelse return null;
+    return cerealgrain.native_ui_frame_preview_worker.Proof.init(profile.path, printer.proofIntent(), printer.paper_white);
+}
+
+fn renderFrameTexture(renderer: *c.SDL_Renderer, preview: *const frame_view.FramePreview, model: *const cerealgrain.native_ui.State) void {
+    preview.render(renderer, model);
+}
+
+/// Exports the Frame view's frame alone: a roll strip's under the roll's
+/// name and folder, as the roll exports it, else as the Strip tab would.
+fn runFrameExport(
+    model: *cerealgrain.native_ui.State,
+    worker: *ProcessExportWorker,
+    ui: *const ProcessUiState,
+    rolls: *const roll_panel.RollPanel,
+    print: ?*const cerealgrain.native_ui_print_order.PrintOrder,
+) !void {
+    const index = model.frame_view_index;
+    const image_path = model.currentProcessingImagePathForWorker();
+    if (if (image_path) |path| rolls.stripNumberOf(path) else null) |strip_number| {
+        var name_buffer: [96]u8 = undefined;
+        _ = try worker.startFromState(model, .{
+            .basename = rolls.stripExportName(&name_buffer, strip_number),
+            .output_dir = rolls.framesDir(),
+            .only_frame = index,
+            .print = print,
+        });
+        return;
+    }
+    _ = try worker.startFromState(model, .{
+        .basename = ui.exportBasename(),
+        .export_ir_neg = ui.export_ir_neg,
+        .export_ir_inv = ui.export_ir_inv,
+        .export_inv_only = ui.export_inv_only,
+        .only_frame = index,
+        .print = print,
+    });
+}
+
 fn drawExportFolder(ctx: *c.struct_nk_context, model: *cerealgrain.native_ui.State, io: std.Io, relative: []const u8) void {
     var path_buffer: [std.fs.max_path_bytes + 32]u8 = undefined;
     var line_buffer: [std.fs.max_path_bytes + 64]u8 = undefined;

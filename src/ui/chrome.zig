@@ -138,7 +138,10 @@ pub fn controlPanelBaseHeight(model: *const cerealgrain.native_ui.State) f32 {
         // panel is capped at the space above the footer.
         .scan => 760.0,
         .gallery => 330.0,
-        .process => 940.0 +
+        // The look's controls, then the Print section.
+        .frame => 1790.0 +
+            @as(f32, @floatFromInt(@min(model.process_selection_count, 12))) * 24.0,
+        .strip => 820.0 +
             @as(f32, @floatFromInt(@min(model.processing_images.paths.len, 16))) * 24.0 +
             @as(f32, @floatFromInt(@min(model.process_selection_count, 12))) * 50.0,
     };
@@ -440,6 +443,44 @@ pub fn assertControlPanelPolicy() !void {
     event.wheel.mouse_x = @floatCast(footer_left + 1.0);
     event.wheel.mouse_y = @floatCast(footer_top + 1.0);
     if (controlPanelShouldReceiveWheel(event)) return error.FooterBarWheelPolicyMismatch;
+}
+
+/// The renderer, and the gamut previews may fill: on macOS it draws in
+/// extended linear sRGB (Metal, a half-float layer ColorSync shows across
+/// a Display P3 panel), so previews can show colours beyond sRGB; the UI's
+/// own colours stay sRGB. Elsewhere, or when the renderer refuses, sRGB.
+pub const Screen = struct {
+    renderer: *c.SDL_Renderer,
+    space: cerealgrain.processing.rgb_space.Space,
+};
+
+pub fn createRenderer(window: *c.SDL_Window, wide: bool) ?Screen {
+    if (wide) {
+        const props = c.SDL_CreateProperties();
+        defer c.SDL_DestroyProperties(props);
+        _ = c.SDL_SetPointerProperty(props, c.SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, window);
+        _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER, c.SDL_COLORSPACE_SRGB_LINEAR);
+        if (c.SDL_CreateRendererWithProperties(props)) |renderer| {
+            const output = c.SDL_GetNumberProperty(c.SDL_GetRendererProperties(renderer), c.SDL_PROP_RENDERER_OUTPUT_COLORSPACE_NUMBER, c.SDL_COLORSPACE_SRGB);
+            if (output == c.SDL_COLORSPACE_SRGB_LINEAR) return .{ .renderer = renderer, .space = .display_p3 };
+            c.SDL_DestroyRenderer(renderer);
+        }
+    }
+    const renderer = c.SDL_CreateRenderer(window, null) orelse return null;
+    return .{ .renderer = renderer, .space = .srgb };
+}
+
+/// A static RGBA half-float texture in extended linear sRGB, for colours
+/// beyond sRGB on a renderer drawing in it.
+pub fn createExtendedTexture(renderer: *c.SDL_Renderer, width: usize, height: usize) ?*c.SDL_Texture {
+    const props = c.SDL_CreateProperties();
+    defer c.SDL_DestroyProperties(props);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, c.SDL_PIXELFORMAT_RGBA64_FLOAT);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, c.SDL_TEXTUREACCESS_STATIC);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, @intCast(width));
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, @intCast(height));
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, c.SDL_COLORSPACE_SRGB_LINEAR);
+    return c.SDL_CreateTextureWithProperties(renderer, props);
 }
 
 pub fn nkBool(value: bool) c.nk_bool {

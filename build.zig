@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// The libraries the processing code links, by pkg-config name.
-const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib" };
+const static_packages = [_][]const u8{ "libtiff-4", "libdeflate", "libjpeg", "zlib", "lcms2" };
 
 const UiSmokeSpec = struct {
     arg: []const u8,
@@ -14,13 +14,15 @@ const ui_smoke_steps = [_]UiSmokeSpec{
     .{ .arg = "--smoke", .name = "ui-smoke", .description = "Run one native UI frame and exit" },
     .{ .arg = "--scanner-connect-smoke", .name = "native-scanner-connect-smoke", .description = "Verify native scanner startup begins in connecting state" },
     .{ .arg = "--process-worker-smoke", .name = "native-process-worker-smoke", .description = "Verify native Process worker keeps the UI responsive for a frame" },
-    .{ .arg = "--roll-smoke", .name = "native-roll-smoke", .description = "Verify opening a roll points the Scan and Process views at it" },
+    .{ .arg = "--roll-smoke", .name = "native-roll-smoke", .description = "Verify opening a roll points the Scan and Strip views at it" },
     .{ .arg = "--roll-name-input-smoke", .name = "native-roll-name-input-smoke", .description = "Verify typing into the roll name field reaches Nuklear" },
     .{ .arg = "--scan-sweep-smoke", .name = "native-scan-sweep-smoke", .description = "Verify the scan progress line draws over the scanned selection" },
-    .{ .arg = "--roll-reframe-smoke", .name = "native-roll-reframe-smoke", .description = "Verify hand-placed Process frames re-export a roll strip under the roll's names" },
+    .{ .arg = "--roll-reframe-smoke", .name = "native-roll-reframe-smoke", .description = "Verify hand-placed Strip frames re-export a roll strip under the roll's names" },
     .{ .arg = "--roll-close-smoke", .name = "native-roll-close-smoke", .description = "Verify Close Roll returns while a strip exports and the export finishes after" },
     .{ .arg = "--process-dump-smoke", .name = "native-process-dump-smoke", .description = "Verify native Process selection dump diagnostics" },
     .{ .arg = "--process-export-smoke", .name = "native-process-export-smoke", .description = "Verify native Process export flow starts from the UI" },
+    .{ .arg = "--frame-render-smoke", .name = "native-frame-render-smoke", .description = "Verify the Frame view renders its frame and re-renders it live as its look changes" },
+    .{ .arg = "--frame-print-smoke", .name = "native-frame-print-smoke", .description = "Verify the Frame view's Print section lists the printers and soft-proofs the frame (never prints)" },
     .{ .arg = "--preview-worker-smoke", .name = "native-preview-worker-smoke-skip", .description = "Verify native preview hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
     .{ .arg = "--scan-worker-smoke", .name = "native-scan-worker-smoke-skip", .description = "Verify native scan hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
     .{ .arg = "--roll-strip-smoke", .name = "native-roll-strip-smoke-skip", .description = "Verify the native Scan Strip hardware smoke skips without CEREALGRAIN_HARDWARE_SMOKE=1", .clear_env = true },
@@ -276,6 +278,7 @@ fn addRootModule(
     root_module.linkSystemLibrary("zlib", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libdeflate", .{ .use_pkg_config = .force });
     root_module.linkSystemLibrary("libjpeg", .{ .use_pkg_config = .force });
+    root_module.linkSystemLibrary("lcms2", .{ .use_pkg_config = .force });
     if (!target.query.isNativeOs()) addNixLibraryPaths(b, root_module);
     if (target.result.os.tag == .macos) {
         // USB transport for the Epson interpreter scanner backend.

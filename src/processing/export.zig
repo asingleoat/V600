@@ -2,11 +2,13 @@ const std = @import("std");
 
 const film_stocks = @import("film_stocks.zig");
 const frames = @import("frames.zig");
+const icc = @import("icc.zig");
 const inversion = @import("inversion.zig");
 const ir_processing = @import("ir.zig");
 const numeric = @import("numeric_fixture.zig");
 const print = @import("print.zig");
 const render = @import("render.zig");
+const rgb_space = @import("rgb_space.zig");
 const tiff = @import("../tiff.zig");
 const webgpu = @import("webgpu.zig");
 const monotonicNowNs = @import("../clock.zig").monotonicNowNs;
@@ -902,10 +904,10 @@ pub fn processFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.ir_inv);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta, outputSpace(options.render_options));
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
-        try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, &local_timings);
+        try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, outputSpace(options.render_options), &local_timings);
     }
 
     if (options.outputs.inv_only) {
@@ -926,10 +928,10 @@ pub fn processFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta, outputSpace(options.render_options));
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
-        if (!options.outputs.ir_inv) try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, &local_timings);
+        if (!options.outputs.ir_inv) try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, outputSpace(options.render_options), &local_timings);
     }
 
     return .{
@@ -980,10 +982,10 @@ pub fn processCroppedFrame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta, outputSpace(options.render_options));
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
-        try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, &local_timings);
+        try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, outputSpace(options.render_options), &local_timings);
     }
 
     return .{
@@ -1034,10 +1036,10 @@ pub fn processInvertedSceneF32Frame(
         defer allocator.free(metadata);
         const path = try options.paths.path(.inv_only);
         const write_started = monotonicNowNs();
-        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta);
+        try writeU16TiffSamples(allocator, path, out, metadata, options.base_meta, outputSpace(options.render_options));
         local_timings.write_ns += monotonicNowNs() - write_started;
         try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
-        try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, &local_timings);
+        try writePrintCopy(allocator, &written, path, out, options.paths.print, options.base_meta.crop, outputSpace(options.render_options), &local_timings);
     }
 
     return .{
@@ -1077,16 +1079,22 @@ fn writePrintCopy(
     image: ImageU16,
     spec: ?print.Spec,
     crop: FrameRect,
+    space: rgb_space.Space,
     timings: *ProcessFrameTimings,
 ) !void {
     const print_spec = spec orelse return;
     const started = monotonicNowNs();
     const turned = crop.rotation == 90 or crop.rotation == 270;
     const aspect = if (turned) crop.h / crop.w else crop.w / crop.h;
-    const path = try print.writeCopy(allocator, tiff_path, image.pixels, image.width, image.height, aspect, print_spec);
+    const path = try print.writeCopy(allocator, tiff_path, image.pixels, image.width, image.height, aspect, space, print_spec);
     defer allocator.free(path);
     timings.write_ns += monotonicNowNs() - started;
     try written.append(try allocator.dupe(u8, std.fs.path.basename(path)));
+}
+
+/// The space a positive is written in: the render's output space.
+fn outputSpace(options: render.RenderToDisplayOptions) rgb_space.Space {
+    return options.output orelse options.primaries;
 }
 
 fn writeU16TiffSamples(
@@ -1095,14 +1103,17 @@ fn writeU16TiffSamples(
     image: ImageU16,
     metadata_json: []const u8,
     base_meta: BaseMetadata,
+    space: rgb_space.Space,
 ) !void {
+    const profile = try icc.spaceProfileBytes(allocator, space);
+    defer allocator.free(profile);
     try tiff.writeImage(allocator, path, .{
         .width = @intCast(image.width),
         .height = @intCast(image.height),
         .samples_per_pixel = @intCast(image.channels),
         .bits_per_sample = 16,
         .data = std.mem.sliceAsBytes(image.pixels),
-    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime, .software = tiff.software });
+    }, .{ .metadata_json = metadata_json, .compression = .deflate, .dpi = base_meta.dpi, .datetime = base_meta.datetime, .software = tiff.software, .icc_profile = profile });
 }
 
 fn exportMetadataJson(

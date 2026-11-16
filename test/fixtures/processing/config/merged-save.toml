@@ -42,21 +42,27 @@ render_contrast = 1.6
 # render_percentile_hi = 99.5
 # Exposure in stops on top of automatic exposure: positive=brighter
 # exposure_compensation = 0.0
+# Automatic exposure puts the frame's 99th-percentile lightness here (Oklab L, e.g. 0.84) instead of the average at 18% grey; 0 = off
+# render_highlight_target = 0.0
 # Color temperature, about half a stop per unit: positive=warmer, negative=cooler
 # color_temp = 0.0
 # Color tint, about half a stop per unit: positive=magenta, negative=green
 color_tint = -0.25
 # Per-frame white balance from each channel's black and white points: 0=off, 1=full
 # auto_white_balance = 1.0
+# Then takes the cast of the frame's nearly neutral surfaces (greys, whites, glass) out of the render: 0=off, 1=full
+# neutral_white_balance = 1.0
 # Film contrast: net density per decade of exposure on the straight part of its curve
 # film_gamma = 0.55
 # Width of the film's toe in decades of exposure
 # film_toe = 0.25
 # Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)
 # dye_crosstalk = 0.2
+# Colour space of the render, how saturated the film's colours can come out: srgb, display_p3, adobe_rgb, rec2020, or auto (rec2020 on macOS, which holds a photo printer's gamut; srgb elsewhere). Exports embed its ICC profile
+# render_primaries = "auto"
 # Colour contrast: how much chroma differences grow near each family's centre, 0 to 0.5
 # color_contrast_gain = 0.4
-# Colour contrast: chroma added to each family's centre, as a share of it, 0 to 0.8
+# Colour contrast: how much each family's colours gain chroma along their own hue, 0 to 0.8
 # color_contrast_boost = 0.3
 # Colour contrast: largest family core, in Oklab units, 0 to 0.08
 # color_contrast_radius = 0.025
@@ -66,6 +72,8 @@ color_tint = -0.25
 # color_cohesion_chroma = 0.55
 # Colour contrast: the most colour families fitted per frame, the tallest kept, 1 to 12
 # color_contrast_families = 12
+# Colour contrast: the colourfulness the boost aims for (90th percentile of chroma), up to the boost; 0 = always the boost
+# color_contrast_target = 0.0
 
 # Film stock profiles
 

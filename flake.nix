@@ -88,7 +88,7 @@ EOF
           inherit version;
           src = cleanSource pkgs;
           nativeBuildInputs = [ pkgs.zig s.buildPackages.pkg-config pkgs.nukeReferences ];
-          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg ];
+          buildInputs = [ s.libtiff s.zlib s.libdeflate s.libjpeg s.lcms2 ];
           allowedReferences = [ ];
           buildPhase = ''
             runHook preBuild
@@ -136,6 +136,7 @@ EOF
                 pkgs.zlib
                 pkgs.libdeflate
                 pkgs.libjpeg
+                pkgs.lcms2
               ] ++ pkgs.lib.optionals enableUi [
                 pkgs.sdl3
                 nuklear
@@ -174,7 +175,7 @@ EOF
         let nuklear = nuklearPackage pkgs; in {
         zig-tests = pkgs.runCommand "cerealgrain-tests" {
           nativeBuildInputs = [ pkgs.zig pkgs.pkg-config pkgs.stdenv.cc pkgs.imagemagick pkgs.exiftool ];
-          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.sdl3 nuklear ];
+          buildInputs = [ pkgs.libtiff pkgs.zlib pkgs.libdeflate pkgs.libjpeg pkgs.lcms2 pkgs.sdl3 nuklear ];
         } ''
           cp -R ${cleanSource pkgs} source
           chmod -R u+w source
@@ -232,6 +233,7 @@ EOF
             zlib
             libdeflate
             libjpeg
+            lcms2
             sdl3
             nuklear
           ];

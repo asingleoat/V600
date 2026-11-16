@@ -7,12 +7,21 @@ renders; they do not replace looking at the real window.
 
 Build steps (run with `-Dui=true`): `ui-smoke`, `native-scanner-connect-smoke`,
 `native-process-worker-smoke`, `native-process-dump-smoke`,
-`native-process-export-smoke`, `native-roll-smoke` (opening a roll points
-the Scan and Process views at it), `native-roll-name-input-smoke` (clicking,
+`native-process-export-smoke`, `native-frame-render-smoke` (the Frame
+view renders its frame, then again live when the frame's look changes),
+`native-frame-print-smoke` (the Frame view's Print section lists the
+system's printers and reads the first one's options; with a driver that
+ships paper profiles it soft-proofs the frame, then scrolls to the Paper
+pulldown, opens it, and picks another paper through SDL mouse events,
+saving to a scratch config; it never prints. Nuklear windows have one
+popup, so a tooltip on a pulldown keeps its list from opening: pulldowns
+put their help on their labels),
+`native-roll-smoke` (opening a roll points
+the Scan and Strip views at it), `native-roll-name-input-smoke` (clicking,
 typing, Backspace, and Cmd+A/C/V through SDL events and the clipboard),
 `native-scan-sweep-smoke` (the scan progress line draws at the reported
 position over the scanned selection), `native-roll-reframe-smoke` (frames
-placed in the Process view re-export a roll strip under the roll's names and
+placed in the Strip view re-export a roll strip under the roll's names and
 are saved as its framing; a settled edit saves and Undo saves the earlier
 frames back), `native-roll-close-smoke` (Close Roll returns at
 once while a strip exports, the panel reports the export finishing and the
@@ -68,12 +77,15 @@ density 1, so only a real window shows the high-density path.
 
 Look at:
 
-- Scan, Process, and Gallery at the default size, at scale `1.0` and `1.45`,
+- Scan, Strip, Frame, and Gallery at the default size, at scale `1.0` and `1.45`,
   and after resizing narrower, wider, and shorter.
 - Gallery with at least two exports in `frames/`, including Trash, the
   Delete confirmation, and wheel zoom plus middle-button pan.
-- The footer status bar in each view, including Process while a worker or
+- The footer status bar in each view, including Strip while a worker or
   export is running.
+- In Frame, dragging a slider or the colour pad updates the preview as it
+  moves; a frame given its own look says so in the frame list and keeps it
+  after switching scans and back.
 
 Check that:
 

@@ -2,6 +2,7 @@ const std = @import("std");
 
 const app_state = @import("../app_state.zig");
 const processing_config = @import("../processing/config.zig");
+const processing_frame_adjust = @import("../processing/frame_adjust.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_render = @import("../processing/render.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
@@ -740,16 +741,34 @@ pub fn configStateBytes(
     allocator: std.mem.Allocator,
     loaded: *const processing_config.LoadedConfig,
 ) ![]u8 {
+    return configStateBytesFor(allocator, loaded, .all);
+}
+
+/// What a cached result depends on: the whole config, or all but the
+/// frames' look settings, which frame detection and Dmin never read.
+pub const ConfigScope = enum { all, detection };
+
+pub fn configStateBytesFor(
+    allocator: std.mem.Allocator,
+    loaded: *const processing_config.LoadedConfig,
+    scope: ConfigScope,
+) ![]u8 {
     var builder = StateBuilder.init(allocator);
     errdefer builder.deinit();
 
     try builder.tag("config");
     try builder.appendU32(schema_version);
 
-    var entry_indices: [32]usize = undefined;
+    var entry_indices: [processing_config.max_entries]usize = undefined;
     const entries = sortedEntryIndices(loaded, &entry_indices);
-    try builder.appendUsize(entries.len);
+    var kept: usize = 0;
     for (entries) |index| {
+        if (scope == .detection and processing_frame_adjust.keyNamed(loaded.entries[index].name.slice()) != null) continue;
+        entries[kept] = index;
+        kept += 1;
+    }
+    try builder.appendUsize(kept);
+    for (entries[0..kept]) |index| {
         const entry = loaded.entries[index];
         try builder.appendString(entry.name.slice());
         try appendConfigValue(&builder, entry.value);
@@ -841,7 +860,7 @@ pub fn autoDetectKey(
     loaded: *const processing_config.LoadedConfig,
     state: AutoDetectState,
 ) !Key {
-    const config_state = try configStateBytes(allocator, loaded);
+    const config_state = try configStateBytesFor(allocator, loaded, .detection);
     defer allocator.free(config_state);
     const operation_state = try autoDetectStateBytes(allocator, state);
     defer allocator.free(operation_state);
@@ -871,7 +890,7 @@ pub fn rebateDminKey(
     loaded: *const processing_config.LoadedConfig,
     rect: app_state.RebateRect,
 ) !Key {
-    const config_state = try configStateBytes(allocator, loaded);
+    const config_state = try configStateBytesFor(allocator, loaded, .detection);
     defer allocator.free(config_state);
     const operation_state = try rebateDminStateBytes(allocator, rect);
     defer allocator.free(operation_state);
@@ -1043,13 +1062,18 @@ fn appendRenderOptions(builder: *StateBuilder, options: processing_render.Render
     try builder.appendF64(options.percentile_lo);
     try builder.appendF64(options.percentile_hi);
     try builder.appendF64(options.exposure_compensation);
+    try builder.appendF64(options.highlight_target);
+    try builder.appendF64(options.highlight_mix);
     try builder.appendF64(options.color_temp);
     try builder.appendF64(options.color_tint);
     try builder.appendF64(options.auto_white_balance);
+    try builder.appendF64(options.neutral_white_balance);
     try builder.appendF64(options.film_gamma);
     try builder.appendF64(options.film_toe);
     try builder.appendF64(options.dye_crosstalk);
     try builder.appendUsize(options.percentile_sample_limit);
+    try builder.appendUsize(@intFromEnum(options.primaries));
+    try builder.appendUsize(if (options.output) |space| @intFromEnum(space) + 1 else 0);
     try builder.appendBool(options.chroma != null);
     if (options.chroma) |settings| {
         try builder.appendF64(settings.hue);
@@ -1058,6 +1082,7 @@ fn appendRenderOptions(builder: *StateBuilder, options: processing_render.Render
         try builder.appendF64(settings.radius);
         try builder.appendF64(settings.gain);
         try builder.appendUsize(settings.families);
+        try builder.appendF64(settings.target);
     }
 }
 
@@ -1076,11 +1101,29 @@ fn appendRebateRect(builder: *StateBuilder, rect: app_state.RebateRect) !void {
 
 fn sortedEntryIndices(
     loaded: *const processing_config.LoadedConfig,
-    out: *[32]usize,
+    out: *[processing_config.max_entries]usize,
 ) []usize {
     for (0..loaded.len) |index| out[index] = index;
     insertionSortConfigEntries(loaded, out[0..loaded.len]);
     return out[0..loaded.len];
+}
+
+test "frame detection and Dmin keys ignore the look settings" {
+    const allocator = std.testing.allocator;
+    var plain = processing_config.LoadedConfig{};
+    var looked = processing_config.LoadedConfig{};
+    try looked.apply(&.{
+        .{ .name = "exposure_compensation", .value = .{ .float = 1.0 } },
+        .{ .name = "color_contrast", .value = .{ .boolean = true } },
+    });
+    const plain_bytes = try configStateBytesFor(allocator, &plain, .detection);
+    defer allocator.free(plain_bytes);
+    const looked_bytes = try configStateBytesFor(allocator, &looked, .detection);
+    defer allocator.free(looked_bytes);
+    try std.testing.expectEqualSlices(u8, plain_bytes, looked_bytes);
+    const looked_all = try configStateBytesFor(allocator, &looked, .all);
+    defer allocator.free(looked_all);
+    try std.testing.expect(!std.mem.eql(u8, plain_bytes, looked_all));
 }
 
 fn sortedStockIndices(
@@ -1541,28 +1584,33 @@ test "Dmin key changes when image metadata or rebate rectangle changes" {
     try std.testing.expect(!key_a.eql(key_c));
 }
 
-test "Dmin public key includes full processing config state" {
+test "Dmin public key includes processing config state but not the look settings" {
     const allocator = std.testing.allocator;
     var config_a = try sampleConfig();
     var config_b = config_a;
-    try config_b.set("render_contrast", .{ .float = 1.55 });
+    try config_b.set("clahe_clip", .{ .float = 3.0 });
+    var config_look = config_a;
+    try config_look.set("render_contrast", .{ .float = 1.55 });
     const rect: app_state.RebateRect = .{ .x = 1.0, .y = 2.0, .w = 3.0, .h = 4.0, .angle = 0.0 };
 
     var key_a = try rebateDminKey(allocator, std.testing.io, "scans/missing-dmin-config.tiff", &config_a, rect);
     defer key_a.deinit(allocator);
     var key_b = try rebateDminKey(allocator, std.testing.io, "scans/missing-dmin-config.tiff", &config_b, rect);
     defer key_b.deinit(allocator);
+    var key_look = try rebateDminKey(allocator, std.testing.io, "scans/missing-dmin-config.tiff", &config_look, rect);
+    defer key_look.deinit(allocator);
     try std.testing.expect(!key_a.eql(key_b));
+    try std.testing.expect(key_a.eql(key_look));
 }
 
-test "auto detect cache clones hits and includes full config state" {
+test "auto detect cache clones hits and includes config state" {
     const allocator = std.testing.allocator;
     var cache = AutoDetectCache{};
     defer cache.deinit(allocator);
 
     var config_a = try sampleConfig();
     var config_b = config_a;
-    try config_b.set("render_contrast", .{ .float = 1.55 });
+    try config_b.set("clahe_clip", .{ .float = 3.0 });
     const state: AutoDetectState = .{
         .options = .{ .format = "35mm", .n_frames = 6 },
         .scale_percent = 0.5,

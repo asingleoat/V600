@@ -10,7 +10,9 @@ ports (`filter.mjs`, a JavaScript reference of the filter in its demo page).
 
 Given the families the prototype fitted, the tests hold both of our filter
 paths (f64 and the fast f32 one) within one 8-bit level of these outputs and
-to the same changed pixels; byte-for-byte parity with the prototype's
-JavaScript math is not a goal. Our fit differs from the prototype's (it is
+to the same changed pixels in the cases without boost or pull (`gain-only`,
+`identity`). Our boost and pull differ on purpose: the prototype's moved
+near-greys toward the families' hues, a colour cast. Byte-for-byte parity
+with the prototype's JavaScript math is not a goal. Our fit differs from the prototype's (it is
 spatial and weights colours by chroma), so it is not checked against
 `expectedPeaks`.

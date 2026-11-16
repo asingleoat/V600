@@ -118,6 +118,8 @@ pub const WriteImageOptions = struct {
     /// TIFF DateTime, "YYYY:MM:DD HH:MM:SS".
     datetime: ?[]const u8 = null,
     software: ?[]const u8 = null,
+    /// An ICC profile to embed: the colour space the pixels are in.
+    icc_profile: ?[]const u8 = null,
 };
 
 pub fn readDpi(allocator: std.mem.Allocator, path: []const u8) !?u32 {
@@ -264,6 +266,19 @@ pub fn loadRgbPage(allocator: std.mem.Allocator, path: []const u8) !Image {
 
 /// Rows `first_row` up to `first_row + row_count` of the RGB page (fewer at
 /// the page's end), with the scanner LUT inverted, without reading the rest.
+/// The ICC profile embedded in the first page, if any.
+pub fn readIccProfile(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+    const tiff = openTiff(path_z.ptr, "r") orelse return error.TiffOpenFailed;
+    defer c.TIFFClose(tiff);
+    var size: u32 = 0;
+    var data: ?*anyopaque = null;
+    if (c.TIFFGetField(tiff, c.TIFFTAG_ICCPROFILE, &size, &data) == 0) return null;
+    const bytes: [*]const u8 = @ptrCast(data orelse return null);
+    return try allocator.dupe(u8, bytes[0..size]);
+}
+
 pub fn loadRgbPageRows(allocator: std.mem.Allocator, path: []const u8, first_row: u32, row_count: u32) !Image {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
@@ -539,6 +554,10 @@ fn writeImageDirectory(
         const json_z = try allocator.dupeZ(u8, json);
         defer allocator.free(json_z);
         try setAsciiField(tiff, export_metadata_tag, json_z.ptr);
+    }
+    if (options.icc_profile) |icc| {
+        const size = std.math.cast(u32, icc.len) orelse return error.TiffMetadataFailed;
+        if (c.TIFFSetField(tiff, c.TIFFTAG_ICCPROFILE, size, icc.ptr) == 0) return error.TiffMetadataFailed;
     }
     if (options.dpi) |dpi| {
         const dpi_f: f32 = @floatFromInt(dpi);

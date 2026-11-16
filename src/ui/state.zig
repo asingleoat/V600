@@ -5,12 +5,15 @@ const processing_chroma = @import("../processing/chroma.zig");
 const processing_config = @import("../processing/config.zig");
 const processing_export = @import("../processing/export.zig");
 const processing_events = @import("../processing/events.zig");
+const processing_frame_adjust = @import("../processing/frame_adjust.zig");
 const processing_frames = @import("../processing/frames.zig");
 const processing_webgpu = @import("../processing/webgpu.zig");
+const processing_render = @import("../processing/render.zig");
 const processing_workflow = @import("../processing/workflow.zig");
 const scanner_config = @import("../scanner/config.zig");
 const scanner_contracts = @import("../scanner/contracts.zig");
 const scanner_events = @import("../scanner/events.zig");
+const print_order = @import("print_order.zig");
 const process_cache = @import("process_cache.zig");
 const scan_workflow = @import("scan_workflow.zig");
 const trash_files = @import("trash.zig");
@@ -277,6 +280,12 @@ pub const ProcessExportControls = struct {
     export_ir_neg: bool = false,
     export_ir_inv: bool = true,
     export_inv_only: bool = false,
+    /// Export this frame alone, under its own number.
+    only_frame: ?usize = null,
+    /// Where to write, instead of the export folder.
+    output_dir: ?[]const u8 = null,
+    /// Print the exported frame afterwards.
+    print: ?*const print_order.PrintOrder = null,
 
     pub fn outputSelection(self: ProcessExportControls) processing_export.OutputSelection {
         return .{
@@ -369,15 +378,24 @@ pub const Command = union(enum) {
 
 pub const View = enum {
     scan,
-    process,
+    /// Whole-strip work: frames, Dmin, dust removal, export.
+    strip,
+    /// One frame's look, previewed live.
+    frame,
     gallery,
 
     pub fn titleZ(self: View) [*:0]const u8 {
         return switch (self) {
             .scan => "Scan",
-            .process => "Process",
+            .strip => "Strip",
+            .frame => "Frame",
             .gallery => "Gallery",
         };
+    }
+
+    /// The views working on the loaded scan.
+    pub fn isProcessing(self: View) bool {
+        return self == .strip or self == .frame;
     }
 };
 
@@ -443,6 +461,15 @@ pub const State = struct {
     process_undo: [process_undo_depth]ProcessSelectionsSnapshot = undefined,
     process_undo_len: usize = 0,
     process_auto_detect_pending: bool = false,
+    /// Each frame's own look, in the order of `process_selections`, for the
+    /// image named in `process_adjustments_path` (`<image>.adjust.json`).
+    process_frame_adjustments: [64]processing_frame_adjust.Adjustments = @splat(.{}),
+    process_adjustments_path: [std.fs.max_path_bytes]u8 = undefined,
+    process_adjustments_path_len: usize = 0,
+    /// Looks changed since they were last saved.
+    process_adjustments_dirty: bool = false,
+    /// The frame the Frame view shows and edits.
+    frame_view_index: usize = 0,
     process_exporting: bool = false,
     process_export_files_written: usize = 0,
     process_status_buffer: [128]u8 = undefined,
@@ -1005,7 +1032,7 @@ pub const State = struct {
     }
 
     pub fn beginProcessingImageLoad(self: *State, path: []const u8, index: usize) void {
-        self.active_view = .process;
+        self.active_view = .strip;
         self.processing.beginImageLoad(path, index);
         self.status = "Loading image...";
     }
@@ -1161,6 +1188,8 @@ pub const State = struct {
     }
 
     pub fn processingInvertedPreviewOptions(self: *const State) processing_workflow.InvertedPreviewOptions {
+        var buffer: [processing_config.max_entries]processing_config.Override = undefined;
+        const base = self.processing_config.overrides(&buffer);
         return .{
             .stock = self.processing_config.activeStock(),
             .dmin = self.processing.dmin,
@@ -1169,13 +1198,16 @@ pub const State = struct {
                 .percentile_lo = processingConfigFloat(&self.processing_config, "render_percentile_lo"),
                 .percentile_hi = processingConfigFloat(&self.processing_config, "render_percentile_hi"),
                 .exposure_compensation = processingConfigFloat(&self.processing_config, "exposure_compensation"),
+                .highlight_target = processingConfigFloat(&self.processing_config, "render_highlight_target"),
                 .color_temp = processingConfigFloat(&self.processing_config, "color_temp"),
                 .color_tint = processingConfigFloat(&self.processing_config, "color_tint"),
                 .auto_white_balance = processingConfigFloat(&self.processing_config, "auto_white_balance"),
+                .neutral_white_balance = processingConfigFloat(&self.processing_config, "neutral_white_balance"),
                 .film_gamma = processingConfigFloat(&self.processing_config, "film_gamma"),
                 .film_toe = processingConfigFloat(&self.processing_config, "film_toe"),
                 .dye_crosstalk = processingConfigFloat(&self.processing_config, "dye_crosstalk"),
                 .chroma = processingChromaSettings(&self.processing_config),
+                .primaries = processing_workflow.primariesForConfig(base),
             },
             .invert_request = self.processing_gpu_request,
         };
@@ -1394,10 +1426,16 @@ pub const State = struct {
 
     pub fn removeProcessSelection(self: *State, index: usize) bool {
         if (index >= self.process_selection_count) return false;
+        // The later frames' looks move down with them.
+        for (self.process_frame_adjustments[index..self.process_selection_count]) |*adjustments| {
+            if (!adjustments.isEmpty()) self.process_adjustments_dirty = true;
+        }
         var i = index;
         while (i + 1 < self.process_selection_count) : (i += 1) {
             self.process_selections[i] = self.process_selections[i + 1];
+            self.process_frame_adjustments[i] = self.process_frame_adjustments[i + 1];
         }
+        self.process_frame_adjustments[self.process_selection_count - 1] = .{};
         self.process_selection_count -= 1;
         if (self.process_selection_count == 0) {
             self.process_active_selection = null;
@@ -2049,6 +2087,72 @@ pub const State = struct {
         return self.processing_images.paths[self.processing.image_idx];
     }
 
+    /// Loads the frames' looks of the current image when it changed,
+    /// saving any unsaved ones of the image before.
+    pub fn syncFrameAdjustments(self: *State, allocator: std.mem.Allocator, io: std.Io) !void {
+        const path = self.currentProcessingImagePath() orelse return;
+        if (std.mem.eql(u8, path, self.process_adjustments_path[0..self.process_adjustments_path_len])) return;
+        if (path.len > self.process_adjustments_path.len) return error.NameTooLong;
+        try self.saveFrameAdjustments(allocator, io);
+        const loaded = try processing_frame_adjust.load(allocator, io, path);
+        defer allocator.free(loaded);
+        self.process_frame_adjustments = @splat(.{});
+        const count = @min(loaded.len, self.process_frame_adjustments.len);
+        @memcpy(self.process_frame_adjustments[0..count], loaded[0..count]);
+        @memcpy(self.process_adjustments_path[0..path.len], path);
+        self.process_adjustments_path_len = path.len;
+        self.frame_view_index = 0;
+    }
+
+    /// Writes the frames' looks beside their image, if they changed.
+    pub fn saveFrameAdjustments(self: *State, allocator: std.mem.Allocator, io: std.Io) !void {
+        if (!self.process_adjustments_dirty or self.process_adjustments_path_len == 0) return;
+        try processing_frame_adjust.save(allocator, io, self.process_adjustments_path[0..self.process_adjustments_path_len], &self.process_frame_adjustments);
+        self.process_adjustments_dirty = false;
+    }
+
+    /// The settings a frame renders with: processing.toml's under its own.
+    pub fn frameRenderOptions(self: *const State, index: usize) processing_render.RenderToDisplayOptions {
+        var buffer: [processing_config.max_entries]processing_config.Override = undefined;
+        const base = self.processing_config.overrides(&buffer);
+        const adjustments = self.process_frame_adjustments[0..@min(self.process_selection_count, self.process_frame_adjustments.len)];
+        return processing_workflow.frameRenderOptions(null, base, adjustments, index);
+    }
+
+    /// A setting's value in processing.toml, else its built-in default.
+    pub fn configSetting(self: *const State, key: processing_frame_adjust.Key) f64 {
+        if (processingConfigEntry(&self.processing_config, @tagName(key))) |entry| {
+            return switch (entry.value) {
+                .boolean => |boolean| if (boolean) 1.0 else 0.0,
+                else => entry.value.asFloat(),
+            };
+        }
+        const default = processing_config.defaultValue(@tagName(key)) orelse return 0.0;
+        return default.asFloat();
+    }
+
+    /// A setting's value for frame `index`: its own, else the config's.
+    pub fn frameSetting(self: *const State, index: usize, key: processing_frame_adjust.Key) f64 {
+        if (index < self.process_frame_adjustments.len) {
+            if (self.process_frame_adjustments[index].get(key)) |value| return value;
+        }
+        if (key == .look_mix) return 1.0;
+        if (processingConfigEntry(&self.processing_config, @tagName(key))) |entry| {
+            return switch (entry.value) {
+                .boolean => |boolean| if (boolean) 1.0 else 0.0,
+                else => entry.value.asFloat(),
+            };
+        }
+        const default = processing_config.defaultValue(@tagName(key)) orelse return 0.0;
+        return default.asFloat();
+    }
+
+    pub fn setFrameSetting(self: *State, index: usize, key: processing_frame_adjust.Key, value: ?f64) void {
+        if (index >= self.process_frame_adjustments.len) return;
+        self.process_frame_adjustments[index].set(key, value);
+        self.process_adjustments_dirty = true;
+    }
+
     pub fn currentProcessingImagePathForWorker(self: State) ?[]const u8 {
         return self.currentProcessingImagePath();
     }
@@ -2178,6 +2282,7 @@ fn processingChromaSettings(loaded: *const processing_config.LoadedConfig) ?proc
         .radius = processingConfigFloat(loaded, "color_contrast_radius"),
         .gain = processingConfigFloat(loaded, "color_contrast_gain"),
         .families = @intFromFloat(std.math.clamp(@round(processingConfigFloat(loaded, "color_contrast_families")), 1.0, processing_chroma.max_families)),
+        .target = processingConfigFloat(loaded, "color_contrast_target"),
     };
 }
 
@@ -2357,10 +2462,10 @@ test "native UI state initializes without SDL or Nuklear bindings" {
     try std.testing.expectEqual(@as(usize, 3), state.processing.image_count);
     try std.testing.expectEqualStrings("Scan", std.mem.span(state.activeTitleZ()));
 
-    state.show(.process);
+    state.show(.strip);
     state.setStatus("Ready");
-    try std.testing.expectEqual(View.process, state.active_view);
-    try std.testing.expectEqualStrings("Process", std.mem.span(state.activeTitleZ()));
+    try std.testing.expectEqual(View.strip, state.active_view);
+    try std.testing.expectEqualStrings("Strip", std.mem.span(state.activeTitleZ()));
     try std.testing.expectEqualStrings("Ready", state.status);
 
     state.requestQuit();
@@ -2633,7 +2738,7 @@ test "native UI processing and gallery transitions are headless state changes" {
     try std.testing.expect(state.processPreviewInteractionReady());
 
     state.beginProcessingImageLoad("scans/scan_0006_rgbir_800dpi.tiff", 2);
-    try std.testing.expectEqual(View.process, state.active_view);
+    try std.testing.expectEqual(View.strip, state.active_view);
     var info = state.processingInfo();
     try std.testing.expect(info.loading);
     try std.testing.expectEqualStrings("scan_0006_rgbir_800dpi.tiff", info.filename);
@@ -2719,7 +2824,7 @@ test "native UI switches process image through process_handlers metadata state" 
     state.processing.image_count = paths.len;
 
     const info = try state.switchProcessingImage(allocator, 0, 8192);
-    try std.testing.expectEqual(View.process, state.active_view);
+    try std.testing.expectEqual(View.strip, state.active_view);
     try std.testing.expectEqualStrings("rgb-thumb-ir.tiff", info.filename);
     try std.testing.expectEqual(@as(usize, 0), info.image_idx);
     try std.testing.expectEqual(@as(usize, 1), info.image_count);

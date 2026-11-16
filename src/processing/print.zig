@@ -7,9 +7,11 @@
 //! 360 and 720 ppi Epson's printer drivers work at.
 const std = @import("std");
 
+const chroma = @import("chroma.zig");
 const color = @import("color.zig");
 const config = @import("config.zig");
 const parallelism = @import("parallelism.zig");
+const rgb_space = @import("rgb_space.zig");
 
 pub const Size = struct {
     /// The `print_size` config value, and the size in the copy's file name.
@@ -158,8 +160,10 @@ extern fn cerealgrain_write_rgb_jpeg_file(
     dpi: c_int,
 ) c_int;
 
-/// Writes the print copy of a 16-bit sRGB RGB image next to `tiff_path` and
-/// returns the copy's path. `aspect` is the frame's true width over height.
+/// Writes the print copy of a 16-bit RGB image (sRGB-encoded, in `space`)
+/// next to `tiff_path` and returns the copy's path. `aspect` is the frame's
+/// true width over height. Copies are sRGB, what labs print from: colours
+/// beyond it come in at the same Oklab lightness and hue.
 pub fn writeCopy(
     allocator: std.mem.Allocator,
     tiff_path: []const u8,
@@ -167,13 +171,14 @@ pub fn writeCopy(
     width: usize,
     height: usize,
     aspect: f64,
+    space: rgb_space.Space,
     spec: Spec,
 ) ![]u8 {
     const fitted = fit(width, height, aspect, spec);
-    const rgb = if (fitted.kept)
+    const rgb = if (fitted.kept and space == .srgb)
         try trimToSrgb8(allocator, pixels, width, height, fitted.width, fitted.height)
     else
-        try downscaleToSrgb8(allocator, pixels, width, height, fitted.width, fitted.height);
+        try scaleToSrgb8(allocator, pixels, width, height, fitted.width, fitted.height, space, fitted.kept);
     defer allocator.free(rgb);
     const path = try copyPath(allocator, tiff_path, spec.size, fitted.dpi);
     errdefer allocator.free(path);
@@ -225,6 +230,21 @@ pub fn downscaleToSrgb8(
     out_width: usize,
     out_height: usize,
 ) ![]u8 {
+    return scaleToSrgb8(allocator, pixels, width, height, out_width, out_height, .srgb, false);
+}
+
+/// downscaleToSrgb8 from `space`; with `trim`, the image keeps its pixels
+/// and only its middle `out_width` x `out_height` is taken, as trimToSrgb8.
+fn scaleToSrgb8(
+    allocator: std.mem.Allocator,
+    pixels: []const u16,
+    width: usize,
+    height: usize,
+    out_width: usize,
+    out_height: usize,
+    space: rgb_space.Space,
+    trim: bool,
+) ![]u8 {
     std.debug.assert(pixels.len == width * height * 3);
     std.debug.assert(out_width <= width and out_height <= height and out_width > 0 and out_height > 0);
     const output = try allocator.alloc(u8, out_width * out_height * 3);
@@ -239,11 +259,20 @@ pub fn downscaleToSrgb8(
     for (&encode, 0..) |*threshold, index| {
         threshold.* = @floatCast(color.srgbToLinearValue((@as(f64, @floatFromInt(index)) + 0.5) / 255.0));
     }
-    const xs = try areaSpans(allocator, width, out_width);
+    const xs = try spansFor(allocator, width, out_width, trim);
     defer allocator.free(xs);
-    const ys = try areaSpans(allocator, height, out_height);
+    const ys = try spansFor(allocator, height, out_height, trim);
     defer allocator.free(ys);
 
+    var convert: ?[3][3]f32 = null;
+    if (space != .srgb) {
+        const m = rgb_space.conversion(space, .srgb);
+        var narrowed: [3][3]f32 = undefined;
+        for (0..3) |row| for (0..3) |column| {
+            narrowed[row][column] = @floatCast(m[row][column]);
+        };
+        convert = narrowed;
+    }
     try parallelism.forRowBands(allocator, out_height, Downscale{
         .pixels = pixels,
         .width = width,
@@ -252,8 +281,19 @@ pub fn downscaleToSrgb8(
         .decode = decode,
         .encode = &encode,
         .output = output,
+        .convert = convert,
     }, Downscale.rows);
     return output;
+}
+
+/// Area spans from `in_len` source pixels to `out_len`, or with `trim` one
+/// source pixel each, from the middle.
+fn spansFor(allocator: std.mem.Allocator, in_len: usize, out_len: usize, trim: bool) ![]Span {
+    if (!trim) return areaSpans(allocator, in_len, out_len);
+    const spans = try allocator.alloc(Span, out_len);
+    const offset = (in_len - out_len) / 2;
+    for (spans, 0..) |*span, index| span.* = .{ .start = offset + index, .end = offset + index + 1, .first = 1.0, .last = 1.0, .total = 1.0 };
+    return spans;
 }
 
 /// The source pixels an output pixel covers, `start..end`, with the
@@ -300,6 +340,8 @@ const Downscale = struct {
     decode: []const f32,
     encode: *const [255]f32,
     output: []u8,
+    /// The source space to sRGB, when they differ.
+    convert: ?[3][3]f32 = null,
 
     fn rows(self: Downscale, row_start: usize, row_end: usize) void {
         const Vec = @Vector(3, f32);
@@ -317,7 +359,15 @@ const Downscale = struct {
                     }
                     acc += sum * @as(Vec, @splat(ys.weight(sy)));
                 }
-                const mean = acc / @as(Vec, @splat(xs.total * ys.total));
+                var mean = acc / @as(Vec, @splat(xs.total * ys.total));
+                if (self.convert) |m| {
+                    const srgb = [3]f32{
+                        m[0][0] * mean[0] + m[0][1] * mean[1] + m[0][2] * mean[2],
+                        m[1][0] * mean[0] + m[1][1] * mean[1] + m[1][2] * mean[2],
+                        m[2][0] * mean[0] + m[2][1] * mean[1] + m[2][2] * mean[2],
+                    };
+                    mean = chroma.fitPixel(&chroma.srgb_lms, srgb);
+                }
                 const out = self.output[(oy * out_width + ox) * 3 ..][0..3];
                 inline for (0..3) |channel| out[channel] = encodeSrgb8(self.encode, mean[channel]);
             }
