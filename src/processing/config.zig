@@ -277,26 +277,27 @@ pub const defaults = [_]ParamDefault{
     .{ .name = "ir_blur_size", .value = .{ .integer = 301 }, .section = .dust_removal, .dpi_scale = .linear },
     .{ .name = "ir_max_coverage", .value = .{ .float = 0.03 }, .section = .dust_removal },
     .{ .name = "inpaint_padding", .value = .{ .integer = 16 }, .section = .dust_removal, .dpi_scale = .linear },
-    .{ .name = "render_contrast", .value = .{ .float = 1.8 }, .section = .render },
-    .{ .name = "render_percentile_lo", .value = .{ .float = 0.5 }, .section = .render },
-    .{ .name = "render_percentile_hi", .value = .{ .float = 99.5 }, .section = .render },
+    .{ .name = "render_contrast", .value = .{ .float = 1.02 }, .section = .render },
+    .{ .name = "render_percentile_lo", .value = .{ .float = 3.7 }, .section = .render },
+    .{ .name = "render_percentile_hi", .value = .{ .float = 96.7 }, .section = .render },
     .{ .name = "exposure_compensation", .value = .{ .float = 0.0 }, .section = .render },
-    .{ .name = "render_highlight_target", .value = .{ .float = 0.0 }, .section = .render },
-    .{ .name = "color_temp", .value = .{ .float = 0.0 }, .section = .render },
-    .{ .name = "color_tint", .value = .{ .float = 0.0 }, .section = .render },
-    .{ .name = "auto_white_balance", .value = .{ .float = 1.0 }, .section = .render },
+    .{ .name = "render_highlight_target", .value = .{ .float = 0.84 }, .section = .render },
+    .{ .name = "color_temp", .value = .{ .float = 0.26 }, .section = .render },
+    .{ .name = "color_tint", .value = .{ .float = -0.08 }, .section = .render },
+    .{ .name = "auto_white_balance", .value = .{ .float = 0.99 }, .section = .render },
     .{ .name = "neutral_white_balance", .value = .{ .float = 1.0 }, .section = .render },
-    .{ .name = "film_gamma", .value = .{ .float = 0.55 }, .section = .render },
-    .{ .name = "film_toe", .value = .{ .float = 0.25 }, .section = .render },
-    .{ .name = "dye_crosstalk", .value = .{ .float = 0.2 }, .section = .render },
+    .{ .name = "film_gamma", .value = .{ .float = 0.6 }, .section = .render },
+    .{ .name = "film_toe", .value = .{ .float = 0.23 }, .section = .render },
+    .{ .name = "dye_crosstalk", .value = .{ .float = 0.05 }, .section = .render },
     .{ .name = "render_primaries", .value = .{ .string = FixedString.init("auto") }, .section = .render },
-    .{ .name = "color_contrast_gain", .value = .{ .float = 0.40 }, .section = .render },
-    .{ .name = "color_contrast_boost", .value = .{ .float = 0.30 }, .section = .render },
-    .{ .name = "color_contrast_radius", .value = .{ .float = 0.025 }, .section = .render },
-    .{ .name = "color_cohesion_hue", .value = .{ .float = 0.70 }, .section = .render },
-    .{ .name = "color_cohesion_chroma", .value = .{ .float = 0.55 }, .section = .render },
+    .{ .name = "color_contrast_gain", .value = .{ .float = 0.5 }, .section = .render },
+    .{ .name = "color_contrast_boost", .value = .{ .float = 0.15 }, .section = .render },
+    .{ .name = "color_contrast_radius", .value = .{ .float = 0.035 }, .section = .render },
+    .{ .name = "color_cohesion_hue", .value = .{ .float = 0.85 }, .section = .render },
+    .{ .name = "color_cohesion_chroma", .value = .{ .float = 0.3 }, .section = .render },
     .{ .name = "color_contrast_families", .value = .{ .integer = 12 }, .section = .render },
-    .{ .name = "color_contrast_target", .value = .{ .float = 0.0 }, .section = .render },
+    .{ .name = "color_contrast_target", .value = .{ .float = 0.052 }, .section = .render },
+    .{ .name = "color_contrast", .value = .{ .boolean = true } },
     .{ .name = "preview_size", .value = .{ .integer = 8192 } },
     .{ .name = "clahe_clip", .value = .{ .float = 2.0 } },
 };
@@ -325,7 +326,7 @@ pub const comments = [_]ParamComment{
     .{ .name = "film_gamma", .text = "Film contrast: net density per decade of exposure on the straight part of its curve" },
     .{ .name = "film_toe", .text = "Width of the film's toe in decades of exposure" },
     .{ .name = "dye_crosstalk", .text = "Dye crosstalk the scan sees: colour differences grow by 1 / (1 - crosstalk)" },
-    .{ .name = "color_contrast", .text = "Colour contrast within each colour family of a frame (the color_contrast_* and color_cohesion_* settings); off unless true" },
+    .{ .name = "color_contrast", .text = "Colour contrast within each colour family of a frame (the color_contrast_* and color_cohesion_* settings); on unless false" },
     .{ .name = "color_contrast_gain", .text = "Colour contrast: how much chroma differences grow near each family's centre, 0 to 0.5" },
     .{ .name = "color_contrast_boost", .text = "Colour contrast: how much each family's colours gain chroma along their own hue, 0 to 0.8" },
     .{ .name = "color_contrast_radius", .text = "Colour contrast: largest family core, in Oklab units, 0 to 0.08" },
@@ -763,7 +764,7 @@ fn appendPythonFloat(out: *std.array_list.Managed(u8), value: f64) !void {
 
 test "preserves processing config default order, values, and types" {
     try std.testing.expectEqual(@as(u32, 800), reference_dpi);
-    try std.testing.expectEqual(@as(usize, 30), defaults.len);
+    try std.testing.expectEqual(@as(usize, 31), defaults.len);
     try std.testing.expectEqualStrings("processing.toml", config_file);
 
     try defaultValue("ir_threshold").?.expectEqual(.{ .float = 0.10 });
@@ -774,17 +775,17 @@ test "preserves processing config default order, values, and types" {
     try defaultValue("ir_blur_size").?.expectEqual(.{ .integer = 301 });
     try defaultValue("ir_max_coverage").?.expectEqual(.{ .float = 0.03 });
     try defaultValue("inpaint_padding").?.expectEqual(.{ .integer = 16 });
-    try defaultValue("render_contrast").?.expectEqual(.{ .float = 1.8 });
-    try defaultValue("render_percentile_lo").?.expectEqual(.{ .float = 0.5 });
-    try defaultValue("render_percentile_hi").?.expectEqual(.{ .float = 99.5 });
+    try defaultValue("render_contrast").?.expectEqual(.{ .float = 1.02 });
+    try defaultValue("render_percentile_lo").?.expectEqual(.{ .float = 3.7 });
+    try defaultValue("render_percentile_hi").?.expectEqual(.{ .float = 96.7 });
     try defaultValue("exposure_compensation").?.expectEqual(.{ .float = 0.0 });
-    try defaultValue("color_temp").?.expectEqual(.{ .float = 0.0 });
-    try defaultValue("color_tint").?.expectEqual(.{ .float = 0.0 });
-    try defaultValue("auto_white_balance").?.expectEqual(.{ .float = 1.0 });
+    try defaultValue("color_temp").?.expectEqual(.{ .float = 0.26 });
+    try defaultValue("color_tint").?.expectEqual(.{ .float = -0.08 });
+    try defaultValue("auto_white_balance").?.expectEqual(.{ .float = 0.99 });
     try defaultValue("neutral_white_balance").?.expectEqual(.{ .float = 1.0 });
-    try defaultValue("film_gamma").?.expectEqual(.{ .float = 0.55 });
-    try defaultValue("film_toe").?.expectEqual(.{ .float = 0.25 });
-    try defaultValue("dye_crosstalk").?.expectEqual(.{ .float = 0.2 });
+    try defaultValue("film_gamma").?.expectEqual(.{ .float = 0.6 });
+    try defaultValue("film_toe").?.expectEqual(.{ .float = 0.23 });
+    try defaultValue("dye_crosstalk").?.expectEqual(.{ .float = 0.05 });
     try defaultValue("preview_size").?.expectEqual(.{ .integer = 8192 });
     try defaultValue("clahe_clip").?.expectEqual(.{ .float = 2.0 });
 
@@ -834,7 +835,7 @@ test "scales processing params with Python get_param semantics" {
     try getParam("ir_blur_size", 1600, &.{}).?.expectEqual(.{ .integer = 603 });
     try getParam("ir_blur_size", 400, &.{}).?.expectEqual(.{ .integer = 151 });
 
-    try getParam("render_contrast", 1600, &.{}).?.expectEqual(.{ .float = 1.8 });
+    try getParam("render_contrast", 1600, &.{}).?.expectEqual(.{ .float = 1.02 });
     try getParam("ir_dilate_radius", null, &.{}).?.expectEqual(.{ .integer = 4 });
     try getParam("ir_dilate_radius", 0, &.{}).?.expectEqual(.{ .integer = 4 });
     try std.testing.expect(getParam("missing", 800, &.{}) == null);

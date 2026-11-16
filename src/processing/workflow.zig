@@ -2621,14 +2621,12 @@ pub fn primariesForConfig(overrides: []const config.Override) rgb_space.Space {
 }
 
 /// The colour contrast settings, or null when it is off: `enabled`, else
-/// the config's `color_contrast` (off unless true).
+/// the config's `color_contrast` (on unless false).
 pub fn chromaSettingsForConfig(current_dpi: ?u32, overrides: []const config.Override, enabled: ?bool) ?chroma.Settings {
-    const on = enabled orelse for (overrides) |entry| {
-        if (std.mem.eql(u8, entry.name, "color_contrast")) break switch (entry.value) {
-            .boolean => |boolean| boolean,
-            else => false,
-        };
-    } else false;
+    const on = enabled orelse switch (config.getParam("color_contrast", current_dpi, overrides).?) {
+        .boolean => |boolean| boolean,
+        else => true,
+    };
     if (!on) return null;
     return .{
         .hue = config.getParam("color_cohesion_hue", current_dpi, overrides).?.asFloat(),
@@ -3353,5 +3351,5 @@ test "a look at part strength goes part way, and switched modes fade in what the
     looks[0].set(.render_contrast, 2.6);
     looks[0].set(.look_mix, 0.25);
     const options = frameRenderOptions(null, &.{}, &looks, 0);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.8 + 0.25 * 0.8), options.contrast, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.02 + 0.25 * (2.6 - 1.02)), options.contrast, 1e-12);
 }

@@ -234,7 +234,9 @@ pub fn drawPanel(
     for (looks.all) |look| {
         tooltip(ctx, look.description);
         if (c.nk_button_label(ctx, look.name.ptr) != 0) {
+            const strength = model.process_frame_adjustments[index].get(.look_mix);
             model.process_frame_adjustments[index] = look.adjustments();
+            model.process_frame_adjustments[index].set(.look_mix, strength);
             model.process_adjustments_dirty = true;
         }
     }
@@ -344,8 +346,12 @@ fn kept(value: f32) f64 {
 fn ownSettingsText(buffer: []u8, model: *const State, index: usize) []const u8 {
     const adjustments = &model.process_frame_adjustments[index];
     if (adjustments.isEmpty()) return "This frame uses the default look. Changing a setting gives it its own.";
+    var without_strength = adjustments.*;
+    without_strength.set(.look_mix, null);
     for (looks.all) |look| {
-        if (std.meta.eql(adjustments.values, look.adjustments().values)) {
+        if (std.meta.eql(without_strength.values, look.adjustments().values)) {
+            const mix = adjustments.mix();
+            if (mix < 1.0) return std.fmt.bufPrint(buffer, "This frame uses the {s} look at {d:.0}% strength. Reset Frame returns it to the default.", .{ look.name, mix * 100.0 }) catch "";
             return std.fmt.bufPrint(buffer, "This frame uses the {s} look. Reset Frame returns it to the default.", .{look.name}) catch "";
         }
     }

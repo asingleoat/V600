@@ -2274,7 +2274,7 @@ fn processingConfigBool(loaded: *const processing_config.LoadedConfig, name: []c
 
 /// Colour contrast as the config sets it, or null when off (the default).
 fn processingChromaSettings(loaded: *const processing_config.LoadedConfig) ?processing_chroma.Settings {
-    if (!(processingConfigBool(loaded, "color_contrast") orelse false)) return null;
+    if (!(processingConfigBool(loaded, "color_contrast") orelse true)) return null;
     return .{
         .hue = processingConfigFloat(loaded, "color_cohesion_hue"),
         .chroma = processingConfigFloat(loaded, "color_cohesion_chroma"),
@@ -3016,7 +3016,8 @@ test "native UI process settings and stocks mirror process_handlers routes" {
     const preview_options = state.processingInvertedPreviewOptions();
     try std.testing.expectEqualStrings("kodak_portra", preview_options.stock.?);
     try std.testing.expectApproxEqAbs(1.6, preview_options.render_options.contrast, 0.0);
-    try std.testing.expectApproxEqAbs(0.0, preview_options.render_options.color_temp, 0.0);
+    // Not saved: the default, Pastel's warm cast.
+    try std.testing.expectApproxEqAbs(0.26, preview_options.render_options.color_temp, 0.0);
 
     const saved = try processing_config.loadFile(allocator, std.testing.io, config_path);
     try saved.value("stock").?.expectEqual(.{ .string = processing_config.FixedString.init("kodak_portra") });

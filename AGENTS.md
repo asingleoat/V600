@@ -289,6 +289,10 @@ deliberately, not by accident.
 
 - Input is 16-bit RGB plus optional IR. IR is usually scanned at lower
   resolution (1:2 or 1:4) and must be aligned before use.
+- The render settings' defaults are the Pastel look's (see Config and
+  files, looks); the figures quoted below are the Standard look's, the
+  render's own defaults (`render.RenderToDisplayOptions`), which the
+  regression fixtures use.
 - Order: transmittance, density, Dmin subtraction (from a rebate selection,
   or the full image as fallback), film stock transform (channel balance in
   density), then per frame: automatic white balance (red and blue onto
@@ -330,7 +334,7 @@ deliberately, not by accident.
   Scene contrast is kept, not stretched per frame. A frame crop's white
   balance and exposure are measured on its inner 95% each way, clear of
   film-border slivers. Formulas: `docs/RENDER_TRANSFORM_CLOSED_FORM.md`.
-- Colour contrast (`color_contrast`, off unless true: the Frame view's
+- Colour contrast (`color_contrast`, on unless false: the Frame view's
   "Color contrast", `processing export --color-contrast on`; roll exports
   follow it) is the render's last step, on display light before it is
   quantized (`processing/chroma.zig`). Each image's colourful objects are
@@ -468,14 +472,15 @@ deliberately, not by accident.
   Strip and Frame views, `processing export`, roll exports), and a roll
   strip whose looks changed since its export counts as needing one.
   Built-in looks (`processing/looks.zig`, the Frame view's Preset buttons)
-  are complete sets of those settings (unnamed ones at the built-in
-  defaults, so a look does not depend on processing.toml): Pastel
+  are complete sets of those settings (unnamed ones at Standard's, so a
+  look depends on neither the defaults nor processing.toml): Pastel
   (highlights at 0.84, soft contrast, a warm cast, colour contrast with a
   0.052 colourfulness target), fitted to the colour signature of a
-  reference photograph on the owner's frames, and Vivid (contrast 2.0,
-  highlights at 0.90, crosstalk 0.25, colour contrast with a 0.085 target),
-  chosen by the owner from renders. Applying one replaces the frame's own
-  settings. A frame's Strength (`look_mix`, a frame setting only, 1 unless
+  reference photograph on the owner's frames and the default look; Vivid
+  (contrast 2.0, highlights at 0.90, crosstalk 0.25, colour contrast with
+  a 0.085 target), chosen by the owner from renders; and Standard, the
+  plain render and the defaults before Pastel. Applying one replaces the
+  frame's own settings but keeps its Strength. A frame's Strength (`look_mix`, a frame setting only, 1 unless
   set) blends its own look with the default look
   (`workflow.mixLook`): settings that vary smoothly go part way;
   highlight placement moves exposure part way from the log-average's
