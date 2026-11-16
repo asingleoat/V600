@@ -10,7 +10,7 @@ findings to the backlog; do not add phases or progress logs here.
 
 ## Current state
 
-As of 2026-09-28, on branch `zig-rewrite`:
+As of 2026-09-28, on `master`, the only branch:
 
 - Zig CLI and native SDL3/Nuklear UI cover scanning, frame detection,
   inversion, IR dust removal, export, and the gallery. Linux scanning was
