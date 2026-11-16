@@ -3,6 +3,35 @@ colour negatives through the transparency unit with infrared dust
 removal, finds the frames, inverts them, and exports 16-bit TIFFs, plus
 print-sized JPEGs if you ask for them.
 
+## New in v0.1.0
+
+- **Frame view.** Processing is split in two: the Strip view handles the
+  scan as a whole (frames, film base, dust and Newton's rings, export),
+  and the new Frame view edits one frame's look with a live preview. Each
+  frame can have its own look, kept beside the scan and used by every
+  export.
+- **Looks.** Pastel (now the default: soft contrast, highlights held off
+  white, gentle colour), Vivid (richer colour, a little more contrast),
+  and Standard (the plain render, the old default). A Strength slider
+  blends a frame's look with the default when a preset is the right idea
+  but too strong.
+- **Colour contrast.** Finds each frame's colourful objects (skin, sky,
+  foliage) and spreads their shades apart, aiming for a set
+  colourfulness, so muted frames gain colour and colourful ones are left
+  alone. Greys stay neutral.
+- **Better white balance.** A second pass finds the frame's nearly
+  neutral surfaces and takes their remaining colour cast out.
+- **Wide gamut.** On the Mac, frames render in Rec. 2020, wide enough for
+  a photo printer's colours, and exported TIFFs carry their ICC profile.
+  The Frame view and gallery show the full range of a Display P3 screen.
+- **Colour-managed printing (Mac).** Print a frame straight from the
+  Frame view: CerealGrain converts it with the ICC profile for your
+  printer and paper (Epson's own, picked to match the paper) and turns
+  the driver's colour adjustment off, with a soft proof to preview the
+  print on screen. Built for Epson's EcoTank photo printers; other
+  printers whose drivers take raster pages should work too. Also from the
+  command line: `cerealgrain print`.
+
 ## Downloads
 
 - **CerealGrain-…-macos-arm64.dmg**: the Mac app, for Apple silicon (M1 or
